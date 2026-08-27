@@ -332,6 +332,40 @@ describe("entity resolution module", () => {
 		]);
 	});
 
+	it("requires identity scope keys to agree before producing merge evidence", () => {
+		const assess = (leftScopeKey: string | null, rightScopeKey: string | null) =>
+			assessEntityResolution({
+				metadataSchema: { type: "object" },
+				entityTypeSlug: "person",
+				winner: {
+					id: 1,
+					metadata: {},
+					identities: [
+						{ namespace: "phone", identifier: "+44 7700 900 123", scopeKey: leftScopeKey },
+					],
+				},
+				losers: [
+					{
+						id: 2,
+						metadata: {},
+						identities: [
+							{ namespace: "phone", identifier: "447700900123", scopeKey: rightScopeKey },
+						],
+					},
+				],
+			});
+
+		expect(assess("tenant-a", "tenant-b").evidence).toEqual([]);
+		expect(assess("tenant-a", "tenant-a").evidence).toContainEqual({
+			kind: "phone",
+			identifier: "447700900123 [tenant: tenant-a]",
+		});
+		expect(assess(null, null).evidence).toContainEqual({
+			kind: "phone",
+			identifier: "447700900123",
+		});
+	});
+
 	it("reads a JID-shell's phone identity but does not match a corrupted metadata phone", () => {
 		// The run-702088 prod shape (numbers sanitized): the WhatsApp shell has
 		// its phone only in entity_identities; the named contact's metadata phone

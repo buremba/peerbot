@@ -20,6 +20,7 @@ import {
 import { isInternalUrl } from '../gateway/proxy/ssrf-guard';
 import type { McpOAuthMetadata } from '../mcp-proxy/types';
 import { preflightConnectorRelationshipTypes } from './connector-relationship-declarations';
+import { reconcileConnectorIdentityScopeRegistry } from './connector-identity-scopes';
 
 type SqlClient = ReturnType<typeof getDb>;
 
@@ -328,6 +329,10 @@ export async function upsertConnectorDefinitionRecords(params: {
   // vocabulary before any definition or version row can become active.
   await preflightConnectorRelationshipTypes({
     sql,
+    organizationId: params.organizationId,
+    metadata,
+  });
+  await reconcileConnectorIdentityScopeRegistry({
     organizationId: params.organizationId,
     metadata,
   });

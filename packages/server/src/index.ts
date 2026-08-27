@@ -71,6 +71,7 @@ import { agentRoutes } from "./lobu/agent-routes";
 import { clientRoutes } from "./lobu/client-routes";
 import { clientActivityScopeRoutes } from "./lobu/client-activity-scope-routes";
 import { deploymentRoutes } from "./lobu/deployment-routes";
+import { identityRoutes } from "./lobu/identity-routes";
 import { sandboxRoutes } from "./lobu/sandbox-routes";
 import {
 	getLobuCoreServices,
@@ -2257,6 +2258,7 @@ app.route("/catalog", globalCatalogRoutes);
 app.route("/api/:orgSlug/installed", orgInstalledRoutes);
 app.route("/api/:orgSlug/agents", agentRoutes);
 app.route("/api/:orgSlug/deployments", deploymentRoutes);
+app.route("/api/:orgSlug/identities", identityRoutes);
 app.route("/api/:orgSlug/sandboxes", sandboxRoutes);
 app.route("/api/:orgSlug/clients/activity-scopes", clientActivityScopeRoutes);
 app.route("/api/:orgSlug/clients", clientRoutes);

@@ -6,7 +6,7 @@
  * The ingestion pipeline:
  *   1) Extracts + normalizes identifiers from each event.
  *   2) Looks them up in the normalized `entity_identities` table
- *      (UNIQUE per (org, namespace, identifier, COALESCE(scope_connection_id, 0))
+ *      (UNIQUE per (org, namespace, identifier, COALESCE(scope_key, ''))
  *       — see EntityIdentitySpec.scope).
  *   3) Links to the matched entity, creates on miss (when autoCreate=true),
  *      logs a merge candidate when one event's identifiers resolve to
@@ -234,8 +234,7 @@ export type ResolvedIdentity = {
   primary: boolean;
   /**
    * Uniqueness scope, resolved once at extraction from the spec's `scope` and
-   * the ingesting connection. `null` = org-wide, which is every identity a
-   * connector has not explicitly declared connection-scoped.
+   * the connector-declared tenant key path. `null` = org-wide.
    *
    * Carried on the identity rather than read from params at each use site so
    * matching and insertion cannot disagree: `lookupMatches` and
@@ -247,38 +246,38 @@ export type ResolvedIdentity = {
    * legitimately mean org scope; requiring the field would break them without
    * the compiler noticing, because the server tsconfig excludes `__tests__`.
    * Omission is safe in the only direction that matters: it can never
-   * accidentally CLAIM a connection scope, only decline one.
+   * accidentally CLAIM a tenant scope, only decline one.
    */
-  scopeConnectionId?: number | null;
+  scopeKey?: string | null;
 };
 
 /**
- * The sentinel the unique index COALESCEs a NULL scope to. `connections.id` is
- * a bigserial, so 0 can never collide with a real connection.
+ * The sentinel the unique index COALESCEs a NULL scope to. Tenant keys are
+ * required to be non-empty, so the empty string cannot collide with one.
  *
- * Every `ON CONFLICT` below writes this sentinel as a LITERAL `0`, never as a
+ * Every `ON CONFLICT` below writes this sentinel as a LITERAL `''`, never as a
  * bound parameter: conflict inference matches the target expression against the
  * index's, and a Param node never equals the index's Const node — a
- * parameterized `COALESCE(scope_connection_id, $n)` fails with "there is no
+ * parameterized `COALESCE(scope_key, $n)` fails with "there is no
  * unique or exclusion constraint matching the ON CONFLICT specification". If
  * this value ever changes, the SQL literals must be updated by hand.
  */
-const ORG_SCOPE_SENTINEL = 0;
+const ORG_SCOPE_SENTINEL = '';
 
-/** Index-shaped scope value: mirrors `COALESCE(scope_connection_id, 0)`. */
-function scopeKeyOf(identity: { scopeConnectionId?: number | null }): number {
-  return identity.scopeConnectionId ?? ORG_SCOPE_SENTINEL;
+/** Index-shaped scope value: mirrors `COALESCE(scope_key, '')`. */
+function scopeKeyOf(identity: { scopeKey?: string | null }): string {
+  return identity.scopeKey ?? ORG_SCOPE_SENTINEL;
 }
 
 /**
- * Match key for an identity. Includes the scope so a connection-scoped
- * `erp_customer:CARI-001` never resolves to another connection's row — the
+ * Match key for an identity. Includes the scope so a tenant-scoped
+ * `erp_customer:CARI-001` never resolves to another tenant's row — the
  * whole point of the scope column.
  */
 function identityKey(identity: {
   namespace: string;
   identifier: string;
-  scopeConnectionId?: number | null;
+  scopeKey?: string | null;
 }): string {
   // NUL separator, as the pre-scope key used: a namespace or identifier may
   // contain any printable character, so only a byte that cannot appear in
@@ -294,7 +293,7 @@ function identityKey(identity: {
 type AttachedIdentity = {
   namespace: string;
   identifier: string;
-  scopeConnectionId: number | null;
+  scopeKey: string | null;
 };
 
 type ExtractedLink = {
@@ -383,19 +382,17 @@ function normalizeIdentityValue(namespace: string, raw: string): string | null {
 
 /**
  * Extraction is the one place scope is decided. Everything downstream —
- * matching, creation, insertion — reads `scopeConnectionId` off the identity
+ * matching, creation, insertion — reads `scopeKey` off the identity
  * rather than consulting the spec again, so there is no way for the lookup and
  * the write to disagree about which row they mean.
  *
- * `scope: 'connection'` with no ingesting connection falls back to org scope:
- * the webhook and manual paths pass `connectionId: null`, and inventing a
- * scope there would strand those identities in a bucket nothing else can ever
- * match.
+ * Tenant scope never depends on Lobu's connection row. Missing or empty tenant
+ * keys fail hard rather than silently widening the identity to organization
+ * scope.
  */
 function extractLink(
   item: BatchItem,
-  rule: ResolvedEventAttributionRule,
-  connectionId: number | null
+  rule: ResolvedEventAttributionRule
 ): ExtractedLink | null {
   const identities: ExtractedLink['identities'] = [];
   for (const spec of rule.identities) {
@@ -403,12 +400,31 @@ function extractLink(
     if (typeof raw !== 'string' || raw.length === 0) continue;
     const normalized = normalizeIdentityValue(spec.namespace, raw);
     if (!normalized) continue;
+    let scopeKey: string | null = null;
+    if (spec.scope === 'tenant') {
+      if (!spec.scopeKeyPath?.trim()) {
+        throw new Error(
+          `Identity namespace '${spec.namespace}' has tenant scope and requires a non-empty scopeKeyPath.`
+        );
+      }
+      const rawScopeKey = getValueAtPath(item, spec.scopeKeyPath);
+      scopeKey = rawScopeKey === null || rawScopeKey === undefined ? '' : String(rawScopeKey).trim();
+      if (!scopeKey || scopeKey.includes('\u0000')) {
+        throw new Error(
+          `Identity namespace '${spec.namespace}' at '${spec.scopeKeyPath}' requires a non-empty tenant scope key.`
+        );
+      }
+    } else if (spec.scopeKeyPath !== undefined) {
+      throw new Error(
+        `Identity namespace '${spec.namespace}' is organization-scoped, so scopeKeyPath must be omitted.`
+      );
+    }
     identities.push({
       namespace: spec.namespace,
       identifier: normalized,
       matchOnly: spec.matchOnly === true,
       primary: spec.primary === true,
-      scopeConnectionId: spec.scope === 'connection' ? connectionId : null,
+      scopeKey,
     });
   }
   if (identities.length === 0) return null;
@@ -431,11 +447,11 @@ function extractLink(
  * Resolve identity keys to their owning entity — TYPE-AGNOSTIC.
  *
  * An identity value belongs to at most ONE entity within its scope (the
- * `idx_entity_identities_live_unique_scoped` index on
- * `(org, namespace, identifier, COALESCE(scope_connection_id, 0))`), so a key
+ * `idx_entity_identities_live_unique_tenant_scoped` index on
+ * `(org, namespace, identifier, COALESCE(scope_key, ''))`), so a key
  * resolves to a single entity of ANY type. Org-scoped identities carry a NULL
  * scope and therefore still resolve org-wide, which is every identity a
- * connector has not declared `scope: 'connection'`. We deliberately do NOT
+ * connector has not declared `scope: 'tenant'`. We deliberately do NOT
  * filter by the rule's target `entityType`: a `slack_user_id` owned by a
  * signed-in `$member` must resolve to that `$member` even when a `person`-typed
  * rule looks it up, so attribution and ACL converge on one entity instead of
@@ -461,7 +477,7 @@ async function lookupMatches(
 
   const namespaces: string[] = [];
   const identifiers: string[] = [];
-  const scopes: number[] = [];
+  const scopes: string[] = [];
   for (const id of wanted.values()) {
     namespaces.push(id.namespace);
     identifiers.push(id.identifier);
@@ -472,21 +488,21 @@ async function lookupMatches(
     entity_id: number | string;
     namespace: string;
     identifier: string;
-    scope_key: number | string;
+    scope_key: string;
   }>`
     SELECT ei.entity_id, ei.namespace, ei.identifier,
-           COALESCE(ei.scope_connection_id, 0) AS scope_key
+           COALESCE(ei.scope_key, '') AS scope_key
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
     WHERE ei.organization_id = ${params.orgId}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
-      AND (ei.namespace, ei.identifier, COALESCE(ei.scope_connection_id, 0)) IN (
+      AND (ei.namespace, ei.identifier, COALESCE(ei.scope_key, '')) IN (
         SELECT ns, ident, scope
         FROM unnest(
           ${pgTextArray(namespaces)}::text[],
           ${pgTextArray(identifiers)}::text[],
-          ${pgBigintArray(scopes)}::bigint[]
+          ${pgTextArray(scopes)}::text[]
         ) AS u(ns, ident, scope)
       )
   `;
@@ -500,7 +516,7 @@ async function lookupMatches(
         // COALESCE already collapsed NULL to the sentinel; map it back so the
         // key built from a DB row matches the key built from an extracted
         // identity, whose org scope is null.
-        scopeConnectionId: Number(row.scope_key) || null,
+        scopeKey: row.scope_key || null,
       }),
       Number(row.entity_id)
     );
@@ -685,7 +701,7 @@ async function createEntityWithIdentities(
  *
  * The scope is RETURNED, not just written, because callers key the in-memory
  * claim map on it. Returning `(namespace, identifier)` alone would let a
- * connection-scoped identity be re-keyed as org-scoped on the way back, and the
+ * tenant-scoped identity be re-keyed as org-scoped on the way back, and the
  * rest of the batch would then resolve it to the wrong entity.
  */
 async function insertIdentities(
@@ -702,19 +718,17 @@ async function insertIdentities(
   const namespaces = params.identities.map((i) => i.namespace);
   const identifiers = params.identities.map((i) => i.identifier);
   // NULL, not the sentinel: the sentinel exists only inside the index
-  // expression. Storing 0 would make the row claim connection 0.
-  // `?? null` collapses undefined into null BEFORE serialization. Without it an
-  // omitted scope reached the array literal as String(undefined) === "undefined",
-  // which Postgres rejects with `invalid input syntax for type bigint`.
-  const scopes = params.identities.map((i) => i.scopeConnectionId ?? null);
+  // expression. `?? null` collapses hand-built identity omissions to org scope
+  // before serialization.
+  const scopes = params.identities.map((i) => i.scopeKey ?? null);
   const attached = await sql<{
     namespace: string;
     identifier: string;
-    scope_connection_id: number | string | null;
+    scope_key: string | null;
   }>`
     INSERT INTO entity_identities (
       organization_id, entity_id, namespace, identifier, source_connector, connection_id,
-      scope_connection_id
+      scope_key
     )
     SELECT ${params.orgId}, ${params.entityId}, v.ns, v.ident,
            ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null},
@@ -722,20 +736,20 @@ async function insertIdentities(
     FROM unnest(
       ${pgTextArray(namespaces)}::text[],
       ${pgTextArray(identifiers)}::text[],
-      ${pgTextArray(scopes.map((v) => (v === null ? null : String(v))))}::bigint[]
+      ${pgTextArray(scopes)}::text[]
     ) AS v(ns, ident, scope)
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, ''))
       WHERE deleted_at IS NULL
     DO UPDATE SET connection_id = EXCLUDED.connection_id
     WHERE entity_identities.entity_id = EXCLUDED.entity_id
       AND entity_identities.connection_id IS NULL
       AND EXCLUDED.connection_id IS NOT NULL
-    RETURNING namespace, identifier, scope_connection_id
+    RETURNING namespace, identifier, scope_key
   `;
   return attached.map((r) => ({
     namespace: r.namespace,
     identifier: r.identifier,
-    scopeConnectionId: r.scope_connection_id === null ? null : Number(r.scope_connection_id),
+    scopeKey: r.scope_key,
   }));
 }
 
@@ -862,7 +876,7 @@ export async function applyEventAttributions(
  * `events.entity_ids` (a webhook row is read by id, not via a feed-time JOIN).
  * `rules` is keyed by event kind (origin_type). Tenant-scoped on `orgId`;
  * entity_identities are UNIQUE per
- * (org, namespace, identifier, COALESCE(scope_connection_id, 0)), so resolution
+ * (org, namespace, identifier, COALESCE(scope_key, '')), so resolution
  * never crosses organizations.
  */
 export async function resolveEventAttributionsForItems(
@@ -935,7 +949,7 @@ async function resolveLinksByKind(
     const rules = params.rulesByKind[kind];
     if (!rules) return;
     for (const rule of rules) {
-      const link = extractLink(item, rule, params.connectionId ?? null);
+      const link = extractLink(item, rule);
       if (!link) continue;
       // Metadata stamping is deferred to post-resolution (below) — only
       // attached identifiers are stamped, so a stale one (e.g. a vacated
@@ -1053,7 +1067,7 @@ async function resolveLinksByKind(
             attached.push({
               namespace: id.namespace,
               identifier: id.identifier,
-              scopeConnectionId: id.scopeConnectionId ?? null,
+              scopeKey: id.scopeKey ?? null,
             });
           }
         }
@@ -1105,7 +1119,7 @@ async function resolveLinksByKind(
                 attached.push({
                   namespace: id.namespace,
                   identifier: id.identifier,
-                  scopeConnectionId: id.scopeConnectionId ?? null,
+                  scopeKey: id.scopeKey ?? null,
                 });
               }
             }

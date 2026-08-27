@@ -58,7 +58,7 @@ describe("buildSenderIdentity", () => {
         // carries its workspace, so it names the same person through every
         // connection that observes it. Scoping it per connection would fork one
         // person into one entity per connection.
-        scopeConnectionId: null,
+        scopeKey: null,
       },
     ]);
   });

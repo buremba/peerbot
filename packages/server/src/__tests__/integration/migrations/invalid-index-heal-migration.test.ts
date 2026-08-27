@@ -115,6 +115,14 @@ const HEAL_MIGRATIONS = [
         ON events (id)
     `,
 	},
+	{
+		files: ["20260827160000_entity_identity_tenant_scope.sql"],
+		index: "idx_entity_identities_live_unique_tenant_scoped",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS idx_entity_identities_live_unique_tenant_scoped
+        ON entity_identities (id)
+    `,
+	},
 ] as const;
 
 function resolveMigrationsDir(): string {
@@ -260,6 +268,90 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 			column_exists: true,
 			index_exists: true,
 			foreign_key_exists: true,
+		});
+	});
+
+	it("round-trips and replays the entity identity tenant-scope schema", async () => {
+		const migrationsDir = resolveMigrationsDir();
+		const file = "20260827160000_entity_identity_tenant_scope.sql";
+		const sql = getDb();
+		const execute = (statement: string) => sql.unsafe(statement);
+
+		await executeMigrationSection(
+			execute,
+			loadMigrationDown(migrationsDir, file),
+		);
+
+		const [afterDown] = await sql<{
+			scope_key_exists: boolean;
+			connection_scope_exists: boolean;
+			registry_exists: boolean;
+			legacy_index_exists: boolean;
+		}>`
+			SELECT
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_key'
+				) AS scope_key_exists,
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_connection_id'
+				) AS connection_scope_exists,
+				to_regclass('public.connector_identity_scope_registry') IS NOT NULL
+					AS registry_exists,
+				to_regclass('public.idx_entity_identities_live_unique_scoped') IS NOT NULL
+					AS legacy_index_exists
+		`;
+		expect(afterDown).toEqual({
+			scope_key_exists: false,
+			connection_scope_exists: true,
+			registry_exists: false,
+			legacy_index_exists: true,
+		});
+
+		const up = loadMigrationUp(migrationsDir, file);
+		await executeMigrationSection(execute, up);
+		// A production runner can replay the body after the final column drop but
+		// before recording the migration. The old-column guard must stay valid.
+		await executeMigrationSection(execute, up);
+
+		const [afterReplay] = await sql<{
+			scope_key_exists: boolean;
+			connection_scope_exists: boolean;
+			registry_exists: boolean;
+			tenant_index_valid: boolean;
+		}>`
+			SELECT
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_key'
+				) AS scope_key_exists,
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_connection_id'
+				) AS connection_scope_exists,
+				to_regclass('public.connector_identity_scope_registry') IS NOT NULL
+					AS registry_exists,
+				COALESCE((
+					SELECT i.indisvalid
+					FROM pg_index i
+					WHERE i.indexrelid =
+						to_regclass('public.idx_entity_identities_live_unique_tenant_scoped')
+				), false) AS tenant_index_valid
+		`;
+		expect(afterReplay).toEqual({
+			scope_key_exists: true,
+			connection_scope_exists: false,
+			registry_exists: true,
+			tenant_index_valid: true,
 		});
 	});
 });

@@ -8,8 +8,8 @@
  * typed key tuple; the full tuple remains in entity metadata for inspection,
  * so a re-run — or a second replica racing the same window — resolves to the
  * existing entity instead of creating a duplicate. The partial unique index
- * `idx_entity_identities_live_unique_scoped (organization_id, namespace, identifier,
- * COALESCE(scope_connection_id, 0))
+ * `idx_entity_identities_live_unique_tenant_scoped (organization_id, namespace, identifier,
+ * COALESCE(scope_key, ''))
  * WHERE deleted_at IS NULL` is the lock.
  *
  * Origin provenance (the run that first produced the entity, its stable key,
@@ -268,7 +268,7 @@ async function insertEntityWithUniqueSlug(params: {
  * Upsert a child entity by stable key. Returns its id and whether it was newly
  * created. Idempotent across re-runs / concurrent replicas via the
  * `entity_identities` live-unique index on
- * (org, namespace, identifier, COALESCE(scope_connection_id, 0)) — automation
+ * (org, namespace, identifier, COALESCE(scope_key, '')) — automation
  * keys are org-scoped, so that column is always NULL here. Slug
  * collisions are disambiguated by `insertEntityWithUniqueSlug` (the stable key,
  * not the slug, is the identity).
@@ -557,7 +557,7 @@ async function upsertKeyedEntity(params: {
     ) VALUES (
       ${organizationId}, ${entityId}, ${AUTOMATION_KEY_NAMESPACE}, ${identifier}, 'automation'
     )
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
     DO NOTHING
     RETURNING entity_id
   `;

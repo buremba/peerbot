@@ -84,7 +84,9 @@ describe("Automation schedule auto-pause notifications", () => {
 		expect(firstEvents[0]?.title).toBe(
 			'Automation "Notification pause" was auto-paused',
 		);
-		expect(firstEvents[0]?.target_user_ids).toEqual(
+		expect(
+			[...(firstEvents[0]?.target_user_ids as string[])].sort(),
+		).toEqual(
 			[workspace.users.admin.id, workspace.users.owner.id].sort(),
 		);
 		expect(firstEvents[0]?.metadata).toMatchObject({

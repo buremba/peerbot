@@ -3,6 +3,7 @@ import type { AutomationPollPayload, PollResponse } from '@lobu/core/contracts/w
 import { executeAutomationRun, isInteractiveSessionEligible } from '../daemon/automation.js';
 import { executeRun } from '../daemon/executor.js';
 import { executeRun } from '../daemon/executor.js';
+import { WorkerHttpError } from '../daemon/client.js';
 import * as interactive from '../daemon/interactive-session.js';
 import { resolveDaemonWorkerId } from '../daemon/start.js';
 
@@ -226,6 +227,128 @@ describe('interactive-session routing', () => {
     expect(reports[0]?.error).toBe(
       'daemon shut down before parent Claude completed the Automation'
     );
+  });
+
+  test('a terminal heartbeat cancels an active interactive handoff without reporting a stale failure', async () => {
+    const session: interactive.ParentClaudeSession = {
+      kind: 'claude-code',
+      pid: process.pid,
+      sessionId: 'parent-session',
+      socketPath: '/private/unused-parent.sock',
+      messagingToken: 'messaging-token',
+      registryPath: '/private/unused-session.json',
+    };
+    const handoff = spyOn(interactive, 'handoffToInteractiveSession').mockImplementation(
+      async (opts) => ({
+        kind: 'handed-off',
+        certainty: 'possible',
+        helperPath: '/private/helper',
+        completion: new Promise((resolve) => {
+          // Resolving as `timeout` keeps an unforwarded signal a visible
+          // assertion failure instead of a hung test.
+          const fallback = setTimeout(
+            () =>
+              resolve({
+                kind: 'timeout',
+                durationMs: 50,
+                error: 'terminal signal was not forwarded to the active handoff',
+              }),
+            50
+          );
+          opts.terminalSignal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(fallback);
+              resolve({
+                kind: 'terminal',
+                durationMs: 7,
+                error: 'automation run became terminal before the interactive session completed it',
+              });
+            },
+            { once: true }
+          );
+        }),
+      })
+    );
+    const reports: Array<Record<string, unknown>> = [];
+    const client = {
+      id: 'worker-test',
+      mcpWiring: undefined,
+      async heartbeat() {
+        throw new WorkerHttpError(409, '/heartbeat', 'run is no longer active');
+      },
+      async completeAutomation(_runId: number, request: Record<string, unknown>) {
+        reports.push(request);
+        return { ok: true, status: 'completed' };
+      },
+    };
+
+    await executeAutomationRun(
+      client as never,
+      { run_id: 96, run_type: 'automation', payload: payload() } satisfies PollResponse,
+      interactive.attachInteractiveSession({ heartbeatIntervalMs: 5 }, session)
+    );
+
+    expect(handoff).toHaveBeenCalledTimes(1);
+    expect(handoff.mock.calls[0]?.[0]?.terminalSignal?.aborted).toBe(true);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.finalize_attempt).toBe(0);
+    expect(reports[0]?.exit_reason).toBe('ok');
+    expect(reports[0]?.exit_code).toBeNull();
+    expect(reports[0]?.exit_signal).toBeNull();
+    expect(reports[0]?.error).toBeUndefined();
+  });
+
+  test('a resume granted before the terminal latch never re-injects an interactive prompt', async () => {
+    const session: interactive.ParentClaudeSession = {
+      kind: 'claude-code',
+      pid: process.pid,
+      sessionId: 'parent-session',
+      socketPath: '/private/unused-parent.sock',
+      messagingToken: 'messaging-token',
+      registryPath: '/private/unused-session.json',
+    };
+    const handoff = spyOn(interactive, 'handoffToInteractiveSession').mockResolvedValue({
+      kind: 'handed-off',
+      certainty: 'possible',
+      helperPath: '/private/helper',
+      completion: Promise.resolve({
+        kind: 'completed',
+        durationMs: 5,
+        output: 'first attempt',
+      }),
+    });
+    let heartbeatConflict = false;
+    const reports: Array<Record<string, unknown>> = [];
+    const client = {
+      id: 'worker-test',
+      mcpWiring: undefined,
+      async heartbeat() {
+        if (!heartbeatConflict) return;
+        throw new WorkerHttpError(409, '/heartbeat', 'run is no longer active');
+      },
+      async completeAutomation(_runId: number, request: Record<string, unknown>) {
+        reports.push(request);
+        heartbeatConflict = true;
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return { ok: true, status: 'resume', attempt: 1, nudge: 'finalize' };
+      },
+    };
+
+    const outcome = await executeAutomationRun(
+      client as never,
+      { run_id: 97, run_type: 'automation', payload: payload() } satisfies PollResponse,
+      interactive.attachInteractiveSession({ heartbeatIntervalMs: 5 }, session)
+    );
+
+    expect(handoff).toHaveBeenCalledTimes(1);
+    expect(reports).toHaveLength(1);
+    // The one report is the first round's real completion, and the granted
+    // resume is dropped rather than driving a second prompt into the session.
+    expect(reports[0]?.output).toBe('first attempt');
+    expect(reports[0]?.exit_reason).toBe('ok');
+    expect(reports[0]?.finalize_attempt).toBe(0);
+    expect(outcome.error).toBeUndefined();
   });
 
   test('Codex handoff preserves completion and finalize-resume semantics without subprocess fallback', async () => {

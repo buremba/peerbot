@@ -126,6 +126,7 @@ Cloud:
   whoami | status          Show user / agent state
   context <subcmd>         Manage API contexts
   org <subcmd>             Manage active org slug
+  identities <subcmd>      Repair identity tenant-scope keys
   link | unlink            Bind this directory to a (context, org)
   apply | deploy           Sync lobu.config.ts to cloud (idempotent)
   agent <subcmd>           CRUD agents via REST
@@ -645,6 +646,41 @@ Memory:
     async (slug: string, options: { name?: string; context?: string }) => {
       const { orgCreateCommand } = await import("./commands/org.js");
       await orgCreateCommand(slug, options);
+    }
+  );
+
+  // ─── identities ─────────────────────────────────────────────────────
+  const identities = program
+    .command("identities")
+    .description("Repair identity tenant-scope keys");
+
+  withCommonOpts(
+    identities
+      .command("rekey <namespace>")
+      .description(
+        "Dry-run or atomically apply a complete identity tenant-key mapping"
+      )
+      .requiredOption(
+        "--mapping <file.json>",
+        'JSON file mapping every live identity id to its tenant key or null: {"123":"tenant-key","124":null}'
+      )
+      .option(
+        "--apply",
+        "Apply after a successful dry-run (default: report only)"
+      ),
+    { org: true, json: true }
+  ).action(
+    async (
+      namespace: string,
+      options: CloudCommandOptions & {
+        mapping: string;
+        apply?: boolean;
+      }
+    ) => {
+      const { identitiesRekeyCommand } = await import(
+        "./commands/identities.js"
+      );
+      await identitiesRekeyCommand(namespace, options);
     }
   );
 

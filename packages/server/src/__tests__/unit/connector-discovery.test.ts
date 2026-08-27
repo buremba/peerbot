@@ -58,6 +58,7 @@ function makeDeps(over?: {
 	// many other connections exist).
 	connectionsByKey?: Record<string, Array<{ status: string }>>;
 	organizations?: Array<Record<string, unknown>>;
+	liveGrantedOrganizationIds?: string[];
 }): ConnectorDiscoveryDeps {
 	return {
 		manageCatalog: (async (args: { action: string }) =>
@@ -71,6 +72,8 @@ function makeDeps(over?: {
 			return { connections: rows };
 		}) as never,
 		listOrganizations: async () => (over?.organizations ?? []) as never,
+		listLiveGrantedOrganizations: async () =>
+			(over?.liveGrantedOrganizationIds ?? []).map((id) => ({ id })),
 	};
 }
 
@@ -276,6 +279,113 @@ describe("searchLiveConnectors (search_sdk connector intent search)", () => {
 		expect(hits[0]).toContain("connections.connectManaged");
 		expect(hits[0]).toContain("lobu init --from-org lobu-cloud");
 		expect(hits[0]).toContain("provider data stays local");
+	});
+
+	it("hides private managed-auth memberships outside the grant while retaining public offers", async () => {
+		const grantCtx = {
+			...ctx,
+			grantedOrganizationIds: ["granted-org"],
+			directSearchFederation: false,
+		} as ToolContext;
+		const managedAuth = (managedByOrg: string) => ({
+			credential_mode: "managed",
+			requires_user_login: true,
+			requires_user_consent: true,
+			join_required: true,
+			connect_method: "connections.connectManaged",
+			local_bootstrap_command: `lobu init --from-org ${managedByOrg}`,
+			connectors: [
+				{
+					connector_key: "google.gmail",
+					provider: "google",
+					managed_by_org: managedByOrg,
+				},
+			],
+		});
+		const deps = makeDeps({
+			catalog: {
+				catalogs: {
+					connectors: {
+						entries: [
+							{
+								id: "google.gmail",
+								name: "Gmail",
+								description: "Email search",
+							},
+						],
+					},
+				},
+			},
+			liveGrantedOrganizationIds: ["granted-org"],
+			organizations: [
+				{
+					id: "ungranted-private",
+					slug: "secret-team",
+					name: "Secret Team",
+					is_member: true,
+					visibility: "private",
+					managed_auth: managedAuth("secret-team"),
+				},
+				{
+					id: "public-managed",
+					slug: "public-catalog",
+					name: "Public Catalog",
+					is_member: false,
+					visibility: "public",
+					managed_auth: managedAuth("public-catalog"),
+				},
+			],
+		});
+
+		const hits = await searchLiveConnectors("gmail", env, grantCtx, deps);
+		expect(hits.join("\n")).toContain("public-catalog");
+		expect(hits.join("\n")).not.toContain("secret-team");
+	});
+
+	it("preserves private membership discovery when no OAuth grant snapshot exists", async () => {
+		const managedAuth = {
+			credential_mode: "managed",
+			requires_user_login: true,
+			requires_user_consent: true,
+			join_required: false,
+			connect_method: "connections.connectManaged",
+			local_bootstrap_command: "lobu init --from-org legacy-team",
+			connectors: [
+				{
+					connector_key: "google.gmail",
+					provider: "google",
+					managed_by_org: "legacy-team",
+				},
+			],
+		};
+		const deps = makeDeps({
+			catalog: {
+				catalogs: {
+					connectors: {
+						entries: [
+							{
+								id: "google.gmail",
+								name: "Gmail",
+								description: "Email search",
+							},
+						],
+					},
+				},
+			},
+			organizations: [
+				{
+					id: "legacy-private",
+					slug: "legacy-team",
+					name: "Legacy Team",
+					is_member: true,
+					visibility: "private",
+					managed_auth: managedAuth,
+				},
+			],
+		});
+
+		const hits = await searchLiveConnectors("gmail", env, ctx, deps);
+		expect(hits.join("\n")).toContain("legacy-team");
 	});
 
 	it("still surfaces connectors when optional managed-auth discovery fails", async () => {

@@ -536,14 +536,22 @@ export async function createTestAccessToken(
   const tokenHash = hashToken(token);
   const id = generateSecureToken(16);
   const expiresAt = new Date(Date.now() + (options?.expiresIn || 3600) * 1000);
+  const scope = options?.scope || 'mcp:read mcp:write';
+  // Only the device-code flow can mint private scopes — mirrored by the
+  // oauth_tokens_private_scopes_require_device_grant check constraint.
+  const grantType = scope
+    .split(/\s+/)
+    .some((s) => s === 'device_worker:run' || s === 'connections:token')
+    ? 'device_code'
+    : null;
 
   await sql`
     INSERT INTO oauth_tokens (
       id, token_type, token_hash, client_id, user_id, organization_id,
-      scope, resource, expires_at, created_at
+      authorization_grant_type, scope, resource, expires_at, created_at
     ) VALUES (
       ${id}, 'access', ${tokenHash}, ${clientId}, ${userId}, ${organizationId},
-      ${options?.scope || 'mcp:read mcp:write'}, ${options?.resource ?? null}, ${expiresAt}, NOW()
+      ${grantType}, ${scope}, ${options?.resource ?? null}, ${expiresAt}, NOW()
     )
   `;
 

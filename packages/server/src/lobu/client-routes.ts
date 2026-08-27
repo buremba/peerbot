@@ -308,13 +308,16 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	      SELECT
 	        oc.id,
 	        oc.client_name,
-	        org_token.user_id AS owner_user_id
+	        COALESCE(org_token.user_id, grant_code.user_id) AS owner_user_id
 	      FROM oauth_clients oc
 	      LEFT JOIN LATERAL (
 	        SELECT ot.user_id
 	        FROM oauth_tokens ot
 	        WHERE ot.client_id = oc.id
-	          AND ot.organization_id = ${organizationId}
+	          AND (
+	            ot.organization_id = ${organizationId}
+	            OR ot.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+	          )
 	        -- Keep this live-first ordering identical to the inventory query so
 	        -- the displayed identity and revoked grant cannot diverge.
 	        ORDER BY
@@ -323,10 +326,37 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	          ot.id DESC
 	        LIMIT 1
 	      ) org_token ON true
+	      LEFT JOIN LATERAL (
+	        SELECT grant_row.user_id
+	        FROM (
+	          SELECT ac.user_id, ac.created_at, ac.code AS grant_id
+	          FROM oauth_authorization_codes ac
+	          WHERE ac.client_id = oc.id
+	            AND ac.expires_at > NOW()
+	            AND (
+	              ac.organization_id = ${organizationId}
+	              OR ac.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+	            )
+	          UNION ALL
+	          SELECT dc.user_id, dc.created_at, dc.device_code AS grant_id
+	          FROM oauth_device_codes dc
+	          WHERE dc.client_id = oc.id
+	            AND dc.user_id IS NOT NULL
+	            AND dc.status = 'approved'
+	            AND dc.expires_at > NOW()
+	            AND (
+	              dc.organization_id = ${organizationId}
+	              OR dc.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+	            )
+	        ) grant_row
+	        ORDER BY grant_row.created_at DESC, grant_row.grant_id DESC
+	        LIMIT 1
+	      ) grant_code ON true
 	      WHERE oc.id = ${clientId}
 	        AND (
 	          oc.organization_id = ${organizationId}
 	          OR org_token.user_id IS NOT NULL
+	          OR grant_code.user_id IS NOT NULL
 	        )
 	      LIMIT 1
 	    `;
@@ -349,18 +379,48 @@ routes.delete("/mcp/:clientId", mcpAuth, async (c) => {
 	          SELECT ot.user_id
 	          FROM oauth_tokens ot
 	          WHERE ot.client_id = sibling.id
-	            AND ot.organization_id = ${organizationId}
+	            AND (
+	              ot.organization_id = ${organizationId}
+	              OR ot.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+	            )
 	          ORDER BY
 	            (ot.revoked_at IS NULL AND ot.expires_at > NOW()) DESC,
 	            ot.created_at DESC,
 	            ot.id DESC
 	          LIMIT 1
 	        ) org_token ON true
+	        LEFT JOIN LATERAL (
+	          SELECT grant_row.user_id
+	          FROM (
+	            SELECT ac.user_id, ac.created_at, ac.code AS grant_id
+	            FROM oauth_authorization_codes ac
+	            WHERE ac.client_id = sibling.id
+	              AND ac.expires_at > NOW()
+	              AND (
+	                ac.organization_id = ${organizationId}
+	                OR ac.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+	              )
+	            UNION ALL
+	            SELECT dc.user_id, dc.created_at, dc.device_code AS grant_id
+	            FROM oauth_device_codes dc
+	            WHERE dc.client_id = sibling.id
+	              AND dc.user_id IS NOT NULL
+	              AND dc.status = 'approved'
+	              AND dc.expires_at > NOW()
+	              AND (
+	                dc.organization_id = ${organizationId}
+	                OR dc.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+	              )
+	          ) grant_row
+	          ORDER BY grant_row.created_at DESC, grant_row.grant_id DESC
+	          LIMIT 1
+	        ) grant_code ON true
 	        WHERE sibling.client_name = ${target.client_name}
-	          AND org_token.user_id = ${target.owner_user_id}
+	          AND COALESCE(org_token.user_id, grant_code.user_id) = ${target.owner_user_id}
 	          AND (
 	            sibling.organization_id = ${organizationId}
 	            OR org_token.user_id IS NOT NULL
+	            OR grant_code.user_id IS NOT NULL
 	          )
 	        ORDER BY sibling.id
 	      `;

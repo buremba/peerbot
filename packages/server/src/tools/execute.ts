@@ -61,6 +61,10 @@ export interface AuthContext {
   baseUrl: string;
   scopedToOrg: boolean;
   allowCrossOrg: boolean;
+  /** Explicit OAuth workspace snapshot; null for non-OAuth identities. */
+  grantedOrganizationIds: string[] | null;
+  /** Bare OAuth MCP search may fan out only when multiple grants remain. */
+  directSearchFederation: boolean;
   /**
    * Persistent MCP session id (`mcp-session-id` header) when the call arrived
    * through an MCP transport session; null for REST-proxy and internal calls.
@@ -131,10 +135,16 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     : c.var.session?.userId ? 'session'
     : 'anonymous';
   const scopedToOrg = !!c.req.param('orgSlug');
+  const requestPath = new URL(c.req.url).pathname;
+  const tokenOrganizationId = mcpAuthInfo?.organizationId ?? null;
+  const grantedOrganizationIds =
+    tokenType === 'oauth'
+      ? (mcpAuthInfo?.grantedOrganizationIds ?? (tokenOrganizationId ? [tokenOrganizationId] : []))
+      : null;
 
   return {
     organizationId: c.var.organizationId,
-    tokenOrganizationId: mcpAuthInfo?.organizationId ?? null,
+    tokenOrganizationId,
     userId: mcpAuthInfo?.userId || c.var.session?.userId || null,
     memberRole: c.var.memberRole,
     agentId: mcpAuthInfo?.agentId ?? null,
@@ -157,7 +167,13 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     requestUrl: c.req.url,
     baseUrl: getConfiguredPublicOrigin() ?? '',
     scopedToOrg,
-    allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
+    allowCrossOrg:
+      tokenType === 'oauth' &&
+      requestPath === '/mcp' &&
+      (grantedOrganizationIds?.length ?? 0) > 1,
+    grantedOrganizationIds,
+    directSearchFederation:
+      tokenType === 'oauth' && requestPath === '/mcp' && (grantedOrganizationIds?.length ?? 0) > 1,
     applyId: parseApplyId(c.req.header('x-lobu-apply-id')),
     rollbackOf: parseApplyId(c.req.header('x-lobu-rollback-of')),
     // Admin-tool LIMIT: only the verified worker token's per-turn allowlist
@@ -184,6 +200,7 @@ function defersWorkspaceRoleToTarget(
   args: unknown,
   authCtx: AuthContext
 ): boolean {
+  if (authCtx.agentId || authCtx.actingAutomationId) return false;
   if (!authCtx.allowCrossOrg) return false;
   if (toolName === 'run_sdk') return true;
   if (
@@ -341,6 +358,12 @@ export async function executeTool(
           listOrganizations(args as any, env, {
             userId: authCtx.userId!,
             currentOrganizationId: authCtx.organizationId,
+            grantedOrganizationIds:
+              authCtx.agentId || authCtx.actingAutomationId
+                ? authCtx.organizationId
+                  ? [authCtx.organizationId]
+                  : []
+                : authCtx.grantedOrganizationIds,
           })
         );
         await auditIfOrgBound({ result });
@@ -503,6 +526,7 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
   if (!authCtx.organizationId) {
     throw new Error('Organization context required. Authenticate with OAuth or API key.');
   }
+  const identityBound = Boolean(authCtx.agentId || authCtx.actingAutomationId);
   return {
     organizationId: authCtx.organizationId,
     userId: authCtx.userId,
@@ -516,7 +540,11 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     scopes: authCtx.scopes,
     tokenType: authCtx.tokenType,
     scopedToOrg: authCtx.scopedToOrg,
-    allowCrossOrg: authCtx.allowCrossOrg,
+    allowCrossOrg: identityBound ? false : authCtx.allowCrossOrg,
+    grantedOrganizationIds: identityBound
+      ? [authCtx.organizationId]
+      : authCtx.grantedOrganizationIds,
+    directSearchFederation: identityBound ? false : authCtx.directSearchFederation,
     requestUrl: authCtx.requestUrl,
     baseUrl: authCtx.baseUrl,
     applyId: authCtx.applyId ?? null,

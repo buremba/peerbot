@@ -135,7 +135,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       '',
       "You have persistent memory. Use it proactively — don't wait to be asked.",
       '',
-      "When asked about the workspace's data — including people, leads, companies, connections, feeds, runs, or counts — query it before answering. Use `search_memory` for semantic recall and `query_sdk` or `query_sql` for structured lookups and counts; these tools default to the current organization. Do not claim you can see only chat/Slack messages or channel members without querying workspace data first.",
+      "When asked about workspace data — including people, leads, companies, connections, feeds, runs, or counts — query it before answering. On a direct bare OAuth connection, `search_memory` searches every currently accessible workspace the user granted and can be narrowed with its singular `workspace` argument; pinned connections and all other tools stay in the current workspace. Use `query_sdk` or `query_sql` for structured lookups and counts. Do not claim you can see only chat/Slack messages or channel members without querying workspace data first.",
     ];
 
     // Org-wide admin-authored context goes near the top: it is the governed
@@ -273,7 +273,7 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       '',
       '### Recalling',
       '- Always search before creating to avoid duplicates',
-      '- `search_memory(query=…, entity_type=…)` to find entities + semantic content matches',
+      '- `search_memory(query=…, entity_type=…)` to find entities + semantic content matches; on a bare OAuth connection omit `workspace` to search all currently accessible granted workspaces, or pass one returned workspace slug to narrow',
       '- `query_sdk({script: "client.entities.listLinks({entity_id: ...})"})` to explore relationships',
       '',
       '### Full schema details',

@@ -447,7 +447,18 @@ function formatSearchResult(result: any, options: FormatterOptions): string {
 function formatSearchCoverage(coverage: any): string {
   const localSources = Array.isArray(coverage.local_sources) ? coverage.local_sources : [];
   const sourceFeeds = Array.isArray(coverage.source_feeds) ? coverage.source_feeds : [];
+  const workspaces = Array.isArray(coverage.workspaces) ? coverage.workspaces : [];
   let md = '## Search Coverage\n\n';
+  if (coverage.scope) md += `Scope: ${coverage.scope}. Status: ${coverage.status ?? 'complete'}.\n\n`;
+  if (workspaces.length > 0) {
+    md += 'Workspace coverage:\n\n';
+    for (const workspace of workspaces) {
+      md += `- \`${workspace.workspace_slug}\`: ${workspace.status}\n`;
+    }
+    md += '\n';
+  } else if (coverage.workspace_slug) {
+    md += `Workspace: \`${coverage.workspace_slug}\`.\n\n`;
+  }
   md += `Local stores searched: ${localSources.length > 0 ? localSources.join(', ') : 'none completed'}.\n\n`;
   if (coverage.source_feed_discovery === 'unavailable') {
     md += 'Source feed discovery was unavailable for this search.\n\n';
@@ -462,7 +473,8 @@ function formatSearchCoverage(coverage: any): string {
   for (const feed of sourceFeeds) {
     const label = `${feed.connection_slug}/${feed.feed_key}`;
     const displayName = feed.display_name ? ` (${feed.display_name})` : '';
-    md += `- Feed ${feed.feed_id}: \`${label}\`${displayName}, ${feed.connector_key}, not queried\n`;
+    const workspace = feed.workspace_slug ? `, workspace \`${feed.workspace_slug}\`` : '';
+    md += `- Feed ${feed.feed_id}: \`${label}\`${displayName}, ${feed.connector_key}${workspace}, not queried\n`;
   }
   if (coverage.more_source_feeds) md += '- More accessible source feeds are available\n';
   return `${md}\n`;
@@ -477,7 +489,8 @@ function formatConversationMessages(messages: any[]): string {
     const who = m.author_name || 'unknown';
     const where = m.channel_id ? ` in #${m.channel_id}` : '';
     const when = m.occurred_at ? ` · ${new Date(m.occurred_at).toLocaleString()}` : '';
-    md += `**${who}**${where}${when}\n`;
+    const workspace = m.workspace_slug ? ` · workspace \`${m.workspace_slug}\`` : '';
+    md += `**${who}**${where}${when}${workspace}\n`;
     const text = m.text || '';
     const excerpt = text.length > 300 ? `${text.slice(0, 300)}...` : text;
     if (excerpt) md += `> ${excerpt.replace(/\n/g, '\n> ')}\n\n`;
@@ -499,6 +512,16 @@ function formatContentSnippets(content: any[]): string {
     if (item.occurred_at) md += ` | **Date**: ${new Date(item.occurred_at).toLocaleDateString()}`;
     md += '\n\n';
     if (item.id != null) md += `**Lobu event ID**: ${item.id}\n\n`;
+    const workspaceSlugs = Array.isArray(item.workspace_slugs)
+      ? item.workspace_slugs
+      : item.workspace_slug
+        ? [item.workspace_slug]
+        : [];
+    if (workspaceSlugs.length > 0) {
+      md += `**Visible through workspace${workspaceSlugs.length === 1 ? '' : 's'}**: ${workspaceSlugs
+        .map((slug: string) => `\`${slug}\``)
+        .join(', ')}\n\n`;
+    }
 
     const text = item.text_content || '';
     const excerpt = text.length > 300 ? text.slice(0, 300) + '...' : text;
@@ -696,6 +719,8 @@ function formatEntityCard(entity: Entity): string {
   const isRootEntity = entity.parent_id == null;
 
   card += `**Entity ID**: \`${entity.id}\`\n\n`;
+  const workspaceSlug = entity.workspace_slug ?? entity.organization_slug;
+  if (workspaceSlug) card += `**Workspace**: \`${workspaceSlug}\`\n\n`;
 
   // Show parent info for child entities
   if (!isRootEntity && entity.parent_name) {

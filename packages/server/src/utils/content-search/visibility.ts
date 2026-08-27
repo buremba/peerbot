@@ -83,7 +83,8 @@ export function buildProducedByAutomationClause(
 
 /**
  * Build an org/workspace-scoping WHERE clause using EXISTS (no JOIN needed).
- * Returns an empty string when no scoping is needed (e.g. entity_id is set).
+ * Returns an empty string when no scoping is needed (for example, entity_id is
+ * set and the caller did not opt into strict organization scoping).
  * Assumes the query has `f` aliasing events and `c` aliasing connections.
  *
  * An event is in scope when ANY of these hold:
@@ -98,9 +99,12 @@ export function buildProducedByAutomationClause(
 export function buildOrgScopeWhere(options: {
   entity_id?: number;
   organization_id?: string;
+  strict_organization_scope?: boolean;
   baseParamIndex: number;
 }): { sql: string; params: Array<string | number | null> } {
-  if (options.entity_id || !options.organization_id) return { sql: '', params: [] };
+  if (!options.organization_id || (options.entity_id && !options.strict_organization_scope)) {
+    return { sql: '', params: [] };
+  }
 
   const p = `$${options.baseParamIndex}::text`;
   // Denormalized bridge (events.linked_org_ids, write-once at INSERT): folds

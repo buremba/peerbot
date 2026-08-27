@@ -9,6 +9,7 @@
 
 import * as Sentry from '@sentry/node';
 import { type Static, Type } from '@sinclair/typebox';
+import { resolveGrantedWorkspaceTarget } from '../auth/oauth/workspace-grants';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { feedLinkedToBusinessEntitySql } from '../authz/channel-about';
@@ -397,10 +398,7 @@ async function _resolvePath(
   );
 
   if (!resolved) {
-    throw new ToolUserError(
-      `${isUserSpace ? 'User' : 'Organization'} '${ownerSlug}' not found`,
-      404
-    );
+    throw new ToolUserError('Workspace is not available for this authorization', 404);
   }
 
   const workspace: ResolvedWorkspace = {
@@ -410,11 +408,67 @@ async function _resolvePath(
     name: resolved.name,
   };
 
-  // memberRole is for ctx.organizationId only. resolve_path can target a
-  // different public workspace (e.g. owner of A browsing public B) — treat
-  // foreign-org roles as non-member so owner/admin privileges never cross.
-  const roleInResolvedWorkspace =
-    ctx.organizationId === workspace.id ? ctx.memberRole : null;
+  // User namespaces have no workspace visibility/grant record to authorize
+  // against. Do not turn this hidden direct tool into a username/name oracle;
+  // organization namespaces are the only externally resolvable workspaces.
+  if (workspace.type !== 'organization') {
+    throw new ToolUserError('Workspace is not available for this authorization', 404);
+  }
+
+  // The request boundary has already freshly verified this token/session's
+  // membership in ctx.organizationId. Only body-selected foreign targets need
+  // the additional grant/public resolution below.
+  let workspaceCtx = ctx;
+  if (workspace.id !== ctx.organizationId) {
+    const grantedTarget =
+      ctx.allowCrossOrg &&
+      ctx.tokenType === 'oauth' &&
+      ctx.userId &&
+      Array.isArray(ctx.grantedOrganizationIds)
+        ? await resolveGrantedWorkspaceTarget({
+            sql,
+            userId: ctx.userId,
+            grantedOrganizationIds: ctx.grantedOrganizationIds,
+            slugOrId: workspace.id,
+          })
+        : null;
+    if (grantedTarget) {
+      workspaceCtx = {
+        ...ctx,
+        organizationId: grantedTarget.id,
+        memberRole: grantedTarget.role,
+        allowCrossOrg: false,
+        grantedOrganizationIds: [grantedTarget.id],
+        directSearchFederation: false,
+      };
+    } else {
+      const publicRows = await sql`
+        SELECT 1
+        FROM organization
+        WHERE id = ${workspace.id}
+          AND visibility = 'public'
+        LIMIT 1
+      `;
+      if (publicRows.length === 0) {
+        // Unknown, ungranted, and private workspaces deliberately collapse to
+        // one result so `resolve_path` cannot be used as an org-name oracle.
+        throw new ToolUserError('Workspace is not available for this authorization', 404);
+      }
+      // Cross-workspace public browse is intentionally readable, but never
+      // inherits the caller's role or grant capabilities from the URL-bound
+      // workspace.
+      workspaceCtx = {
+        ...ctx,
+        organizationId: workspace.id,
+        memberRole: null,
+        allowCrossOrg: false,
+        grantedOrganizationIds: ctx.tokenType === 'oauth' ? [] : null,
+        directSearchFederation: false,
+      };
+    }
+  }
+
+  const roleInResolvedWorkspace = workspaceCtx.memberRole;
   // Workspace-identity audit + template events: owner/admin of THIS workspace
   // (or trusted system) only.
   const excludeWorkspaceAudit =
@@ -426,9 +480,9 @@ async function _resolvePath(
   if (remaining.length === 0) {
     const [bootstrap, counts] = await Promise.all([
       args.include_bootstrap
-        ? fetchBootstrap(sql, ctx, workspace, null, excludeWorkspaceAudit)
+        ? fetchBootstrap(sql, workspaceCtx, workspace, null, excludeWorkspaceAudit)
         : null,
-      resolveWorkspaceCounts(sql, workspace, ctx.userId),
+      resolveWorkspaceCounts(sql, workspace, workspaceCtx.userId),
     ]);
     return emptyResult(workspace, bootstrap, counts);
   }
@@ -550,7 +604,7 @@ async function _resolvePath(
       // entity type, whose rows are produced by `backing_sql`, not stored in
       // `entities`. Synthesize the same response shape so the routed detail page
       // renders it like any other entity (read-only, id-keyed tabs hidden).
-      const derived = await resolveDerivedLeaf(sql, ctx, workspace, segment);
+      const derived = await resolveDerivedLeaf(sql, workspaceCtx, workspace, segment);
       if (derived) {
         resolvedPath.push({
           id: derived.id,
@@ -792,9 +846,9 @@ async function _resolvePath(
 
   const [bootstrap, counts] = await Promise.all([
     args.include_bootstrap
-      ? fetchBootstrap(sql, ctx, workspace, resolvedEntity, excludeWorkspaceAudit)
+      ? fetchBootstrap(sql, workspaceCtx, workspace, resolvedEntity, excludeWorkspaceAudit)
       : null,
-    resolveWorkspaceCounts(sql, workspace, ctx.userId),
+    resolveWorkspaceCounts(sql, workspace, workspaceCtx.userId),
   ]);
 
   return {

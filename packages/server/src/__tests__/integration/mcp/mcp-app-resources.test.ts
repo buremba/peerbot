@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { hashToken } from '../../../auth/oauth/utils';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { LOBU_INTERACTION_RESOURCE_URI } from '../../../mcp-app-resource-uris';
@@ -1155,6 +1156,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         scope: 'mcp:read mcp:write mcp:admin',
       })
     ).token;
+    // Cross-workspace approval rendering now requires the target workspace in
+    // the token's explicit consent snapshot; a legacy NULL grant stays pinned
+    // to its anchor workspace.
+    await getDb()`
+      UPDATE oauth_tokens
+      SET granted_organization_ids = ARRAY[${defaultOrg.id}, ${targetOrg.id}]::text[]
+      WHERE token_hash = ${hashToken(crossOrgToken)}
+    `;
     const sessionId = await initSession('/mcp', { sessionToken: crossOrgToken });
 
     const [run] = await getDb()<{ id: number }>`

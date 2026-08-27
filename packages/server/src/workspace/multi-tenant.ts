@@ -111,22 +111,6 @@ export async function getCachedOrgBySlug(
 
 /// Bootstrap identity constants — must match the constants in
 /// `packages/server/src/embedded-runtime.ts` (BOOTSTRAP_USER_ID + BOOTSTRAP_ORG_ID).
-/**
- * Direct org lookup by id. Uncached — ids are a fallback path for the sandbox's
- * `.org(slugOrId)` accessor, so the TTL cache hit rate would be near-zero.
- */
-export async function getOrgById(
-  organizationId: string
-): Promise<{ slug: string; visibility: string } | null> {
-  const rows = await getDb()`
-      SELECT slug, visibility FROM "organization" WHERE id = ${organizationId} LIMIT 1
-    `;
-  if (rows.length === 0) return null;
-  return {
-    slug: rows[0].slug as string,
-    visibility: (rows[0].visibility as string) ?? "private",
-  };
-}
 
 
 export class MultiTenantProvider implements WorkspaceProvider {
@@ -139,6 +123,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
   async resolveAuth(c: HonoContext, next: ResolveAuthNext): Promise<Response | undefined> {
     const authHeader = c.req.header('Authorization');
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const sql = getDb();
     const baseUrl = getConfiguredPublicOrigin() ?? new URL(c.req.url).origin;
     const requestPath = new URL(c.req.url).pathname;
@@ -159,6 +144,22 @@ export class MultiTenantProvider implements WorkspaceProvider {
       requestPath === '/mcp';
     const requestedOrgSlug = c.req.param('orgSlug') || c.get('subdomainOrg') || null;
     const requestedToolName = c.req.param('toolName') || null;
+    const organizationNotFound = () =>
+      c.json(
+        {
+          error: 'invalid_request',
+          error_description: `Organization '${requestedOrgSlug}' not found`,
+        },
+        404
+      );
+    const oauthWorkspaceUnavailable = () =>
+      c.json(
+        {
+          error: 'forbidden',
+          error_description: 'Workspace is not available for this authorization',
+        },
+        403
+      );
 
     c.set('mcpAuthInfo', null);
     c.set('mcpIsAuthenticated', false);
@@ -170,6 +171,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
     let requestedOrgId: string | null = null;
     let requestedOrgVisibility: string | null = null;
+    let requestedOrgMissing = false;
     if (requestedOrgSlug) {
       const cached = orgSlugCache.get(requestedOrgSlug);
       if (cached) {
@@ -182,21 +184,28 @@ export class MultiTenantProvider implements WorkspaceProvider {
           LIMIT 1
         `;
         if (orgResult.length === 0) {
-          return c.json(
-            {
-              error: 'invalid_request',
-              error_description: `Organization '${requestedOrgSlug}' not found`,
-            },
-            404
-          );
+          requestedOrgMissing = true;
+        } else {
+          requestedOrgId = orgResult[0].id as string;
+          requestedOrgVisibility = (orgResult[0].visibility as string) ?? 'private';
+          orgSlugCache.set(requestedOrgSlug, {
+            id: requestedOrgId,
+            visibility: requestedOrgVisibility,
+          });
         }
-        requestedOrgId = orgResult[0].id as string;
-        requestedOrgVisibility = (orgResult[0].visibility as string) ?? 'private';
-        orgSlugCache.set(requestedOrgSlug, {
-          id: requestedOrgId,
-          visibility: requestedOrgVisibility,
-        });
       }
+    }
+
+    // Preserve the existing named 404 for anonymous, session, PAT, and worker
+    // callers. OAuth is the exception: authenticate it below before answering
+    // so an access token cannot distinguish a guessed private workspace slug
+    // from a nonexistent one. Tokens with a non-OAuth envelope are safe to
+    // classify here; opaque bearer/session tokens fall through to verification.
+    if (
+      requestedOrgMissing &&
+      (!bearerToken || bearerToken.startsWith('owl_pat_') || looksLikeWorkerToken(bearerToken))
+    ) {
+      return organizationNotFound();
     }
 
     /** Apply the existing public-read policy to a declared fixed-action GET. */
@@ -307,7 +316,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
     // without that header. Ordinary worker tokens are rejected on both paths;
     // non-worker bearers still fall through to PAT, OAuth, or session auth.
     const directAuthHeader = c.req.header('x-lobu-memory-direct-auth') === '1';
-    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const directAuthBearer = bearerToken && isMcpRoute ? bearerToken : null;
     const gatewayMcpTokenData =
       directAuthBearer && directAuthHeader && looksLikeWorkerToken(directAuthBearer)
@@ -435,6 +443,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         mcpAuthInfo: {
           userId: directAuthUserId,
           organizationId: requestedOrgId,
+          grantedOrganizationIds: [requestedOrgId],
           clientId: 'lobu-worker',
           scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
           expiresAt: Math.floor((tokenData.timestamp + 2 * 60 * 60 * 1000) / 1000),
@@ -489,6 +498,12 @@ export class MultiTenantProvider implements WorkspaceProvider {
         : await new OAuthProvider(sql, baseUrl).verifyAccessToken(token);
 
       if (!authInfo) {
+        // Before this request was known to be OAuth, retain the legacy
+        // unknown-workspace 404 for invalid and Better Auth bearer tokens.
+        // Valid OAuth tokens take the indistinguishable grant-denial path
+        // below.
+        if (requestedOrgMissing) return organizationNotFound();
+
         // PATs are recognisable by their `owl_pat_` prefix — if one is sent
         // and verify fails, it's truly invalid, refuse fast. For everything
         // else (a bearer that's not a PAT and not an OAuth access token),
@@ -516,10 +531,13 @@ export class MultiTenantProvider implements WorkspaceProvider {
       }
 
       // RFC 8707-bound OAuth tokens are valid only for the exact MCP resource
-      // named during authorization. Legacy unbound tokens remain accepted for
-      // the first-party device/CLI compatibility flow.
-      if (!isPat && authInfo.resource && isMcpRoute) {
-        const requestedResource = getMcpResourceForRequest(publicMcpRequestUrl(c.req.raw));
+      // named during authorization and cannot be replayed against REST routes.
+      // Legacy unbound tokens remain accepted for the device/CLI compatibility
+      // flow, subject to their immutable workspace grant below.
+      if (!isPat && authInfo.resource) {
+        const requestedResource = isMcpRoute
+          ? getMcpResourceForRequest(publicMcpRequestUrl(c.req.raw))
+          : null;
         if (!requestedResource || authInfo.resource !== requestedResource) {
           return c.json(
             {
@@ -530,6 +548,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
             { 'WWW-Authenticate': bearerChallenge('invalid_token') }
           );
         }
+      }
+
+      if (!isPat && requestedOrgMissing) {
+        return oauthWorkspaceUnavailable();
       }
 
       let effectiveOrgId = requestedOrgId;
@@ -582,6 +604,12 @@ export class MultiTenantProvider implements WorkspaceProvider {
         );
       }
 
+      const oauthTargetGranted =
+        isPat || (authInfo.grantedOrganizationIds ?? []).includes(effectiveOrgId);
+      if (!oauthTargetGranted) {
+        return oauthWorkspaceUnavailable();
+      }
+
       const role = await getMembershipRole(effectiveOrgId, authInfo.userId, { bypassCache: true });
       const allowPublicOrgWithoutMembership =
         !role &&
@@ -593,7 +621,9 @@ export class MultiTenantProvider implements WorkspaceProvider {
         return c.json(
           {
             error: 'forbidden',
-            error_description: 'Token owner is not a member of this organization',
+            error_description: !isPat
+              ? 'Workspace is not available for this authorization'
+              : 'Token owner is not a member of this organization',
           },
           403
         );
@@ -797,7 +827,8 @@ export class MultiTenantProvider implements WorkspaceProvider {
       const searchClause = search ? `AND o.name ILIKE $${params.push(`%${search}%`)}` : '';
 
       organizations = (await sql.unsafe(
-        `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at, false as is_member, o.visibility
+        `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at,
+                false as is_member, false as is_personal, o.visibility
          FROM "organization" o
          WHERE o.visibility = 'public' ${searchClause}
          ORDER BY o.name ASC`,
@@ -809,7 +840,9 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
       organizations = (await sql.unsafe(
         `SELECT o.id, o.name, o.slug, o.logo, o.description, o."createdAt" as created_at,
-                (m."userId" IS NOT NULL) as is_member, o.visibility
+                (m."userId" IS NOT NULL) as is_member,
+                COALESCE((o.metadata::jsonb)->>'personal_org_for_user_id' = $1, false) as is_personal,
+                o.visibility
          FROM "organization" o
          LEFT JOIN "member" m ON o.id = m."organizationId" AND m."userId" = $1
          WHERE (m."userId" IS NOT NULL OR o.visibility = 'public') ${searchClause}

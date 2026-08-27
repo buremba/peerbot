@@ -30,6 +30,8 @@ export interface OrgInfo {
   description: string | null;
   created_at: string;
   is_member: boolean;
+  /** True only for the authenticated user's metadata-marked personal workspace. */
+  is_personal: boolean;
   visibility: 'public' | 'private';
   managed_auth?: {
     credential_mode: 'managed';

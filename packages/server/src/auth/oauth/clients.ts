@@ -251,11 +251,106 @@ export class OAuthClientsStore {
     userId?: string | null
   ): Promise<boolean> {
     return this.sql.begin(async (tx) => {
-      const revokedTokens = await tx`
-        UPDATE oauth_tokens
-        SET revoked_at = NOW()
+      // Shared transaction mutex with auth-code/device exchange and refresh.
+      // Once acquired, no token-issuing path for this registration can race
+      // the grant narrowing below or re-mint a stale workspace snapshot.
+      const clientLock = await tx`
+        SELECT id FROM oauth_clients WHERE id = ${clientId} FOR UPDATE
+      `;
+      if (clientLock.length === 0) return false;
+
+      const affectedUsers = await tx`
+        SELECT DISTINCT user_id FROM (
+          SELECT user_id
+          FROM oauth_tokens
+          WHERE client_id = ${clientId}
+            AND (
+              organization_id = ${organizationId}
+              OR granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+            )
+            ${userId ? tx`AND user_id = ${userId}` : tx``}
+          UNION ALL
+          SELECT user_id
+          FROM oauth_authorization_codes
+          WHERE client_id = ${clientId}
+            AND (
+              organization_id = ${organizationId}
+              OR granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+            )
+            ${userId ? tx`AND user_id = ${userId}` : tx``}
+          UNION ALL
+          SELECT user_id
+          FROM oauth_device_codes
+          WHERE client_id = ${clientId}
+            AND (
+              organization_id = ${organizationId}
+              OR granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+            )
+            ${userId ? tx`AND user_id = ${userId}` : tx``}
+          UNION ALL
+          SELECT user_id
+          FROM mcp_sessions
+          WHERE client_id = ${clientId}
+            AND organization_id = ${organizationId}
+            ${userId ? tx`AND user_id = ${userId}` : tx``}
+        ) affected_grants
+        WHERE user_id IS NOT NULL
+      `;
+      const affectedUserIds = affectedUsers.map((row) => String(row.user_id));
+      if (affectedUserIds.length === 0) return false;
+
+      const narrowedAuthorizationCodes = await tx`
+        UPDATE oauth_authorization_codes
+        SET granted_organization_ids = array_remove(granted_organization_ids, ${organizationId})
+        WHERE client_id = ${clientId}
+          AND organization_id IS DISTINCT FROM ${organizationId}
+          AND granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+          ${userId ? tx`AND user_id = ${userId}` : tx``}
+        RETURNING code
+      `;
+      const deletedAuthorizationCodes = await tx`
+        DELETE FROM oauth_authorization_codes
         WHERE client_id = ${clientId}
           AND organization_id = ${organizationId}
+          ${userId ? tx`AND user_id = ${userId}` : tx``}
+        RETURNING code
+      `;
+
+      const narrowedDeviceCodes = await tx`
+        UPDATE oauth_device_codes
+        SET granted_organization_ids = array_remove(granted_organization_ids, ${organizationId})
+        WHERE client_id = ${clientId}
+          AND organization_id IS DISTINCT FROM ${organizationId}
+          AND granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+          ${userId ? tx`AND user_id = ${userId}` : tx``}
+        RETURNING device_code
+      `;
+      const deletedDeviceCodes = await tx`
+        DELETE FROM oauth_device_codes
+        WHERE client_id = ${clientId}
+          AND organization_id = ${organizationId}
+          ${userId ? tx`AND user_id = ${userId}` : tx``}
+        RETURNING device_code
+      `;
+
+      const revokedTokens = await tx`
+        UPDATE oauth_tokens
+        SET
+          granted_organization_ids = CASE
+            WHEN organization_id = ${organizationId} THEN granted_organization_ids
+            ELSE array_remove(granted_organization_ids, ${organizationId})
+          END,
+          revoked_at = CASE
+            WHEN organization_id = ${organizationId}
+              OR cardinality(array_remove(granted_organization_ids, ${organizationId})) = 0
+            THEN NOW()
+            ELSE revoked_at
+          END
+        WHERE client_id = ${clientId}
+          AND (
+            organization_id = ${organizationId}
+            OR granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+          )
           AND revoked_at IS NULL
           ${userId ? tx`AND user_id = ${userId}` : tx``}
         RETURNING id
@@ -264,12 +359,18 @@ export class OAuthClientsStore {
       const deletedSessions = await tx`
         DELETE FROM mcp_sessions
         WHERE client_id = ${clientId}
-          AND organization_id = ${organizationId}
-          ${userId ? tx`AND user_id = ${userId}` : tx``}
+          AND user_id = ANY(${pgTextArray(affectedUserIds)}::text[])
         RETURNING session_id
       `;
 
-      return revokedTokens.length > 0 || deletedSessions.length > 0;
+      return (
+        revokedTokens.length > 0 ||
+        narrowedAuthorizationCodes.length > 0 ||
+        deletedAuthorizationCodes.length > 0 ||
+        narrowedDeviceCodes.length > 0 ||
+        deletedDeviceCodes.length > 0 ||
+        deletedSessions.length > 0
+      );
     });
   }
 
@@ -288,8 +389,9 @@ export class OAuthClientsStore {
 
   /**
    * List clients for an organization with user info and active token counts.
-   * Discovers clients via oauth_tokens since dynamic client registration
-   * (RFC 7591) happens before user auth, so clients may not have organization_id set.
+   * Discovers clients via tokens and unexpired approved grant codes since dynamic
+   * client registration (RFC 7591) happens before user auth, so clients may
+   * not have organization_id set.
    */
   async listClientsByOrganization(organizationId: string): Promise<
     (OAuthClient & {
@@ -303,9 +405,9 @@ export class OAuthClientsStore {
     const result = await this.sql`
       SELECT
         oc.*,
-        token_owner.user_name,
-        token_owner.user_email,
-        token_owner.token_user_id AS owner_user_id,
+        COALESCE(token_owner.user_name, code_owner.user_name) AS user_name,
+        COALESCE(token_owner.user_email, code_owner.user_email) AS user_email,
+        COALESCE(token_owner.token_user_id, code_owner.code_user_id) AS owner_user_id,
         COALESCE(token_counts.active_token_count, 0)::int AS active_token_count
       FROM oauth_clients oc
       LEFT JOIN LATERAL (
@@ -316,7 +418,10 @@ export class OAuthClientsStore {
         FROM oauth_tokens ot
         LEFT JOIN "user" u ON u.id = ot.user_id
         WHERE ot.client_id = oc.id
-          AND ot.organization_id = ${organizationId}
+          AND (
+            ot.organization_id = ${organizationId}
+            OR ot.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+          )
         ORDER BY
           (ot.revoked_at IS NULL AND ot.expires_at > NOW()) DESC,
           ot.created_at DESC,
@@ -324,20 +429,54 @@ export class OAuthClientsStore {
         LIMIT 1
       ) token_owner ON true
       LEFT JOIN LATERAL (
+        SELECT u.name AS user_name, u.email AS user_email, grant_row.user_id AS code_user_id
+        FROM (
+          SELECT ac.user_id, ac.created_at, ac.code AS grant_id
+          FROM oauth_authorization_codes ac
+          WHERE ac.client_id = oc.id
+            AND ac.expires_at > NOW()
+            AND (
+              ac.organization_id = ${organizationId}
+              OR ac.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+            )
+          UNION ALL
+          SELECT dc.user_id, dc.created_at, dc.device_code AS grant_id
+          FROM oauth_device_codes dc
+          WHERE dc.client_id = oc.id
+            AND dc.user_id IS NOT NULL
+            AND dc.status = 'approved'
+            AND dc.expires_at > NOW()
+            AND (
+              dc.organization_id = ${organizationId}
+              OR dc.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+            )
+        ) grant_row
+        LEFT JOIN "user" u ON u.id = grant_row.user_id
+        ORDER BY grant_row.created_at DESC, grant_row.grant_id DESC
+        LIMIT 1
+      ) code_owner ON true
+      LEFT JOIN LATERAL (
         SELECT
           COUNT(*) FILTER (
             WHERE ot.revoked_at IS NULL AND ot.expires_at > NOW()
           )::int AS active_token_count
         FROM oauth_tokens ot
         WHERE ot.client_id = oc.id
-          AND ot.organization_id = ${organizationId}
+          AND (
+            ot.organization_id = ${organizationId}
+            OR ot.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+          )
       ) token_counts ON true
       WHERE oc.organization_id = ${organizationId}
          OR EXISTS (
            SELECT 1 FROM oauth_tokens ot2
            WHERE ot2.client_id = oc.id
-             AND ot2.organization_id = ${organizationId}
+             AND (
+               ot2.organization_id = ${organizationId}
+               OR ot2.granted_organization_ids @> ${pgTextArray([organizationId])}::text[]
+             )
          )
+         OR code_owner.code_user_id IS NOT NULL
       ORDER BY oc.created_at DESC
     `;
 

@@ -158,6 +158,7 @@ export type {
 // Gateway ↔ worker wire contract (MessagePayload, JobType, QueuedMessage).
 export type {
   BangBashCommand,
+  DeviceExecutionTarget,
   JobType,
   MessagePayload,
   QueuedMessage,

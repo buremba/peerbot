@@ -3,8 +3,9 @@
  *
  * Single source of truth for the device/connector-worker job protocol:
  * `POST /api/workers/poll`, `/api/workers/complete`, `/complete-action`,
- * `/complete-embeddings`, `/complete-automation`, `/emit-auth-artifact`,
- * `/poll-auth-signal`, `/stream`, and the chrome-action dispatch.
+ * `/complete-embeddings`, `/complete-automation`, `/complete-chat`,
+ * `/emit-auth-artifact`, `/poll-auth-signal`, `/stream`, and the chrome-action
+ * dispatch.
  *
  * Before this module the wire shapes were typed twice with no compiler link:
  *   - the SERVER, inline as `c.req.json<{…}>()` in `worker-api/*` handlers, and
@@ -61,6 +62,7 @@ export const RunTypeSchema = Type.Union([
   Type.Literal("sync"),
   Type.Literal("action"),
   Type.Literal("automation"),
+  Type.Literal("chat_message"),
   Type.Literal("embed_backfill"),
   Type.Literal("auth"),
 ]);
@@ -175,7 +177,7 @@ export const AutomationPollEventSchema = Type.Object({
   payload: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 });
 
-/** Identity context for a device automation run. */
+/** Identity context for a device-local CLI run (automation or chat). */
 export const AutomationPollContextSchema = Type.Object({
   device: Type.Object({ worker_id: Type.Optional(Type.String()) }),
   user: Type.Object({
@@ -183,16 +185,15 @@ export const AutomationPollContextSchema = Type.Object({
   }),
   // Device execution: the per-run lobu-memory MCP session when the worker
   // advertises automations.execute. Legacy Mac bridge workers omit it.
-  // `token` is a WorkerToken minted for the automation's ASSIGNED AGENT via
-  // buildAutomationRunWorkerAccess — never the polling device's PAT (a child
-  // PAT is bound to the user's personal org and can't authenticate to a
-  // team-org Automation). `mcp_url` is the org-scoped direct MCP endpoint
-  // (`<public origin>/mcp/<orgSlug>`), where the bearer opens its own session.
-  // The daemon hands both to the spawned CLI as its MCP wiring and as
-  // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the automation's
-  // agent for this run. Absent when the run has no usable assigned agent or
-  // when the legacy worker did not advertise automations.execute. A capable
-  // standalone daemon fails closed instead of falling back to its device PAT.
+  // `token` is a WorkerToken minted for the run's ASSIGNED AGENT — never the
+  // polling device's PAT (a child PAT is bound to the user's personal org and
+  // can't authenticate to a team org). `mcp_url` is the org-scoped direct MCP
+  // endpoint (`<public origin>/mcp/<orgSlug>`), where the bearer opens its own
+  // session. The daemon hands both to the spawned CLI as its MCP wiring and as
+  // LOBU_API_TOKEN / LOBU_MEMORY_URL so `lobu memory` runs as the run's agent.
+  // Absent when the run has no usable assigned agent, or when the legacy worker
+  // did not advertise automations.execute. A capable standalone daemon fails
+  // closed instead of falling back to its device PAT.
   agent_session: Type.Optional(
     Type.Object({
       conversation_id: Type.String(),
@@ -216,6 +217,30 @@ export const AutomationPollContextSchema = Type.Object({
 export const AutomationPollPayloadSchema = Type.Object({
   automation: AutomationPollMetaSchema,
   event: AutomationPollEventSchema,
+  context: AutomationPollContextSchema,
+});
+
+/** One bounded prior turn shipped to a stateless device CLI. */
+export const DeviceChatHistoryMessageSchema = Type.Object({
+  role: Type.Union([Type.Literal("user"), Type.Literal("assistant")]),
+  content: Type.String({ maxLength: 16_000 }),
+});
+
+/** Device-local chat execution metadata. Conversation ownership stays with `agent.id`. */
+export const DeviceChatPollPayloadSchema = Type.Object({
+  chat: Type.Object({
+    agent_kind: Type.String({ minLength: 1, maxLength: 64 }),
+    message: Type.String({ maxLength: 32_000 }),
+    ephemeral_context: Type.Optional(Type.String({ maxLength: 2_048 })),
+    history: Type.Array(DeviceChatHistoryMessageSchema, { maxItems: 12 }),
+    agent: Type.Object({
+      id: Type.String({ minLength: 1 }),
+      name: Type.Optional(Type.String()),
+      identity_md: Type.Optional(Type.String()),
+      soul_md: Type.Optional(Type.String()),
+      user_md: Type.Optional(Type.String()),
+    }),
+  }),
   context: AutomationPollContextSchema,
 });
 
@@ -276,15 +301,16 @@ export const PollResponseSchema = Type.Object({
       metadata: Type.Record(Type.String(), Type.Unknown()),
     })
   ),
-  /** Owning org of a claimed automation run; sent on the automation lane only. */
+  /** Owning org of a claimed device-local CLI run. */
   organization_id: Type.Optional(Type.String()),
   /**
-   * Automation-run envelope. Present only when `run_type === 'automation'`: the
-   * gateway composes the payload a device-local CLI executor needs to build a
-   * prompt, and the device returns its process exit via `/complete-automation`.
-   * No connector code, credentials, or compiled_code are shipped on this lane.
+   * Device-local CLI envelope for `automation` or `chat_message` runs. The
+   * gateway composes the prompt context and the device reports through the
+   * matching completion endpoint. No connector code or credentials are shipped.
    */
-  payload: Type.Optional(AutomationPollPayloadSchema),
+  payload: Type.Optional(
+    Type.Union([AutomationPollPayloadSchema, DeviceChatPollPayloadSchema])
+  ),
 });
 
 export const ActivatePageRequestSchema = Type.Object({
@@ -453,6 +479,22 @@ export const CompleteAutomationResponseSchema = Type.Object({
   idempotent: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
 });
 
+/** `POST .../complete-chat` terminal report for a `chat_message` turn. */
+export const CompleteDeviceChatRequestSchema = Type.Object({
+  worker_id: Type.String(),
+  output: Type.Optional(Type.String()),
+  error: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  exit_code: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
+  exit_signal: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  exit_reason: Type.Optional(WorkerExitReasonSchema),
+});
+
+export const CompleteDeviceChatResponseSchema = Type.Object({
+  ok: Type.Boolean(),
+  status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
+  idempotent: Type.Optional(Type.Boolean()),
+});
+
 // ── auth signalling ─────────────────────────────────────────────────────────
 
 /** `POST /api/workers/emit-auth-artifact`. */
@@ -536,11 +578,21 @@ export type AutomationPollMeta = Static<typeof AutomationPollMetaSchema>;
 export type AutomationPollEvent = Static<typeof AutomationPollEventSchema>;
 export type AutomationPollContext = Static<typeof AutomationPollContextSchema>;
 export type AutomationPollPayload = Static<typeof AutomationPollPayloadSchema>;
+export type DeviceChatHistoryMessage = Static<
+  typeof DeviceChatHistoryMessageSchema
+>;
+export type DeviceChatPollPayload = Static<typeof DeviceChatPollPayloadSchema>;
 export type CompleteAutomationRequest = Static<
   typeof CompleteAutomationRequestSchema
 >;
 export type CompleteAutomationResponse = Static<
   typeof CompleteAutomationResponseSchema
+>;
+export type CompleteDeviceChatRequest = Static<
+  typeof CompleteDeviceChatRequestSchema
+>;
+export type CompleteDeviceChatResponse = Static<
+  typeof CompleteDeviceChatResponseSchema
 >;
 export type ActivatePageRequest = Static<typeof ActivatePageRequestSchema>;
 export type ActivatePageResponse = Static<typeof ActivatePageResponseSchema>;

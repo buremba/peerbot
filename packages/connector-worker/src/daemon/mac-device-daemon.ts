@@ -5,6 +5,7 @@ import {
 } from '@lobu/core/contracts/worker/device-automation';
 import type { PollResponse } from '@lobu/core/contracts/worker/protocol';
 import { executeAutomationRun, type AutomationExecutorConfig } from './automation.js';
+import { executeDeviceChatRun } from './device-chat.js';
 import type { AutomationAcpAdapters } from './automation-acp.js';
 import {
   locateBinary,
@@ -328,6 +329,9 @@ export function createMacDeviceDaemon(
     execute: async (job) => {
       if (job.run_type === 'automation') {
         return executeAutomationRun(client, job, automationConfig);
+      }
+      if (job.run_type === 'chat_message') {
+        return executeDeviceChatRun(client, job, automationConfig);
       }
       if (job.execution_backend === 'native_bridge') {
         if (!nativeBridge) {

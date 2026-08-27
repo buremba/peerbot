@@ -14,7 +14,7 @@ import { describe, expect, test } from 'bun:test';
 
 import {
   dispatchAutomationResumeLoop,
-  resolveAutomationRunAccess,
+  resolveDeviceAgentRunAccess,
   type AutomationRunIo,
   type ExecutorResult,
 } from '../daemon/automation.js';
@@ -222,9 +222,11 @@ describe('dispatchAutomationResumeLoop', () => {
   });
 });
 
-function makeSafetyNetClient() {
+function makeSafetyNetClient(options: { failFirstDeviceChat?: boolean } = {}) {
   const completes: Array<Record<string, unknown>> = [];
   const automationCompletes: Array<{ runId: number; req: Record<string, unknown> }> = [];
+  const deviceChatCompletes: Array<{ runId: number; req: Record<string, unknown> }> = [];
+  let deviceChatAttempts = 0;
   const client = {
     id: 'test-worker',
     version: 'test',
@@ -238,12 +240,20 @@ function makeSafetyNetClient() {
     async pollAuthSignal() { return { signal: null }; },
     async fetchEventsForEmbedding() { return []; },
     async dispatchChromeAction() { return {}; },
+    async completeDeviceChat(runId: number, req: Record<string, unknown>) {
+      deviceChatAttempts++;
+      deviceChatCompletes.push({ runId, req });
+      if (options.failFirstDeviceChat && deviceChatAttempts === 1) {
+        throw new Error('device chat completion failed');
+      }
+      return { ok: true, status: 'failed' };
+    },
     async completeAutomation(runId: number, req: Record<string, unknown>) {
       automationCompletes.push({ runId, req });
       return { ok: true, status: 'completed' };
     },
   };
-  return { client, completes, automationCompletes };
+  return { client, completes, automationCompletes, deviceChatCompletes };
 }
 
 describe('executeRun try/catch safety net', () => {
@@ -265,13 +275,17 @@ describe('executeRun try/catch safety net', () => {
   test('automation-lane unhandled error terminates via complete-automation, never the sync endpoint', async () => {
     const { client, completes, automationCompletes } = makeSafetyNetClient();
 
-    // payload present but malformed (automation key missing) → throws inside
-    // executeAutomationRun before its own reporting kicks in, exercising the
-    // outer net. The sync /complete endpoint must NOT be used: it would
+    // A payload that clears the envelope guard but has no `context` → throws
+    // inside executeAutomationRun before its own reporting kicks in, exercising
+    // the outer net. The sync /complete endpoint must NOT be used: it would
     // finalize the run row but skip the automation-side bookkeeping.
     const result = await executeRun(
       client as any,
-      { run_id: 12, run_type: 'automation', payload: {} } as any,
+      {
+        run_id: 12,
+        run_type: 'automation',
+        payload: { automation: { agent_kind: 'pi' } },
+      } as any,
       {}
     );
 
@@ -282,9 +296,52 @@ describe('executeRun try/catch safety net', () => {
     expect(automationCompletes[0]!.req.exit_reason).toBe('crash');
     expect(String(automationCompletes[0]!.req.error)).toBeTruthy();
   });
+
+  test('device-chat completion failures retry through complete-chat, never the sync endpoint', async () => {
+    const { client, completes, deviceChatCompletes } = makeSafetyNetClient({
+      failFirstDeviceChat: true,
+    });
+
+    const result = await executeRun(
+      client as any,
+      {
+        run_id: 14,
+        run_type: 'chat_message',
+        payload: { chat: { agent_kind: 'pi' } },
+      } as any,
+      {}
+    );
+
+    expect(result.error).toContain('device chat completion failed');
+    expect(completes).toHaveLength(0);
+    expect(deviceChatCompletes).toHaveLength(2);
+    expect(deviceChatCompletes[1]).toMatchObject({
+      runId: 14,
+      req: { exit_reason: 'crash' },
+    });
+    expect(String(deviceChatCompletes[1]!.req.error)).toContain(
+      'device chat completion failed'
+    );
+  });
+
+  test('a chat envelope on the automation lane is reported, not crashed', async () => {
+    const { client, completes, automationCompletes } = makeSafetyNetClient();
+
+    const result = await executeRun(
+      client as any,
+      { run_id: 13, run_type: 'automation', payload: { chat: {} } } as any,
+      {}
+    );
+
+    expect(result.error).toContain('non-automation payload envelope');
+    expect(completes).toHaveLength(0);
+    expect(automationCompletes).toHaveLength(1);
+    expect(automationCompletes[0]!.runId).toBe(13);
+    expect(automationCompletes[0]!.req.exit_reason).toBe('error_message');
+  });
 });
 
-describe('resolveAutomationRunAccess', () => {
+describe('resolveDeviceAgentRunAccess', () => {
   const daemonWiring = { url: 'http://daemon.local/api/mcp', bearer: 'daemon-pat' };
   const basePayload = (
     session?: NonNullable<AutomationPollPayload['context']['agent_session']>
@@ -305,7 +362,10 @@ describe('resolveAutomationRunAccess', () => {
       token: 'run-scoped-token',
       expires_at: Date.now() + 60_000,
     };
-    const access = resolveAutomationRunAccess(basePayload(session), daemonWiring);
+    const access = resolveDeviceAgentRunAccess(
+      basePayload(session).context.agent_session,
+      daemonWiring
+    );
     expect(access.wiring).toEqual({
       url: 'https://gateway.test/lobu/mcp/lobu-memory',
       bearer: 'run-scoped-token',
@@ -317,7 +377,10 @@ describe('resolveAutomationRunAccess', () => {
   });
 
   test('falls back to the daemon wiring (and no env override) without a session', () => {
-    const access = resolveAutomationRunAccess(basePayload(), daemonWiring);
+    const access = resolveDeviceAgentRunAccess(
+      basePayload().context.agent_session,
+      daemonWiring
+    );
     expect(access.wiring).toBe(daemonWiring);
     expect(access.env).toEqual({});
   });

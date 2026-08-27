@@ -5,7 +5,12 @@
  * platform binding, capability authorization, and multi-lane run claiming.
  */
 
-import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
+import {
+  authorizeCapabilities,
+  entryToMessage,
+  isKnownPlatform,
+  parseSessionEntries,
+} from '@lobu/core';
 import { Value } from '@sinclair/typebox/value';
 import {
   PollRequestSchema,
@@ -21,13 +26,21 @@ import {
   ensureAutomationAgentExists,
   parseAutomationRunPayload,
 } from '../automations/automation';
-import { buildAutomationRunWorkerAccess } from '../gateway/services/automation-run-worker-token';
+import {
+  buildAutomationRunWorkerAccess,
+  buildDeviceChatRunWorkerAccess,
+} from '../gateway/services/run-worker-access';
+import { readSnapshotJsonl } from '../gateway/services/transcript-snapshot';
 import { resolvePublicOrigin } from '../utils/public-origin';
 import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/automations';
 import { deriveAutomationExtractionSchema } from '../utils/automation-extraction-schema';
 import { withDbRetry } from '../db/with-retry';
 import { incrementCounter, setGauge } from '../gateway/metrics/prometheus';
+import {
+  insertThreadResponseRow,
+  notifyThreadResponse,
+} from '../gateway/orchestration/turn-liveness';
 import type { Env } from '../index';
 import { claimPendingAutomationRun } from '../runs/queue-service';
 import { parseAutomationSkillSnapshots } from '../automations/skill-snapshots';
@@ -71,8 +84,26 @@ import {
 // evidence about the agent regardless of the message, so no message
 // classification applies.
 const DISPATCH_FAILURE_OUTCOME: RunOutcome = 'infra_error';
+const DEVICE_CHAT_HISTORY_TAIL_CHARS = 1024 * 1024;
+const DEVICE_CHAT_DISPATCH_ERROR =
+  'The selected device could not start this message.';
 
 const DUE_FEEDS_LOCK_KEY = 71001;
+
+function transcriptText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((part) =>
+      part &&
+      typeof part === 'object' &&
+      (part as Record<string, unknown>).type === 'text'
+        ? String((part as Record<string, unknown>).text ?? '')
+        : ''
+    )
+    .filter(Boolean)
+    .join('\n');
+}
 
 /**
  * Fail a run that this worker already claimed. Approval-gated actions also
@@ -126,6 +157,76 @@ export async function failClaimedWorkerRun(params: {
     }
     return true;
   });
+}
+
+/** Fail a claimed device-chat dispatch and emit its visible terminal response atomically. */
+async function failClaimedDeviceChatRun(params: {
+  runId: number;
+  workerId: string;
+  errorMessage: string;
+  message: Record<string, unknown> | null;
+  organizationId: string;
+}): Promise<boolean> {
+  const messageId =
+    typeof params.message?.messageId === 'string'
+      ? params.message.messageId
+      : '';
+  if (!messageId) {
+    return failClaimedWorkerRun({
+      runId: params.runId,
+      workerId: params.workerId,
+      errorMessage: params.errorMessage,
+    });
+  }
+
+  const sql = getDb();
+  const transitioned = await sql.begin(async (tx) => {
+    const rows = await tx`
+      UPDATE public.runs
+      SET status = 'failed',
+          outcome = ${DISPATCH_FAILURE_OUTCOME},
+          completed_at = current_timestamp,
+          error_message = ${params.errorMessage}
+      WHERE id = ${params.runId}
+        AND status = 'running'
+        AND claimed_by = ${params.workerId}
+        AND run_type = 'chat_message'
+        AND queue_name = 'messages'
+      RETURNING id
+    `;
+    if (rows.length === 0) return false;
+
+    const stringField = (key: string): string | undefined => {
+      const value = params.message?.[key];
+      return typeof value === 'string' && value.length > 0 ? value : undefined;
+    };
+    const platformMetadata = params.message?.platformMetadata;
+    await insertThreadResponseRow(
+      tx,
+      {
+        messageId,
+        channelId: stringField('channelId'),
+        conversationId: stringField('conversationId'),
+        userId: stringField('userId'),
+        teamId: stringField('teamId') ?? 'api',
+        platform: stringField('platform') ?? 'api',
+        organizationId: params.organizationId,
+        platformMetadata:
+          platformMetadata &&
+          typeof platformMetadata === 'object' &&
+          !Array.isArray(platformMetadata)
+            ? platformMetadata
+            : undefined,
+        error: DEVICE_CHAT_DISPATCH_ERROR,
+        processedMessageIds: [messageId],
+        timestamp: Date.now(),
+      },
+      params.organizationId
+    );
+    return true;
+  });
+  if (transitioned) await notifyThreadResponse();
+  return transitioned;
 }
 
 /** jsonb columns arrive as objects, text columns as JSON strings — normalize to an object or null. */
@@ -715,6 +816,33 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                   AND active.status IN ('claimed', 'running')
               )
             )
+            -- (3) Device chat lane: the ordinary messages/chat_message row is
+            --     pinned through its shared MessagePayload.executionTarget.
+            --     Only an explicitly-advertising daemon can claim it; legacy
+            --     Mac/extension polls with agentKinds=NULL never enter here.
+            OR (
+              ${isUserScopedWorker}
+              AND r.run_type = 'chat_message'
+              AND r.queue_name = 'messages'
+              AND ${deviceWorkerId}::uuid IS NOT NULL
+              AND jsonb_typeof(r.action_input) = 'object'
+              AND r.action_input->'executionTarget'->>'kind' = 'device'
+              AND r.action_input->'executionTarget'->>'deviceWorkerId' = ${deviceWorkerId}::text
+              AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+              AND ${agentKindsParam}::text[] IS NOT NULL
+              AND r.action_input->'executionTarget'->>'agentKind' = ANY(${agentKindsParam}::text[])
+              AND 'automations.execute' = ANY(${pgTextArray(authorizedCapabilities)}::text[])
+              AND NOT EXISTS (
+                SELECT 1
+                FROM runs active
+                WHERE active.id < r.id
+                  AND active.run_type = 'chat_message'
+                  AND active.queue_name = 'messages'
+                  AND active.status IN ('pending', 'running')
+                  AND active.organization_id = r.organization_id
+                  AND active.action_input->>'conversationId' = r.action_input->>'conversationId'
+              )
+            )
           )
         ORDER BY
           CASE WHEN r.run_type = 'auth' THEN 0 ELSE 1 END,
@@ -833,7 +961,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         w.execution_config AS automation_execution_config,
         wv.prompt AS automation_prompt,
         wv.skills AS automation_skills,
-        wv.outputs AS automation_outputs
+        wv.outputs AS automation_outputs,
+        chat_agent.id AS chat_agent_id,
+        chat_agent.name AS chat_agent_name,
+        chat_agent.identity_md AS chat_agent_identity_md,
+        chat_agent.soul_md AS chat_agent_soul_md,
+        chat_agent.user_md AS chat_agent_user_md
       FROM runs r
       LEFT JOIN organization org ON org.id = r.organization_id
       LEFT JOIN feeds f ON f.id = r.feed_id
@@ -860,6 +993,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       LEFT JOIN automation_versions wv
         ON wv.id = COALESCE((r.approved_input->>'version_id')::bigint, w.current_version_id)
         AND wv.automation_id = w.automation_group_id
+      LEFT JOIN agents chat_agent
+        ON chat_agent.organization_id = r.organization_id
+        AND chat_agent.id = r.action_input->>'agentId'
       WHERE r.id = ${runId}
       LIMIT 1
     `;
@@ -994,6 +1130,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     automation_prompt: string | null;
     automation_skills: unknown;
     automation_outputs: Record<string, unknown> | string | null;
+    // Device chat fields (derived from the ordinary MessagePayload row)
+    chat_agent_id: string | null;
+    chat_agent_name: string | null;
+    chat_agent_identity_md: string | null;
+    chat_agent_soul_md: string | null;
+    chat_agent_user_md: string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;
@@ -1050,6 +1192,152 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     });
   }
   const isNativeBridgeRun = selectedExecution.backend === 'native_bridge';
+
+  // Device chat reuses the ordinary messages/chat_message row. The poll
+  // response is only an execution envelope: ownership/routing remain on the
+  // original MessagePayload and completion emits the standard thread_response.
+  if (row.run_type === 'chat_message') {
+    const message = row.action_input;
+    const target =
+      message?.executionTarget &&
+      typeof message.executionTarget === 'object' &&
+      !Array.isArray(message.executionTarget)
+        ? (message.executionTarget as Record<string, unknown>)
+        : null;
+    const agentKind =
+      typeof target?.agentKind === 'string' ? target.agentKind.trim() : '';
+    const conversationId =
+      typeof message?.conversationId === 'string' ? message.conversationId : '';
+    const messageText =
+      typeof message?.messageText === 'string' ? message.messageText : '';
+    const messageId =
+      typeof message?.messageId === 'string' ? message.messageId : '';
+    const userId = typeof message?.userId === 'string' ? message.userId : '';
+    const channelId =
+      typeof message?.channelId === 'string' ? message.channelId : '';
+    if (
+      !agentKind ||
+      !row.chat_agent_id ||
+      !conversationId ||
+      !messageText ||
+      !messageId ||
+      !userId ||
+      !channelId ||
+      !row.organization_slug
+    ) {
+      const failure = 'device chat run has an incomplete execution envelope';
+      await failClaimedDeviceChatRun({
+        runId: row.run_id,
+        workerId: worker_id,
+        errorMessage: failure,
+        message,
+        organizationId: row.organization_id,
+      });
+      return c.json({
+        next_poll_seconds: 1,
+        skipped_run_id: row.run_id,
+        error: failure,
+        ...pollMetadata,
+      });
+    }
+
+    let agentSession: {
+      conversation_id: string;
+      mcp_url: string;
+      token: string;
+      expires_at: number;
+    };
+    try {
+      const access = buildDeviceChatRunWorkerAccess({
+        agentId: row.chat_agent_id,
+        conversationId,
+        runId: row.run_id,
+        organizationId: row.organization_id,
+        userId,
+        channelId,
+      });
+      agentSession = {
+        conversation_id: access.conversationId,
+        mcp_url: `${resolvePublicOrigin(c.req.url)}/mcp/${encodeURIComponent(row.organization_slug)}`,
+        token: access.token,
+        expires_at: access.expiresAt,
+      };
+    } catch (err) {
+      const failure = 'failed to mint the required device chat run session';
+      await failClaimedDeviceChatRun({
+        runId: row.run_id,
+        workerId: worker_id,
+        errorMessage: failure,
+        message,
+        organizationId: row.organization_id,
+      });
+      logger.error({ run_id: row.run_id, err }, failure);
+      return c.json({
+        next_poll_seconds: 1,
+        skipped_run_id: row.run_id,
+        error: failure,
+        ...pollMetadata,
+      });
+    }
+
+    const snapshot = await readSnapshotJsonl({
+      organizationId: row.organization_id,
+      agentId: row.chat_agent_id,
+      conversationId,
+      // History returns at most twelve 16 KB messages. A 1 MB suffix keeps the
+      // poll request bounded while leaving ample room for JSONL overhead and
+      // ordinary longer raw replies; parseSessionEntries ignores a cut line.
+      suffixChars: DEVICE_CHAT_HISTORY_TAIL_CHARS,
+    });
+    const history = snapshot
+      ? parseSessionEntries(snapshot).entries
+          .flatMap((entry) => {
+            const messageEntry = entryToMessage(entry);
+            if (
+              messageEntry?.type !== 'message' ||
+              (messageEntry.role !== 'user' &&
+                messageEntry.role !== 'assistant')
+            ) {
+              return [];
+            }
+            const content = transcriptText(messageEntry.content).slice(0, 16_000);
+            return content
+              ? [{ role: messageEntry.role, content }]
+              : [];
+          })
+          .slice(-12)
+      : [];
+
+    return c.json({
+      ...pollMetadata,
+      run_id: row.run_id,
+      run_type: 'chat_message',
+      organization_id: row.organization_id,
+      payload: {
+        chat: {
+          agent_kind: agentKind,
+          message: messageText.slice(0, 32_000),
+          ...(typeof message?.ephemeralContext === 'string' &&
+          message.ephemeralContext.length > 0
+            ? { ephemeral_context: message.ephemeralContext.slice(0, 2_048) }
+            : {}),
+          history,
+          agent: {
+            id: row.chat_agent_id,
+            name: row.chat_agent_name ?? undefined,
+            identity_md: row.chat_agent_identity_md ?? undefined,
+            soul_md: row.chat_agent_soul_md ?? undefined,
+            user_md: row.chat_agent_user_md ?? undefined,
+          },
+        },
+        context: {
+          device: { worker_id: deviceWorkerId ?? undefined },
+          user: { user_id: effectiveWorkerUserId ?? null },
+          agent_session: agentSession,
+        },
+      },
+    });
+  }
 
   // Automation run: device worker is going to spawn a local CLI executor and
   // return the result via /api/workers/me/runs/:runId/complete-automation. No

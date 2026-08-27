@@ -1168,11 +1168,18 @@ async function findConnectionlessEventByIdempotencyKey(
       }
     | undefined;
   if (!row) return null;
+  // insertEvent strips NULs from the whole write envelope before persistence.
+  // Reconcile against those persisted lineage values so an exact retry does
+  // not rethrow the unique violation merely because its raw IDs contained NUL.
+  const expectedOriginId = stripNul(expected.originId);
+  const expectedParentOriginId = expected.parentOriginId
+    ? stripNul(expected.parentOriginId)
+    : null;
   if (
     row.semantic_type !== expected.semanticType ||
     row.origin_type !== (expected.originType ?? null) ||
-    row.origin_id !== expected.originId ||
-    row.origin_parent_id !== (expected.parentOriginId ?? null)
+    row.origin_id !== expectedOriginId ||
+    row.origin_parent_id !== expectedParentOriginId
   ) {
     return null;
   }

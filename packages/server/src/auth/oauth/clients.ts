@@ -360,6 +360,9 @@ export class OAuthClientsStore {
         DELETE FROM mcp_sessions
         WHERE client_id = ${clientId}
           AND user_id = ANY(${pgTextArray(affectedUserIds)}::text[])
+          -- Unscoped sessions may carry the removed workspace in their grant
+          -- snapshot. Scoped sessions are pinned, so preserve a different org.
+          AND (organization_id = ${organizationId} OR scoped_to_org = false)
         RETURNING session_id
       `;
 

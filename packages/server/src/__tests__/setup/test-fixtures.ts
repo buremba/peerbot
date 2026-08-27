@@ -9,6 +9,7 @@ import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import { normalizeSlackUserId } from '@lobu/connectors/slack-identity';
 import { serializeSigned } from 'hono/utils/cookie';
 import { hashClientSecret } from '../../auth/oauth/clients';
+import { NON_PUBLIC_OAUTH_SCOPES } from '../../auth/oauth/scopes';
 import { slugify } from '@lobu/core';
 import { generateSecureToken, hashToken } from '../../auth/oauth/utils';
 import { pgBigintArray, pgTextArray } from '../../db/client';
@@ -541,7 +542,7 @@ export async function createTestAccessToken(
   // oauth_tokens_private_scopes_require_device_grant check constraint.
   const grantType = scope
     .split(/\s+/)
-    .some((s) => s === 'device_worker:run' || s === 'connections:token')
+    .some((s) => (NON_PUBLIC_OAUTH_SCOPES as readonly string[]).includes(s))
     ? 'device_code'
     : null;
 

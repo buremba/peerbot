@@ -396,14 +396,6 @@ function formatSearchResult(result: any, options: FormatterOptions): string {
     md = '# 🔍 Search Results\n\n';
   } else if (!entity && matches.length === 0) {
     md = `# ❌ No Results Found\n\n${suggestion || 'No matching entities found.'}\n\n`;
-    if (result.existing_entities?.length > 0) {
-      md += '## Existing Entities\n\n';
-      for (const group of result.existing_entities) {
-        const names = group.entities.map((e: any) => `"${e.name}" (id: ${e.id})`).join(', ');
-        md += `- **${group.entity_type}**: ${names}\n`;
-      }
-      md += '\n';
-    }
   } else if (entity?.parent_id != null) {
     md = formatSearchChildEntityResult(
       {

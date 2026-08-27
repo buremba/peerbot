@@ -66,7 +66,7 @@ describe("ClientSDK.org() accessor", () => {
       tokenType: "oauth",
       scopes: ["mcp:read", "mcp:write", "mcp:admin"],
       scopedToOrg: false,
-      allowCrossOrg: grantedOrganizationIds.length > 1,
+      allowCrossOrg: grantedOrganizationIds.length > 0,
       grantedOrganizationIds,
       directSearchFederation: grantedOrganizationIds.length > 1,
     };
@@ -98,6 +98,14 @@ describe("ClientSDK.org() accessor", () => {
       await expect(sdk.org(orgB.slug)).rejects.toBeInstanceOf(
         CrossOrgAccessDenied
       );
+    });
+
+    it(".org() accepts an explicit selection of the sole granted workspace", async () => {
+      const ctx = buildCtx(user1.id, orgA.id, [orgA.id]);
+      const sdk = buildClientSDK(ctx, testEnv);
+      const selected = await sdk.org(orgA.slug);
+      expect(selected).toBeDefined();
+      expect(selected).not.toBe(sdk);
     });
 
     it(".org() does not treat a public workspace as an ambient OAuth grant", async () => {

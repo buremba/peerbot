@@ -390,18 +390,6 @@ export const UnifiedSearchResultSchema = Type.Object({
   ),
   suggestion: Type.Optional(Type.String()),
   view_url: Type.Optional(Type.String()),
-  // Deprecated compatibility surface. Search no longer populates this field:
-  // returning an unrelated workspace inventory on a miss is both noisy and a
-  // needless disclosure. Keep it optional so existing generated clients do
-  // not experience an avoidable response-schema break.
-  existing_entities: Type.Optional(
-    Type.Array(
-      Type.Object({
-        entity_type: Type.String(),
-        entities: Type.Array(Type.Object({ id: Type.Integer(), name: Type.String() })),
-      })
-    )
-  ),
   metadata: Type.Object({
     total_matches: Type.Integer(),
     page_size: Type.Integer(),

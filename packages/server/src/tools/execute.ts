@@ -170,7 +170,7 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     allowCrossOrg:
       tokenType === 'oauth' &&
       requestPath === '/mcp' &&
-      (grantedOrganizationIds?.length ?? 0) > 1,
+      (grantedOrganizationIds?.length ?? 0) > 0,
     grantedOrganizationIds,
     directSearchFederation:
       tokenType === 'oauth' && requestPath === '/mcp' && (grantedOrganizationIds?.length ?? 0) > 1,

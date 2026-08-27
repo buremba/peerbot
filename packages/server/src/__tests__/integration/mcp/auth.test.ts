@@ -595,6 +595,38 @@ describe('MCP Authentication', () => {
       expect(toolNames).not.toContain('manage_entity');
     });
 
+    it('keeps a public workspace readable when it is not in the OAuth workspace grant', async () => {
+      const { token } = await createTestAccessToken(user.id, org.id, client.client_id, {
+        scope: 'mcp:read profile:read',
+      });
+      await getTestDb()`
+        UPDATE oauth_tokens
+        SET granted_organization_ids = ARRAY[${org.id}]::text[]
+        WHERE token_hash = ${hashToken(token)}
+      `;
+
+      const result = await mcpListTools({ token, orgSlug: publicOrg.slug });
+      const toolNames = result.tools.map((tool) => tool.name);
+
+      expect(toolNames).toContain('search_memory');
+      expect(toolNames).toContain('search_sdk');
+      expect(toolNames).not.toContain('save_memory');
+      expect(toolNames).not.toContain('query_sql');
+      expect(toolNames).not.toContain('run_sdk');
+
+      const publicRead = await mcpToolsCall<any>(
+        'resolve_path',
+        { path: `/${publicOrg.slug}/brand/public-brand` },
+        { token, orgSlug: publicOrg.slug }
+      );
+      expect(publicRead.workspace).toMatchObject({ id: publicOrg.id, slug: publicOrg.slug });
+      expect(publicRead.entity).toMatchObject({ id: publicEntity.id });
+
+      clearInMemoryMcpSessionsForTests();
+      const recovered = await mcpListTools({ token, orgSlug: publicOrg.slug });
+      expect(recovered.tools.map((tool) => tool.name)).toContain('search_memory');
+    });
+
     it('should reject expired OAuth access token', async () => {
       const { token } = await createExpiredAccessToken(user.id, org.id, client.client_id);
 
@@ -1519,6 +1551,70 @@ describe('MCP Authentication', () => {
       // Owner is NOT denied by the admin gate (it may fail for a missing
       // connector, but never with an admin-access denial).
       expect(result.return_value?.denied).toBe(false);
+    });
+
+    it('allows a bare OAuth client to explicitly target its sole granted workspace', async () => {
+      const singletonOrg = await createTestOrganization({
+        name: 'Singleton Explicit Grant Org',
+        slug: 'singleton-explicit-grant-org',
+      });
+      const singletonUser = await createTestUser({});
+      await addUserToOrganization(singletonUser.id, singletonOrg.id, 'member');
+      const { token } = await createTestAccessToken(
+        singletonUser.id,
+        singletonOrg.id,
+        client.client_id,
+        { scope: 'mcp:read mcp:write' }
+      );
+      await getTestDb()`
+        UPDATE oauth_tokens
+        SET granted_organization_ids = ARRAY[${singletonOrg.id}]::text[]
+        WHERE token_hash = ${hashToken(token)}
+      `;
+
+      const sdk = await mcpToolsCall<any>(
+        'run_sdk',
+        {
+          script: `export default async (_ctx, client) => {
+            const target = await client.org(${JSON.stringify(singletonOrg.slug)});
+            return target.organizations.current();
+          };`,
+        },
+        { token }
+      );
+      expect(sdk.success).toBe(true);
+      expect(sdk.return_value).toMatchObject({ id: singletonOrg.id, slug: singletonOrg.slug });
+
+      const result = await mcpToolsCall<any>(
+        'query_sql',
+        {
+          sql: 'SELECT 1 AS ok',
+          org_slug: singletonOrg.slug,
+        },
+        { token }
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.rows).toEqual([{ ok: 1 }]);
+
+      const init = await post('/mcp', {
+        body: {
+          jsonrpc: '2.0',
+          id: 'single-grant-init',
+          method: 'initialize',
+          params: {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: 'single-grant-test', version: '1.0' },
+          },
+        },
+        token,
+      });
+      const initBody = await init.json();
+      expect(initBody.result?.instructions).toContain('Search and writes use the primary workspace.');
+      expect(initBody.result?.instructions).not.toContain(
+        'Unqualified search searches all granted workspaces'
+      );
     });
 
     it('uses the selected workspace role for cross-org SDK mutations on unscoped OAuth only', async () => {

@@ -238,8 +238,8 @@ export async function querySqlImpl(
   }
 
   // Resolve the target organization. By default, the caller's bound org. When
-  // `org_slug` is supplied: only a bare /mcp OAuth context with multiple live
-  // explicit grants may cross workspaces. Agent/Automation-bound identities,
+  // `org_slug` is supplied: only a bare /mcp OAuth context with a live explicit
+  // grant may select a workspace. Agent/Automation-bound identities,
   // scoped MCP, PAT, and session auth are pinned to one workspace.
   let targetOrgId = ctx.organizationId;
   // Members may query their own org's operational tables; the auth/identity

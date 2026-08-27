@@ -46,10 +46,15 @@ describe("connected-app workspace grant revocation", () => {
       INSERT INTO mcp_sessions (
         session_id, user_id, client_id, organization_id, member_role,
         is_authenticated, scoped_to_org, expires_at
-      ) VALUES (
-        'workspace-grant-session', ${user.id}, ${client.client_id}, ${primary.id}, 'owner',
-        true, false, NOW() + INTERVAL '1 hour'
-      )
+      ) VALUES
+        (
+          'workspace-grant-session', ${user.id}, ${client.client_id}, ${primary.id}, 'owner',
+          true, false, NOW() + INTERVAL '1 hour'
+        ),
+        (
+          'workspace-scoped-primary-session', ${user.id}, ${client.client_id}, ${primary.id}, 'owner',
+          true, true, NOW() + INTERVAL '1 hour'
+        )
     `;
 
 		expect(
@@ -77,9 +82,14 @@ describe("connected-app workspace grant revocation", () => {
 			),
 		).toEqual([primary.id]);
 		const sessions = await sql`
-      SELECT session_id FROM mcp_sessions WHERE session_id = 'workspace-grant-session'
+      SELECT session_id
+      FROM mcp_sessions
+      WHERE session_id IN ('workspace-grant-session', 'workspace-scoped-primary-session')
+      ORDER BY session_id
     `;
-		expect(sessions).toHaveLength(0);
+		expect(sessions.map((row) => row.session_id)).toEqual([
+			"workspace-scoped-primary-session",
+		]);
 
 		expect(
 			await store.revokeClientForOrganization(
@@ -92,6 +102,12 @@ describe("connected-app workspace grant revocation", () => {
       SELECT revoked_at FROM oauth_tokens WHERE id = 'grant-access'
     `;
 		expect(afterPrimary[0]?.revoked_at).not.toBeNull();
+		const sessionsAfterPrimary = await sql`
+      SELECT session_id
+      FROM mcp_sessions
+      WHERE session_id = 'workspace-scoped-primary-session'
+    `;
+		expect(sessionsAfterPrimary).toHaveLength(0);
 	});
 
 	it("serializes refresh rotation with workspace revoke so children cannot retain the removed grant", async () => {
@@ -131,6 +147,9 @@ describe("connected-app workspace grant revocation", () => {
         RETURN NEW;
       END;
       $$;
+    `);
+		await sql.unsafe(`
+      DROP TRIGGER IF EXISTS test_pause_workspace_grant_refresh_trigger ON oauth_tokens;
     `);
 		await sql.unsafe(`
       CREATE TRIGGER test_pause_workspace_grant_refresh_trigger

@@ -606,16 +606,16 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
       const oauthTargetGranted =
         isPat || (authInfo.grantedOrganizationIds ?? []).includes(effectiveOrgId);
-      if (!oauthTargetGranted) {
-        return oauthWorkspaceUnavailable();
-      }
-
       const role = await getMembershipRole(effectiveOrgId, authInfo.userId, { bypassCache: true });
       const allowPublicOrgWithoutMembership =
         !role &&
         requestedOrgId === effectiveOrgId &&
         requestedOrgVisibility === 'public' &&
         isMcpRoute;
+
+      if (!oauthTargetGranted && !allowPublicOrgWithoutMembership) {
+        return oauthWorkspaceUnavailable();
+      }
 
       if (!role && !allowPublicOrgWithoutMembership) {
         return c.json(

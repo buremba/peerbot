@@ -951,6 +951,10 @@ async function recoverSessionAuthContext(
 
   if (
     authCtx.tokenType === 'oauth' &&
+    // Scoped routes were already authorized by the current request's
+    // multi-tenant middleware. This exception preserves public read-only
+    // sessions whose workspace intentionally is not an OAuth member grant.
+    !persisted.scopedToOrg &&
     persisted.organizationId &&
     !(authCtx.grantedOrganizationIds ?? []).includes(persisted.organizationId)
   ) {
@@ -1405,6 +1409,7 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       session.authCtx.isAuthenticated = true;
       session.authCtx.userId = freshCtx.userId;
       session.authCtx.clientId = freshCtx.clientId;
+      session.authCtx.tokenType = freshCtx.tokenType;
       // `extractAuthContext` always yields a concrete scope array (real scopes
       // for token callers, the not-applicable sentinel for session/anonymous).
       // Assign it straight through — `hasRequiredMcpScope` fails closed on

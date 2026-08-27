@@ -153,8 +153,8 @@ export interface ToolContext {
   /** True when the MCP URL pinned an org slug (e.g. `/mcp/acme`). */
   scopedToOrg: boolean;
   /**
-   * Whether `client.org(other)` is allowed inside the sandbox. True only for a
-   * bare `/mcp` OAuth context with multiple effective grants and no bound identity.
+   * Whether `client.org(slug)` is allowed inside the sandbox. True only for a
+   * bare `/mcp` OAuth context with an explicit effective grant and no bound identity.
    */
   allowCrossOrg: boolean;
   /** Explicit OAuth workspace snapshot; null for PAT/session/internal contexts. */

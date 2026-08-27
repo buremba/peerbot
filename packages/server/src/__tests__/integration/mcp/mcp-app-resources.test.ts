@@ -1140,6 +1140,50 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(settled).toMatchObject({ approval_status: 'rejected' });
   });
 
+  it('renders an explicitly targeted approval in the sole granted workspace', async () => {
+    const sessionId = await initSession('/mcp');
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'action', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_single_grant_approval_${runId}`,
+      title: 'Single-grant review — pending approval',
+      content: 'Review in the sole granted workspace.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+    });
+
+    const response = await post('/mcp', {
+      body: {
+        jsonrpc: '2.0',
+        id: 'single-grant-get-approval',
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId, organization: org.slug },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
+    expect(body.result?.structuredContent?.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'approve' }),
+        expect.objectContaining({ id: 'reject' }),
+      ])
+    );
+  });
+
   it('renders and resolves a target-workspace approval through one unscoped OAuth session', async () => {
     const defaultOrg = await createTestOrganization({
       name: 'Approval Default Org',

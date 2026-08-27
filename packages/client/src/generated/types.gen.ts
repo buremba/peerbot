@@ -5175,6 +5175,8 @@ export type GetAutomationResponses = {
           }
       >;
       next_run_at?: string | null;
+      consecutive_scheduled_failures?: number;
+      schedule_auto_paused_at?: string | null;
       agent_id?: string | null;
       delivery_target?: {
         /**

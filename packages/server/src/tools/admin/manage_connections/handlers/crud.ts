@@ -15,6 +15,7 @@ import {
 	parsePgNumberArray,
 	pgBigintArray,
 	pgTextArray,
+	withSessionAdvisoryLock,
 	type DbClient,
 } from "../../../../db/client";
 import { recordToolConfigChange } from "../../helpers/config-audit";
@@ -75,6 +76,14 @@ import {
 	recordChangeEvent,
 	recordLifecycleEvent,
 } from "../../../../utils/insert-event";
+import {
+	DEVICE_AUTOWIRE_SUPPRESSION_ERROR,
+	DEVICE_AUTOWIRE_SUPPRESSION_PATCH,
+	type DeviceAutowireIdentityRow,
+	hasDeviceAutowireSuppressionMarker,
+	IS_DEVICE_CONNECTOR_SQL,
+	isDeviceAutowireIdentity,
+} from "../../../../utils/device-autowire-suppression";
 import logger from "../../../../utils/logger";
 import { syncOAuthConnectionsForAuthProfile } from "../../../../utils/oauth-connection-state";
 import { compileConnectionRowVisibility } from "../../../../authz/connection-visibility";
@@ -642,6 +651,9 @@ export async function handleCreate(
 	args: Extract<ConnectionsArgs, { action: "create" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+  if (hasDeviceAutowireSuppressionMarker(args.config)) {
+    return { error: DEVICE_AUTOWIRE_SUPPRESSION_ERROR };
+  }
   // Refuse before connector installation or any other create-path side effect.
   if (hasActionModes(args.config)) {
     const denied = denyNonHumanActionModesWrite(ctx);
@@ -1353,6 +1365,9 @@ export async function handleApplyChatConnection(
 	args: Extract<ConnectionsArgs, { action: "apply_chat_connection" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+	if (hasDeviceAutowireSuppressionMarker(args.config)) {
+		return { error: DEVICE_AUTOWIRE_SUPPRESSION_ERROR };
+	}
 	const { organizationId } = ctx;
 	if (args.agent_id) {
 		const sql = getDb();
@@ -1406,6 +1421,9 @@ export async function handleUpdate(
 	args: Extract<ConnectionsArgs, { action: "update" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+  if (hasDeviceAutowireSuppressionMarker(args.config)) {
+    return { error: DEVICE_AUTOWIRE_SUPPRESSION_ERROR };
+  }
   const sql = getDb();
   const { organizationId } = ctx;
 
@@ -2149,19 +2167,24 @@ export async function handleDelete(
   const sql = getDb();
   const { organizationId } = ctx;
 	const targets = await sql`
-		SELECT credential_mode
-		FROM connections
-		WHERE id = ${args.connection_id}
-			AND organization_id = ${organizationId}
-			AND deleted_at IS NULL
+		SELECT c.credential_mode, c.connector_key, c.auth_profile_id, c.app_auth_profile_id,
+			NULLIF((o.metadata::jsonb)->>'personal_org_for_user_id', '') AS autowire_user_id,
+			${sql.unsafe(IS_DEVICE_CONNECTOR_SQL)} AS is_device_connector
+		FROM connections c
+		JOIN "organization" o ON o.id = c.organization_id
+		WHERE c.id = ${args.connection_id}
+			AND c.organization_id = ${organizationId}
+			AND c.deleted_at IS NULL
 		LIMIT 1
 	`;
 	if (targets.length === 0) {
 		return { error: "Connection not found or already deleted" };
 	}
-	const target = targets[0] as {
+	const target = targets[0] as DeviceAutowireIdentityRow & {
 		credential_mode: string | null;
+		connector_key: string;
 	};
+	const isAutoWiredDeviceConnection = isDeviceAutowireIdentity(target);
 
   // Expire any undecided approval runs for this connection. Deleting a
   // connection makes its pending approvals unreviewable — the card disappears
@@ -2231,6 +2254,7 @@ export async function handleDelete(
 		return expiredRunIds;
   };
 
+  const performDelete = async (): Promise<ManageConnectionsResult> => {
   // Phase 1: fallible EXTERNAL teardown runs FIRST, while the connection is
   // still visible with its approvals pending. A teardown failure (e.g. the chat
   // platform rejects the removal) returns an error BEFORE any approval is
@@ -2272,7 +2296,14 @@ export async function handleDelete(
   const deleted = await sql.begin(async (tx) => {
     const tombstoned = await tx`
       UPDATE connections
-      SET deleted_at = NOW(), status = 'paused', updated_at = NOW()
+      SET deleted_at = NOW(),
+          status = 'paused',
+          config = CASE
+            WHEN ${isAutoWiredDeviceConnection}
+              THEN COALESCE(config, '{}'::jsonb) || ${sql.json(DEVICE_AUTOWIRE_SUPPRESSION_PATCH)}::jsonb
+            ELSE config
+          END,
+          updated_at = NOW()
       WHERE id = ${args.connection_id}
         AND organization_id = ${organizationId}
         AND deleted_at IS NULL
@@ -2368,4 +2399,22 @@ export async function handleDelete(
     connection_id: args.connection_id,
     slug: conn.slug as string,
   };
+  };
+
+  if (!isAutoWiredDeviceConnection) return performDelete();
+
+  // Same `lobu:autowire` key `ensureDeviceConnectorWired` takes per
+  // (owner, connector). Held across the teardown phase AND the atomic tombstone
+  // so a concurrent reconcile cannot wire a replacement in the gap between
+  // them. Cheap to hold on this path: an auto-wired device connection has
+  // `credential_mode` NULL and no `webhook_external_id`, so the teardown phase
+  // early-returns after DB-local checks and never blocks on a provider call.
+  return withSessionAdvisoryLock(
+    {
+      namespace: 'lobu:autowire',
+      value: `${target.autowire_user_id}:${target.connector_key}`,
+      hashValue: true,
+    },
+    performDelete
+  );
 }

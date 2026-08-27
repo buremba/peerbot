@@ -343,13 +343,97 @@ export function getLockDb(): Sql {
         // Do NOT set lock_timeout here as a startup GUC — Neon/PgBouncer and
         // other poolers reject unsupported startup parameters and the whole
         // reserve() fails with "unsupported startup parameter: lock_timeout".
-        // Callers SET lock_timeout on the reserved session instead
-        // (see withAutomationGroupLock).
+        // withSessionAdvisoryLock SETs lock_timeout on the reserved session
+        // instead.
       },
     });
     logger.info('[DB] PostgreSQL advisory-lock pool created');
   }
   return lockDbSingleton;
+}
+
+type AdvisoryLockKey = {
+  namespace: string;
+  /** Bound as an int4 by default; set `hashValue` to key on an arbitrary string. */
+  value: string | number;
+  hashValue?: boolean;
+};
+
+type SessionAdvisoryLockOptions = {
+  /**
+   * Session GUC bounding the advisory-lock WAIT (not a startup parameter —
+   * poolers reject `lock_timeout` on connect). Expiry surfaces as 55P03.
+   */
+  timeout?: string;
+  /**
+   * Translate a 55P03 raised while ACQUIRING the lock. Scoped to acquisition
+   * on purpose: a 55P03 thrown from inside `fn` is a different contention and
+   * must not be relabelled as a lock-acquisition conflict.
+   */
+  onAcquireTimeout?: (err: unknown) => Error;
+};
+
+/**
+ * Run `fn` while holding a SESSION-level Postgres advisory lock. Acquire and
+ * release happen on ONE reserved connection so the session identity is stable
+ * — any other pool connection serving the unlock would error `you don't own a
+ * lock of type ExclusiveLock`.
+ *
+ * That connection comes from the DEDICATED lock pool (`getLockDb`), never the
+ * main pool. Holders camp on it for the whole critical section while `fn` runs
+ * its reads/transactions on the main pool; if holders camped on the main pool,
+ * N >= DB_POOL_MAX concurrent locked writes would consume every slot and starve
+ * their own handlers — a permanent pool-wide deadlock. With a separate pool the
+ * dependency is one-directional and deadlock-free; excess requests queue FIFO.
+ */
+export async function withSessionAdvisoryLock<T>(
+  key: AdvisoryLockKey,
+  fn: () => Promise<T>,
+  options: SessionAdvisoryLockOptions = {}
+): Promise<T> {
+  const { timeout = '30s', onAcquireTimeout } = options;
+  const reserved = await getLockDb().reserve();
+  const keyValue = key.hashValue
+    ? reserved`hashtext(${String(key.value)})`
+    : reserved`${key.value}`;
+  let acquired = false;
+
+  try {
+    await reserved`SELECT set_config('lock_timeout', ${timeout}, false)`;
+    try {
+      await reserved`SELECT pg_advisory_lock(hashtext(${key.namespace}), ${keyValue})`;
+    } catch (err) {
+      // We do NOT hold the lock here, so the reserved session is clean; the
+      // outer finally just releases it.
+      if (onAcquireTimeout && (err as { code?: string }).code === '55P03') {
+        throw onAcquireTimeout(err);
+      }
+      throw err;
+    }
+    acquired = true;
+    try {
+      return await fn();
+    } finally {
+      await reserved`SELECT pg_advisory_unlock(hashtext(${key.namespace}), ${keyValue})`;
+      acquired = false;
+    }
+  } finally {
+    // A failed unlock leaves the session still owning the lock; returning it to
+    // the pool would leak the lock for the connection's whole lifetime, so kill
+    // the backend instead — Postgres drops session advisory locks on exit.
+    // Deliberately NOT released afterwards: postgres.js only reconnects a
+    // connection it holds in its `closed` queue, and `release()` would move the
+    // dead one into `open` (or hand it straight to a waiting reserve()), so the
+    // next borrower would get a destroyed socket. Skipping release lets the
+    // socket's own close handler requeue it for reconnect.
+    if (acquired) {
+      await reserved`SELECT pg_terminate_backend(pg_backend_pid())`.catch(
+        () => undefined
+      );
+    } else {
+      reserved.release();
+    }
+  }
 }
 
 /**

@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
 import { parsePgTextArray } from '../../db/client';
+import { reconcileDeviceCapabilities } from '../../worker-api/device-reconcile';
+import { TestApiClient } from '../setup/test-mcp-client';
 import {
   deviceManifestHash,
   type DeviceConnectorManifest,
@@ -219,6 +221,14 @@ async function pollClaimingDueFeed(
   return response.json();
 }
 
+async function deviceIdFor(workerId: string): Promise<string> {
+  const sql = getTestDb();
+  const rows = (await sql`
+    SELECT id FROM device_workers WHERE worker_id = ${workerId} LIMIT 1
+  `) as unknown as Array<{ id: string }>;
+  return rows[0].id;
+}
+
 async function settleRunsAndFeeds(orgId: string) {
   const sql = getTestDb();
   await sql`
@@ -323,6 +333,222 @@ describe('device connector manifests', () => {
   });
   afterEach(async () => {
     await cleanupTestDatabase();
+  });
+
+  it('durably suppresses an explicitly deleted auto-wired connection until reconnect', async () => {
+    const { orgId, userId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+    const client = await TestApiClient.for({
+      organizationId: orgId,
+      userId,
+      memberRole: 'owner',
+    });
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    const [wired] = (await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+        AND auth_profile_id IS NULL AND app_auth_profile_id IS NULL
+        AND deleted_at IS NULL
+    `) as unknown as Array<{ id: number }>;
+    expect(wired?.id).toBeTruthy();
+
+    const deleted = (await client.connections.delete(Number(wired.id))) as {
+      deleted?: boolean;
+    };
+    expect(deleted.deleted).toBe(true);
+
+    const [tombstone] = (await sql`
+      SELECT deleted_at, config->>'__lobu_device_autowire_suppressed' AS suppressed
+      FROM connections WHERE id = ${wired.id}
+    `) as unknown as Array<{ deleted_at: string | null; suppressed: string | null }>;
+    expect(tombstone.deleted_at).not.toBeNull();
+    expect(tombstone.suppressed).toBe('true');
+
+    await Promise.all(
+      Array.from({ length: 4 }, () => reconcileDeviceCapabilities(userId)),
+    );
+    const liveAfterDelete = await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+        AND auth_profile_id IS NULL AND app_auth_profile_id IS NULL
+        AND deleted_at IS NULL
+    `;
+    expect(liveAfterDelete).toHaveLength(0);
+
+    const [reconnected] = await Promise.all([
+      client.connections.connect({
+        connector_key: CONNECTOR_KEY,
+        device_worker_id: await deviceIdFor(workerId),
+      }),
+      reconcileDeviceCapabilities(userId),
+    ]) as [{ connection_id?: number; status?: string }, void];
+    expect(reconnected.connection_id).toBeTruthy();
+    expect(reconnected.status).toBe('active');
+
+    await reconcileDeviceCapabilities(userId);
+    const liveAfterReconnect = await sql`
+      SELECT id FROM connections
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+        AND auth_profile_id IS NULL AND app_auth_profile_id IS NULL
+        AND deleted_at IS NULL
+    `;
+    expect(liveAfterReconnect).toHaveLength(1);
+    expect(Number(liveAfterReconnect[0].id)).toBe(reconnected.connection_id);
+    const healedFeeds = await sql`
+      SELECT status FROM feeds
+      WHERE connection_id = ${reconnected.connection_id}
+        AND feed_key = 'snapshots' AND deleted_at IS NULL
+    `;
+    expect(healedFeeds).toEqual([{ status: 'active' }]);
+  });
+
+  it('suppresses an explicitly deleted auto-wired connection even while it is unpinned', async () => {
+    const { orgId, userId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+    const client = await TestApiClient.for({
+      organizationId: orgId,
+      userId,
+      memberRole: 'owner',
+    });
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    const [wired] = (await sql`
+      UPDATE connections
+      SET device_worker_id = NULL
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+        AND auth_profile_id IS NULL AND app_auth_profile_id IS NULL
+        AND deleted_at IS NULL
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    expect(wired?.id).toBeTruthy();
+
+    const deleted = (await client.connections.delete(Number(wired.id))) as {
+      deleted?: boolean;
+    };
+    expect(deleted.deleted).toBe(true);
+    await Promise.all(
+      Array.from({ length: 4 }, () => reconcileDeviceCapabilities(userId)),
+    );
+
+    const rows = await sql`
+      SELECT id, deleted_at, config->>'__lobu_device_autowire_suppressed' AS suppressed
+      FROM connections
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+      ORDER BY id
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deleted_at).not.toBeNull();
+    expect(rows[0].suppressed).toBe('true');
+  });
+
+  it('does not let a deleted credential-backed connection suppress auto-wire', async () => {
+    const { orgId, userId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+    const [profile] = (await sql`
+      INSERT INTO auth_profiles (
+        organization_id, slug, display_name, connector_key, profile_kind, created_by
+      ) VALUES (
+        ${orgId}, ${`profile-${generateSecureToken(4)}`}, 'Manual profile',
+        ${CONNECTOR_KEY}, 'env', ${userId}
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const [manual] = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        auth_profile_id, created_by, visibility
+      ) VALUES (
+        ${orgId}, ${CONNECTOR_KEY}, ${`manual-${generateSecureToken(4)}`},
+        'Manual connection', 'active', ${profile.id}, ${userId}, 'private'
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const client = await TestApiClient.for({
+      organizationId: orgId,
+      userId,
+      memberRole: 'owner',
+    });
+
+    const deleted = (await client.connections.delete(Number(manual.id))) as {
+      deleted?: boolean;
+    };
+    expect(deleted.deleted).toBe(true);
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+
+    const rows = await sql`
+      SELECT auth_profile_id, deleted_at
+      FROM connections
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+      ORDER BY id
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows.some((row) => row.auth_profile_id === null && row.deleted_at === null)).toBe(true);
+  });
+
+  // No definition is installed until the first poll, so `is_device_connector`
+  // is false at delete time and the delete leaves no marker. Once a device
+  // connector IS installed, an auth-none row in the personal org is the
+  // auto-wire identity by construction — `ensureDeviceConnectorWired` matches
+  // and adopts exactly that shape — so there is no separate "manual" case to
+  // exempt.
+  it('does not let an auth-none row deleted before the connector is installed suppress auto-wire', async () => {
+    const { orgId, userId, workerId } = await seedDeviceOwner();
+    const sql = getTestDb();
+    const [manual] = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, auth_profile_id, app_auth_profile_id, device_worker_id
+      ) VALUES (
+        ${orgId}, ${CONNECTOR_KEY}, ${`manual-none-${generateSecureToken(4)}`},
+        'Manual auth-none connection', 'active', ${userId}, 'private', NULL, NULL, NULL
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const client = await TestApiClient.for({
+      organizationId: orgId,
+      userId,
+      memberRole: 'owner',
+    });
+
+    const deleted = (await client.connections.delete(Number(manual.id))) as {
+      deleted?: boolean;
+    };
+    expect(deleted.deleted).toBe(true);
+    const [manualTombstone] = (await sql`
+      SELECT config->>'__lobu_device_autowire_suppressed' AS suppressed
+      FROM connections WHERE id = ${manual.id}
+    `) as unknown as Array<{ suppressed: string | null }>;
+    expect(manualTombstone.suppressed).toBeNull();
+
+    expect((await poll(workerId, [manifest()])).status).toBe(200);
+    const live = await sql`
+      SELECT id, device_worker_id
+      FROM connections
+      WHERE organization_id = ${orgId} AND connector_key = ${CONNECTOR_KEY}
+        AND auth_profile_id IS NULL AND app_auth_profile_id IS NULL
+        AND deleted_at IS NULL
+    `;
+    expect(live).toHaveLength(1);
+    expect(live[0].device_worker_id).not.toBeNull();
+  });
+
+  it('rejects the reserved auto-wire suppression marker on public config writes', async () => {
+    const { orgId, userId } = await seedDeviceOwner();
+    const client = await TestApiClient.for({
+      organizationId: orgId,
+      userId,
+      memberRole: 'owner',
+    });
+
+    await expect(
+      client.connections.connect({
+        connector_key: CONNECTOR_KEY,
+        config: { __lobu_device_autowire_suppressed: true },
+      }),
+    ).rejects.toThrow(
+      'The device auto-wire suppression marker is reserved for connection deletion.',
+    );
   });
 
   it('installs a metadata-only device connector from poll and claims its feed run without compiled_code', async () => {

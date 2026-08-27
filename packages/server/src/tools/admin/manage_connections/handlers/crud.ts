@@ -140,6 +140,7 @@ import {
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
 import { supersedeActionEvent } from "../../approval-events";
+import { retractConnectionRelationshipClaims } from "../../../../utils/relationship-claims";
 
 // These Atlassian MCP config keys select a separately-consented Jira OAuth
 // grant. A member must not bind an admin's Jira authorization to a connection.
@@ -2310,6 +2311,11 @@ export async function handleDelete(
       RETURNING id, slug, display_name, connector_key
     `;
     if (tombstoned.length === 0) return null; // concurrently deleted
+
+		await retractConnectionRelationshipClaims(tx, {
+			organizationId,
+			connectionId: args.connection_id,
+		});
 
 		const expiredApprovalRunIds = await expirePendingApprovalsBeforeDelete(tx);
 

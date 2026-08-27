@@ -7,6 +7,10 @@ import {
 	denyNonHumanActionModesWrite,
 	hasActionModes,
 } from './action-modes-guard';
+import {
+	DEVICE_AUTOWIRE_SUPPRESSION_ERROR,
+	hasDeviceAutowireSuppressionMarker,
+} from '../../../../utils/device-autowire-suppression';
 
 /**
  * Start a managed OAuth grant from any workspace context.
@@ -20,6 +24,9 @@ export async function handleConnectManaged(
 	args: Extract<ConnectionsArgs, { action: 'connect_managed' }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
+	if (hasDeviceAutowireSuppressionMarker(args.config)) {
+		return { error: DEVICE_AUTOWIRE_SUPPRESSION_ERROR };
+	}
 	if (!ctx.isAuthenticated || !ctx.userId) {
 		return { error: 'Lobu login is required before using managed auth.' };
 	}

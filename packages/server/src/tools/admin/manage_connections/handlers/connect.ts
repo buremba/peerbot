@@ -67,6 +67,10 @@ import {
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
 import { buildCrossWorkspaceAppInstallResult } from "../../helpers/cross-workspace-app-install";
+import {
+	DEVICE_AUTOWIRE_SUPPRESSION_ERROR,
+	hasDeviceAutowireSuppressionMarker,
+} from "../../../../utils/device-autowire-suppression";
 
 export async function handleConnect(
 	args: Extract<ConnectionsArgs, { action: "connect" }>,
@@ -87,6 +91,9 @@ async function handleConnectImpl(
 	ctx: ToolContext,
 	requireManaged: boolean,
 ): Promise<ManageConnectionsResult> {
+  if (hasDeviceAutowireSuppressionMarker(args.config)) {
+    return { error: DEVICE_AUTOWIRE_SUPPRESSION_ERROR };
+  }
   // A new row has no stored modes to compare against.
   if (hasActionModes(args.config)) {
     const denied = denyNonHumanActionModesWrite(ctx);

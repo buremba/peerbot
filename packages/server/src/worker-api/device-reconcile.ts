@@ -24,6 +24,7 @@ import { extractConnectorMetadata, type ConnectorMetadata } from '../utils/conne
 import { upsertConnectorDefinitionRecords } from '../utils/connector-definition-install';
 import { ensureUniqueConnectionSlug, isConnectionSlugUniqueViolation } from '../utils/connections';
 import { clearDevicePinTombstoneIfPinned } from '../utils/device-pin-tombstones';
+import { DEVICE_AUTOWIRE_SUPPRESSION_KEY } from '../utils/device-autowire-suppression';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import {
@@ -504,6 +505,37 @@ async function ensureDeviceConnectorWired(
       // downgrade metadata or repin after a newer manifest has arrived.
       const currentSource = source ? await lockedManifestWinner(tx) : null;
       if (source && !currentSource) return null;
+
+      // An explicit user delete is durable opt-out for this device connector.
+      // The marker is reserved at every public config-write path and delete
+      // writes it only after proving the connection belongs to this personal
+      // org's active device-connector definition. A device pin is deliberately
+      // not required: multi-device auto-wiring leaves the connection unpinned.
+      // The live-row anti-join makes an explicit reconnect the sole way to
+      // clear the opt-out without mutating the tombstone during heartbeat
+      // reconciliation. `handleDelete` is the only path that soft-deletes a
+      // connection at all, so no system retirement can plant this marker.
+      const suppressed = (await tx`
+        SELECT 1
+        FROM connections
+        WHERE organization_id = ${organizationId}
+          AND connector_key = ${connectorKey}
+          AND auth_profile_id IS NULL
+          AND app_auth_profile_id IS NULL
+          AND deleted_at IS NOT NULL
+          AND config->>${DEVICE_AUTOWIRE_SUPPRESSION_KEY} = 'true'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM connections live
+            WHERE live.organization_id = ${organizationId}
+              AND live.connector_key = ${connectorKey}
+              AND live.auth_profile_id IS NULL
+              AND live.app_auth_profile_id IS NULL
+              AND live.deleted_at IS NULL
+          )
+        LIMIT 1
+      `) as unknown as Array<{ '?column?': number }>;
+      if (suppressed.length > 0) return null;
 
       // 2. Ensure the connector definition + version are installed (idempotent).
       await upsertConnectorDefinitionRecords({

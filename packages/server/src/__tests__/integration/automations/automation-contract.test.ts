@@ -440,7 +440,7 @@ describe("automation contract", () => {
 		);
 	});
 
-	it("links the exact signed content IDs without re-running automation sources", async () => {
+	it("links exact signed content IDs and a successful manual window resumes an auto-pause", async () => {
 		const { sql, workspace, api, entityId, automationId } =
 			await createAutomatedAutomation();
 
@@ -460,6 +460,12 @@ describe("automation contract", () => {
 			windowEnd,
 			dispatchSource: "manual",
 		});
+		await sql`
+      UPDATE automations
+      SET consecutive_scheduled_failures = 5,
+          schedule_auto_paused_at = date_trunc('milliseconds', current_timestamp)
+      WHERE id = ${automationId}
+    `;
 		const windowToken = await generateWindowToken(
 			{
 				automation_id: automationId,
@@ -494,6 +500,13 @@ describe("automation contract", () => {
 		expect(completion.content_linked).toBe(1);
 		expect(Number(completedRun.content_analyzed)).toBe(1);
 		expect(links.map((row) => Number(row.event_id))).toEqual([event.id]);
+		const [recovered] = await sql`
+      SELECT consecutive_scheduled_failures, schedule_auto_paused_at, next_run_at
+      FROM automations WHERE id = ${automationId}
+    `;
+		expect(Number(recovered.consecutive_scheduled_failures)).toBe(0);
+		expect(recovered.schedule_auto_paused_at).toBeNull();
+		expect(recovered.next_run_at).not.toBeNull();
 	});
 
 	// #798 — device-pinned automation execution end-to-end:
@@ -1045,7 +1058,7 @@ describe("automation contract", () => {
 				agentId: agent.agentId,
 				windowStart: windowStart.toISOString(),
 				windowEnd: windowEnd.toISOString(),
-				dispatchSource: "scheduled",
+				dispatchSource: "event",
 				deviceWorkerId: "77777777-7777-7777-7777-777777777777",
 				agentKind: "claude-code",
 			});
@@ -1058,6 +1071,11 @@ describe("automation contract", () => {
               '{trigger_execution}', '"turn"'::jsonb
             )
         WHERE id = ${queued.runId}
+      `;
+			await sql`
+        UPDATE automations
+        SET consecutive_scheduled_failures = 3
+        WHERE id = ${automationId}
       `;
 
 			// Token-auth workers are trusted at the HTTP authorization layer, so the
@@ -1119,6 +1137,11 @@ describe("automation contract", () => {
 			expect(String(run.exit_reason)).toBe("ok");
 			expect(String(run.model_used)).toBe("device-cli:claude-code");
 			expect(Number(run.execution_time_ms)).toBe(40);
+			const [automation] = await sql`
+        SELECT consecutive_scheduled_failures
+        FROM automations WHERE id = ${automationId}
+      `;
+			expect(Number(automation.consecutive_scheduled_failures)).toBe(3);
 
 
 			// A duplicate report is a no-op ack, not a second completion.
@@ -1389,8 +1412,12 @@ describe("automation contract", () => {
 			);
 
 			const [afterFirst] =
-				await sql`SELECT next_run_at FROM automations WHERE id = ${automationId}`;
+				await sql`
+          SELECT next_run_at, consecutive_scheduled_failures
+          FROM automations WHERE id = ${automationId}
+        `;
 			const advancedOnce = new Date(afterFirst.next_run_at as string).getTime();
+			expect(Number(afterFirst.consecutive_scheduled_failures)).toBe(1);
 
 			// Second report acks the terminal state; no extra side effects.
 			const second = await post(
@@ -1408,10 +1435,14 @@ describe("automation contract", () => {
 			expect(secondJson.idempotent).toBe(true);
 
 			const [afterSecond] =
-				await sql`SELECT next_run_at FROM automations WHERE id = ${automationId}`;
+				await sql`
+          SELECT next_run_at, consecutive_scheduled_failures
+          FROM automations WHERE id = ${automationId}
+        `;
 			expect(new Date(afterSecond.next_run_at as string).getTime()).toBe(
 				advancedOnce
 			);
+			expect(Number(afterSecond.consecutive_scheduled_failures)).toBe(1);
 
 		});
 

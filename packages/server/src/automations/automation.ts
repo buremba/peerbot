@@ -45,6 +45,7 @@ import {
 	advanceAutomationSchedule,
 	advanceAutomationScheduleAfterSuccessfulWindow,
 } from "./schedule-cursor";
+import { recordScheduledExecutionFailure } from "./scheduled-failure-policy";
 import {
 	resolveAutomationRunsByMessageIds,
 } from "./run-completion";
@@ -570,20 +571,33 @@ export async function sweepStaleAutomationRuns(
 		sql,
 		coarseStaleInterval
 	);
-	const executingTimedOut = await markStaleRunsAsTimeout(sql, {
-		// Both lanes: this is a pure status UPDATE with no schedule-cursor or
-		// live result side effect, so terminating a crashed eval cannot touch the
-		// Automation it replays. Without it a `running` eval never reaches a
-		// terminal state and its same-lane claim guard wedges the eval lane.
-		// `finalizeStalePendingAutomationRuns` above stays automation-only on
-		// purpose — it advances `next_run_at`, which an eval must never do.
-		runTypes: AUTOMATION_RUN_TYPES,
-		heartbeatSemantics: "beat-after-claim",
-		heartbeatStaleInterval,
-		coarseStaleInterval,
-		heartbeatErrorMessage: `Automation run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
-		coarseErrorMessage: `Automation run exceeded ${coarseStaleInterval} without reaching terminal state`,
+	const executingTimedOutRows = await sql.begin(async (tx) => {
+		const rows = await markStaleRunsAsTimeout(tx, {
+			// Both lanes are terminalized, but only a real Automation that reached
+			// `running` may count toward the schedule circuit breaker. A claimed
+			// row is a dispatch failure; an eval is a replay of live state.
+			runTypes: AUTOMATION_RUN_TYPES,
+			heartbeatSemantics: "beat-after-claim",
+			heartbeatStaleInterval,
+			coarseStaleInterval,
+			heartbeatErrorMessage: `Automation run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
+			coarseErrorMessage: `Automation run exceeded ${coarseStaleInterval} without reaching terminal state`,
+		});
+		for (const row of rows) {
+			if (
+				row.previous_status === "running" &&
+				row.run_type === AUTOMATION_RUN_TYPE
+			) {
+				await recordScheduledExecutionFailure(
+					tx,
+					row.automation_id,
+					row.dispatch_source,
+				);
+			}
+		}
+		return rows;
 	});
+	const executingTimedOut = executingTimedOutRows.length;
 	const timedOut = pendingTimedOut + executingTimedOut;
 	if (timedOut > 0) {
 		logger.warn(

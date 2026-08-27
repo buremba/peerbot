@@ -4,6 +4,24 @@ import { computeAutomationHealth } from "../../automations/automation-health";
 const NOW = 1_700_000_000_000;
 
 describe("computeAutomationHealth", () => {
+	it("puts the durable schedule auto-pause reason first", () => {
+		const result = computeAutomationHealth(
+			{
+				status: "active",
+				nextRunAt: null,
+				consecutiveScheduledFailures: 5,
+				scheduleAutoPausedAt: new Date(NOW - 60_000).toISOString(),
+				latestRunStatus: "failed",
+				latestRunError: "executor timed out",
+			},
+			NOW,
+		);
+		expect(result.health).toBe("degraded");
+		expect(result.reasons[0]).toBe(
+			"schedule auto-paused after 5 consecutive execution failures",
+		);
+	});
+
 	it("degrades an active automation whose latest run failed", () => {
 		const result = computeAutomationHealth(
 			{

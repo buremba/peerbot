@@ -88,7 +88,6 @@ import {
 	ACL_MANAGED_TYPE_SQL,
 	assertNotAclManagedEdge,
 	canonicalizeSymmetricEdge,
-	checkDuplicateEdge,
 	validateConfidence,
 	validateNoSelfReference,
 	validateReconciledEdgeUpdate,
@@ -96,6 +95,13 @@ import {
 	validateSource,
 	validateTypeRule,
 } from "../../utils/relationship-validation";
+import {
+	assertManualRelationshipClaim,
+	assertManualRelationshipMutationAllowed,
+	assertNoReservedRelationshipMetadata,
+	relationshipMetadataWithoutClaims,
+	retractManualRelationshipClaim,
+} from "../../utils/relationship-claims";
 import {
 	exceedsValidationLimits,
 	isEmptyObject,
@@ -1687,7 +1693,7 @@ const RELATIONSHIP_SELECT = `
   fet.slug as from_entity_type,
   te.name as to_entity_name,
   tet.slug as to_entity_type,
-  r.metadata,
+  NULLIF(r.metadata - '_lobu_claims', '{}'::jsonb) AS metadata,
   r.confidence,
   r.source,
   r.created_by,
@@ -1852,63 +1858,39 @@ async function handleLink(
 		// validateScopeRule already required `from` to be in caller's org.
 	}
 
-	await checkDuplicateEdge(fromId, toId, typeId, sql);
-
 	validateConfidence(args.confidence);
 	validateSource(args.source);
+	assertNoReservedRelationshipMetadata(args.metadata);
 	const source = args.source ?? "api";
 	const confidence =
 		args.confidence ?? (source === "ui" || source === "api" ? 1.0 : null);
 
 	const created = await sql.begin(async (tx) => {
-		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
-		const inserted = await tx`
-    INSERT INTO entity_relationships (
-      organization_id, from_entity_id, to_entity_id, relationship_type_id,
-      metadata, confidence, source, created_by, updated_by,
-      created_at, updated_at
-    ) VALUES (
-      ${ctx.organizationId},
-      ${fromId},
-      ${toId},
-      ${typeId},
-			${args.metadata ? tx.json(args.metadata) : null},
-      ${confidence},
-      ${source},
-      ${ctx.userId},
-      ${ctx.userId},
-      current_timestamp,
-      current_timestamp
-    )
-    RETURNING id
-  `;
-		const relationshipId = Number((inserted[0] as { id: unknown }).id);
+		const asserted = await assertManualRelationshipClaim(tx, {
+			organizationId: ctx.organizationId,
+			fromEntityId: fromId,
+			toEntityId: toId,
+			relationshipTypeId: typeId,
+			relationshipTypeSlug: args.relationship_type_slug!,
+			metadata: args.metadata ?? null,
+			confidence,
+			source,
+			createdBy: ctx.userId,
+			clientId: ctx.clientId,
+		});
+		if (!asserted.claimAdded) {
+			throw new ToolUserError(
+				`An active relationship of this type already exists between entities ${fromId} and ${toId}`,
+				409,
+			);
+		}
+		const relationshipId = asserted.id;
 
 		const createdRows = await tx.unsafe<RelationshipRow>(
     `SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
 			[relationshipId],
   );
 
-		await insertEdgeChangeEventInTransaction(
-			{
-				organizationId: ctx.organizationId,
-				relationshipId,
-				fromEntityId: fromId,
-				toEntityId: toId,
-				relationshipTypeId: typeId,
-				relationshipTypeSlug: args.relationship_type_slug ?? null,
-				op: "link",
-				changes: [
-					{ field: "exists", old: false, new: true },
-					{ field: "metadata", old: null, new: args.metadata ?? null },
-					{ field: "confidence", old: null, new: confidence },
-					{ field: "source", old: null, new: source },
-				],
-				createdBy: ctx.userId,
-				clientId: ctx.clientId,
-			},
-			tx,
-		);
 		return createdRows[0];
 	});
 
@@ -1924,45 +1906,21 @@ async function handleUnlink(
 
   const sql = getDb();
 
-	await sql.begin(async (tx) => {
-		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
-		const edge = await lockEdgeForMutation(
-			tx,
-			args.relationship_id!,
-			ctx.organizationId,
-			"unlink",
-		);
-		await tx`
-      UPDATE entity_relationships
-      SET deleted_at = current_timestamp, updated_at = current_timestamp, updated_by = ${ctx.userId}
-      WHERE id = ${args.relationship_id} AND deleted_at IS NULL
-    `;
-		await insertEdgeChangeEventInTransaction(
-			{
-				organizationId: ctx.organizationId,
-				relationshipId: Number(edge.id),
-				fromEntityId: Number(edge.from_entity_id),
-				toEntityId: Number(edge.to_entity_id),
-				relationshipTypeId: Number(edge.relationship_type_id),
-				relationshipTypeSlug: edge.relationship_type_slug,
-				op: "unlink",
-				changes: [
-					{ field: "exists", old: true, new: false },
-					{ field: "metadata", old: edge.metadata, new: null },
-					{ field: "confidence", old: edge.confidence, new: null },
-					{ field: "source", old: edge.source, new: null },
-				],
-				createdBy: ctx.userId,
-				clientId: ctx.clientId,
-			},
-			tx,
-		);
-	});
+	const result = await sql.begin((tx) =>
+		retractManualRelationshipClaim(tx, {
+			organizationId: ctx.organizationId,
+			relationshipId: args.relationship_id!,
+			updatedBy: ctx.userId,
+			clientId: ctx.clientId,
+		}),
+	);
 
 	return {
 		action: "unlink",
 		success: true,
-		message: `Relationship ${args.relationship_id} deleted`,
+		message: result.relationshipRemoved
+			? `Relationship ${args.relationship_id} deleted`
+			: `Manual claim removed from relationship ${args.relationship_id}; source claims still retain it`,
 	};
 }
 
@@ -1983,11 +1941,15 @@ async function handleUpdateLink(
 			ctx.organizationId,
 			"update_link",
 		);
+		assertManualRelationshipMutationAllowed(edge, "updated");
 		validateConfidence(args.confidence);
 		validateSource(args.source);
 		const hasMetadata = args.metadata !== undefined;
+		assertNoReservedRelationshipMetadata(args.metadata);
+		const visibleMetadataBefore = relationshipMetadataWithoutClaims(edge.metadata);
 		const metadataChanged =
-			hasMetadata && stableJson(edge.metadata ?? null) !== stableJson(args.metadata ?? null);
+			hasMetadata &&
+			stableJson(visibleMetadataBefore) !== stableJson(args.metadata ?? null);
 		// Check the locked pre-image so concurrent updates cannot move a reconciled
 		// edge out of the scope that retires it.
 		validateReconciledEdgeUpdate(edge.source, args.source, metadataChanged);
@@ -1999,7 +1961,11 @@ async function handleUpdateLink(
 		}>`
       UPDATE entity_relationships SET
         metadata = CASE
-          WHEN ${hasMetadata} THEN ${metadataJson}
+					WHEN ${hasMetadata} THEN
+						COALESCE(${metadataJson}, '{}'::jsonb)
+						|| jsonb_build_object(
+							'_lobu_claims', metadata -> '_lobu_claims'
+						)
           ELSE metadata
         END,
         confidence = COALESCE(${args.confidence ?? null}, confidence),
@@ -2015,7 +1981,11 @@ async function handleUpdateLink(
 		);
 		const after = updatedRows[0];
 		const changes = [
-			{ field: "metadata", old: edge.metadata, new: after.metadata },
+			{
+				field: "metadata",
+				old: visibleMetadataBefore,
+				new: relationshipMetadataWithoutClaims(after.metadata),
+			},
 			{ field: "confidence", old: edge.confidence, new: after.confidence },
 			{ field: "source", old: edge.source, new: after.source },
 		].filter(

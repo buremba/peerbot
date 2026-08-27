@@ -16,6 +16,7 @@ import type { StoredConnection } from "@lobu/core";
 import { createLogger } from "@lobu/core";
 import { type DbClient, tsTime } from "../../db/client";
 import { deleteConnectionAclRow } from "../../authz/acl-observability";
+import { retractConnectionRelationshipClaims } from "../../utils/relationship-claims";
 
 const logger = createLogger("connections-projection");
 
@@ -314,6 +315,10 @@ export async function upsertChatConnectionProjection(
         for (const retired of supersededEnterprise as Array<{
           id: string;
         }>) {
+          await retractConnectionRelationshipClaims(sql, {
+            organizationId: orgId,
+            connectionId: retired.id,
+          });
           await deleteConnectionAclRow(sql, {
             organizationId: orgId,
             connectionId: retired.id,
@@ -478,6 +483,10 @@ export async function softDeleteChatConnectionProjection(
       RETURNING id::text AS id
     `) as Array<{ id: string }>;
     for (const row of tombstoned) {
+      await retractConnectionRelationshipClaims(sql, {
+        organizationId: orgId,
+        connectionId: row.id,
+      });
       await deleteConnectionAclRow(sql, {
         organizationId: orgId,
         connectionId: row.id,
@@ -490,6 +499,10 @@ export async function softDeleteChatConnectionProjection(
       RETURNING id::text AS id, organization_id
     `) as Array<{ id: string; organization_id: string }>;
     for (const row of tombstoned) {
+      await retractConnectionRelationshipClaims(sql, {
+        organizationId: row.organization_id,
+        connectionId: row.id,
+      });
       await deleteConnectionAclRow(sql, {
         organizationId: row.organization_id,
         connectionId: row.id,

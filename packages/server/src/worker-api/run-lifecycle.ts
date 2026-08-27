@@ -59,6 +59,7 @@ import {
 } from "../utils/inline-attachments";
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
+import { reconcileConnectorRelationshipClaims } from "../utils/relationship-claims";
 import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import {
 	isBrowserConnectorKey,
@@ -379,7 +380,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			// Runs on a dry run too, against `db`: it creates entity rows, and those
 			// roll back with everything else. Running it is what makes the inserts
 			// below realistic — events carry the entity ids it resolves.
-			await applyEventAttributions(
+			const appliedAttributions = await applyEventAttributions(
 				{
 					connectorKey: run.connector_key,
 					connectionId: run.connection_id,
@@ -419,7 +420,8 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 				);
 			}
 
-			for (let item of batch.items) {
+			for (const [itemIndex, batchItem] of batch.items.entries()) {
+				let item = batchItem;
 				const sourceOriginId = browserSourceOriginIds.get(item);
 				let publishedArtifactIds: string[] = [];
 				let artifactCommitted = false;
@@ -533,6 +535,32 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						// (connection_id, origin_id) across replicas.
 						sql: isDry ? db : undefined,
 						afterPersist: async (persisted, tx) => {
+							const relationshipDeclarations =
+								appliedAttributions.relationshipsByKind[
+									itemOriginType ?? itemSemanticType
+								] ?? [];
+							if (relationshipDeclarations.length > 0) {
+								if (run.connection_id == null) {
+									throw new Error(
+										"Connector-declared relationships require a source connection",
+									);
+								}
+								const named =
+									appliedAttributions.namedEntityIdsByItem.get(itemIndex) ??
+									new Map<string, number>();
+								await reconcileConnectorRelationshipClaims(tx, {
+									organizationId: run.organization_id,
+									connectionId: run.connection_id,
+									originId: persisted.origin_id,
+									desired: relationshipDeclarations.flatMap((declaration) => {
+										const fromEntityId = named.get(declaration.from);
+										const toEntityId = named.get(declaration.to);
+										return fromEntityId === undefined || toEntityId === undefined
+											? []
+											: [{ declaration, fromEntityId, toEntityId }];
+									}),
+								});
+							}
 							const drafts = item.automation_signals ?? [];
 							if (drafts.length > 0) {
 								for (const [draftIndex, draft] of drafts.entries()) {

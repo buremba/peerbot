@@ -30,6 +30,8 @@ export interface OrgInfo {
   description: string | null;
   created_at: string;
   is_member: boolean;
+  /** True only for the authenticated user's metadata-marked personal workspace. */
+  is_personal: boolean;
   visibility: 'public' | 'private';
   managed_auth?: {
     credential_mode: 'managed';
@@ -57,7 +59,7 @@ export type HonoContext = Context<{ Bindings: Env }>;
 
 export interface ResolvedOwner {
   slug: string;
-  type: 'user' | 'organization';
+  type: 'organization';
   id: string;
   name: string | null;
 }
@@ -85,5 +87,5 @@ export interface WorkspaceProvider {
   getOrgSlugs(orgIds: string[]): Promise<Map<string, string>>;
 
   /** Resolve an owner (namespace) by slug and type */
-  resolveOwner(slug: string, type: 'user' | 'organization'): Promise<ResolvedOwner | null>;
+  resolveOwner(slug: string, type: 'organization'): Promise<ResolvedOwner | null>;
 }

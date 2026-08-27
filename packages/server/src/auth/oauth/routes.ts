@@ -20,10 +20,17 @@ import { canonicalizeMcpResource, publicMcpRequestUrl } from './resource-indicat
 import {
   DEFAULT_SCOPES_STRING,
   filterScopeByRole,
-  filterScopeForWorkspaceGrant,
+  stripNonPublicOAuthScopes,
 } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
+import {
+  canonicalizeGrantedOrganizationIds,
+  type GrantedMemberWorkspace,
+  isMultiWorkspaceGrantIssuanceEnabled,
+  listLiveGrantedMemberWorkspaces,
+  MAX_GRANTED_ORGANIZATIONS,
+} from './workspace-grants';
 import { getConfiguredPublicOrigin } from '../../utils/public-origin';
 import { resolveSession } from '../resolve-session';
 
@@ -116,6 +123,106 @@ function getOrgSlugFromResource(resource: string | undefined | null): string | n
   return slug && slug.length > 0 ? slug : null;
 }
 
+function isBareMcpResource(resource: string | undefined | null): boolean {
+  const parsed = safeParseUrl(resource);
+  return parsed?.pathname === '/mcp';
+}
+
+type WorkspaceAccessMode = 'all_current' | 'selected';
+
+async function resolveSubmittedWorkspaceGrant(params: {
+  sql: ReturnType<typeof createDbClientFromEnv>;
+  userId: string;
+  organizationIds: unknown;
+  anchorOrganizationId: unknown;
+  workspaceAccess: unknown;
+  multiWorkspaceGrantsEnabled: boolean;
+}): Promise<
+  | {
+      organizationId: string;
+      memberRole: string;
+      grantedOrganizationIds: string[];
+      liveGrantedWorkspaces: GrantedMemberWorkspace[];
+    }
+  | { error: ReturnType<typeof createOAuthError>; status: number }
+> {
+  if (params.workspaceAccess !== 'all_current' && params.workspaceAccess !== 'selected') {
+    return {
+      error: createOAuthError('invalid_request', 'A valid workspace access selection is required'),
+      status: 400,
+    };
+  }
+  if (
+    !Array.isArray(params.organizationIds) ||
+    !params.organizationIds.every((id): id is string => typeof id === 'string')
+  ) {
+    return {
+      error: createOAuthError(
+        'invalid_request',
+        'organization_ids must be an array of workspace IDs'
+      ),
+      status: 400,
+    };
+  }
+
+  const grantedOrganizationIds = canonicalizeGrantedOrganizationIds(params.organizationIds);
+  if (
+    grantedOrganizationIds.length === 0 ||
+    grantedOrganizationIds.length > MAX_GRANTED_ORGANIZATIONS
+  ) {
+    return {
+      error: createOAuthError('invalid_request', 'The workspace selection is empty or too large'),
+      status: 400,
+    };
+  }
+  if (grantedOrganizationIds.length > 1 && !params.multiWorkspaceGrantsEnabled) {
+    return {
+      error: createOAuthError(
+        'invalid_request',
+        'Multiple-workspace authorization is not enabled'
+      ),
+      status: 400,
+    };
+  }
+
+  const organizationId =
+    typeof params.anchorOrganizationId === 'string' ? params.anchorOrganizationId.trim() : '';
+  if (!organizationId || !grantedOrganizationIds.includes(organizationId)) {
+    return {
+      error: createOAuthError('invalid_request', 'The primary workspace must be selected'),
+      status: 400,
+    };
+  }
+
+  const workspaces = await listLiveGrantedMemberWorkspaces({
+    sql: params.sql,
+    userId: params.userId,
+    grantedOrganizationIds,
+  });
+  if (workspaces.length !== grantedOrganizationIds.length) {
+    return {
+      // Unknown, ungranted, and removed memberships deliberately collapse to
+      // one answer so consent cannot be used as an organization oracle.
+      error: createOAuthError('access_denied', 'The workspace selection is no longer available'),
+      status: 403,
+    };
+  }
+  const anchor = workspaces.find((workspace) => workspace.id === organizationId);
+  if (!anchor) {
+    return {
+      error: createOAuthError('access_denied', 'The workspace selection is no longer available'),
+      status: 403,
+    };
+  }
+
+  return {
+    organizationId,
+    memberRole: anchor.role,
+    grantedOrganizationIds,
+    liveGrantedWorkspaces: workspaces,
+  };
+}
+
 type OrgResolutionResult =
   | { organizationId: string; memberRole: string | null }
   | { error: ReturnType<typeof createOAuthError>; status: number }
@@ -128,7 +235,7 @@ async function resolveOrganizationForGrant(params: {
   explicitOrgId: string | undefined;
   // When true, a user who belongs to more than one org and didn't pass an
   // explicit org (or resource slug) must pick one — we do NOT silently bind to
-  // their personal org. Used by the first-party device-pairing flow, where a
+  // their personal org. Used by the explicitly approved device-worker flow, where a
   // silent personal-org default landed the device in the wrong workspace.
   forceSelectionForMultiOrg?: boolean;
 }): Promise<OrgResolutionResult> {
@@ -219,7 +326,7 @@ async function resolveOrganizationForGrant(params: {
     };
   }
 
-  // First-party device pairing: a multi-org user MUST choose explicitly. Skip
+  // Device pairing: a multi-org user MUST choose explicitly. Skip
   // the personal-org default below so the device can't be silently bound to the
   // wrong workspace. Single-org users (length === 1) have no ambiguity and fall
   // through to the normal resolution.
@@ -269,7 +376,7 @@ async function resolveOrganizationForGrant(params: {
 function getProvider(c: { env: Env; req: { url: string } }): OAuthProvider {
   const sql = createDbClientFromEnv(c.env);
   const baseUrl = getBaseUrl(c);
-  return new OAuthProvider(sql, baseUrl);
+  return new OAuthProvider(sql, baseUrl, isMultiWorkspaceGrantIssuanceEnabled(c.env));
 }
 
 // ============================================
@@ -502,6 +609,13 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
     );
   }
 
+  params.scope = stripNonPublicOAuthScopes(params.scope || DEFAULT_SCOPES_STRING);
+  if (!params.scope) {
+    return c.json(
+      createOAuthError('invalid_scope', 'No requested scopes are available to OAuth clients'),
+      400
+    );
+  }
   const requestedScopes = getRequestedScopes(params.scope);
   const requestedHasMcpScopes = requestedScopes.some((s) => s.startsWith('mcp:'));
   if (requestedHasMcpScopes) {
@@ -579,23 +693,29 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
     return c.redirect(loginUrl.toString());
   }
 
-  // MCP scopes or other scopes — show consent page as before.
-  // Pass the client-requested scope through unchanged. Discovery no longer
-  // advertises device-only scopes, but some MCP clients (Slack) cache an older
-  // scopes_supported list and keep requesting them. Stripping here made the
-  // token `scope` a subset of what the client asked for, and Slack then fails
-  // with "must accept all the required permissions".
+  // MCP scopes or other scopes — show consent page as before. Device-flow-only
+  // device/managed-credential scopes were stripped above and must never reach
+  // authorization-code consent.
   const webUrl = getBaseUrl(c);
   const consentUrl = new URL('/oauth/consent', webUrl);
 
   consentUrl.searchParams.set('client_id', params.client_id);
   consentUrl.searchParams.set('redirect_uri', params.redirect_uri);
-  consentUrl.searchParams.set('scope', params.scope || DEFAULT_SCOPES_STRING);
+  consentUrl.searchParams.set('scope', params.scope);
   consentUrl.searchParams.set('state', params.state || '');
   consentUrl.searchParams.set('code_challenge', params.code_challenge);
   consentUrl.searchParams.set('code_challenge_method', params.code_challenge_method);
   if (params.resource) {
     consentUrl.searchParams.set('resource', params.resource);
+  }
+  if (
+    isBareMcpResource(params.resource) &&
+    isMultiWorkspaceGrantIssuanceEnabled(c.env)
+  ) {
+    // Capability is delivered by the backend that will enforce the grant. New
+    // consent UIs fall back to the legacy singleton picker when this marker is
+    // absent, which keeps new UI safe against old or not-yet-enabled pods.
+    consentUrl.searchParams.set('workspace_grants', '1');
   }
   consentUrl.searchParams.set('client_name', client.client_name || client.client_id);
 
@@ -631,6 +751,8 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
     code_challenge_method: 'S256';
     resource?: string;
     organization_id?: string;
+    organization_ids?: string[];
+    workspace_access?: WorkspaceAccessMode;
     approved: boolean;
   };
 
@@ -640,13 +762,28 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
     return c.json(createOAuthError('invalid_request', 'Invalid JSON body'), 400);
   }
 
-  // Keep the client-requested scope set. Discovery no longer advertises
-  // first-party-only scopes, but clients that cached an older scopes_supported
-  // (notably Slack MCP) still request them and require the token `scope` to
-  // cover every requested entry. Unknown values are filtered later via
-  // parseScopes / AVAILABLE_SCOPES at token use. Device-specific *automation*
-  // (personal-org force-bind, mint-child-token) stays gated on the device
-  // flow / resource binding, not solely on the scope string.
+  // A denial remains possible even when the client supplied malformed grant
+  // details. Approval, however, must never let the scope parser turn an
+  // explicit empty value into the server defaults.
+  if (body.approved && (typeof body.scope !== 'string' || body.scope.trim().length === 0)) {
+    return c.json(createOAuthError('invalid_scope', 'A non-empty scope is required'), 400);
+  }
+
+  if (body.approved) {
+    body.scope = stripNonPublicOAuthScopes(body.scope);
+    if (!body.scope) {
+      return c.json(
+        createOAuthError('invalid_scope', 'No requested scopes are available to OAuth clients'),
+        400
+      );
+    }
+  }
+
+  // Keep the remaining client-requested public scopes after the device-only
+  // values above are stripped. Unknown values are filtered later via
+  // parseScopes / AVAILABLE_SCOPES at token use. Device-specific automation
+  // (personal-org force-bind, mint-child-token) stays gated on the device flow
+  // and resource binding, not solely on the scope string.
   const consentHasMcpScopes = hasMcpScopes(body.scope);
   if (consentHasMcpScopes) {
     const resource = canonicalizeMcpResource(body.resource, publicMcpRequestUrl(c.req.raw));
@@ -672,6 +809,20 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
     return c.json({ redirect_url: redirectUrl.toString() });
   }
 
+  if (
+    consentHasMcpScopes &&
+    getOrgSlugFromResource(body.resource) !== null &&
+    (body.workspace_access !== undefined || body.organization_ids !== undefined)
+  ) {
+    return c.json(
+      createOAuthError(
+        'invalid_request',
+        'Workspace selection is not allowed for a scoped MCP resource'
+      ),
+      400
+    );
+  }
+
   // Validate client again
   const clientResult = await provider.getClientForAuthorization(body.client_id, body.redirect_uri);
 
@@ -693,16 +844,37 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
 
   try {
     let organizationId: string | null = null;
+    let grantedOrganizationIds: string[] = [];
 
     if (consentHasMcpScopes) {
       const sql = createDbClientFromEnv(c.env);
       const resourceOrgSlug = getOrgSlugFromResource(body.resource);
-      const orgResult = await resolveOrganizationForGrant({
-        sql,
-        userId: user.id,
-        resourceOrgSlug,
-        explicitOrgId: body.organization_id,
-      });
+      const submittedGrant =
+        isBareMcpResource(body.resource) &&
+        (body.workspace_access !== undefined || body.organization_ids !== undefined)
+          ? await resolveSubmittedWorkspaceGrant({
+              sql,
+              userId: user.id,
+              organizationIds: body.organization_ids,
+              anchorOrganizationId: body.organization_id,
+              workspaceAccess: body.workspace_access,
+              multiWorkspaceGrantsEnabled: isMultiWorkspaceGrantIssuanceEnabled(c.env),
+            })
+          : null;
+      if (submittedGrant && 'error' in submittedGrant) {
+        return c.json(submittedGrant.error, submittedGrant.status as 400);
+      }
+      const validSubmittedGrant =
+        submittedGrant && !('error' in submittedGrant) ? submittedGrant : null;
+      const orgResult =
+        validSubmittedGrant ??
+        (await resolveOrganizationForGrant({
+          sql,
+          userId: user.id,
+          resourceOrgSlug,
+          explicitOrgId: body.organization_id,
+          forceSelectionForMultiOrg: isBareMcpResource(body.resource),
+        }));
       if ('error' in orgResult) {
         return c.json(orgResult.error, orgResult.status as 400);
       }
@@ -717,14 +889,30 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
         );
       }
       organizationId = orgResult.organizationId;
+      grantedOrganizationIds = validSubmittedGrant?.grantedOrganizationIds ?? [
+        orgResult.organizationId,
+      ];
+      const liveGrantedWorkspaces =
+        validSubmittedGrant?.liveGrantedWorkspaces ??
+        (resourceOrgSlug === null
+          ? await listLiveGrantedMemberWorkspaces({
+              sql,
+              userId: user.id,
+              grantedOrganizationIds,
+            })
+          : []);
       // A scoped resource is governed by its one bound workspace. For /mcp,
       // the resolved org is only the session default; target workspace role
       // checks remain authoritative at runtime.
-      const filtered = filterScopeForWorkspaceGrant(
-        body.scope,
-        orgResult.memberRole,
+      const grantRole =
         resourceOrgSlug !== null
-      );
+          ? orgResult.memberRole
+          : liveGrantedWorkspaces.some(
+                (workspace) => workspace.role === 'owner' || workspace.role === 'admin'
+              )
+            ? 'admin'
+            : 'member';
+      const filtered = filterScopeByRole(body.scope, grantRole);
       if (filtered === null) {
         return c.json(
           createOAuthError(
@@ -739,7 +927,12 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
       params.scope = filtered;
     }
 
-    const code = await provider.createAuthorizationCode(params, user.id, organizationId);
+    const code = await provider.createAuthorizationCode(
+      params,
+      user.id,
+      organizationId,
+      grantedOrganizationIds
+    );
 
     // Build redirect URL with authorization code
     const redirectUrl = new URL(body.redirect_uri);
@@ -779,11 +972,18 @@ oauthRoutes.post('/oauth/device_authorization', async (c) => {
     return c.json(createOAuthError('invalid_request', 'client_id is required'), 400);
   }
 
+  if (
+    body.scope !== undefined &&
+    (typeof body.scope !== 'string' || body.scope.trim().length === 0)
+  ) {
+    return c.json(createOAuthError('invalid_scope', 'Requested scope must not be empty'), 400);
+  }
+
   const deviceScopes = getRequestedScopes(body.scope);
   const isDeviceWorkerGrant = deviceScopes.includes('device_worker:run');
   const deviceHasMcpScopes = deviceScopes.some((scope) => scope.startsWith('mcp:'));
   if (isDeviceWorkerGrant) {
-    // First-party device pairing selects and force-binds the personal org at
+    // Device-worker pairing selects and force-binds the personal org at
     // human approval time. Keeping an earlier caller-supplied team resource
     // would create a token whose OAuth audience disagrees with its org claim.
     // Leave this compatibility grant unbound; normal MCP device grants may
@@ -960,6 +1160,7 @@ oauthRoutes.get('/oauth/device/info', requireAuth, async (c) => {
     client_id: deviceCode.client_id,
     scopes: (deviceCode.scope ?? '').split(' ').filter(Boolean),
     resource: deviceCode.resource,
+    multi_workspace_grants_enabled: isMultiWorkspaceGrantIssuanceEnabled(c.env),
   });
 });
 
@@ -982,7 +1183,13 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     return c.json(createOAuthError('access_denied', 'Invalid request origin'), 403);
   }
 
-  let body: { user_code: string; approved: boolean; organization_id?: string };
+  let body: {
+    user_code: string;
+    approved: boolean;
+    organization_id?: string;
+    organization_ids?: string[];
+    workspace_access?: WorkspaceAccessMode;
+  };
   try {
     body = await c.req.json();
   } catch {
@@ -1018,7 +1225,21 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
   // So a device-worker grant is FORCE-bound to the personal org, ignoring
   // the resource slug, the active org, and the consent picker.
   const isDeviceWorkerGrant = requestedScopes.includes('device_worker:run');
+  if (
+    deviceHasMcpScopes &&
+    getOrgSlugFromResource(deviceCode.resource) !== null &&
+    (body.workspace_access !== undefined || body.organization_ids !== undefined)
+  ) {
+    return c.json(
+      createOAuthError(
+        'invalid_request',
+        'Workspace selection is not allowed for a scoped MCP resource'
+      ),
+      400
+    );
+  }
   let organizationId: string | null = null;
+  let grantedOrganizationIds: string[] = [];
   let scopeOverride: string | null | undefined;
 
   if (isDeviceWorkerGrant) {
@@ -1050,7 +1271,44 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     }
     const memberRole = memberRow[0]?.role ?? null;
     organizationId = personalOrg.id;
-    scopeOverride = filterScopeByRole(deviceCode.scope, memberRole);
+    grantedOrganizationIds = [personalOrg.id];
+    let submittedGrantWorkspaces: GrantedMemberWorkspace[] | null = null;
+    if (
+      deviceHasMcpScopes &&
+      (isBareMcpResource(deviceCode.resource) || deviceCode.resource === null) &&
+      (body.workspace_access !== undefined || body.organization_ids !== undefined)
+    ) {
+      const submittedGrant = await resolveSubmittedWorkspaceGrant({
+        sql,
+        userId: user.id,
+        organizationIds: body.organization_ids,
+        anchorOrganizationId: body.organization_id,
+        workspaceAccess: body.workspace_access,
+        multiWorkspaceGrantsEnabled: isMultiWorkspaceGrantIssuanceEnabled(c.env),
+      });
+      if ('error' in submittedGrant) {
+        return c.json(submittedGrant.error, submittedGrant.status as 400);
+      }
+      if (
+        submittedGrant.organizationId !== personalOrg.id ||
+        !submittedGrant.grantedOrganizationIds.includes(personalOrg.id)
+      ) {
+        return c.json(
+          createOAuthError('access_denied', 'The workspace selection is no longer available'),
+          403
+        );
+      }
+      // Device placement remains anchored to personal. The additional IDs are
+      // an explicit bare-MCP read grant, not a device-data destination.
+      grantedOrganizationIds = submittedGrant.grantedOrganizationIds;
+      submittedGrantWorkspaces = submittedGrant.liveGrantedWorkspaces;
+    }
+    const grantRole = submittedGrantWorkspaces?.some(
+      (workspace) => workspace.role === 'owner' || workspace.role === 'admin'
+    )
+      ? 'admin'
+      : memberRole;
+    scopeOverride = filterScopeByRole(deviceCode.scope, grantRole);
     if (scopeOverride === null) {
       return c.json(
         createOAuthError(
@@ -1063,15 +1321,34 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
   } else if (deviceHasMcpScopes) {
     const sql = createDbClientFromEnv(c.env);
     const resourceOrgSlug = getOrgSlugFromResource(deviceCode.resource);
-    const orgResult = await resolveOrganizationForGrant({
-      sql,
-      userId: user.id,
-      resourceOrgSlug,
-      explicitOrgId: body.organization_id,
-      // Device pairing must not silently default a multi-org user's device to
-      // their personal org — require an explicit pick.
-      forceSelectionForMultiOrg: true,
-    });
+    const submittedGrant =
+      isBareMcpResource(deviceCode.resource) &&
+      (body.workspace_access !== undefined || body.organization_ids !== undefined)
+        ? await resolveSubmittedWorkspaceGrant({
+            sql,
+            userId: user.id,
+            organizationIds: body.organization_ids,
+            anchorOrganizationId: body.organization_id,
+            workspaceAccess: body.workspace_access,
+            multiWorkspaceGrantsEnabled: isMultiWorkspaceGrantIssuanceEnabled(c.env),
+          })
+        : null;
+    if (submittedGrant && 'error' in submittedGrant) {
+      return c.json(submittedGrant.error, submittedGrant.status as 400);
+    }
+    const validSubmittedGrant =
+      submittedGrant && !('error' in submittedGrant) ? submittedGrant : null;
+    const orgResult =
+      validSubmittedGrant ??
+      (await resolveOrganizationForGrant({
+        sql,
+        userId: user.id,
+        resourceOrgSlug,
+        explicitOrgId: body.organization_id,
+        // Device pairing must not silently default a multi-org user's device to
+        // their personal org — require an explicit pick.
+        forceSelectionForMultiOrg: true,
+      }));
     if ('error' in orgResult) {
       return c.json(orgResult.error, orgResult.status as 400);
     }
@@ -1086,11 +1363,27 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
       );
     }
     organizationId = orgResult.organizationId;
-    scopeOverride = filterScopeForWorkspaceGrant(
-      deviceCode.scope,
-      orgResult.memberRole,
+    grantedOrganizationIds = validSubmittedGrant?.grantedOrganizationIds ?? [
+      orgResult.organizationId,
+    ];
+    const liveGrantedWorkspaces =
+      validSubmittedGrant?.liveGrantedWorkspaces ??
+      (resourceOrgSlug === null
+        ? await listLiveGrantedMemberWorkspaces({
+            sql,
+            userId: user.id,
+            grantedOrganizationIds,
+          })
+        : []);
+    const grantRole =
       resourceOrgSlug !== null
-    );
+        ? orgResult.memberRole
+        : liveGrantedWorkspaces.some(
+              (workspace) => workspace.role === 'owner' || workspace.role === 'admin'
+            )
+          ? 'admin'
+          : 'member';
+    scopeOverride = filterScopeByRole(deviceCode.scope, grantRole);
     if (scopeOverride === null) {
       return c.json(
         createOAuthError(
@@ -1103,9 +1396,11 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     // NOTE: `connections:token` is NOT auto-appended here. Device-code
     // registration is open (DCR), so auto-granting it to any device client
     // would silently widen its token beyond what it requested — the same
-    // scope-creep we removed from the authorization-code path. The first-party
-    // `lobu login` requests `connections:token` explicitly in its
-    // device_authorization scope (see `packages/cli/src/internal/oauth.ts`);
+    // scope-creep we removed from the authorization-code path. `lobu login`
+    // requests `connections:token` explicitly in its device_authorization
+    // scope (see `packages/cli/src/internal/oauth.ts`). Open DCR does not prove
+    // that client is first-party; the enforceable boundary is device flow plus
+    // the user's explicit consent, never client-supplied identity metadata.
     // The grant filter never strips `connections:token`, so an explicitly
     // requested value survives in `deviceCode.scope`. A device client that did
     // NOT request it simply doesn't get it.
@@ -1115,7 +1410,8 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
     body.user_code,
     user.id,
     organizationId,
-    scopeOverride
+    scopeOverride,
+    grantedOrganizationIds
   );
   if (!approved) {
     return c.json(createOAuthError('invalid_grant', INVALID_DEVICE_CODE_MESSAGE), 400);

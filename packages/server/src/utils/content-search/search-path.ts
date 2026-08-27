@@ -114,6 +114,7 @@ export async function searchContentBySingleQuery(
   const orgScope = buildOrgScopeWhere({
     entity_id: entityId,
     organization_id: options.organization_id,
+    strict_organization_scope: options.strict_organization_scope,
     baseParamIndex: 14,
   });
   // Exclude-automation param slot sits immediately after orgScope so its $N index

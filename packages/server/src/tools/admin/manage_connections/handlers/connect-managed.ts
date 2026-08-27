@@ -71,6 +71,8 @@ export async function handleConnectManaged(
 			memberRole: membership.role,
 			scopedToOrg: true,
 			allowCrossOrg: false,
+			grantedOrganizationIds: [membership.organizationId],
+			directSearchFederation: false,
 		},
 	);
 }

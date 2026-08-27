@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { IdentityRekeyError, rekeyEntityIdentities } from '../../../identity/rekey';
 import type { ConnectorMetadata } from '../../../utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../../../utils/connector-definition-install';
+import {
+  applyEventAttributions,
+  clearEntityLinkRulesCache,
+} from '../../../utils/entity-link-upsert';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -34,7 +38,10 @@ function metadata(
             attributions: [
               {
                 role: 'about',
+                autoCreate: true,
                 target: {
+                  entityType: 'person',
+                  titlePath: 'metadata.customer_name',
                   identities: [
                     {
                       namespace,
@@ -73,6 +80,10 @@ async function seedRows(options?: { duplicateIdentifier?: boolean }) {
   const org = await createTestOrganization({ name: 'Scope lifecycle org' });
   const user = await createTestUser();
   await addUserToOrganization(user.id, org.id, 'owner');
+  await sql`
+    INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+    VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+  `;
   const first = await createTestEntity({
     name: 'First customer',
     entity_type: '$member',
@@ -180,7 +191,65 @@ describe('connector identity scope lifecycle', () => {
       { scope_key: 'tenant-a', scope: 'tenant', pending_scope: null },
       { scope_key: 'tenant-b', scope: 'tenant', pending_scope: null },
     ]);
+
+    clearEntityLinkRulesCache();
+    await expect(
+      applyEventAttributions({
+        connectorKey,
+        feedKey: 'customers',
+        orgId: org.id,
+        items: [
+          {
+            origin_type: 'customer',
+            metadata: {
+              customer_id: 'CARI-003',
+              customer_name: 'Blocked during activation gap',
+              tenant_id: 'tenant-c',
+            },
+          },
+        ],
+      })
+    ).rejects.toThrow(/erp_customer.*ingestion is paused.*lobu apply/i);
+
+    const blockedRows = await getTestDb()<{ count: number }[]>`
+      SELECT count(*)::integer AS count
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+        AND identifier = 'CARI-003'
+        AND deleted_at IS NULL
+    `;
+    expect(blockedRows[0]?.count).toBe(0);
+
     await expect(install(org.id, next)).resolves.toBeDefined();
+    clearEntityLinkRulesCache();
+    await expect(
+      applyEventAttributions({
+        connectorKey,
+        feedKey: 'customers',
+        orgId: org.id,
+        items: [
+          {
+            origin_type: 'customer',
+            metadata: {
+              customer_id: 'CARI-003',
+              customer_name: 'Allowed after apply',
+              tenant_id: 'tenant-c',
+            },
+          },
+        ],
+      })
+    ).resolves.toBeUndefined();
+
+    const activatedRows = await getTestDb()<{ scope_key: string | null }[]>`
+      SELECT scope_key
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+        AND identifier = 'CARI-003'
+        AND deleted_at IS NULL
+    `;
+    expect(activatedRows).toEqual([{ scope_key: 'tenant-c' }]);
   });
 
   it('rejects ids outside the org+namespace and proposed unique-key collisions', async () => {

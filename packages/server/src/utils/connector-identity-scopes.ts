@@ -1,4 +1,4 @@
-import { getDb } from '../db/client';
+import { type DbClient, getDb, pgTextArray } from '../db/client';
 
 type ConnectorIdentityScopeShape = {
   scope: 'organization' | 'tenant';
@@ -110,6 +110,83 @@ export function connectorIdentityScopeDeclarations(
 }
 
 /**
+ * Keep ingestion on the declaration shape that the registry currently owns.
+ *
+ * Re-key promotes the registry and rows atomically, but the operator still has
+ * to apply the connector version containing that promoted declaration. The old
+ * active definition must not recreate identities under its old key during that
+ * interval. Call this inside the same transaction that writes identities: the
+ * shared transition lock makes an ingestion that started before re-key finish
+ * first, while re-key's exclusive lock makes a later ingestion observe the new
+ * registry shape and fail closed until apply activates matching rules.
+ */
+export async function assertConnectorIdentityScopesActive(params: {
+  sql: DbClient;
+  organizationId: string;
+  connectorKey: string;
+  identities: Array<{
+    namespace: string;
+    scope?: 'organization' | 'tenant';
+    scopeKeyPath?: string;
+  }>;
+}): Promise<void> {
+  const declarations = new Map<string, ConnectorIdentityScopeShape>();
+  for (const identity of params.identities) {
+    const namespace = identity.namespace.trim();
+    if (!namespace) continue;
+    const shape: ConnectorIdentityScopeShape =
+      identity.scope === 'tenant'
+        ? { scope: 'tenant', scopeKeyPath: identity.scopeKeyPath?.trim() || null }
+        : { scope: 'organization', scopeKeyPath: null };
+    const prior = declarations.get(namespace);
+    if (prior && !sameShape(prior, shape)) {
+      throw new Error(
+        `Identity namespace '${namespace}' has conflicting active scope declarations: ` +
+          `${renderShape(prior)} and ${renderShape(shape)}.`
+      );
+    }
+    declarations.set(namespace, prior ?? shape);
+  }
+  const namespaces = [...declarations.keys()].sort();
+  if (namespaces.length === 0) return;
+
+  for (const namespace of namespaces) {
+    await params.sql`
+      SELECT pg_advisory_xact_lock_shared(
+        hashtext('lobu:identity-rekey'),
+        hashtext(${`${params.organizationId}:${namespace}`})
+      )
+    `;
+  }
+  const rows = await params.sql<{
+    namespace: string;
+    scope: 'organization' | 'tenant';
+    scope_key_path: string | null;
+  }>`
+    SELECT namespace, scope, scope_key_path
+    FROM connector_identity_scope_registry
+    WHERE organization_id = ${params.organizationId}
+      AND connector_key = ${params.connectorKey}
+      AND namespace = ANY(${pgTextArray(namespaces)}::text[])
+  `;
+  for (const row of rows) {
+    const active = declarations.get(row.namespace);
+    if (!active) continue;
+    const registered: ConnectorIdentityScopeShape = {
+      scope: row.scope,
+      scopeKeyPath: row.scope_key_path,
+    };
+    if (sameShape(active, registered)) continue;
+    throw new Error(
+      `Identity namespace '${row.namespace}' ingestion is paused for connector ` +
+        `'${params.connectorKey}' because its active declaration ${renderShape(active)} ` +
+        `does not match the registered shape ${renderShape(registered)}. ` +
+        'Run `lobu apply` with the re-keyed connector declaration before ingesting more events.'
+    );
+  }
+}
+
+/**
  * Persist the connector's declared identity shapes. A shape change with live
  * rows records the exact pending target before rejecting apply, so the explicit
  * re-key command can promote it atomically with the row rewrite.
@@ -130,7 +207,19 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
         hashtext(${`${params.organizationId}:${params.metadata.key}`})
       )
     `;
-    for (const declaration of declarations.values()) {
+    for (const declaration of [...declarations.values()].sort((left, right) =>
+      left.namespace.localeCompare(right.namespace)
+    )) {
+      // Serialize zero-row shape changes with ingestion as well as explicit
+      // re-key. Once this transaction promotes the registry, any old active
+      // rule entering later sees the mismatch and fails closed until apply
+      // finishes activating the new definition.
+      await tx`
+        SELECT pg_advisory_xact_lock(
+          hashtext('lobu:identity-rekey'),
+          hashtext(${`${params.organizationId}:${declaration.namespace}`})
+        )
+      `;
       const rows = await tx<{
         scope: 'organization' | 'tenant';
         scope_key_path: string | null;

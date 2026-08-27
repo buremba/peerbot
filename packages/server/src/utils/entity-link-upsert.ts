@@ -33,6 +33,7 @@ import { normalizeIdentifier } from '@lobu/connector-sdk/identity-normalize';
 import { ensureResourceEntityType } from '../authz/acl-resource-type';
 import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client';
 import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
+import { assertConnectorIdentityScopesActive } from './connector-identity-scopes';
 import {
   hardDeleteEntityRows,
   patchEntityRows,
@@ -931,6 +932,15 @@ async function resolveLinksByKind(
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
     return resolvedByItem;
   }
+
+  await assertConnectorIdentityScopesActive({
+    sql,
+    organizationId: params.orgId,
+    connectorKey: params.connectorKey,
+    identities: Object.values(params.rulesByKind).flatMap((rules) =>
+      rules.flatMap((rule) => rule.identities)
+    ),
+  });
 
   // entities.created_by is NOT NULL; resolve an org owner/admin once per batch
   // so auto-created entities attribute to a real member rather than a seed user.

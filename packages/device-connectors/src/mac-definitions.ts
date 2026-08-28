@@ -300,23 +300,15 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   },
   {
     key: "apple.photos",
-    version: "0.1.0",
+    version: "0.1.1",
     name: "Apple Photos",
     description:
-      "Sync your Photos library (local or iCloud-mirrored) from the Lobu Mac app. Includes location, people, albums, captions, keywords, and Vision OCR text — data Google Photos' API does not expose.",
+      "Sync the metadata PhotoKit exposes for photos and optional videos on this Mac: dates, dimensions, location, albums, media subtype, and favorite or hidden state.",
     faviconDomain: "apple.com",
     requiredCapability: "photos",
     runtime: {
       platforms: ["macos"],
-      scopes: [
-        "date",
-        "location",
-        "people",
-        "albums",
-        "captions",
-        "keywords",
-        "ocr",
-      ],
+      scopes: ["date", "location", "albums"],
       execution: "bridge",
     },
     authSchema: {
@@ -332,7 +324,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
         name: "Library",
         operations: ["sync"],
         description:
-          "Every photo in your library. Each event carries the photo's metadata (date taken, location, people, albums, captions, OCR text) plus stable asset identifiers so agents can fetch the image bytes on demand.",
+          "PhotoKit assets in the configured backfill window. Events include dates, dimensions, location, album membership, media subtype, favorite and hidden state, and stable per-device asset identifiers.",
         configSchema: {
           type: "object",
           properties: {
@@ -360,7 +352,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
         eventKinds: {
           photo: {
             description:
-              "A single photo (or video, if enabled) from the user's Apple Photos library. v1 (this PR) populates: asset_local_id, media_type, media_subtypes, date_taken, date_modified, width, height, duration_s, latitude/longitude/altitude_m, albums, is_favorite, is_hidden — everything PhotoKit's public API exposes. v2 will add: asset_cloud_id, place_name (reverse geocoding), people, keywords, caption, ocr_text — all of which require direct reads against the Photos.sqlite bundle (FDA + schema-pinned, osxphotos-style). Schema allows nulls so v1 events validate cleanly.",
+              "A single photo (or video, if enabled) from the user's Apple Photos library. The bridge populates what PhotoKit's public API exposes: asset_local_id, media_type, media_subtypes, date_taken, date_modified, width, height, duration_s, latitude/longitude/altitude_m, albums, is_favorite, is_hidden. place_name is added server-side by geo enrichment from latitude/longitude.",
             metadataSchema: {
               type: "object",
               required: ["source", "origin_id", "asset_local_id"],
@@ -376,10 +368,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
                   type: "string",
                   description:
                     "PHAsset.localIdentifier — stable per-device handle.",
-                },
-                asset_cloud_id: {
-                  type: ["string", "null"],
-                  description: "iCloud asset id when synced via iCloud Photos.",
                 },
                 media_type: {
                   type: "string",
@@ -424,15 +412,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
                 place_name: {
                   type: ["string", "null"],
                   description:
-                    "Reverse-geocoded human-readable place from CLGeocoder when available offline.",
-                },
-                people: {
-                  type: "array",
-                  items: {
-                    type: "string",
-                  },
-                  description:
-                    "Named-person tags from Apple's on-device face recognition.",
+                    "Nearest place name, filled in server-side by geo enrichment from latitude/longitude.",
                 },
                 albums: {
                   type: "array",
@@ -440,15 +420,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
                     type: "string",
                   },
                   description: "User album names this asset belongs to.",
-                },
-                keywords: {
-                  type: "array",
-                  items: {
-                    type: "string",
-                  },
-                },
-                caption: {
-                  type: ["string", "null"],
                 },
                 is_favorite: {
                   type: "boolean",

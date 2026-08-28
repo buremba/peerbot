@@ -16,7 +16,7 @@ const expectedOriginHashes: Record<string, string> = {
   "apple.health":
     "95d01cbd942d6af5f201656e2b6ed320e3e6559723ad3f9de619b524451f70e4",
   "apple.photos":
-    "1ca01291d17d0386a0dbc70546a0697a81290cf6a842fdaa035cc244c953009a",
+    "0e140bd9a6d8f88fd1a750033a54b3157961c2046d0d18de08e16a9a566718e5",
   "apple.reminders":
     "ccaf18f1c403ce2ae125388a7d5a720f33a0ef656c69a2a4bde45d7b364c5de1",
   "apple.screen_time":
@@ -69,6 +69,40 @@ describe("Mac device connector registry", () => {
         },
       },
     });
+  });
+
+  test("apple.photos advertises only what the PhotoKit bridge populates", () => {
+    const photos = macDeviceConnectorManifests.find(
+      (manifest) => manifest.key === "apple.photos"
+    );
+    expect(photos).toBeDefined();
+
+    const library = photos?.feeds_schema.library;
+    const photoKind = library?.eventKinds?.photo;
+    expect(library).toBeDefined();
+    expect(photoKind).toBeDefined();
+
+    // The Mac bridge reads PhotoKit's public API only; people, captions,
+    // keywords and OCR text live in the Photos.sqlite bundle and are not
+    // read today. The feed is metadata-only (`operations: ["sync"]`, no
+    // action schema), so image bytes are not fetchable either. No catalog
+    // string may promise any of it. The one advertised key the bridge does
+    // not fill is place_name, which geo enrichment fills server-side.
+    const unsupported = /people|caption|keyword|ocr|image bytes/i;
+    expect(photos?.description).toContain("PhotoKit");
+    expect(photos?.description).not.toMatch(unsupported);
+    expect(library?.description).not.toMatch(unsupported);
+    expect(photoKind?.description).not.toMatch(unsupported);
+
+    const metadataKeys = Object.keys(
+      photoKind?.metadataSchema?.properties ?? {}
+    );
+    expect(metadataKeys).toContain("asset_local_id");
+    for (const key of metadataKeys) {
+      expect(key).not.toMatch(unsupported);
+    }
+
+    expect(photos?.runtime.scopes).toEqual(["date", "location", "albums"]);
   });
 
   test("every generated manifest is accepted by the server validator", () => {

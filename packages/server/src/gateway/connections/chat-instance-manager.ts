@@ -15,7 +15,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentConnectionStore, StoredConnection } from "@lobu/core";
 import { createLogger, getErrorMessage, isSecretRef } from "@lobu/core";
-import { type AdapterPostableMessage, Chat } from "chat";
+import { type Adapter, type AdapterPostableMessage, Chat } from "chat";
 import { verifyAtlassianWebhookAuthorization } from "../../connect/atlassian-webhook-auth.js";
 import { resolveConnectionWebhookConfig } from "../../connect/webhook-registration.js";
 import { getDb } from "../../db/client.js";
@@ -1109,6 +1109,19 @@ export class ChatInstanceManager {
     return instance;
   }
 
+  private requireRunningAdapter(connectionId: string): Adapter {
+    const instance = this.requireRunningInstance(connectionId);
+    const adapter = instance.chat.getAdapter(
+      instance.connection.platform,
+    ) as Adapter | undefined;
+    if (!adapter) {
+      throw new Error(
+				`No active ${instance.connection.platform} adapter for connection ${connectionId}`,
+      );
+    }
+    return adapter;
+  }
+
   /** Add or remove an emoji reaction on a specific message. */
   async reactToMessage(
     connectionId: string,
@@ -1120,8 +1133,7 @@ export class ChatInstanceManager {
 		},
   ): Promise<void> {
     await this.ensureConnectionRunning(connectionId);
-    const instance = this.requireRunningInstance(connectionId);
-    const adapter = instance.chat?.adapter;
+    const adapter = this.requireRunningAdapter(connectionId);
     if (opts.remove) {
       await adapter.removeReaction(opts.threadId, opts.messageId, opts.emoji);
     } else {
@@ -1150,14 +1162,10 @@ export class ChatInstanceManager {
 			content: AdapterPostableMessage;
 		},
 	): Promise<void> {
-    await this.ensureConnectionRunning(connectionId);
-    const instance = this.requireRunningInstance(connectionId);
-		await instance.chat?.adapter.editMessage(
-			opts.threadId,
-			opts.messageId,
-			opts.content,
-		);
-  }
+		await this.ensureConnectionRunning(connectionId);
+		const adapter = this.requireRunningAdapter(connectionId);
+		await adapter.editMessage(opts.threadId, opts.messageId, opts.content);
+	}
 
   /** Delete a message the bot previously sent. */
   async deleteMessage(
@@ -1165,8 +1173,8 @@ export class ChatInstanceManager {
 		opts: { threadId: string; messageId: string },
   ): Promise<void> {
     await this.ensureConnectionRunning(connectionId);
-    const instance = this.requireRunningInstance(connectionId);
-    await instance.chat?.adapter.deleteMessage(opts.threadId, opts.messageId);
+    const adapter = this.requireRunningAdapter(connectionId);
+    await adapter.deleteMessage(opts.threadId, opts.messageId);
   }
 
   /**

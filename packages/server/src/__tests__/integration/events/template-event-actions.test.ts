@@ -137,7 +137,7 @@ describe("template event actions", () => {
 						connectionId: "91",
 						channelKey: "gchat:spaces/AAA",
 						messageId: "spaces/AAA/messages/poll-1",
-						threadId: "gchat:spaces/AAA:threads/thread-1",
+						threadId: "gchat:spaces/AAA:dm",
 					},
 				],
 			},
@@ -249,7 +249,7 @@ describe("template event actions", () => {
 				source: {
 					connectionId: "91",
 					messageId: "spaces/AAA/messages/poll-1",
-					threadId: "gchat:spaces/AAA:threads/thread-1",
+					threadId: "gchat:spaces/AAA:dm",
 				},
 				...overrides,
 			} as never);
@@ -258,6 +258,18 @@ describe("template event actions", () => {
 		expect(first).toMatchObject({ created: true, eventType: "poll_vote_cast" });
 		const replay = await invoke();
 		expect(replay).toEqual({ ...first, created: false });
+		await expect(
+			invoke({
+				source: {
+					connectionId: "91",
+					messageId: "spaces/AAA/messages/poll-1",
+					// Google Chat stores a direct-message delivery under the stable
+					// DM conversation id, but its card callback re-encodes the exact
+					// message as a message-bound thread id.
+					threadId: "gchat:spaces/AAA:c3BhY2VzL0FBQS9tZXNzYWdlcy9wb2xsLTE",
+				},
+			}),
+		).resolves.toEqual({ ...first, created: false });
 
 		const votes = await sql<{
 			id: number;
@@ -326,6 +338,31 @@ describe("template event actions", () => {
 				},
 			}),
 		).rejects.toThrow(/does not belong to this chat delivery/i);
+		await expect(
+			invoke({
+				interactionId: "wrong-message",
+				source: {
+					connectionId: "91",
+					messageId: "spaces/AAA/messages/another-card",
+				},
+			}),
+		).rejects.toThrow(/does not belong to this chat delivery/i);
+		await expect(
+			invoke({
+				interactionId: "wrong-thread",
+				surface: "slack",
+				actor: {
+					platform: "slack",
+					platformUserId: "UADA",
+					name: "Ada",
+				},
+				source: {
+					connectionId: "91",
+					messageId: "spaces/AAA/messages/poll-1",
+					threadId: "slack:C999:1712345678.000001",
+				},
+			}),
+		).rejects.toThrow(/does not belong to this chat delivery/i);
 
 		const otherWorkspace = await TestWorkspace.create({
 			name: "Other Template Action Org",
@@ -370,7 +407,7 @@ describe("template event actions", () => {
 		});
 		expect(editMessageContent).toHaveBeenCalledTimes(1);
 		expect(editMessageContent).toHaveBeenCalledWith("91", {
-			threadId: "gchat:spaces/AAA:threads/thread-1",
+			threadId: "gchat:spaces/AAA:dm",
 			messageId: "spaces/AAA/messages/poll-1",
 			content: expect.objectContaining({ card: expect.anything() }),
 		});
@@ -403,7 +440,7 @@ describe("template event actions", () => {
 					connectionId: "91",
 					channelKey: "gchat:spaces/AAA",
 					messageId: "spaces/AAA/messages/poll-1",
-					threadId: "gchat:spaces/AAA:threads/thread-1",
+					threadId: "gchat:spaces/AAA:dm",
 				},
 			]);
 		});
@@ -423,7 +460,7 @@ describe("template event actions", () => {
 				source: {
 					connectionId: "91",
 					messageId: "spaces/AAA/messages/poll-1",
-					threadId: "gchat:spaces/AAA:threads/thread-1",
+					threadId: "gchat:spaces/AAA:dm",
 				},
 			}),
 		).resolves.toMatchObject({

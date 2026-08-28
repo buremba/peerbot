@@ -108,6 +108,7 @@ function deliveryMatches(
 	metadata: Record<string, unknown>,
 	source: Required<Pick<TemplateActionSource, "connectionId" | "messageId">> &
 		Pick<TemplateActionSource, "threadId">,
+	platform: string,
 ): boolean {
 	if (!Array.isArray(metadata.delivery)) return false;
 	return metadata.delivery.some((raw) => {
@@ -118,8 +119,18 @@ function deliveryMatches(
 		) {
 			return false;
 		}
+		// Google Chat identifies the exact message with a full space-scoped
+		// resource name, but a DM click re-encodes its thread from the stable DM
+		// route to a message-bound route. Other adapters retain the thread check:
+		// identifiers such as Slack's `ts` are only conversation-scoped.
+		const isSpaceScopedGoogleChatMessage =
+			platform === "gchat" &&
+			typeof source.messageId === "string" &&
+			/^spaces\/[^/]+\/messages\/[^/]+$/.test(source.messageId);
 		return (
-			!source.threadId || stringOrNull(delivery.threadId) === source.threadId
+			isSpaceScopedGoogleChatMessage ||
+			!source.threadId ||
+			stringOrNull(delivery.threadId) === source.threadId
 		);
 	});
 }
@@ -202,11 +213,15 @@ export async function invokeTemplateEventAction(
 			);
 		}
 		if (
-			!deliveryMatches(record(sourceEvent.metadata), {
-				connectionId: source.connectionId,
-				messageId: source.messageId,
-				threadId: source.threadId,
-			})
+			!deliveryMatches(
+				record(sourceEvent.metadata),
+				{
+					connectionId: source.connectionId,
+					messageId: source.messageId,
+					threadId: source.threadId,
+				},
+				params.surface,
+			)
 		) {
 			throw new ToolUserError(
 				"This action does not belong to this chat delivery.",

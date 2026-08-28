@@ -15,7 +15,8 @@ import { hasRequiredMcpScope } from '../auth/tool-access';
 import { resolveChannelEntityId } from '../authz/channel-entity';
 import { type DbClient, getDb, parsePgNumberArray } from '../db/client';
 import type { Env } from '../index';
-import { queueInteractiveEventCardRefresh } from '../notifications/service';
+import { INTERACTIVE_EVENT_CARD_REFRESH_TASK } from '../scheduled/task-definitions';
+import { enqueueTasksInTransaction } from '../scheduled/task-scheduler';
 import { autoLinkEvent } from '../utils/auto-linker';
 import { ToolUserError } from '../utils/errors';
 import { validateSaveContentSemanticType } from '../utils/event-kind-validation';
@@ -25,7 +26,7 @@ import {
   deleteMaterializedArtifacts,
   materializeInlineAttachments,
 } from '../utils/inline-attachments';
-import { insertEvent } from '../utils/insert-event';
+import { insertEvent, type InsertedEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import {
   assertCanAuthorGuidance,
@@ -634,6 +635,48 @@ async function saveContentImpl(
       // bytes live.
     }
 
+    const insertOptions = args.supersedes_event_id
+      ? {
+          afterPersist: async (event: InsertedEvent, tx: DbClient) => {
+            if (event.change !== 'superseded') return;
+            const [presented] = await tx<{ presented: boolean }>`
+              WITH RECURSIVE ancestry AS (
+                SELECT id, supersedes_event_id, metadata
+                FROM events
+                WHERE id = ${args.supersedes_event_id}
+                  AND organization_id = ${ctx.organizationId}
+                UNION ALL
+                SELECT parent.id, parent.supersedes_event_id, parent.metadata
+                FROM events parent
+                JOIN ancestry child ON child.supersedes_event_id = parent.id
+                WHERE parent.organization_id = ${ctx.organizationId}
+              )
+              SELECT EXISTS (
+                SELECT 1 FROM ancestry
+                WHERE jsonb_array_length(
+                  CASE WHEN jsonb_typeof(metadata->'delivery') = 'array'
+                    THEN metadata->'delivery' ELSE '[]'::jsonb END
+                ) > 0
+              ) AS presented
+            `;
+            if (!presented?.presented) return;
+            await enqueueTasksInTransaction(tx, [
+              {
+                name: INTERACTIVE_EVENT_CARD_REFRESH_TASK,
+                payload: {
+                  organizationId: ctx.organizationId,
+                  replacementEventId: Number(event.id),
+                },
+                opts: {
+                  idempotencyKey: `interactive-event-card-refresh:${event.id}`,
+                  maxAttempts: 5,
+                  organizationId: ctx.organizationId,
+                },
+              },
+            ]);
+          },
+        }
+      : undefined;
     try {
       row = await insertEvent({
         entityIds: finalEntityIds,
@@ -657,7 +700,7 @@ async function saveContentImpl(
         createdBy: ctx.userId,
         clientId: ctx.clientId,
         supersedesEventId: args.supersedes_event_id ?? null,
-      });
+      }, insertOptions);
     } catch (error) {
       // No row of ours references these artifacts on any branch below — the
       // idempotency loser returns the winner's event, and everything else
@@ -710,14 +753,6 @@ async function saveContentImpl(
     }).catch((err) => {
       logger.warn({ err, eventId: row.id }, 'autoLinkEvent failed');
     });
-  }
-
-  if (inserted && args.supersedes_event_id) {
-    queueInteractiveEventCardRefresh(
-      ctx.organizationId,
-      Number(row.id),
-      args.supersedes_event_id
-    );
   }
 
   logger.info(

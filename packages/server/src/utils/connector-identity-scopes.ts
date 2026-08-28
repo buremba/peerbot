@@ -293,17 +293,89 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
 
       const current = registryByConnector.get(params.metadata.key);
       if (!current) {
-        const incompatible = [...registryByConnector.values()].find((row) =>
-          !sameShape(declaration, { scope: row.scope, scopeKeyPath: row.scope_key_path })
+        const incompatibleActive = [...registryByConnector.values()].find(
+          (row) =>
+            activeNamespaceDeclarations.has(row.connector_key) &&
+            !sameShape(declaration, {
+              scope: row.scope,
+              scopeKeyPath: row.scope_key_path,
+            })
         );
-        if (incompatible) {
+        if (incompatibleActive) {
           blockedMessage =
             `Identity namespace '${declaration.namespace}' cannot be registered as ` +
             `${renderShape(declaration)} for connector '${params.metadata.key}' because connector ` +
-            `'${incompatible.connector_key}' already uses ` +
-            `${renderShape({ scope: incompatible.scope, scopeKeyPath: incompatible.scope_key_path })}. ` +
+            `'${incompatibleActive.connector_key}' already uses ` +
+            `${renderShape({ scope: incompatibleActive.scope, scopeKeyPath: incompatibleActive.scope_key_path })}. ` +
             'Connectors sharing an identity namespace must declare the same scope shape.';
           break;
+        }
+
+        // Registry rows outlive connector definitions on purpose: identities
+        // and append-only events still need their declared scope after a
+        // connector is archived or stops declaring the namespace. A new
+        // connector may take over that namespace, but it must explicitly
+        // re-key those dormant claims instead of being rejected forever.
+        const incompatibleDormant = [...registryByConnector.values()].filter(
+          (row) =>
+            !activeNamespaceDeclarations.has(row.connector_key) &&
+            !sameShape(declaration, {
+              scope: row.scope,
+              scopeKeyPath: row.scope_key_path,
+            })
+        );
+        if (incompatibleDormant.length > 0) {
+          const counts = await tx<{ count: number | string }>`
+            SELECT count(*)::bigint AS count
+            FROM entity_identities
+            WHERE organization_id = ${params.organizationId}
+              AND namespace = ${declaration.namespace}
+              AND deleted_at IS NULL
+          `;
+          const liveCount = Number(counts[0]?.count ?? 0);
+          const dormantKeys = incompatibleDormant.map((row) => row.connector_key);
+          if (liveCount === 0) {
+            await tx`
+              UPDATE connector_identity_scope_registry
+              SET scope = ${declaration.scope},
+                  scope_key_path = ${declaration.scopeKeyPath},
+                  pending_scope = NULL,
+                  pending_scope_key_path = NULL,
+                  shape_version = shape_version + 1,
+                  updated_at = now()
+              WHERE organization_id = ${params.organizationId}
+                AND namespace = ${declaration.namespace}
+                AND connector_key = ANY(${pgTextArray(dormantKeys)}::text[])
+            `;
+          } else {
+            const oldShape = incompatibleDormant[0]!;
+            await tx`
+              UPDATE connector_identity_scope_registry
+              SET pending_scope = ${declaration.scope},
+                  pending_scope_key_path = ${declaration.scopeKeyPath},
+                  updated_at = now()
+              WHERE organization_id = ${params.organizationId}
+                AND namespace = ${declaration.namespace}
+                AND connector_key = ANY(${pgTextArray(dormantKeys)}::text[])
+            `;
+            await tx`
+              INSERT INTO connector_identity_scope_registry (
+                organization_id, connector_key, namespace, scope, scope_key_path,
+                pending_scope, pending_scope_key_path
+              ) VALUES (
+                ${params.organizationId}, ${params.metadata.key}, ${declaration.namespace},
+                ${oldShape.scope}, ${oldShape.scope_key_path},
+                ${declaration.scope}, ${declaration.scopeKeyPath}
+              )
+            `;
+            blockedMessage =
+              `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +
+              `'${params.metadata.key}' while ${liveCount} live identity row${liveCount === 1 ? '' : 's'} exist. ` +
+              `Old shape: ${renderShape({ scope: oldShape.scope, scopeKeyPath: oldShape.scope_key_path })}. ` +
+              `New shape: ${renderShape(declaration)}. ` +
+              `Run \`lobu identities rekey ${declaration.namespace} --mapping <file.json>\` to re-key explicitly first.`;
+            break;
+          }
         }
         await tx`
           INSERT INTO connector_identity_scope_registry (
@@ -320,7 +392,17 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
         scope: current.scope,
         scopeKeyPath: current.scope_key_path,
       };
-      if (sameShape(oldShape, declaration)) {
+      const dormantNeedingTarget = [...registryByConnector.values()].filter(
+        (row) =>
+          row.connector_key !== params.metadata.key &&
+          !activeNamespaceDeclarations.has(row.connector_key) &&
+          !sameShape(declaration, {
+            scope: row.scope,
+            scopeKeyPath: row.scope_key_path,
+          })
+      );
+      const ownNeedsTarget = !sameShape(oldShape, declaration);
+      if (!ownNeedsTarget && dormantNeedingTarget.length === 0) {
         await tx`
           UPDATE connector_identity_scope_registry
           SET pending_scope = NULL,
@@ -333,6 +415,11 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
         continue;
       }
 
+      const transitionRows = [
+        ...(ownNeedsTarget ? [current] : []),
+        ...dormantNeedingTarget,
+      ];
+      const transitionKeys = transitionRows.map((row) => row.connector_key);
       const counts = await tx<{ count: number | string }>`
         SELECT count(*)::bigint AS count
         FROM entity_identities
@@ -351,8 +438,8 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
               shape_version = shape_version + 1,
               updated_at = now()
           WHERE organization_id = ${params.organizationId}
-            AND connector_key = ${params.metadata.key}
             AND namespace = ${declaration.namespace}
+            AND connector_key = ANY(${pgTextArray(transitionKeys)}::text[])
         `;
         continue;
       }
@@ -363,13 +450,15 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
             pending_scope_key_path = ${declaration.scopeKeyPath},
             updated_at = now()
         WHERE organization_id = ${params.organizationId}
-          AND connector_key = ${params.metadata.key}
           AND namespace = ${declaration.namespace}
+          AND connector_key = ANY(${pgTextArray(transitionKeys)}::text[])
       `;
+      const transitionOldShape = transitionRows[0]!;
       blockedMessage =
         `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +
         `'${params.metadata.key}' while ${liveCount} live identity row${liveCount === 1 ? '' : 's'} exist. ` +
-        `Old shape: ${renderShape(oldShape)}. New shape: ${renderShape(declaration)}. ` +
+        `Old shape: ${renderShape({ scope: transitionOldShape.scope, scopeKeyPath: transitionOldShape.scope_key_path })}. ` +
+        `New shape: ${renderShape(declaration)}. ` +
         `Run \`lobu identities rekey ${declaration.namespace} --mapping <file.json>\` to re-key explicitly first.`;
       break;
     }

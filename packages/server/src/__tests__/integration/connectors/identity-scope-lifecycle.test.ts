@@ -472,6 +472,83 @@ describe('connector identity scope lifecycle', () => {
     ]);
   });
 
+  it('lets a new connector take over an archived registry owner through re-key', async () => {
+    const { org, ids } = await seedRows();
+    const sql = getTestDb();
+    const takeoverConnectorKey = 'scope-lifecycle-takeover';
+    await sql`
+      UPDATE connector_definitions
+      SET status = 'archived', updated_at = now()
+      WHERE organization_id = ${org.id}
+        AND key = ${connectorKey}
+        AND status = 'active'
+    `;
+
+    const next = metadata(
+      '2.0.0',
+      { scope: 'tenant', scopeKeyPath: 'metadata.tenant_id' },
+      takeoverConnectorKey
+    );
+    await expect(install(org.id, next)).rejects.toThrow(/2 live identity rows/i);
+    const staged = await sql<
+      { connector_key: string; scope: string; pending_scope: string | null }[]
+    >`
+      SELECT connector_key, scope, pending_scope
+      FROM connector_identity_scope_registry
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+      ORDER BY connector_key
+    `;
+    expect(staged).toEqual([
+      {
+        connector_key: connectorKey,
+        scope: 'organization',
+        pending_scope: 'tenant',
+      },
+      {
+        connector_key: takeoverConnectorKey,
+        scope: 'organization',
+        pending_scope: 'tenant',
+      },
+    ]);
+
+    const mapping = { [ids[0]!]: 'tenant-a', [ids[1]!]: 'tenant-b' };
+    await expect(
+      rekeyEntityIdentities({
+        organizationId: org.id,
+        namespace,
+        mapping,
+        apply: true,
+      })
+    ).resolves.toMatchObject({ applied: true });
+    await expect(install(org.id, next)).resolves.toBeDefined();
+
+    const promoted = await sql<
+      { connector_key: string; scope: string; pending_scope: string | null }[]
+    >`
+      SELECT connector_key, scope, pending_scope
+      FROM connector_identity_scope_registry
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+      ORDER BY connector_key
+    `;
+    expect(promoted).toEqual([
+      { connector_key: connectorKey, scope: 'tenant', pending_scope: null },
+      { connector_key: takeoverConnectorKey, scope: 'tenant', pending_scope: null },
+    ]);
+    const definitions = await sql<{ key: string; status: string }[]>`
+      SELECT key, status
+      FROM connector_definitions
+      WHERE organization_id = ${org.id}
+        AND key IN (${connectorKey}, ${takeoverConnectorKey})
+      ORDER BY key
+    `;
+    expect(definitions).toEqual([
+      { key: connectorKey, status: 'archived' },
+      { key: takeoverConnectorKey, status: 'active' },
+    ]);
+  });
+
   it('keeps a retained tenant key exclusive and resolves it to the original entity', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Retained tenant claim org' });

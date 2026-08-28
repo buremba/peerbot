@@ -9,12 +9,14 @@
 import type { ToolContext } from "../../tools/registry";
 import { getWorkspaceProvider } from "../../workspace";
 import type { OrgInfo } from "../../workspace/types";
+import { listLiveGrantedMemberWorkspaces } from "../../auth/oauth/workspace-grants";
 
 export interface OrgSummary {
 	id: string;
 	slug: string;
 	name: string;
 	is_member: boolean;
+	is_personal: boolean;
 	visibility: "public" | "private";
 	managed_auth?: OrgInfo["managed_auth"];
 }
@@ -40,6 +42,7 @@ export function buildOrganizationsNamespace(
 		slug: organization.slug,
 		name: organization.name,
 		is_member: organization.is_member,
+		is_personal: organization.is_personal,
 		visibility: organization.visibility,
 		...(organization.managed_auth
 			? { managed_auth: organization.managed_auth }
@@ -53,7 +56,28 @@ export function buildOrganizationsNamespace(
 				options?.search,
 				ctx.userId,
 			);
-			return orgs.map(summarize);
+			const allowedIds =
+				Array.isArray(ctx.grantedOrganizationIds) && ctx.userId
+					? new Set(
+						(
+							await listLiveGrantedMemberWorkspaces({
+								userId: ctx.userId,
+								grantedOrganizationIds: ctx.grantedOrganizationIds,
+							})
+						).map((workspace) => workspace.id),
+					)
+					: null;
+			// Only PRIVATE memberships outside the grant snapshot are
+			// confidential; public workspaces stay listed for their members.
+			return orgs
+				.filter(
+					(organization) =>
+						allowedIds === null ||
+						!organization.is_member ||
+						organization.visibility === "public" ||
+						allowedIds.has(organization.id),
+				)
+				.map(summarize);
 		},
 		async current() {
 			const provider = getWorkspaceProvider();
@@ -69,6 +93,7 @@ export function buildOrganizationsNamespace(
 					slug: slug ?? ctx.organizationId,
 					name: slug ?? "unknown",
 					is_member: false,
+					is_personal: false,
 					visibility: "public",
 				};
 			}

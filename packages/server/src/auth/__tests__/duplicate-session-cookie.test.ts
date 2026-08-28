@@ -7,11 +7,13 @@ import {
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
 import { get } from '../../__tests__/setup/test-helpers';
+import { clearAuthCacheForTests } from '../index';
 
 /**
- * End-to-end cover for the permanent-login-brick class: a jar holding the same
- * session cookie twice must authenticate on merit, never on cookie order.
- * Mechanism and cure: ../resolve-session.ts.
+ * End-to-end cover for the session-cookie login-brick class: a duplicated jar
+ * must authenticate on merit, while a single correctly signed cookie whose DB
+ * row is gone must be expired on the wire. Mechanisms: Better Auth's
+ * get-session handler plus ../resolve-session.ts and ../session-cookie-scope.ts.
  *
  * Runs through the real app stack, so it also pins that the middleware, the
  * route and Better Auth agree — which a unit test cannot show.
@@ -63,6 +65,29 @@ describe('duplicate session cookies', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { organizations: Array<{ slug: string }> };
     return body.organizations.map((o) => o.slug);
+  }
+
+  function rawSessionToken(signedCookieValue: string): string {
+    // Split on the LAST dot, the way better-call itself does: the signed value
+    // is `<token>.<signature>`, so splitting on the first would truncate any
+    // token that happens to contain one.
+    const signed = decodeURIComponent(signedCookieValue);
+    return signed.slice(0, signed.lastIndexOf('.'));
+  }
+
+  async function getSession(cookie?: string): Promise<{
+    body: unknown;
+    setCookies: string[];
+  }> {
+    const res = await get('/api/auth/get-session', cookie ? { cookie } : undefined);
+    expect(res.status).toBe(200);
+    return { body: await res.json(), setCookies: res.headers.getSetCookie() };
+  }
+
+  function sessionExpiries(setCookies: string[], name: string): string[] {
+    return setCookies.filter(
+      (cookie) => cookie.startsWith(`${name}=;`) && /Max-Age=0/i.test(cookie)
+    );
   }
 
   // Garbage values that are syntactically plausible signed cookies — a 44-char
@@ -118,17 +143,16 @@ describe('duplicate session cookies', () => {
     expect(doomed.value).not.toBe(live.value);
 
     // Revoke the first session at the source, leaving its signature intact.
-    // Split on the LAST dot, the way better-call itself does: the signed value
-    // is `<token>.<signature>`, so splitting on the first would truncate any
-    // token that happens to contain one.
-    const signed = decodeURIComponent(doomed.value);
-    const token = signed.slice(0, signed.lastIndexOf('.'));
+    const token = rawSessionToken(doomed.value);
     const deleted = await getTestDb()`DELETE FROM "session" WHERE token = ${token} RETURNING id`;
     expect(deleted.length, 'the doomed session must actually be revoked').toBe(1);
 
     const name = live.name;
     // Signed, revoked, and FIRST — the exact shape of the production brick.
     expect(await orgSlugsFor(`${name}=${doomed.value}; ${name}=${live.value}`)).toContain(slug);
+    const resolved = await getSession(`${name}=${doomed.value}; ${name}=${live.value}`);
+    expect(resolved.body).toMatchObject({ user: { id: user.id } });
+    expect(sessionExpiries(resolved.setCookies, name)).toEqual([]);
     // And it is genuinely dead on its own, or the assertion above proves nothing.
     expect(await orgSlugsFor(`${name}=${doomed.value}`)).not.toContain(slug);
   });
@@ -138,5 +162,62 @@ describe('duplicate session cookies', () => {
     const { name, value } = await realSessionCookie(slug, 'dup-single@test.example.com');
 
     expect(await orgSlugsFor(`${name}=${value}`)).toContain(slug);
+    const resolved = await getSession(`${name}=${value}`);
+    expect(resolved.body).toMatchObject({ user: { email: 'dup-single@test.example.com' } });
+    expect(sessionExpiries(resolved.setCookies, name)).toEqual([]);
+  });
+
+  it('does not invent cookie deletions for a no-cookie request', async () => {
+    const result = await getSession();
+    expect(result.body).toBeNull();
+    expect(result.setCookies).toEqual([]);
+  });
+
+  it('clears a single VALIDLY SIGNED cookie whose session row is gone', async () => {
+    const stale = await realSessionCookie(
+      'single-stale-session',
+      'single-stale-session@test.example.com'
+    );
+    const deleted = await getTestDb()`
+      DELETE FROM "session"
+      WHERE token = ${rawSessionToken(stale.value)}
+      RETURNING id
+    `;
+    expect(deleted.length, 'the stale session must actually be revoked').toBe(1);
+
+    const result = await getSession(`${stale.name}=${stale.value}`);
+    expect(result.body).toBeNull();
+    const expiries = sessionExpiries(result.setCookies, stale.name);
+    expect(expiries).toHaveLength(1);
+    expect(expiries[0]).not.toMatch(/Domain=/i);
+  });
+
+  it('clears both configured-domain and host-only scopes for a stale cookie', async () => {
+    const previousDomain = process.env.AUTH_COOKIE_DOMAIN;
+    process.env.AUTH_COOKIE_DOMAIN = '.lobu.ai';
+    clearAuthCacheForTests();
+    try {
+      const stale = await realSessionCookie(
+        'domain-stale-session',
+        'domain-stale-session@test.example.com'
+      );
+      const deleted = await getTestDb()`
+        DELETE FROM "session"
+        WHERE token = ${rawSessionToken(stale.value)}
+        RETURNING id
+      `;
+      expect(deleted.length, 'the stale session must actually be revoked').toBe(1);
+
+      const result = await getSession(`${stale.name}=${stale.value}`);
+      expect(result.body).toBeNull();
+      const expiries = sessionExpiries(result.setCookies, stale.name);
+      expect(expiries).toHaveLength(2);
+      expect(expiries.filter((cookie) => /Domain=\.lobu\.ai/i.test(cookie))).toHaveLength(1);
+      expect(expiries.filter((cookie) => !/Domain=/i.test(cookie))).toHaveLength(1);
+    } finally {
+      if (previousDomain === undefined) delete process.env.AUTH_COOKIE_DOMAIN;
+      else process.env.AUTH_COOKIE_DOMAIN = previousDomain;
+      clearAuthCacheForTests();
+    }
   });
 });

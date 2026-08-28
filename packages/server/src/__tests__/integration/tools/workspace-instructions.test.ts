@@ -302,16 +302,18 @@ describe('buildWorkspaceInstructions render fixes', () => {
     const emptyOrg = await createTestOrganization({ name: 'Empty Render Org' });
     const out = await buildWorkspaceInstructions(emptyOrg.id);
     expect(out).toContain(
-      "When asked about the workspace's data — including people, leads, companies, connections, feeds, runs, or counts — query it before answering"
+      'When asked about workspace data — including people, leads, companies, connections, feeds, runs, or counts — query it before answering'
     );
     expect(out).toContain(
-      'Use `search_memory` for semantic recall and `query_sdk` or `query_sql` for structured lookups and counts'
+      'On a direct bare OAuth connection, `search_memory` searches every currently accessible workspace the user granted'
     );
+    expect(out).toContain('can be narrowed with its singular `workspace` argument');
+    expect(out).toContain('pinned connections and all other tools stay in the current workspace');
     expect(out).toContain(
       'Do not claim you can see only chat/Slack messages or channel members without querying workspace data first'
     );
     const directiveIdx =
-      out?.indexOf("When asked about the workspace's data") ?? -1;
+      out?.indexOf('When asked about workspace data') ?? -1;
     const toolSurfaceIdx = out?.indexOf('### Tool surface') ?? -1;
     expect(directiveIdx).toBeGreaterThan(-1);
     expect(directiveIdx).toBeLessThan(toolSurfaceIdx);

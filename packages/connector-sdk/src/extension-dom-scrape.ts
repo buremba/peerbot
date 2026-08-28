@@ -58,20 +58,18 @@ interface ExtensionScrapeField {
   /** Sub-spec for `objectAll`: the named parts to read off each matched element. */
   parts?: Record<string, ExtensionScrapePart>;
   /**
-   * `clipboardAction` only: a row-local control that opens a menu/popover.
-   * The scraper intercepts clipboard.writeText before clicking, so the copied
-   * value is returned without changing the user's real clipboard.
+   * `clipboardAction` menu-navigation keys, all inert: the extension never
+   * clicks a clipboard-writing action. Page code can retain the native
+   * clipboard callables before injection, so a late interceptor cannot prove
+   * the user's real clipboard was left untouched. A `clipboardAction` field
+   * always reads as an empty string — a connector must instead extract a
+   * durable identity or link already present in the DOM.
    */
   triggerSelector?: string;
-  /** `clipboardAction` only: global selector for the opened action. */
   actionSelector?: string;
-  /** `clipboardAction` only: exact visible text of the action to click. */
   actionText?: string;
-  /** `clipboardAction` only: visible-text regex used when exact text varies. */
   actionTextRegex?: string;
-  /** Optional flags for `actionTextRegex` (for example, `i`). */
   actionTextRegexFlags?: string;
-  /** Maximum wait for the action/value (default 1500ms). */
   maxWaitMs?: number;
 }
 

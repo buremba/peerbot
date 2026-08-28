@@ -93,6 +93,8 @@ export interface StoredOAuthToken {
   client_id: string;
   user_id: string;
   organization_id: string | null;
+  granted_organization_ids: string[] | string | null;
+  authorization_grant_type: 'authorization_code' | 'device_code' | null;
   scope: string | null;
   resource: string | null;
   parent_token_id: string | null;
@@ -113,6 +115,7 @@ export interface StoredAuthorizationCode {
   client_id: string;
   user_id: string;
   organization_id: string | null;
+  granted_organization_ids: string[] | string | null;
   code_challenge: string;
   code_challenge_method: string;
   redirect_uri: string;
@@ -176,6 +179,7 @@ export interface StoredDeviceCode {
   resource: string | null;
   user_id: string | null;
   organization_id: string | null;
+  granted_organization_ids: string[] | string | null;
   status: 'pending' | 'approved' | 'denied' | 'expired';
   poll_interval: number;
   expires_at: Date;
@@ -204,6 +208,10 @@ export interface DeviceAuthorizationResponse {
 export interface AuthInfo {
   userId: string;
   organizationId: string | null;
+  /** Immutable workspace snapshot authorized at consent time. */
+  grantedOrganizationIds: string[] | null;
+  /** Issuing OAuth flow; absent on PATs and legacy OAuth rows. */
+  authorizationGrantType?: 'authorization_code' | 'device_code' | null;
   clientId: string;
   scopes: string[];
   expiresAt: number; // Unix timestamp

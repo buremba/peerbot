@@ -255,7 +255,15 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // connections.config, and nothing needs it to pin an Automation.
     device_workers: new Set(['user_id', 'connector_manifests']),
     oauth_clients: new Set(['client_secret', 'client_secret_expires_at']),
-    oauth_tokens: new Set(['token_hash']),
+    // granted_organization_ids / authorization_grant_type: internal grant
+    // snapshot and issuing-flow provenance (migrations 20260827110000/-02),
+    // same class as events.linked_org_ids — enforcement inputs for the typed
+    // OAuth verifier, not a user query surface.
+    oauth_tokens: new Set([
+      'token_hash',
+      'granted_organization_ids',
+      'authorization_grant_type',
+    ]),
     // repair_*/last_repair_*: same retired repair-agent subsystem, awaiting the
     // phase-2 DROP COLUMN migration.
     feeds: new Set([

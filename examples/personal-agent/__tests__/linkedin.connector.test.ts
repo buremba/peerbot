@@ -1827,7 +1827,6 @@ describe("LinkedInConnector home_feed", () => {
           actionSelector: string;
           actionText: string;
         };
-        post_identity: { selector: string; take: string; attr: string };
         post_media: { selector: string; take: string };
         comment_media: { selector: string; take: string };
         reaction_count_text: { selector: string; take: string };
@@ -1955,7 +1954,8 @@ describe("LinkedInConnector home_feed", () => {
   const syncHomeFeedDom = async (
     body: string,
     setup?: (dom: JSDOM) => void,
-    expandRowsOverride?: Record<string, unknown>
+    expandRowsOverride?: Record<string, unknown>,
+    scrollOverride?: Record<string, number>
   ) => {
     const dom = new JSDOM(`<!doctype html><body>${body}</body>`, {
       url: "https://www.linkedin.com/feed/",
@@ -2003,7 +2003,7 @@ describe("LinkedInConnector home_feed", () => {
               cs_scrape: true,
               result: await genericScrape({
                 ...(input.scrape_config as Record<string, unknown>),
-                scroll: { max: 0, stall: 0, waitMs: 0 },
+                scroll: scrollOverride ?? { max: 0, stall: 0, waitMs: 0 },
                 ...(expandRowsOverride
                   ? {
                       expandRows: {
@@ -2088,7 +2088,11 @@ describe("LinkedInConnector home_feed", () => {
             });
             document.body.append(option);
           });
-      }
+      },
+      undefined,
+      // Production enforces at least one pass. Its final harvest expands the
+      // replacement from scratch without carrying evidence across DOM rows.
+      { max: 1, stall: 1, waitMs: 0 }
     );
 
     expect(res.events.map((event: any) => event.origin_id)).toEqual([

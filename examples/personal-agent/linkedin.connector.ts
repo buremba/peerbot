@@ -1257,8 +1257,8 @@ function isHomeFeedRowNoise(
  * wins when a row carries one, but current cards expose none, so the canonical
  * post identity is normally the activity/share/ugcPost id embedded in
  * `post_identity`. The scrape-only componentkey never becomes an event origin,
- * and a post without either durable identity is not emitted. Native comments carry their own
- * durable id and point at the stable parent-post origin.
+ * and a post without either durable identity is not emitted. Native comments
+ * carry their own durable id and point at the stable parent-post origin.
  * Home-feed posts expose no reliable timestamp, so the caller stamps
  * occurred_at with the sync time.
  */

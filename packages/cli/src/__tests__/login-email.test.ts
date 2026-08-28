@@ -13,7 +13,7 @@ const credentials = await import("../internal/credentials");
  * earlier version checked the void result of the claim call as falsy and
  * returned immediately, so the email sent but no token was ever collected.
  */
-describe("login --email (user_claimed)", () => {
+describe("login device-code approval", () => {
   afterEach(() => {
     mock.restore();
     openMock.mockClear();

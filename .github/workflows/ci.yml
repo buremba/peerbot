@@ -1712,7 +1712,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(packages/owletto($|/)|packages/connector-worker/|packages/core/|scripts/(build-mac-device-daemon|test-mac-device-daemon-package|check-mac-device-daemon-graph|verify-mac-device-daemon|with-owletto-mac-daemon)\.|package\.json$|bun\.lock$|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(packages/owletto($|/)|packages/cli/|packages/connector-worker/|packages/core/|config/macos/lobu-auth\.entitlements$|scripts/(build-mac-auth-cli|build-mac-device-daemon|test-mac-device-daemon-package|check-mac-device-daemon-graph|verify-mac-device-daemon|with-owletto-mac-daemon)\.|package\.json$|bun\.lock$|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
             echo "mac=true" >> "$GITHUB_OUTPUT"
           else
             echo "mac=false" >> "$GITHUB_OUTPUT"
@@ -1735,11 +1735,11 @@ jobs:
   #
   # Runner cost is bounded by the filter job above — the macOS runner is only
   # allocated when something the Mac build actually consumes changes: the
-  # submodule pointer, the device-daemon sources (`packages/connector-worker/`,
-  # `packages/core/`) or its build/verify scripts, the workspace manifest or
-  # lockfile, the release workflow, this workflow, the submodule setup action,
-  # or `.gitmodules`. This workflow is in the filter so a PR editing this job
-  # can't skip it.
+  # submodule pointer, the bundled auth CLI sources/signing inputs, the
+  # device-daemon sources (`packages/connector-worker/`, `packages/core/`) or
+  # its build/verify scripts, the workspace manifest or lockfile, the release
+  # workflow, this workflow, the submodule setup action, or `.gitmodules`. This
+  # workflow is in the filter so a PR editing this job can't skip it.
   mac-build-smoke:
     needs: optional-smoke-filter
     if: needs.optional-smoke-filter.outputs.mac == 'true'

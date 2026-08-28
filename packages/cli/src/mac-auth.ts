@@ -11,7 +11,7 @@ import { whoamiCommand } from "./commands/whoami.js";
  * LobuCLISession invokes; local runtime commands continue to use the user's
  * full `lobu` installation.
  */
-export async function runMacAuthCli(
+async function runMacAuthCli(
   argv: readonly string[] = process.argv
 ): Promise<void> {
   const version = process.env.LOBU_MAC_AUTH_CLI_VERSION ?? "0.0.0";

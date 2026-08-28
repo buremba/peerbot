@@ -1,5 +1,4 @@
-import { type DbClient, pgTextArray } from '../db/client';
-import { isIdentityScopeProjectionMetadataKey } from '../identity/scope-projection';
+import type { DbClient } from '../db/client';
 
 type ConnectorIdentityScopeShape = {
   scope: 'organization' | 'tenant';
@@ -29,29 +28,13 @@ function sameShape(
   return left.scope === right.scope && left.scopeKeyPath === right.scopeKeyPath;
 }
 
-/**
- * Namespace ownership is semantic across connectors: two connectors may read
- * the same upstream tenant id from different payload paths. The full shape is
- * still exact within one connector (and across its versions), as required by
- * the public manifest contract.
- */
-function sameScope(
-  left: ConnectorIdentityScopeShape,
-  right: ConnectorIdentityScopeShape
-): boolean {
-  return left.scope === right.scope;
-}
-
 function renderShape(shape: ConnectorIdentityScopeShape): string {
   return shape.scope === 'tenant'
     ? `{ scope: 'tenant', scopeKeyPath: '${shape.scopeKeyPath}' }`
     : `{ scope: 'organization' }`;
 }
 
-/**
- * Read and validate every entity-identity declaration from connector metadata.
- * The returned map is one canonical declaration shape per namespace.
- */
+/** Read and validate one canonical declaration shape per connector namespace. */
 export function connectorIdentityScopeDeclarations(
   metadata: ConnectorIdentityMetadata
 ): Map<string, ConnectorIdentityScopeDeclaration> {
@@ -63,17 +46,7 @@ export function connectorIdentityScopeDeclarations(
       const attributions = asRecord(rawEventKind)?.attributions;
       if (!Array.isArray(attributions)) continue;
       attributions.forEach((rawAttribution, attributionIndex) => {
-        const attribution = asRecord(rawAttribution);
-        const traits = asRecord(attribution?.traits);
-        for (const traitKey of Object.keys(traits ?? {})) {
-          if (isIdentityScopeProjectionMetadataKey(traitKey)) {
-            throw new Error(
-              `Entity trait '${traitKey}' in feed '${feedKey}', event kind '${eventKind}', ` +
-                `attribution #${attributionIndex + 1} is reserved for server-authored identity scope projections.`
-            );
-          }
-        }
-        const identities = asRecord(attribution?.target)?.identities;
+        const identities = asRecord(asRecord(rawAttribution)?.target)?.identities;
         if (!Array.isArray(identities)) return;
         identities.forEach((rawIdentity, identityIndex) => {
           const identity = asRecord(rawIdentity);
@@ -134,412 +107,121 @@ export function connectorIdentityScopeDeclarations(
 }
 
 /**
- * Keep ingestion on the declaration shape that the registry currently owns.
+ * Persist the active declaration shape and reject implicit re-keying.
  *
- * Re-key promotes the registry and rows atomically, but the operator still has
- * to apply the connector version containing that promoted declaration. The old
- * active definition must not recreate identities under its old key during that
- * interval. Call this inside the same transaction that writes identities: the
- * shared transition lock makes an ingestion that started before re-key finish
- * first, while re-key's exclusive lock makes a later ingestion observe the new
- * registry shape and fail closed until apply activates matching rules.
- */
-export async function assertConnectorIdentityScopesActive(params: {
-  sql: DbClient;
-  organizationId: string;
-  connectorKey: string;
-  identities: Array<{
-    namespace: string;
-    scope?: 'organization' | 'tenant';
-    scopeKeyPath?: string;
-  }>;
-}): Promise<void> {
-  const declarations = new Map<string, ConnectorIdentityScopeShape>();
-  for (const identity of params.identities) {
-    const namespace = identity.namespace.trim();
-    if (!namespace) continue;
-    const shape: ConnectorIdentityScopeShape =
-      identity.scope === 'tenant'
-        ? { scope: 'tenant', scopeKeyPath: identity.scopeKeyPath?.trim() || null }
-        : { scope: 'organization', scopeKeyPath: null };
-    const prior = declarations.get(namespace);
-    if (prior && !sameShape(prior, shape)) {
-      throw new Error(
-        `Identity namespace '${namespace}' has conflicting active scope declarations: ` +
-          `${renderShape(prior)} and ${renderShape(shape)}.`
-      );
-    }
-    declarations.set(namespace, prior ?? shape);
-  }
-  const namespaces = [...declarations.keys()].sort();
-  if (namespaces.length === 0) return;
-
-  for (const namespace of namespaces) {
-    await params.sql`
-      SELECT pg_advisory_xact_lock_shared(
-        hashtext('lobu:identity-rekey'),
-        hashtext(${`${params.organizationId}:${namespace}`})
-      )
-    `;
-  }
-  const rows = await params.sql<{
-    connector_key: string;
-    namespace: string;
-    scope: 'organization' | 'tenant';
-    scope_key_path: string | null;
-  }>`
-    SELECT connector_key, namespace, scope, scope_key_path
-    FROM connector_identity_scope_registry
-    WHERE organization_id = ${params.organizationId}
-      AND namespace = ANY(${pgTextArray(namespaces)}::text[])
-  `;
-  for (const [namespace, active] of declarations) {
-    const namespaceRows = rows.filter((row) => row.namespace === namespace);
-    const own = namespaceRows.find((row) => row.connector_key === params.connectorKey);
-    if (own) {
-      const registered: ConnectorIdentityScopeShape = {
-        scope: own.scope,
-        scopeKeyPath: own.scope_key_path,
-      };
-      if (!sameShape(active, registered)) {
-        throw new Error(
-          `Identity namespace '${namespace}' ingestion is paused for connector ` +
-            `'${params.connectorKey}' because its active declaration ${renderShape(active)} ` +
-            `does not match the registered shape ${renderShape(registered)}. ` +
-            'Run `lobu apply` with the re-keyed connector declaration before ingesting more events.'
-        );
-      }
-    }
-    const incompatible = namespaceRows.find((row) =>
-      !sameScope(active, { scope: row.scope, scopeKeyPath: row.scope_key_path })
-    );
-    if (incompatible) {
-      throw new Error(
-        `Identity namespace '${namespace}' ingestion is paused because connector ` +
-          `'${incompatible.connector_key}' is registered as ` +
-          `${renderShape({ scope: incompatible.scope, scopeKeyPath: incompatible.scope_key_path })}, ` +
-          `which does not match connector '${params.connectorKey}' at ${renderShape(active)}. ` +
-          'Finish applying the same namespace scope to every connector before ingesting more events.'
-      );
-    }
-  }
-}
-
-/**
- * Persist the connector's declared identity shapes. A shape change with live
- * rows records the exact pending target before rejecting apply, so the explicit
- * re-key command can promote it atomically with the row rewrite.
+ * Shape changes with live identities are an operational boundary: quiesce
+ * ingestion, migrate `entity_identities` and this registry together, then retry
+ * apply. The runtime deliberately has no online re-key state machine.
  */
 export async function reconcileConnectorIdentityScopeRegistry(params: {
   sql: DbClient;
   organizationId: string;
   metadata: ConnectorIdentityMetadata;
-}): Promise<string | null> {
+}): Promise<void> {
   const declarations = connectorIdentityScopeDeclarations(params.metadata);
-  if (declarations.size === 0) return null;
-  const tx = params.sql;
-  let blockedMessage: string | null = null;
+  if (declarations.size === 0) return;
 
-  await tx`
-    SELECT pg_advisory_xact_lock(
-      hashtext('lobu:connector-identity-scope'),
-      hashtext(${`${params.organizationId}:${params.metadata.key}`})
-    )
-  `;
-  for (const declaration of [...declarations.values()].sort((left, right) =>
+  const sortedDeclarations = [...declarations.values()].sort((left, right) =>
     left.namespace.localeCompare(right.namespace)
-  )) {
-      // Serialize zero-row shape changes with ingestion as well as explicit
-      // re-key. Once this transaction promotes the registry, any old active
-      // rule entering later sees the mismatch and fails closed until apply
-      // finishes activating the new definition.
-      await tx`
-        SELECT pg_advisory_xact_lock(
-          hashtext('lobu:identity-rekey'),
-          hashtext(${`${params.organizationId}:${declaration.namespace}`})
-        )
-      `;
-      // Backfill every active connector sharing this namespace, not just the
-      // connector being installed. The registry starts empty on upgrade and a
-      // brand-new connector must not become the first row with a shape that
-      // contradicts an already-active peer.
-      const activeDefinitionRows = await tx<{
-        key: string;
-        feeds_schema: Record<string, unknown> | null;
-      }>`
-        SELECT key, feeds_schema
-        FROM connector_definitions
-        WHERE organization_id = ${params.organizationId}
-          AND status = 'active'
-        ORDER BY key
-      `;
-      const activeNamespaceDeclarations = new Map<string, ConnectorIdentityScopeDeclaration>();
-      for (const activeDefinition of activeDefinitionRows) {
-        const active = connectorIdentityScopeDeclarations({
-          key: activeDefinition.key,
-          feeds: asRecord(activeDefinition.feeds_schema),
-        }).get(declaration.namespace);
-        if (active) activeNamespaceDeclarations.set(activeDefinition.key, active);
-      }
+  );
+  // Lock every namespace in a stable order before reading peer definitions so
+  // concurrent connector applies cannot both validate stale registry state.
+  for (const declaration of sortedDeclarations) {
+    await params.sql`
+      SELECT pg_advisory_xact_lock(
+        hashtext('lobu:connector-identity-scope'),
+        hashtext(${`${params.organizationId}:${declaration.namespace}`})
+      )
+    `;
+  }
 
-      const rows = await tx<{
-        connector_key: string;
-        scope: 'organization' | 'tenant';
-        scope_key_path: string | null;
-        pending_scope: 'organization' | 'tenant' | null;
-        pending_scope_key_path: string | null;
-      }>`
-        SELECT connector_key, scope, scope_key_path, pending_scope, pending_scope_key_path
-        FROM connector_identity_scope_registry
-        WHERE organization_id = ${params.organizationId}
-          AND namespace = ${declaration.namespace}
-        FOR UPDATE
-      `;
-      const registryByConnector = new Map(rows.map((row) => [row.connector_key, row]));
-      for (const [connectorKey, active] of activeNamespaceDeclarations) {
-        if (registryByConnector.has(connectorKey)) continue;
-        await tx`
-          INSERT INTO connector_identity_scope_registry (
-            organization_id, connector_key, namespace, scope, scope_key_path
-          ) VALUES (
-            ${params.organizationId}, ${connectorKey}, ${declaration.namespace},
-            ${active.scope}, ${active.scopeKeyPath}
-          )
-        `;
-        registryByConnector.set(connectorKey, {
-          connector_key: connectorKey,
-          scope: active.scope,
-          scope_key_path: active.scopeKeyPath,
-          pending_scope: null,
-          pending_scope_key_path: null,
-        });
-      }
+  const activeDefinitionRows = await params.sql<{
+    key: string;
+    feeds_schema: Record<string, unknown> | null;
+  }>`
+    SELECT key, feeds_schema
+    FROM connector_definitions
+    WHERE organization_id = ${params.organizationId}
+      AND status = 'active'
+      AND key <> ${params.metadata.key}
+    ORDER BY key
+  `;
+  const activeDeclarations = activeDefinitionRows.map((row) => ({
+    connectorKey: row.key,
+    declarations: connectorIdentityScopeDeclarations({
+      key: row.key,
+      feeds: asRecord(row.feeds_schema),
+    }),
+  }));
 
-      const current = registryByConnector.get(params.metadata.key);
-      if (!current) {
-        const incompatibleActive = [...registryByConnector.values()].find(
-          (row) =>
-            activeNamespaceDeclarations.has(row.connector_key) &&
-            !sameScope(declaration, {
-              scope: row.scope,
-              scopeKeyPath: row.scope_key_path,
-            })
-        );
-        if (incompatibleActive) {
-          blockedMessage =
-            `Identity namespace '${declaration.namespace}' cannot be registered as ` +
-            `${renderShape(declaration)} for connector '${params.metadata.key}' because connector ` +
-            `'${incompatibleActive.connector_key}' already uses ` +
-            `${renderShape({ scope: incompatibleActive.scope, scopeKeyPath: incompatibleActive.scope_key_path })}. ` +
-            'Connectors sharing an identity namespace must declare the same organization/tenant scope; their payload paths may differ.';
-          break;
-        }
-
-        const needsLiveRowInspection =
-          registryByConnector.size === 0 ||
-          [...registryByConnector.values()].some(
-            (row) =>
-              !activeNamespaceDeclarations.has(row.connector_key) &&
-              !sameScope(declaration, {
-                scope: row.scope,
-                scopeKeyPath: row.scope_key_path,
-              })
-          );
-        const liveCounts = needsLiveRowInspection
-          ? await tx<{ count: number | string; scoped_count: number | string }>`
-              SELECT count(*)::bigint AS count,
-                     count(*) FILTER (
-                       WHERE scope_key IS NOT NULL OR cardinality(scope_key_history) > 0
-                     )::bigint AS scoped_count
-              FROM entity_identities
-              WHERE organization_id = ${params.organizationId}
-                AND namespace = ${declaration.namespace}
-                AND deleted_at IS NULL
-            `
-          : [];
-        const liveCount = Number(liveCounts[0]?.count ?? 0);
-        const scopedLiveCount = Number(liveCounts[0]?.scoped_count ?? 0);
-
-        // A connector may have been archived before this registry existed. Its
-        // carried-forward live rows are organization-scoped, but with no active
-        // or dormant registry owner a new tenant declaration would otherwise
-        // register directly and fork every future write. Seed the missing old
-        // shape plus the pending target so the ordinary explicit re-key flow is
-        // still mandatory. Never guess an old declaration when scoped rows
-        // already exist; that indicates registry corruption after adoption.
-        if (
-          registryByConnector.size === 0 &&
-          liveCount > 0 &&
-          declaration.scope === 'tenant'
-        ) {
-          if (scopedLiveCount > 0) {
-            blockedMessage =
-              `Identity namespace '${declaration.namespace}' has ${scopedLiveCount} tenant-scoped live ` +
-              `identity row${scopedLiveCount === 1 ? '' : 's'} but no declaration registry. ` +
-              'Restore the missing registry before changing or adopting this namespace scope.';
-            break;
-          }
-          await tx`
-            INSERT INTO connector_identity_scope_registry (
-              organization_id, connector_key, namespace, scope, scope_key_path,
-              pending_scope, pending_scope_key_path
-            ) VALUES (
-              ${params.organizationId}, ${params.metadata.key}, ${declaration.namespace},
-              'organization', NULL, ${declaration.scope}, ${declaration.scopeKeyPath}
-            )
-          `;
-          blockedMessage =
-            `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +
-            `'${params.metadata.key}' while ${liveCount} live identity row${liveCount === 1 ? '' : 's'} exist. ` +
-            `Old shape: ${renderShape({ scope: 'organization', scopeKeyPath: null })}. ` +
-            `New shape: ${renderShape(declaration)}. ` +
-            `Run \`lobu identities rekey ${declaration.namespace} --mapping <file.json>\` to re-key explicitly first.`;
-          break;
-        }
-
-        // Registry rows outlive connector definitions on purpose: identities
-        // and append-only events still need their declared scope after a
-        // connector is archived or stops declaring the namespace. A new
-        // connector may take over that namespace, but it must explicitly
-        // re-key those dormant claims instead of being rejected forever.
-        const incompatibleDormant = [...registryByConnector.values()].filter(
-          (row) =>
-            !activeNamespaceDeclarations.has(row.connector_key) &&
-            !sameScope(declaration, {
-              scope: row.scope,
-              scopeKeyPath: row.scope_key_path,
-            })
-        );
-        if (incompatibleDormant.length > 0) {
-          const dormantKeys = incompatibleDormant.map((row) => row.connector_key);
-          if (liveCount === 0) {
-            await tx`
-              UPDATE connector_identity_scope_registry
-              SET scope = ${declaration.scope},
-                  scope_key_path = ${declaration.scopeKeyPath},
-                  pending_scope = NULL,
-                  pending_scope_key_path = NULL,
-                  shape_version = shape_version + 1,
-                  updated_at = now()
-              WHERE organization_id = ${params.organizationId}
-                AND namespace = ${declaration.namespace}
-                AND connector_key = ANY(${pgTextArray(dormantKeys)}::text[])
-            `;
-          } else {
-            const oldShape = incompatibleDormant[0]!;
-            await tx`
-              UPDATE connector_identity_scope_registry
-              SET pending_scope = ${declaration.scope},
-                  pending_scope_key_path = ${declaration.scopeKeyPath},
-                  updated_at = now()
-              WHERE organization_id = ${params.organizationId}
-                AND namespace = ${declaration.namespace}
-                AND connector_key = ANY(${pgTextArray(dormantKeys)}::text[])
-            `;
-            await tx`
-              INSERT INTO connector_identity_scope_registry (
-                organization_id, connector_key, namespace, scope, scope_key_path,
-                pending_scope, pending_scope_key_path
-              ) VALUES (
-                ${params.organizationId}, ${params.metadata.key}, ${declaration.namespace},
-                ${oldShape.scope}, ${oldShape.scope_key_path},
-                ${declaration.scope}, ${declaration.scopeKeyPath}
-              )
-            `;
-            blockedMessage =
-              `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +
-              `'${params.metadata.key}' while ${liveCount} live identity row${liveCount === 1 ? '' : 's'} exist. ` +
-              `Old shape: ${renderShape({ scope: oldShape.scope, scopeKeyPath: oldShape.scope_key_path })}. ` +
-              `New shape: ${renderShape(declaration)}. ` +
-              `Run \`lobu identities rekey ${declaration.namespace} --mapping <file.json>\` to re-key explicitly first.`;
-            break;
-          }
-        }
-        await tx`
-          INSERT INTO connector_identity_scope_registry (
-            organization_id, connector_key, namespace, scope, scope_key_path
-          ) VALUES (
-            ${params.organizationId}, ${params.metadata.key}, ${declaration.namespace},
-            ${declaration.scope}, ${declaration.scopeKeyPath}
-          )
-        `;
-        continue;
-      }
-
-      const oldShape: ConnectorIdentityScopeShape = {
-        scope: current.scope,
-        scopeKeyPath: current.scope_key_path,
-      };
-      const dormantNeedingTarget = [...registryByConnector.values()].filter(
-        (row) =>
-          row.connector_key !== params.metadata.key &&
-          !activeNamespaceDeclarations.has(row.connector_key) &&
-          !sameScope(declaration, {
-            scope: row.scope,
-            scopeKeyPath: row.scope_key_path,
-          })
+  for (const declaration of sortedDeclarations) {
+    const incompatible = activeDeclarations.find(({ declarations: peerDeclarations }) => {
+      const peer = peerDeclarations.get(declaration.namespace);
+      return peer !== undefined && peer.scope !== declaration.scope;
+    });
+    if (incompatible) {
+      const peer = incompatible.declarations.get(declaration.namespace)!;
+      throw new Error(
+        `Identity namespace '${declaration.namespace}' cannot be registered as ` +
+          `${renderShape(declaration)} for connector '${params.metadata.key}' because connector ` +
+          `'${incompatible.connectorKey}' already uses ${renderShape(peer)}. ` +
+          'Connectors sharing an identity namespace must declare the same organization/tenant scope; their payload paths may differ.'
       );
-      const ownNeedsTarget = !sameShape(oldShape, declaration);
-      if (!ownNeedsTarget && dormantNeedingTarget.length === 0) {
-        await tx`
-          UPDATE connector_identity_scope_registry
-          SET pending_scope = NULL,
-              pending_scope_key_path = NULL,
-              updated_at = now()
-          WHERE organization_id = ${params.organizationId}
-            AND connector_key = ${params.metadata.key}
-            AND namespace = ${declaration.namespace}
-        `;
-        continue;
-      }
-
-      const transitionRows = [
-        ...(ownNeedsTarget ? [current] : []),
-        ...dormantNeedingTarget,
-      ];
-      const transitionKeys = transitionRows.map((row) => row.connector_key);
-      const counts = await tx<{ count: number | string }>`
-        SELECT count(*)::bigint AS count
-        FROM entity_identities
-        WHERE organization_id = ${params.organizationId}
-          AND namespace = ${declaration.namespace}
-          AND deleted_at IS NULL
-      `;
-      const liveCount = Number(counts[0]?.count ?? 0);
-      if (liveCount === 0) {
-        await tx`
-          UPDATE connector_identity_scope_registry
-          SET scope = ${declaration.scope},
-              scope_key_path = ${declaration.scopeKeyPath},
-              pending_scope = NULL,
-              pending_scope_key_path = NULL,
-              shape_version = shape_version + 1,
-              updated_at = now()
-          WHERE organization_id = ${params.organizationId}
-            AND namespace = ${declaration.namespace}
-            AND connector_key = ANY(${pgTextArray(transitionKeys)}::text[])
-        `;
-        continue;
-      }
-
-      await tx`
-        UPDATE connector_identity_scope_registry
-        SET pending_scope = ${declaration.scope},
-            pending_scope_key_path = ${declaration.scopeKeyPath},
-            updated_at = now()
-        WHERE organization_id = ${params.organizationId}
-          AND namespace = ${declaration.namespace}
-          AND connector_key = ANY(${pgTextArray(transitionKeys)}::text[])
-      `;
-      const transitionOldShape = transitionRows[0]!;
-      blockedMessage =
-        `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +
-        `'${params.metadata.key}' while ${liveCount} live identity row${liveCount === 1 ? '' : 's'} exist. ` +
-        `Old shape: ${renderShape({ scope: transitionOldShape.scope, scopeKeyPath: transitionOldShape.scope_key_path })}. ` +
-        `New shape: ${renderShape(declaration)}. ` +
-        `Run \`lobu identities rekey ${declaration.namespace} --mapping <file.json>\` to re-key explicitly first.`;
-      break;
     }
 
-  return blockedMessage;
+    const rows = await params.sql<{
+      scope: 'organization' | 'tenant';
+      scope_key_path: string | null;
+    }>`
+      SELECT scope, scope_key_path
+      FROM connector_identity_scope_registry
+      WHERE organization_id = ${params.organizationId}
+        AND connector_key = ${params.metadata.key}
+        AND namespace = ${declaration.namespace}
+      FOR UPDATE
+    `;
+    const current = rows[0];
+    const currentShape = current
+      ? { scope: current.scope, scopeKeyPath: current.scope_key_path }
+      : null;
+    if (currentShape && sameShape(currentShape, declaration)) continue;
+
+    const counts = await params.sql<{
+      count: number | string;
+      tenant_count: number | string;
+    }>`
+      SELECT count(*)::bigint AS count,
+             count(*) FILTER (WHERE scope_key IS NOT NULL)::bigint AS tenant_count
+      FROM entity_identities
+      WHERE organization_id = ${params.organizationId}
+        AND namespace = ${declaration.namespace}
+        AND deleted_at IS NULL
+    `;
+    const liveCount = Number(counts[0]?.count ?? 0);
+    const tenantCount = Number(counts[0]?.tenant_count ?? 0);
+    const missingRegistryIsSafeOrganizationAdoption =
+      currentShape === null && declaration.scope === 'organization' && tenantCount === 0;
+    if (liveCount > 0 && !missingRegistryIsSafeOrganizationAdoption) {
+      const oldShape = currentShape ?? { scope: 'organization' as const, scopeKeyPath: null };
+      throw new Error(
+        `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +
+          `'${params.metadata.key}' while ${liveCount} live identity row${liveCount === 1 ? '' : 's'} exist. ` +
+          `Old shape: ${renderShape(oldShape)}. New shape: ${renderShape(declaration)}. ` +
+          'Quiesce ingestion and migrate the identity rows plus connector_identity_scope_registry together before retrying apply.'
+      );
+    }
+
+    await params.sql`
+      INSERT INTO connector_identity_scope_registry (
+        organization_id, connector_key, namespace, scope, scope_key_path
+      ) VALUES (
+        ${params.organizationId}, ${params.metadata.key}, ${declaration.namespace},
+        ${declaration.scope}, ${declaration.scopeKeyPath}
+      )
+      ON CONFLICT (organization_id, connector_key, namespace)
+      DO UPDATE SET scope = EXCLUDED.scope,
+                    scope_key_path = EXCLUDED.scope_key_path,
+                    updated_at = now()
+    `;
+  }
 }

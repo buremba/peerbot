@@ -18,7 +18,7 @@ import {
   computeCompileConfigHash,
   EXTERNAL_RUNTIME_DEPS,
 } from '@lobu/connector-worker/compile';
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 // A bundle from the "pino is external" era: pino left as a bare import that
 // the current runtime image no longer ships.
@@ -65,18 +65,7 @@ beforeEach(() => {
   queries.length = 0;
   storedSourceCode = STORED_SOURCE;
   vi.resetModules();
-  vi.doMock('../../db/client', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('../../db/client')>()),
-    getDb: () => fakeSql,
-  }));
-});
-
-afterEach(() => {
-  // Vitest runs this package with `isolate: false` so the Postgres singleton is
-  // shared. Remove this file-local DB seam before the next test file imports a
-  // newer db/client export (for example pgTextArray).
-  vi.resetModules();
-  vi.doUnmock('../../db/client');
+  vi.doMock('../../db/client', () => ({ getDb: () => fakeSql }));
 });
 
 describe('resolveConnectorCode compile-config staleness', () => {

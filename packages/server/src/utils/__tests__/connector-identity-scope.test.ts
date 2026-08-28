@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { SCOPED_IDENTITY_ALIASES_METADATA_KEY } from '../../identity/scope-projection';
 import { validateConnectorMetadata } from '../connector-compiler';
 
 function metadata(feeds: Record<string, unknown>) {
@@ -93,32 +92,4 @@ describe('connector identity scope manifest validation', () => {
     ).toThrow(/erp_customer.*customer\.created.*invoice\.created/i);
   });
 
-  it('rejects traits that target server-owned identity projections', () => {
-    const connector = metadata({
-      customers: {
-        eventKinds: {
-          'customer.created': {
-            attributions: [
-              {
-                role: 'about',
-                target: {
-                  identities: [identity('erp_customer', 'metadata.id')],
-                },
-                traits: {
-                  [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: {
-                    eventPath: 'metadata.forged_aliases',
-                    mergeStrategy: 'overwrite',
-                  },
-                },
-              },
-            ],
-          },
-        },
-      },
-    });
-
-    expect(() => validateConnectorMetadata(connector)).toThrow(
-      /trait.*reserved for server-authored identity scope projections/i
-    );
-  });
 });

@@ -9,7 +9,6 @@
 import { normalizeSlackUserId, SLACK_IDENTITY } from "@lobu/connectors/slack-identity";
 import { fetchUserInfoWithRaw } from "../connect/oauth-providers";
 import { getDb } from "../db/client";
-import { insertOrganizationScopedIdentity } from "../identity/claims";
 import {
 	type ResolvedTenantMember,
 	resolveMemberOrgsForUser,
@@ -58,13 +57,15 @@ async function writeIdentities(
 	rows: IdentityRow[],
 ): Promise<void> {
 	for (const row of rows) {
-		await insertOrganizationScopedIdentity(sql, {
-			organizationId,
-			entityId: memberEntityId,
-			namespace: row.namespace,
-			identifier: row.identifier,
-			sourceConnector: source,
-		});
+		await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector, scope_key
+      ) VALUES (
+        ${organizationId}, ${memberEntityId}, ${row.namespace}, ${row.identifier}, ${source}, NULL
+      )
+      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
+      DO NOTHING
+    `;
 	}
 }
 
@@ -105,14 +106,17 @@ async function adoptSlackIdentityOntoMember(
 	memberEntityId: number,
 	identifier: string,
 ): Promise<"created" | "adopted" | "already-owned" | "conflict"> {
-	const inserted = await insertOrganizationScopedIdentity(sql, {
-		organizationId,
-		entityId: memberEntityId,
-		namespace: SLACK_IDENTITY.USER_ID,
-		identifier,
-		sourceConnector: "auth:signup",
-	});
-	if (inserted) return "created";
+	const inserted = await sql<{ id: number }>`
+    INSERT INTO entity_identities (
+      organization_id, entity_id, namespace, identifier, source_connector, scope_key
+    ) VALUES (
+      ${organizationId}, ${memberEntityId}, ${SLACK_IDENTITY.USER_ID}, ${identifier}, 'auth:signup', NULL
+    )
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
+    DO NOTHING
+    RETURNING id
+  `;
+	if (inserted.length > 0) return "created";
 
 	// Take over only from a `person`; a `$member` holder means two humans claim
 	// one workspace id, which must not be silently reassigned.

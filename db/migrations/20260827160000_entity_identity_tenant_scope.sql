@@ -12,12 +12,9 @@
 -- connections can legitimately address the same upstream tenant. The connector
 -- therefore supplies a stable text scope key from each event.
 ALTER TABLE public.entity_identities
-  ADD COLUMN IF NOT EXISTS scope_key text,
-  ADD COLUMN IF NOT EXISTS scope_key_history text[] NOT NULL DEFAULT '{}';
+  ADD COLUMN IF NOT EXISTS scope_key text;
 
--- The current tenant key is always non-empty. Historical keys use the same
--- empty-string sentinel as the unique index to remember a prior organization
--- scope without making a second live identity claim.
+-- Tenant keys are always non-empty. NULL remains the organization-wide scope.
 DO $constraints$
 BEGIN
   IF NOT EXISTS (
@@ -30,23 +27,11 @@ BEGIN
         scope_key IS NULL OR length(btrim(scope_key)) > 0
       ) NOT VALID;
   END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'entity_identities_scope_key_history_no_nulls_check'
-      AND conrelid = 'public.entity_identities'::regclass
-  ) THEN
-    ALTER TABLE public.entity_identities
-      ADD CONSTRAINT entity_identities_scope_key_history_no_nulls_check CHECK (
-        array_position(scope_key_history, NULL) IS NULL
-      ) NOT VALID;
-  END IF;
 END
 $constraints$;
 
 -- squawk-ignore prefer-robust-stmts -- transaction:false is required below; validation is idempotent on replay
 ALTER TABLE public.entity_identities VALIDATE CONSTRAINT entity_identities_scope_key_nonempty_check;
--- squawk-ignore prefer-robust-stmts -- transaction:false is required below; validation is idempotent on replay
-ALTER TABLE public.entity_identities VALIDATE CONSTRAINT entity_identities_scope_key_history_no_nulls_check;
 
 -- #2846 shipped the connection-shaped column before a production connector
 -- adopted it. Refuse to guess a tenant key if that assumption is ever false.
@@ -125,17 +110,14 @@ CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_entity_identities_live_unique
   ON public.entity_identities (organization_id, namespace, identifier, COALESCE(scope_key, ''))
   WHERE deleted_at IS NULL;
 
--- Durable current + pending declaration shape. A blocked apply records the
--- exact shape the explicit re-key command must promote with the row rewrite.
+-- Durable declaration shape. Scope changes with live identities fail at apply;
+-- an operator migrates the rows and this registry together before retrying.
 CREATE TABLE IF NOT EXISTS public.connector_identity_scope_registry (
   organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
   connector_key text NOT NULL,
   namespace text NOT NULL,
   scope text NOT NULL,
   scope_key_path text,
-  pending_scope text,
-  pending_scope_key_path text,
-  shape_version bigint NOT NULL DEFAULT 1,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT connector_identity_scope_registry_pkey
@@ -144,14 +126,6 @@ CREATE TABLE IF NOT EXISTS public.connector_identity_scope_registry (
     (scope = 'organization' AND scope_key_path IS NULL)
     OR
     (scope = 'tenant' AND scope_key_path IS NOT NULL AND length(btrim(scope_key_path)) > 0)
-  ),
-  CONSTRAINT connector_identity_scope_registry_pending_shape_check CHECK (
-    (pending_scope IS NULL AND pending_scope_key_path IS NULL)
-    OR
-    (pending_scope = 'organization' AND pending_scope_key_path IS NULL)
-    OR
-    (pending_scope = 'tenant' AND pending_scope_key_path IS NOT NULL
-      AND length(btrim(pending_scope_key_path)) > 0)
   )
 );
 
@@ -179,13 +153,13 @@ BEGIN
     EXECUTE 'SELECT EXISTS (
       SELECT 1
       FROM public.entity_identities
-      WHERE scope_key IS NOT NULL OR cardinality(scope_key_history) > 0
+      WHERE scope_key IS NOT NULL
     )' INTO has_scoped_rows;
 
     IF has_scoped_rows THEN
       RAISE EXCEPTION USING
-        MESSAGE = 'entity identity tenant-scope rollback refused: scope_key or scope_key_history contains scoped rows',
-        HINT = 'Re-key those identities to organization scope before retrying the rollback.';
+        MESSAGE = 'entity identity tenant-scope rollback refused: scope_key contains tenant-scoped rows',
+        HINT = 'Migrate those identities to organization scope before retrying the rollback.';
     END IF;
   END IF;
 
@@ -193,7 +167,7 @@ BEGIN
     EXECUTE 'SELECT EXISTS (
       SELECT 1
       FROM public.connector_identity_scope_registry
-      WHERE scope = ''tenant'' OR pending_scope = ''tenant''
+      WHERE scope = ''tenant''
     )' INTO has_tenant_registry;
   END IF;
   IF has_tenant_registry THEN
@@ -258,5 +232,4 @@ DROP TABLE IF EXISTS public.connector_identity_scope_registry;
 
 -- squawk-ignore ban-drop-column -- rollback path for the column introduced above
 ALTER TABLE public.entity_identities
-  DROP COLUMN IF EXISTS scope_key,
-  DROP COLUMN IF EXISTS scope_key_history;
+  DROP COLUMN IF EXISTS scope_key;

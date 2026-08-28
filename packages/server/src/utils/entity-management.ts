@@ -30,7 +30,6 @@ import {
 	automationIdFromPrincipalId,
 } from "../authz/entity-policy";
 import { type DbClient, getDb, pgBigintArray, pgTextArray } from "../db/client";
-import { stripIdentityScopeProjectionMetadata } from "../identity/scope-projection";
 import type { Env } from "../index";
 import { querySqlImpl } from "../tools/admin/query_sql";
 import type { ToolContext } from "../tools/registry";
@@ -682,12 +681,7 @@ export async function mergeEntityFields(params: {
 	 */
 	approvedFields?: readonly string[];
 }): Promise<FieldMergeResult> {
-	const { tx, entityId, source, actorId } = params;
-	// This seam is used by Automation promotion and approval replay. Both carry
-	// tenant-authored metadata, so neither may overwrite the server-owned
-	// identity projections that metric/recall joins trust. Preserve projections
-	// already on the entity; only discard forged values from the proposed patch.
-	const fields = stripIdentityScopeProjectionMetadata(params.fields) ?? {};
+	const { tx, entityId, fields, source, actorId } = params;
 	const rows = await tx<{ metadata: unknown; field_controls: unknown }>`
     SELECT metadata, field_controls FROM entities
     WHERE id = ${entityId} AND deleted_at IS NULL
@@ -904,19 +898,11 @@ export async function createEntity(
 	if (!data.organization_id) {
 		throw new Error("Organization ID is required");
 	}
-	// Public CRUD metadata is untrusted. Tenant-scope projections participate in
-	// recall and metric identity joins, so only the connector/re-key kernels may
-	// author them from durable entity_identities rows.
-	const sanitizedData: EntityData = {
-		...data,
-		metadata: stripIdentityScopeProjectionMetadata(data.metadata),
-	};
-
 	const sql = opts?.sql ?? getDb();
 
 	try {
 		const created = await withEntityWriteTransaction(sql, async (tx) => {
-			let createData = sanitizedData;
+			let createData = data;
 			if (!opts?.skipHooks && opts?.hookContext) {
 				const hooks = getEntityHooks(createData.entity_type);
 				if (hooks?.beforeCreate) {
@@ -1050,7 +1036,7 @@ export async function updateEntity(
 
 	const metadataUpdates = mergeConvenienceFields(
 		data,
-		stripIdentityScopeProjectionMetadata(data.metadata) ?? {},
+		data.metadata ?? {},
 		"update",
 	);
 	const hasMetadataUpdates = Object.keys(metadataUpdates).length > 0;

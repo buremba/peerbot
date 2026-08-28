@@ -31,7 +31,6 @@ import {
 	validateEntityRowPatch,
 } from "../authz/entity-row-validation";
 import { type DbClient, getDb } from "../db/client.js";
-import { insertOrganizationScopedIdentity } from "../identity/claims.js";
 import { EVAL_CASE_ENTITY_TYPE_SLUG } from "../tools/constants.js";
 import {
 	hardDeleteEntityRows,
@@ -576,46 +575,20 @@ async function claimEvalCaseIdentity(
 	identifier: string,
 	entityId: number,
 ): Promise<void> {
-	const inserted = await insertOrganizationScopedIdentity(sql, {
-		organizationId,
-		entityId,
-		namespace: EVAL_CASE_NAMESPACE,
-		identifier,
-	});
-	if (inserted) return;
-
-	const exact = await sql<{
-		id: number | string;
-		entity_id: number | string;
-		entity_deleted_at: Date | string | null;
-	}>`
-    SELECT identity.id, identity.entity_id, entity.deleted_at AS entity_deleted_at
-    FROM entity_identities identity
-    JOIN entities entity
-      ON entity.id = identity.entity_id
-     AND entity.organization_id = identity.organization_id
-    WHERE identity.organization_id = ${organizationId}
-      AND identity.namespace = ${EVAL_CASE_NAMESPACE}
-      AND identity.identifier = ${identifier}
-      AND identity.scope_key IS NULL
-      AND identity.deleted_at IS NULL
-    FOR UPDATE OF identity
-  `;
-	const current = exact[0];
-	if (!current) {
-		throw new Error(
-			`Eval case identity '${identifier}' cannot reuse an organization scope retained by another live claim.`,
-		);
-	}
-	if (current.entity_deleted_at === null) return;
-
 	await sql`
-    UPDATE entity_identities
-    SET entity_id = ${entityId}, updated_at = current_timestamp
-    WHERE id = ${Number(current.id)}
-      AND organization_id = ${organizationId}
-      AND scope_key IS NULL
-      AND deleted_at IS NULL
+    INSERT INTO entity_identities (
+      organization_id, entity_id, namespace, identifier, scope_key, created_at
+    ) VALUES (
+      ${organizationId}, ${entityId}, ${EVAL_CASE_NAMESPACE}, ${identifier}, NULL,
+      current_timestamp
+    )
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
+    DO UPDATE SET entity_id = EXCLUDED.entity_id, updated_at = current_timestamp
+    WHERE EXISTS (
+      SELECT 1 FROM entities de
+      WHERE de.id = entity_identities.entity_id
+        AND de.deleted_at IS NOT NULL
+    )
   `;
 }
 

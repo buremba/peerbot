@@ -461,16 +461,8 @@ async function saveContentImpl(
       await sql`
         INSERT INTO entity_identities (
           organization_id, entity_id, namespace, identifier, source_connector, scope_key
-        )
-        SELECT ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'auth:signup', NULL
-        WHERE NOT EXISTS (
-          SELECT 1
-          FROM entity_identities retained
-          WHERE retained.organization_id = ${ctx.organizationId}
-            AND retained.namespace = 'auth_user_id'
-            AND retained.identifier = ${authId}
-            AND retained.deleted_at IS NULL
-            AND '' = ANY(retained.scope_key_history)
+        ) VALUES (
+          ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'auth:signup', NULL
         )
         ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
         DO UPDATE SET

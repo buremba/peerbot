@@ -6,11 +6,7 @@ import {
   updateMemberEntityStatus,
 } from '../../../utils/member-entity';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import {
-  createTestEntity,
-  createTestOrganization,
-  createTestUser,
-} from '../../setup/test-fixtures';
+import { createTestOrganization, createTestUser } from '../../setup/test-fixtures';
 
 async function memberRow(organizationId: string, email: string) {
   const sql = getTestDb();
@@ -93,41 +89,4 @@ describe('$member entity lifecycle projections', () => {
     expect((await memberRow(second.id, user.email)).deleted_at).toBeNull();
   });
 
-  it('does not recreate an organization auth claim retained by a tenant row', async () => {
-    const organization = await createTestOrganization({ name: 'Member retained claim org' });
-    const user = await createTestUser({ email: 'retained-member@test.example.com' });
-    const historicalOwner = await createTestEntity({
-      organization_id: organization.id,
-      name: 'Historical auth owner',
-    });
-    const sql = getTestDb();
-    await sql`
-      INSERT INTO entity_identities (
-        organization_id, entity_id, namespace, identifier, source_connector,
-        scope_key, scope_key_history
-      ) VALUES (
-        ${organization.id}, ${historicalOwner.id}, 'auth_user_id', ${user.id}, 'connector:test',
-        'tenant-current', ARRAY['']::text[]
-      )
-    `;
-
-    await ensureMemberEntity({
-      organizationId: organization.id,
-      userId: user.id,
-      name: 'Retained Member',
-      email: user.email,
-      role: 'member',
-      status: 'active',
-    });
-
-    const claims = await sql<{ scope_key: string | null }>`
-      SELECT scope_key
-      FROM entity_identities
-      WHERE organization_id = ${organization.id}
-        AND namespace = 'auth_user_id'
-        AND identifier = ${user.id}
-        AND deleted_at IS NULL
-    `;
-    expect(claims).toEqual([{ scope_key: 'tenant-current' }]);
-  });
 });

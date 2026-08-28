@@ -603,14 +603,9 @@ async function getAutomationImpl(
         (SELECT jsonb_agg(jsonb_build_object(
            'namespace', ei.namespace,
            'identifier', ei.identifier,
-           'scopeKey', NULLIF(identity_scope.scope_key, '')
+           'scopeKey', ei.scope_key
          ))
          FROM entity_identities ei
-         CROSS JOIN LATERAL (
-           SELECT DISTINCT unnest(
-             array_prepend(COALESCE(ei.scope_key, ''), ei.scope_key_history)
-           ) AS scope_key
-         ) identity_scope
          WHERE ei.entity_id = (i.entity_ids)[1]
            AND ei.deleted_at IS NULL
            AND ei.namespace IN (${namespacesLiteral})

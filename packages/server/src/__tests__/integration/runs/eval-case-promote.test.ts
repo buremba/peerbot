@@ -406,37 +406,6 @@ describe("promoteEvalCase", () => {
 		expect(third.evalCase.entityId).toBe(second.evalCase.entityId);
 	});
 
-	test("does not recreate an organization scope retained by a re-keyed case claim", async () => {
-		const caseKey = "retained-organization-scope";
-		const identifier = `${sourceRunId}:${caseKey}`;
-		const first = await promoteEvalCase({ sourceRunId, caseKey });
-		expect(first.ok).toBe(true);
-		if (!first.ok) return;
-
-		await sql`
-      UPDATE entity_identities
-      SET scope_key = 'tenant-current', scope_key_history = ARRAY['']::text[]
-      WHERE organization_id = ${organizationId}
-        AND namespace = ${EVAL_CASE_NAMESPACE}
-        AND identifier = ${identifier}
-        AND scope_key IS NULL
-        AND deleted_at IS NULL
-    `;
-
-		await expect(promoteEvalCase({ sourceRunId, caseKey })).rejects.toThrow(
-			/cannot reuse an organization scope retained by another live claim/i,
-		);
-		const claims = await sql<{ scope_key: string | null }>`
-      SELECT scope_key
-      FROM entity_identities
-      WHERE organization_id = ${organizationId}
-        AND namespace = ${EVAL_CASE_NAMESPACE}
-        AND identifier = ${identifier}
-        AND deleted_at IS NULL
-    `;
-		expect(claims).toEqual([{ scope_key: "tenant-current" }]);
-	});
-
 	test("different case keys on one run are different cases", async () => {
 		const a = await promoteEvalCase({ sourceRunId, caseKey: "angle-a" });
 		const b = await promoteEvalCase({ sourceRunId, caseKey: "angle-b" });

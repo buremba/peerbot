@@ -34,16 +34,9 @@ import { ensureResourceEntityType } from '../authz/acl-resource-type';
 import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client';
 import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
 import {
-  type IdentityScopeByAliasProjection,
-  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
   IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
-  isIdentityScopeProjectionMetadataKey,
   ORGANIZATION_SCOPE_PROJECTION,
-  parseScopedIdentityAliasProjections,
-  SCOPED_IDENTITY_ALIASES_METADATA_KEY,
-  scopedIdentityAliasProjectionKey,
 } from '../identity/scope-projection';
-import { assertConnectorIdentityScopesActive } from './connector-identity-scopes';
 import {
   hardDeleteEntityRows,
   patchEntityRows,
@@ -74,11 +67,6 @@ interface RuleMap {
   [kind: string]: ResolvedEventAttributionRule[];
 }
 
-type CachedRuleMap = {
-  revision: string;
-  rules: RuleMap;
-};
-
 function ownValue<T>(record: Record<string, unknown>, key: string): T | undefined {
   return Object.hasOwn(record, key) ? (record[key] as T) : undefined;
 }
@@ -103,31 +91,11 @@ function setOwn(record: Record<string, unknown>, key: string, value: unknown): v
   });
 }
 
-function assertNoReservedProjectionTraitKeys(keys: Iterable<string>): void {
-  for (const key of keys) {
-    if (isIdentityScopeProjectionMetadataKey(key)) {
-      throw new Error(
-        `Entity trait '${key}' is reserved for server-authored identity scope projections.`
-      );
-    }
-  }
-}
-
-function assertNoReservedProjectionTraits(rulesByKind: RuleMap): void {
-  for (const rules of Object.values(rulesByKind)) {
-    for (const rule of rules) {
-      assertNoReservedProjectionTraitKeys(Object.keys(rule.traits ?? {}));
-    }
-  }
-}
-
 /** Connector payloads may not author the server's tenant-scope projections. */
 function scrubIdentityScopeProjections(items: BatchItem[]): void {
   for (const item of items) {
     if (!item.metadata) continue;
     delete item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY];
-    delete item.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY];
-    delete item.metadata[SCOPED_IDENTITY_ALIASES_METADATA_KEY];
   }
 }
 
@@ -165,23 +133,8 @@ function resolveEventAttributions(
 
 const RULES_CACHE_TTL_MS = 60_000;
 // Per-pod caches — no cross-replica sharing.
-const rulesCache = new TtlCache<CachedRuleMap>(RULES_CACHE_TTL_MS);
+const rulesCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
 const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
-
-function rulesForRevision(
-  cacheKey: string,
-  revision: string,
-  build: () => RuleMap
-): RuleMap {
-  const cached = rulesCache.get(cacheKey);
-  if (cached?.revision === revision) return cached.rules;
-  const rules = build();
-  // The logical lookup key is stable across connector revisions. Replacing its
-  // value makes activation visible immediately without retaining one cache
-  // entry for every historical connector_definitions.updated_at value.
-  rulesCache.set(cacheKey, { revision, rules });
-  return rules;
-}
 
 /**
  * Takes the caller's handle rather than reaching for `getDb()`, because both
@@ -223,26 +176,16 @@ async function loadEventAttributionRules(
     orgId: string;
   }
 ): Promise<RuleMap> {
-  // Always read the active definition revision. The parsed rules stay cached,
-  // but a changed revision replaces the stable logical cache entry, so a
-  // pod that cached the pre-rekey shape cannot reject or mis-key events for the
-  // remainder of the TTL. This is intentionally DB-authoritative per batch;
-  // local cache invalidation alone cannot cover other replicas.
-  const rows = await sql<{
-    id: string;
-    updated_at: string;
-    feeds_schema: Record<string, unknown> | null;
-  }>`
-      SELECT id::text AS id, updated_at::text AS updated_at, feeds_schema
+  const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
+  return rulesCache.getOrSet(cacheKey, async () => {
+    const rows = await sql`
+      SELECT feeds_schema
       FROM connector_definitions
       WHERE key = ${params.connectorKey}
         AND organization_id = ${params.orgId}
         AND status = 'active'
       LIMIT 1
-  `;
-  const revision = rows[0] ? `${rows[0].id}:${rows[0].updated_at}` : 'missing';
-  const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
-  return rulesForRevision(cacheKey, revision, () => {
+    `;
     const result: RuleMap = {};
     const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
     const feedDef = feedsSchema?.[params.feedKey];
@@ -279,21 +222,16 @@ export async function loadAttributionRuleByType(
   }
 ): Promise<ResolvedEventAttributionRule | null> {
   const roleKey = params.role ?? '__any__';
-  const rows = await sql<{
-    id: string;
-    updated_at: string;
-    feeds_schema: Record<string, unknown> | null;
-  }>`
-    SELECT id::text AS id, updated_at::text AS updated_at, feeds_schema
-    FROM connector_definitions
-    WHERE key = ${params.connectorKey}
-      AND organization_id = ${params.orgId}
-      AND status = 'active'
-    LIMIT 1
-  `;
-  const revision = rows[0] ? `${rows[0].id}:${rows[0].updated_at}` : 'missing';
   const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}:${roleKey}`;
-  const map = rulesForRevision(cacheKey, revision, () => {
+  const map = await rulesCache.getOrSet(cacheKey, async () => {
+    const rows = await sql`
+      SELECT feeds_schema
+      FROM connector_definitions
+      WHERE key = ${params.connectorKey}
+        AND organization_id = ${params.orgId}
+        AND status = 'active'
+      LIMIT 1
+    `;
     const result: RuleMap = {};
     const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
     if (feedsSchema) {
@@ -433,10 +371,9 @@ function passesCreateWhen(predicate: EntityLinkPredicate | undefined, item: Batc
 }
 
 /**
- * Ensure each attached identity is present on the entity's metric-resolution
- * surface. Organization-scoped identifiers use the legacy flat `aliases`
- * array. Every durable identity also gets a structured scope projection so the
- * metric compiler can compare both identifier and scope key.
+ * Ensure each organization-scoped attached identity is present in the legacy
+ * flat alias surface. Tenant-scoped metric resolution reads entity_identities
+ * directly and must never enter this scope-blind array.
  *
  * Lock before merging so concurrent connector transactions cannot clobber one
  * another's aliases or traits. Passing the entity's full identifier set (not
@@ -448,6 +385,11 @@ async function ensureAliases(
   params: { orgId: string; entityId: number; identities: AttachedIdentity[] }
 ): Promise<void> {
   if (params.identities.length === 0) return;
+  const organizationIdentifiers = params.identities
+    .filter((identity) => identity.scopeKey === null)
+    .map((identity) => identity.identifier);
+  if (organizationIdentifiers.length === 0) return;
+
   const rows = await sql<{ metadata: Record<string, unknown> | null }>`
     SELECT metadata
     FROM entities
@@ -462,34 +404,8 @@ async function ensureAliases(
   const aliases = Array.isArray(current.aliases)
     ? current.aliases.filter((value): value is string => typeof value === 'string')
     : [];
-  const organizationIdentifiers = params.identities
-    .filter((identity) => identity.scopeKey === null)
-    .map((identity) => identity.identifier);
-  const scopedAliases = parseScopedIdentityAliasProjections(
-    current[SCOPED_IDENTITY_ALIASES_METADATA_KEY]
-  );
-  const scopedByKey = new Map(
-    scopedAliases.map((projection) => [
-      scopedIdentityAliasProjectionKey(projection),
-      projection,
-    ])
-  );
-  for (const identity of params.identities) {
-    const projection = {
-      namespace: identity.namespace,
-      identifier: identity.identifier,
-      scopeKey: identity.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION,
-    };
-    scopedByKey.set(scopedIdentityAliasProjectionKey(projection), projection);
-  }
   const nextAliases = [...new Set([...aliases, ...organizationIdentifiers])].sort();
-  const nextScopedAliases = [...scopedByKey.values()].sort((left, right) =>
-    scopedIdentityAliasProjectionKey(left).localeCompare(scopedIdentityAliasProjectionKey(right))
-  );
-  if (
-    organizationIdentifiers.every((identifier) => aliases.includes(identifier)) &&
-    nextScopedAliases.length === scopedAliases.length
-  ) {
+  if (organizationIdentifiers.every((identifier) => aliases.includes(identifier))) {
     return;
   }
 
@@ -503,7 +419,6 @@ async function ensureAliases(
         metadata: {
           ...current,
           aliases: nextAliases,
-          [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: nextScopedAliases,
         },
       },
     }),
@@ -588,13 +503,10 @@ function extractLink(
 /**
  * Resolve identity keys to their owning entity — TYPE-AGNOSTIC.
  *
- * An identity value belongs to at most ONE entity within its current or
- * retained scope. The live-key index enforces current claims; explicit re-key
- * validates retained claims under an identity-writer table lock, and the
- * insertion path below refuses any retained-key collision. Org-scoped
- * identities carry a NULL scope and therefore still resolve org-wide, which
- * is every identity a connector has not declared `scope: 'tenant'`. We
- * deliberately do NOT
+ * An identity value belongs to at most ONE entity within its declared scope.
+ * The live-key index enforces that claim. Org-scoped identities carry a NULL
+ * scope and therefore still resolve org-wide, which is every identity a
+ * connector has not declared `scope: 'tenant'`. We deliberately do NOT
  * filter by the rule's target `entityType`: a `slack_user_id` owned by a
  * signed-in `$member` must resolve to that `$member` even when a `person`-typed
  * rule looks it up, so attribution and ACL converge on one entity instead of
@@ -633,19 +545,14 @@ async function lookupMatches(
     identifier: string;
     scope_key: string;
   }>`
-    SELECT DISTINCT ei.entity_id, ei.namespace, ei.identifier,
-           claim.scope_key
+    SELECT ei.entity_id, ei.namespace, ei.identifier,
+           COALESCE(ei.scope_key, '') AS scope_key
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
-    CROSS JOIN LATERAL (
-      SELECT DISTINCT unnest(
-        array_prepend(COALESCE(ei.scope_key, ''), ei.scope_key_history)
-      ) AS scope_key
-    ) claim
     WHERE ei.organization_id = ${params.orgId}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
-      AND (ei.namespace, ei.identifier, claim.scope_key) IN (
+      AND (ei.namespace, ei.identifier, COALESCE(ei.scope_key, '')) IN (
         SELECT ns, ident, scope
         FROM unnest(
           ${pgTextArray(namespaces)}::text[],
@@ -740,7 +647,6 @@ async function createEntityWithIdentities(
 
   const name = params.title || persisted[0].identifier;
   const metadata: Record<string, unknown> = {};
-  assertNoReservedProjectionTraitKeys(params.traits.keys());
   for (const [key, value] of params.traits) metadata[key] = value;
 
   // Resolve entity_type slug → entity_types(id). Same schema search path as
@@ -832,8 +738,7 @@ async function createEntityWithIdentities(
     connectionId: params.connectionId,
     identities: persisted,
   });
-  // Organization-scoped identities remain ordinary aliases. Every attached
-  // identity also carries its exact scope on the structured metric surface.
+  // Only organization-scoped identities enter the legacy flat alias surface.
   await ensureAliases(sql, {
     orgId: params.orgId,
     entityId,
@@ -886,20 +791,6 @@ async function insertIdentities(
       ${pgTextArray(identifiers)}::text[],
       ${pgTextArray(scopes)}::text[]
     ) AS v(ns, ident, scope)
-    -- A retained scope is still an authoritative claim because append-only
-    -- events stamped with it must keep resolving to their original entity.
-    -- Rekey takes SHARE ROW EXCLUSIVE on entity_identities, which conflicts
-    -- with this INSERT's ROW EXCLUSIVE lock, so this check cannot race a
-    -- history rewrite. Current-key races remain enforced by the unique index.
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM entity_identities retained
-      WHERE retained.organization_id = ${params.orgId}
-        AND retained.namespace = v.ns
-        AND retained.identifier = v.ident
-        AND retained.deleted_at IS NULL
-        AND COALESCE(v.scope, '') = ANY(retained.scope_key_history)
-    )
     ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, ''))
       WHERE deleted_at IS NULL
     DO UPDATE SET connection_id = EXCLUDED.connection_id
@@ -926,7 +817,6 @@ async function applyTraits(
   }
 ): Promise<void> {
   if (!params.rule.traits || params.traits.size === 0) return;
-  assertNoReservedProjectionTraitKeys(params.traits.keys());
 
   // init_only traits were written to metadata at create time; nothing to do now.
   const overwrite: Record<string, unknown> = {};
@@ -944,7 +834,7 @@ async function applyTraits(
   }
   if (Object.keys(overwrite).length === 0 && Object.keys(preferNonEmpty).length === 0) return;
 
-  // Serialize the metadata read-modify-write with alias and trait projections
+  // Serialize the metadata read-modify-write with aliases and traits
   // from concurrent connector transactions.
   const rows = await sql<{ metadata: Record<string, unknown> | null }>`
     SELECT metadata
@@ -1098,21 +988,6 @@ async function resolveLinksByKind(
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
     return resolvedByItem;
   }
-
-  // Connector payloads may supply trait values, so a declaration targeting a
-  // server-owned projection key would let the payload overwrite the canonical
-  // identity tuples after ensureAliases. Validate direct webhook rules here as
-  // well as connector-definition rules, before any entity write is attempted.
-  assertNoReservedProjectionTraits(params.rulesByKind);
-
-  await assertConnectorIdentityScopesActive({
-    sql,
-    organizationId: params.orgId,
-    connectorKey: params.connectorKey,
-    identities: Object.values(params.rulesByKind).flatMap((rules) =>
-      rules.flatMap((rule) => rule.identities)
-    ),
-  });
 
   // entities.created_by is NOT NULL; resolve an org owner/admin once per batch
   // so auto-created entities attribute to a real member rather than a seed user.
@@ -1381,13 +1256,6 @@ async function resolveLinksByKind(
         byNamespace = {};
         setOwn(md, IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY, byNamespace);
       }
-      let byAlias = ownRecord(md, IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY) as
-        | IdentityScopeByAliasProjection
-        | undefined;
-      if (!byAlias) {
-        byAlias = {};
-        setOwn(md, IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY, byAlias);
-      }
       for (const id of [...attached, ...eventOnlyIdentities]) {
         const existing = ownValue<unknown>(md, id.namespace);
         const projectedScope = id.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION;
@@ -1414,32 +1282,6 @@ async function resolveLinksByKind(
         }
         setOwn(md, id.namespace, id.identifier);
         setOwn(byNamespace, id.namespace, projectedScope);
-
-        let aliasScopes = ownRecord(
-          byAlias as Record<string, unknown>,
-          id.namespace
-        ) as Record<string, string> | undefined;
-        if (!aliasScopes) {
-          aliasScopes = {};
-          setOwn(byAlias as Record<string, unknown>, id.namespace, aliasScopes);
-        }
-        const aliasScope = ownValue<string>(aliasScopes, id.identifier);
-        if (aliasScope === undefined) {
-          setOwn(aliasScopes, id.identifier, projectedScope);
-        } else if (aliasScope !== projectedScope) {
-          logger.warn(
-            {
-              orgId: params.orgId,
-              connectorKey: params.connectorKey,
-              namespace: id.namespace,
-              identifier: id.identifier,
-              keptScope: aliasScope,
-              droppedScope: projectedScope,
-              role: rule.role,
-            },
-            'metric alias scope collision — keeping the first-stamped tenant scope for this event identity'
-          );
-        }
       }
     }
   }

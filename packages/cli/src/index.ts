@@ -391,45 +391,6 @@ Memory:
       }
     );
 
-  // ─── identities ────────────────────────────────────────────────────────
-  const identities = program
-    .command("identities")
-    .description("Manage durable entity identity keys");
-
-  identities
-    .command("rekey <namespace>")
-    .description("Explicitly re-key every live identity in a namespace")
-    .requiredOption(
-      "--mapping <file.json>",
-      "Complete entity-identity-id to tenant-key/null mapping"
-    )
-    .option("--apply", "Apply the reported re-key atomically")
-    .option("--org <slug>", "Org slug override (defaults to active session)")
-    .option("--url <url>", "Server URL override")
-    .option("-c, --context <name>", "Use a named context")
-    .option("--json", "Print JSON")
-    .action(
-      async (
-        namespace: string,
-        options: {
-          mapping: string;
-          apply?: boolean;
-          org?: string;
-          url?: string;
-          context?: string;
-          json?: boolean;
-        }
-      ) => {
-        // Keep this handler under the measured lazy-command exception at the
-        // top of this file: loading cloud config and HTTP helpers on `--help`
-        // would reintroduce the documented ~400ms startup penalty.
-        const { identitiesRekeyCommand } = await import(
-          "./commands/identities.js"
-        );
-        await identitiesRekeyCommand(namespace, options);
-      }
-    );
-
   // ─── run / dev / start ──────────────────────────────────────────────
   program
     .command("run")

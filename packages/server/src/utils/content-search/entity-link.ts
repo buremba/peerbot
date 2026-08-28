@@ -79,9 +79,7 @@ export function entityLinkMatchSql(paramRef: string, alias = 'f'): string {
        AND ei.deleted_at IS NULL
       WHERE e2.metadata ? '${ns}'
         AND e2.metadata->>'${ns}' = ei.identifier
-        AND COALESCE((e2.metadata->'${IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY}')->>'${ns}', '${ORGANIZATION_SCOPE_PROJECTION}') = ANY(
-          array_prepend(COALESCE(ei.scope_key, '${ORGANIZATION_SCOPE_PROJECTION}'), ei.scope_key_history)
-        )`
+        AND COALESCE((e2.metadata->'${IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY}')->>'${ns}', '${ORGANIZATION_SCOPE_PROJECTION}') = COALESCE(ei.scope_key, '${ORGANIZATION_SCOPE_PROJECTION}')`
   );
 
   const branches = [directBranch, ...standardBranches].join('\n    UNION\n    ');
@@ -114,16 +112,10 @@ export async function fetchEntityIdentityScopes(
   entityId: number
 ): Promise<EntityIdentityScope[]> {
   const rows = (await sql`
-    SELECT DISTINCT identity.namespace,
+    SELECT identity.namespace,
            identity.identifier,
-           NULLIF(scope.value, '') AS scope_key
+           identity.scope_key
     FROM entity_identities identity
-    CROSS JOIN LATERAL unnest(
-      array_prepend(
-        COALESCE(identity.scope_key, ''),
-        identity.scope_key_history
-      )
-    ) AS scope(value)
     WHERE identity.entity_id = ${entityId}
       AND identity.deleted_at IS NULL
       AND identity.namespace = ANY(${pgTextArray([...STANDARD_IDENTITY_NAMESPACES])}::text[])

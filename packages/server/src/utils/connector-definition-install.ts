@@ -322,20 +322,11 @@ type UpsertConnectorDefinitionRecordsParams = {
 
 export type UpsertConnectorDefinitionResult = {
   updated: boolean;
-  blockedMessage?: string;
 };
 
 /**
- * Reconcile identity-scope registry state and activate the matching connector
- * definition under one transaction. The namespace advisory locks therefore
- * remain held until the active definition and version rows agree with the
- * registry; a later write failure rolls the registry change back too.
- *
- * A blocked live-row transition is the intentional exception. When this
- * function owns the transaction it commits the pending target and then throws.
- * With a caller-owned transaction it returns `blockedMessage`; that owner must
- * stop its remaining writes, commit, and raise only outside its boundary so the
- * explicit re-key command does not lose the requested shape.
+ * Reconcile identity-scope registry state and activate the matching definition
+ * in one transaction, so a rejected shape change cannot partially install.
  */
 export async function upsertConnectorDefinitionRecords(
   params: UpsertConnectorDefinitionRecordsParams
@@ -346,9 +337,6 @@ export async function upsertConnectorDefinitionRecords(
   const result = callerOwnsTransaction
     ? await params.sql.savepoint(run)
     : await params.sql.begin(run);
-  if (result.blockedMessage && !callerOwnsTransaction) {
-    throw new Error(result.blockedMessage);
-  }
   return result;
 }
 
@@ -368,12 +356,11 @@ async function upsertConnectorDefinitionRecordsInTransaction(
     organizationId: params.organizationId,
     metadata,
   });
-  const blockedMessage = await reconcileConnectorIdentityScopeRegistry({
+  await reconcileConnectorIdentityScopeRegistry({
     sql,
     organizationId: params.organizationId,
     metadata,
   });
-  if (blockedMessage) return { updated: false, blockedMessage };
 
   const authSchemaJson = metadata.authSchema ? sql.json(metadata.authSchema) : null;
   const feedsSchemaJson = metadata.feeds ? sql.json(metadata.feeds) : null;

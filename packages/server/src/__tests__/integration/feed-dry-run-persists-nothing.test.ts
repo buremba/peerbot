@@ -32,7 +32,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../index';
 import { completeWorkerJob, streamContent } from '../../worker-api';
 import {
-  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
   IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
 } from '../../identity/scope-projection';
 import { clearEntityLinkRulesCache } from '../../utils/entity-link-upsert';
@@ -323,9 +322,6 @@ describe('feed dry run persists nothing', () => {
       tenant_id: 'tenant-a',
       strict_actor_id: 'actor-1',
       [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { strict_actor_id: 'tenant-a' },
-      [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: {
-        strict_actor_id: { 'actor-1': 'tenant-a' },
-      },
     });
   });
 

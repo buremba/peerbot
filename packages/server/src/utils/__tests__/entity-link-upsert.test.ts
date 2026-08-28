@@ -10,9 +10,7 @@ import {
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
 import {
-  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
   IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
-  SCOPED_IDENTITY_ALIASES_METADATA_KEY,
 } from '../../identity/scope-projection';
 import {
   applyEventAttributions,
@@ -119,10 +117,6 @@ describe('applyEventAttributions', () => {
       metadata: {
         visible: 'kept',
         [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: 'forged-tenant' },
-        [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { author: 'forged-tenant' },
-        [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
-          { namespace: 'x_user_id', identifier: 'author', scopeKey: 'forged-tenant' },
-        ],
       },
     };
 
@@ -139,10 +133,6 @@ describe('applyEventAttributions', () => {
       metadata: {
         visible: 'also-kept',
         [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: 'forged-tenant' },
-        [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { author: 'forged-tenant' },
-        [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
-          { namespace: 'x_user_id', identifier: 'author', scopeKey: 'forged-tenant' },
-        ],
       },
     };
     await expect(
@@ -154,42 +144,6 @@ describe('applyEventAttributions', () => {
       })
     ).resolves.toEqual(new Map());
     expect(webhookItem.metadata).toEqual({ visible: 'also-kept' });
-  });
-
-  it.each([
-    IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
-    IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
-    SCOPED_IDENTITY_ALIASES_METADATA_KEY,
-  ])('rejects a connector trait targeting reserved projection %s', async (reservedKey) => {
-    const { org } = await setupOrg(`reserved projection trait ${reservedKey}`);
-    const item = {
-      origin_type: 'message',
-      metadata: { user_id: 'actor-1', forged: [{ scopeKey: 'tenant-forged' }] },
-    };
-
-    await expect(
-      resolveEventAttributionsForItems({
-        connectorKey: 'webhook:reserved-projection-trait',
-        orgId: org.id,
-        items: [item],
-        rules: {
-          message: [
-            {
-              role: 'authored_by',
-              entityType: '$member',
-              autoCreate: true,
-              identities: [{ namespace: 'x_user_id', eventPath: 'metadata.user_id' }],
-              traits: {
-                [reservedKey]: {
-                  eventPath: 'metadata.forged',
-                  mergeStrategy: 'overwrite',
-                },
-              },
-            },
-          ],
-        },
-      })
-    ).rejects.toThrow(/reserved for server-authored identity scope projections/i);
   });
 
   it('creates an entity and writes identities when autoCreate is true and no match exists', async () => {
@@ -280,10 +234,8 @@ describe('applyEventAttributions', () => {
         AND deleted_at IS NULL
     `;
     expect(rows).toEqual([{ scope_key: 'tenant-a' }]);
-    expect(
-      (item.metadata as Record<string, unknown>)[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]
-    ).toEqual({
-      erp_customer: { 'C-1': 'tenant-a' },
+    expect(item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]).toEqual({
+      erp_customer: 'tenant-a',
     });
   });
 
@@ -325,14 +277,6 @@ describe('applyEventAttributions', () => {
     expect(Object.getPrototypeOf(byNamespace)).toBe(Object.prototype);
     expect(Object.hasOwn(byNamespace, '__proto__')).toBe(true);
     expect(byNamespace.__proto__).toBe('tenant-a');
-    const byAlias = item.metadata[
-      IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY
-    ] as Record<string, Record<string, unknown>>;
-    expect(Object.getPrototypeOf(byAlias)).toBe(Object.prototype);
-    expect(Object.hasOwn(byAlias, '__proto__')).toBe(true);
-    expect(Object.getPrototypeOf(byAlias.__proto__)).toBe(Object.prototype);
-    expect(Object.hasOwn(byAlias.__proto__, 'constructor')).toBe(true);
-    expect(byAlias.__proto__.constructor).toBe('tenant-a');
   });
 
   it('consumes event attributions directly', async () => {
@@ -715,9 +659,6 @@ describe('applyEventAttributions', () => {
     if (!primaryRow || !secondaryRow) throw new Error('Expected both entity rows');
     const primaryMetadata = primaryRow.metadata;
     expect(primaryMetadata.aliases).toEqual(['actor-1']);
-    expect(primaryMetadata[SCOPED_IDENTITY_ALIASES_METADATA_KEY]).toEqual([
-      { namespace: 'stable_actor_id', identifier: 'actor-1', scopeKey: '' },
-    ]);
     expect(item.metadata.stable_actor_id).toBe('actor-1');
     expect(Object.hasOwn(item.metadata, 'mutable_login')).toBe(false);
     expect(secondaryRow.metadata).toEqual({});
@@ -830,22 +771,10 @@ describe('applyEventAttributions', () => {
     expect(rows.map((r) => r.namespace)).toEqual(['email']);
     expect(item.metadata.email).toBe('alex@example.com');
     expect(item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]).toEqual({ email: '' });
-    expect(item.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]).toEqual({
-      email: { 'alex@example.com': '' },
-    });
-    const [{ metadata }] = await sql<{
-      metadata: {
-        aliases?: string[];
-        [SCOPED_IDENTITY_ALIASES_METADATA_KEY]?: Array<{
-          namespace: string;
-          identifier: string;
-        }>;
-      };
-    }[]>`
+    const [{ metadata }] = await sql<{ metadata: { aliases?: string[] } }[]>`
       SELECT metadata FROM entities WHERE id = ${Number(entityId)}
     `;
     expect(metadata.aliases).toBeUndefined();
-    expect(metadata[SCOPED_IDENTITY_ALIASES_METADATA_KEY]).toBeUndefined();
   });
 
   it('two concurrent auto-creates for the same new actor → one entity, no orphan', async () => {

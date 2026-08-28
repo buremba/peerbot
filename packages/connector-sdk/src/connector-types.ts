@@ -602,10 +602,7 @@ export interface EventAttributionRule {
   target: EventAttributionTargetSpec;
   /** Whether an unmatched target may be materialized by the attribution engine. */
   autoCreate?: boolean;
-  /**
-   * Optional descriptive fields to merge onto the target entity when resolved.
-   * Server-owned identity-scope projection keys are rejected.
-   */
+  /** Optional descriptive fields to merge onto the target entity when resolved. */
   traits?: Record<string, EntityTraitSpec>;
 }
 

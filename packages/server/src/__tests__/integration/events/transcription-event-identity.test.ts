@@ -9,9 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as lobuGateway from '../../../lobu/gateway';
 import {
-  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
   IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
-  SCOPED_IDENTITY_ALIASES_METADATA_KEY,
 } from '../../../identity/scope-projection';
 import { transcribeOne } from '../../../utils/inline-attachments';
 import { insertEvent } from '../../../utils/insert-event';
@@ -190,10 +188,6 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
       visible: 'kept',
       wa_jid: 'actor-1',
       [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { wa_jid: 'tenant-a' },
-      [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { wa_jid: { 'actor-1': 'tenant-a' } },
-      [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
-        { namespace: 'wa_jid', identifier: 'actor-1', scopeKey: 'tenant-a' },
-      ],
     };
     const base = await insertEvent(
       {

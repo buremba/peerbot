@@ -31,10 +31,7 @@ vi.mock("@sentry/node", () => ({
 
 // --- heavy collaborators of createServerLifecycle, replaced so the spine
 // --- boots in-process against a real ephemeral HTTP server.
-vi.mock("../db/client", async (importOriginal) => ({
-	...(await importOriginal<typeof import("../db/client")>()),
-	closeDbSingleton: vi.fn(async () => {}),
-}));
+vi.mock("../db/client", () => ({ closeDbSingleton: vi.fn(async () => {}) }));
 vi.mock("../dev-vite", () => ({ mountViteDev: vi.fn(async () => null) }));
 vi.mock("../workspace", () => ({
 	initWorkspaceProvider: vi.fn(async () => undefined),

@@ -13,11 +13,12 @@ interface State {
   close_reason?: "quorum" | "deadline";
 }
 
-function harness(closesAt = "2026-08-28T15:00:00.000Z") {
+function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
   let runId = 0;
   let eventId = 100;
   let responseId = 1_000;
   let closeBeforeNextSave = false;
+  let failNextPollEntityUpdate = false;
   let trigger: Record<string, unknown> = {};
   let head = {
     id: eventId,
@@ -26,7 +27,7 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z") {
       question: "Ship which lane?",
       options: ["A", "B", "C"],
       status: "open",
-      quorum: 2,
+      quorum,
       closes_at: closesAt,
       results: [
         { option: "A", count: 0 },
@@ -36,6 +37,7 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z") {
       response_count: 0,
     } as State,
   };
+  let entityState: State = { ...head.metadata };
   const responses = new Map<
     string,
     { id: number; metadata: Record<string, unknown> }
@@ -88,7 +90,14 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z") {
         entity_id: number;
         metadata?: Record<string, unknown>;
       }) => {
-        if (input.entity_id === 77) return;
+        if (input.entity_id === 77) {
+          if (failNextPollEntityUpdate) {
+            failNextPollEntityUpdate = false;
+            throw new Error("poll entity update failed");
+          }
+          if (input.metadata) entityState = input.metadata as unknown as State;
+          return;
+        }
         const current = [...responses.entries()].find(
           ([, response]) => response.id === input.entity_id
         );
@@ -128,32 +137,8 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z") {
     log: () => undefined,
   } as unknown as ReactionClient;
 
-  const vote = async (params: {
-    actorId: string;
-    actorName: string;
-    choice: string;
-    occurredAt: string;
-  }) => {
+  const run = async () => {
     runId += 1;
-    trigger = {
-      id: 200 + runId,
-      entity_ids: [77],
-      semantic_type: "poll_vote_cast",
-      origin_type: "template_interaction",
-      occurred_at: params.occurredAt,
-      metadata: {
-        interaction: {
-          action: "vote",
-          value: params.choice,
-          source_event_id: head.id,
-          actor: {
-            platform: "gchat",
-            id: params.actorId,
-            name: params.actorName,
-          },
-        },
-      },
-    };
     await reducePollVote(
       {
         extracted_data: { summary: "Process the trusted poll interaction." },
@@ -179,6 +164,34 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z") {
     );
   };
 
+  const vote = async (params: {
+    actorId: string;
+    actorName: string;
+    choice: string;
+    occurredAt: string;
+  }) => {
+    trigger = {
+      id: 200 + runId,
+      entity_ids: [77],
+      semantic_type: "poll_vote_cast",
+      origin_type: "template_interaction",
+      occurred_at: params.occurredAt,
+      metadata: {
+        interaction: {
+          action: "vote",
+          value: params.choice,
+          source_event_id: head.id,
+          actor: {
+            platform: "gchat",
+            id: params.actorId,
+            name: params.actorName,
+          },
+        },
+      },
+    };
+    await run();
+  };
+
   const close = (reason: "quorum" | "deadline") => {
     eventId += 1;
     head = {
@@ -198,7 +211,12 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z") {
     raceDeadlineOnNextSave: () => {
       closeBeforeNextSave = true;
     },
+    failNextPollEntityUpdate: () => {
+      failNextPollEntityUpdate = true;
+    },
+    retryLastVote: run,
     state: () => head.metadata,
+    entityState: () => entityState,
     responses: () => [...responses.values()].map((row) => row.metadata),
     savedKinds,
   };
@@ -313,6 +331,65 @@ describe("poll vote reaction", () => {
       ],
       response_count: 1,
     });
+    expect(poll.savedKinds).toEqual(["poll_closed"]);
+  });
+
+  test("repairs poll entity metadata when a closed successor already exists", async () => {
+    const poll = harness("2026-08-28T15:00:00.000Z", 1);
+    poll.failNextPollEntityUpdate();
+
+    await expect(
+      poll.vote({
+        actorId: "users/ada",
+        actorName: "Ada",
+        choice: "A",
+        occurredAt: "2026-08-28T14:10:00.000Z",
+      })
+    ).rejects.toThrow("poll entity update failed");
+
+    expect(poll.state()).toMatchObject({
+      status: "closed",
+      close_reason: "quorum",
+      results: [
+        { option: "A", count: 1 },
+        { option: "B", count: 0 },
+        { option: "C", count: 0 },
+      ],
+    });
+    expect(poll.entityState()).toMatchObject({
+      status: "open",
+      response_count: 0,
+    });
+
+    await poll.retryLastVote();
+
+    expect(poll.entityState()).toEqual(poll.state());
+    expect(poll.savedKinds).toEqual(["poll_closed"]);
+  });
+
+  test("repairs poll entity metadata when a deadline close already exists", async () => {
+    const poll = harness("2026-08-28T14:05:00.000Z");
+    poll.failNextPollEntityUpdate();
+
+    await expect(
+      poll.vote({
+        actorId: "users/late",
+        actorName: "Late voter",
+        choice: "C",
+        occurredAt: "2026-08-28T14:05:00.000Z",
+      })
+    ).rejects.toThrow("poll entity update failed");
+
+    expect(poll.state()).toMatchObject({
+      status: "closed",
+      close_reason: "deadline",
+      response_count: 0,
+    });
+    expect(poll.entityState()).toMatchObject({ status: "open" });
+
+    await poll.retryLastVote();
+
+    expect(poll.entityState()).toEqual(poll.state());
     expect(poll.savedKinds).toEqual(["poll_closed"]);
   });
 });

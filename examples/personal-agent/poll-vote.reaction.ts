@@ -226,6 +226,17 @@ async function saveSuccessor(params: {
   });
 }
 
+async function updatePollEntity(
+  entityId: number,
+  state: PollState,
+  client: ReactionClient
+): Promise<void> {
+  await client.entities.update({
+    entity_id: entityId,
+    metadata: state as unknown as Record<string, unknown>,
+  });
+}
+
 async function upsertResponse(params: {
   pollEntityId: number;
   platform: string;
@@ -342,7 +353,10 @@ export default async function reducePollVote(
   const closesAt = Date.parse(head.metadata.closes_at);
   const deadlineReached = !Number.isFinite(voteAt) || voteAt >= closesAt;
   const alreadyClosed = head.semantic_type === "poll_closed";
-  if (alreadyClosed && deadlineReached) return;
+  if (alreadyClosed && deadlineReached) {
+    await updatePollEntity(entityId, head.metadata, client);
+    return;
+  }
   if (!deadlineReached) {
     await upsertResponse({
       pollEntityId: entityId,
@@ -381,6 +395,7 @@ export default async function reducePollVote(
     next.response_count === head.metadata.response_count &&
     sameResults(next.results, head.metadata.results)
   ) {
+    await updatePollEntity(entityId, next, client);
     return;
   }
   try {
@@ -423,16 +438,10 @@ export default async function reducePollVote(
         alreadyClosed: true,
       });
     }
-    await client.entities.update({
-      entity_id: entityId,
-      metadata: terminal as unknown as Record<string, unknown>,
-    });
+    await updatePollEntity(entityId, terminal, client);
     return;
   }
-  await client.entities.update({
-    entity_id: entityId,
-    metadata: next as unknown as Record<string, unknown>,
-  });
+  await updatePollEntity(entityId, next, client);
   client.log("Poll vote reduced", {
     poll_entity_id: entityId,
     vote_event_id: trigger.id,

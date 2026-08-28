@@ -587,7 +587,14 @@ export async function buildAccessGraph(params: {
   const { createdEdges, removedEdges } = await withAclEdgeWrite(
     sql,
     async (tx) => {
-      const claimKey = connectionRelationshipClaimKey(connectionId, 'config:access-graph');
+      // Connection cleanup is keyed by the stored row id. Chat ACL syncs use a
+      // runtime id derived from the row slug, so claiming under that runtime id
+      // would leave authorization edges behind when the numeric row is deleted.
+      // Synthetic direct callers have no row and retain their supplied id.
+      const claimKey = connectionRelationshipClaimKey(
+        identityConnectionId ?? connectionId,
+        'config:access-graph',
+      );
       const created = await upsertEdges({
         db: tx,
         organizationId,

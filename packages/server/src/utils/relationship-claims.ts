@@ -127,7 +127,10 @@ function migrationRequired(row: { id: number | string }): ToolUserError {
   );
 }
 
-async function lockOrganization(tx: DbClient, organizationId: string): Promise<void> {
+export async function lockOrganizationForRelationshipClaims(
+  tx: DbClient,
+  organizationId: string
+): Promise<void> {
   const rows = await tx`
     SELECT 1 FROM organization
     WHERE id = ${organizationId}
@@ -311,7 +314,7 @@ export async function assertManualRelationshipClaim(
     metadata?: Record<string, unknown> | null;
   }
 ): Promise<RelationshipClaimResult> {
-  await lockOrganization(tx, params.organizationId);
+  await lockOrganizationForRelationshipClaims(tx, params.organizationId);
   return insertOnlyRelationshipClaim(tx, {
     ...params,
     claimKey: MANUAL_RELATIONSHIP_CLAIM_KEY,
@@ -399,7 +402,7 @@ export async function retractManualRelationshipClaim(
     clientId?: string | null;
   }
 ): Promise<{ relationshipRemoved: boolean }> {
-  await lockOrganization(tx, params.organizationId);
+  await lockOrganizationForRelationshipClaims(tx, params.organizationId);
   const rows = await tx<ClaimedRelationshipWithPurposeRow>`
     SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
            rt.slug AS relationship_type_slug, rt.purpose AS relationship_type_purpose,
@@ -522,7 +525,7 @@ export async function reconcileConnectorRelationshipClaims(
     if (existing.length === 0) return;
   }
 
-  await lockOrganization(tx, params.organizationId);
+  await lockOrganizationForRelationshipClaims(tx, params.organizationId);
   await lockLiveConnection(tx, params.organizationId, params.connectionId);
 
   const typeSlugs = [...new Set(params.desired.map((edge) => edge.declaration.type))];
@@ -611,7 +614,7 @@ export async function retractConnectionRelationshipClaims(
   tx: DbClient,
   params: { organizationId: string; connectionId: number | string }
 ): Promise<void> {
-  await lockOrganization(tx, params.organizationId);
+  await lockOrganizationForRelationshipClaims(tx, params.organizationId);
   const prefix = connectionRelationshipClaimPrefix(params.connectionId);
   await withAclPrivilege(tx, async () => {
     // One ascending-id pass over the org's live claimed edges, retracting every

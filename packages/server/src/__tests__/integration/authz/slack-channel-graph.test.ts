@@ -19,6 +19,7 @@ import {
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildAccessGraph } from '../../../authz/access-graph';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
+import { retractConnectionRelationshipClaims } from '../../../utils/relationship-claims';
 
 /**
  * Test helper: materialize a Slack channel graph via the connector normalizer +
@@ -185,6 +186,35 @@ describe('slack channel graph', () => {
     `;
     expect(identitySources.length).toBeGreaterThan(0);
     expect(identitySources.every((row) => Number(row.connection_id) === connection.id)).toBe(true);
+  });
+
+  it('retracts runtime ACL claims when the stored chat connection is deleted', async () => {
+    const { org, user } = await seedOrg('Slack Graph Cleanup Org');
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'slack',
+      slug: 'agentconn-conn-cleanup',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-cleanup',
+      teamId: TEAM,
+      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] }],
+    });
+    expect(await memberOfEdges(org.id)).toHaveLength(1);
+
+    const sql = getTestDb();
+    await sql.begin((tx) =>
+      retractConnectionRelationshipClaims(tx, {
+        organizationId: org.id,
+        connectionId: connection.id,
+      })
+    );
+
+    expect(await memberOfEdges(org.id)).toHaveLength(0);
   });
 
   it('collapses a member onto an already-signed-in $member (no second person)', async () => {

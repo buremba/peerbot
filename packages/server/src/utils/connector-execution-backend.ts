@@ -137,6 +137,37 @@ export function classifySelectedConnectorExecution(params: {
   return { manifestBacked, backend: 'native_bridge', manifestHash: params.artifact.manifestHash };
 }
 
+/**
+ * Whether the claiming device implements this connector itself, so the gateway
+ * may omit `compiled_code` from the poll response.
+ *
+ * ONLY a native-bridge run qualifies. `manifestBacked` and
+ * `deviceAdvertisesRequiredCapability` are accepted so callers cannot
+ * accidentally reintroduce them as reasons to withhold the bundle:
+ *
+ *  - A device manifest may describe a connector the connector-worker daemon
+ *    serves from the bundled catalog rather than a native bridge. The headless
+ *    `os.shell` manifest is exactly that, so `manifestBacked` does not imply
+ *    native execution.
+ *  - A required-capability gate says which device MAY run a connector, never
+ *    that the device implements it.
+ *
+ * Withholding the bundle on either signal strands the run: a worker whose image
+ * cannot resolve the connector source fails it with "connector_key '...' did
+ * not resolve to a local source file".
+ */
+export function deviceExecutesConnectorNatively(params: {
+  isUserScopedWorker: boolean;
+  hasStoredCompiledCode: boolean;
+  isNativeBridgeRun: boolean;
+  manifestBacked: boolean;
+  deviceAdvertisesRequiredCapability: boolean;
+}): boolean {
+  return (
+    params.isUserScopedWorker && !params.hasStoredCompiledCode && params.isNativeBridgeRun
+  );
+}
+
 export function parseManifestSourcePath(
   sourcePath: string | null | undefined,
 ): { platform: string; key: string; version: string } | null {

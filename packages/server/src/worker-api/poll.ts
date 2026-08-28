@@ -60,7 +60,10 @@ import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execut
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { selectedConnectorVersionArtifactSql } from '../utils/connector-execution-placement';
-import { classifySelectedConnectorExecution } from '../utils/connector-execution-backend';
+import {
+  classifySelectedConnectorExecution,
+  deviceExecutesConnectorNatively,
+} from '../utils/connector-execution-backend';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
 import { normalizeAdvertisedCapabilities, normalizeAgentKinds } from './shared';
@@ -1648,18 +1651,21 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const hasStoredCompiledCode = Boolean(row.compiled_code);
   const workerWillResolveLocally =
     !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
-  // Metadata-only device manifests describe connectors implemented natively by
-  // the device bridge, so there is no TypeScript bundle to deliver. A device
-  // connector that does have compiled code (for example an `os.files` takeout
-  // connector installed from source) runs in connector-worker and needs that
-  // code inline because it is not part of the worker's bundled catalog.
-  const deviceWillExecuteNativeConnector =
-    isUserScopedWorker &&
-    !hasStoredCompiledCode &&
-    (isNativeBridgeRun ||
-      row.connector_manifest_backed ||
-      (row.connector_required_capability != null &&
-        authorizedCapabilities.includes(row.connector_required_capability)));
+  // Only a native-bridge run is implemented by the device itself and therefore
+  // needs no TypeScript bundle. `classifySelectedConnectorExecution` is the
+  // authority: it emits `native_bridge` only for a bridge-owned definition on a
+  // hash-attested, platform-matched, code-free manifest artifact. See
+  // `deviceExecutesConnectorNatively` for why manifest-backing and the
+  // capability gate are NOT reasons to withhold the bundle.
+  const deviceWillExecuteNativeConnector = deviceExecutesConnectorNatively({
+    isUserScopedWorker,
+    hasStoredCompiledCode,
+    isNativeBridgeRun,
+    manifestBacked: row.connector_manifest_backed,
+    deviceAdvertisesRequiredCapability:
+      row.connector_required_capability != null &&
+      authorizedCapabilities.includes(row.connector_required_capability),
+  });
   if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteNativeConnector) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, {
@@ -1743,10 +1749,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
 
   // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
   // The worker provisions these on PATH via nix-shell before executing.
+  //
+  // Only a native-bridge run skips provisioning, for the same reason it skips
+  // the code bundle: the device implements the connector itself. Manifest
+  // backing alone does not mean that — a manifest-backed, non-bridge connector
+  // executes in connector-worker and needs its declared native deps like any
+  // other. No shipped device manifest declares `nix` today, so this is inert
+  // now and correct when one does.
   const nixPackages = (
-    isNativeBridgeRun || row.connector_manifest_backed
-      ? []
-      : (row.connector_runtime?.nix?.packages ?? [])
+    isNativeBridgeRun ? [] : (row.connector_runtime?.nix?.packages ?? [])
   ).filter(
     (p): p is string => typeof p === 'string'
   );

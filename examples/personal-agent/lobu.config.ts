@@ -47,7 +47,7 @@ Create no ad-hoc platform card and never use ask_user for a multi-user poll. The
 
 Opening a poll:
 1. Require a non-empty question, 2-5 distinct non-empty options, a positive integer quorum, and a future closes_at. If the user gives a duration, calculate closes_at as an ISO-8601 timestamp.
-2. In one run_sdk call, create a poll entity and then call client.knowledge.save with entity_ids containing only that entity id, semantic_type "poll_opened", payload_type "empty", title equal to the question, a stable idempotency_key "poll-opened:<entity id>", and metadata containing question, options, status "open", quorum, closes_at, results (one { option, count: 0 } row per option), and response_count 0. Return the entity id and saved event id. If retrying after an uncertain result, search for the stable poll slug first instead of creating a duplicate.
+2. In one run_sdk call, create a poll entity, read its numeric id from createResult.entity?.id (stop if the result has no created entity), and then call client.knowledge.save with entity_ids containing only that numeric entity id, semantic_type "poll_opened", payload_type "empty", title equal to the question, a stable idempotency_key "poll-opened:<entity id>", and metadata containing question, options, status "open", quorum, closes_at, results (one { option, count: 0 } row per option), and response_count 0. Return the entity id and saved event id. If retrying after an uncertain result, search for the stable poll slug first instead of creating a duplicate.
 3. Before presenting the event, call schedule_followup with run_at equal to closes_at, idempotency_key "poll-deadline:<entity id>", and prompt: "Close event-backed poll entity <entity id> at its deadline. Follow the event-backed-polls deadline procedure exactly; do nothing if it is already closed."
 4. Call present_event exactly once with the saved event id. That ends the turn because the native card is already the answer.
 
@@ -501,16 +501,20 @@ const poll = defineEntityType({
         type: "card",
         children: [
           {
-            type: "text",
-            content: "Open until {{closes_at}} · quorum {{quorum}}",
+            type: "context",
+            children: [
+              { type: "text", content: "Open until " },
+              { type: "data", path: "closes_at" },
+              { type: "text", content: " · quorum " },
+              { type: "data", path: "quorum" },
+            ],
           },
           {
-            type: "each",
-            items: "results",
-            as: "result",
-            render: {
-              type: "text",
-              content: "{{result.option}} — {{result.count}} vote(s)",
+            type: "table",
+            props: {
+              title: "Results",
+              data: "{{results}}",
+              columns: ["option", "count"],
             },
           },
           {
@@ -540,19 +544,23 @@ const poll = defineEntityType({
       jsonTemplate: {
         type: "card",
         children: [
-          { type: "text", content: "Closed · {{close_reason}}" },
           {
-            type: "each",
-            items: "results",
-            as: "result",
-            render: {
-              type: "text",
-              content: "{{result.option}} — {{result.count}} vote(s)",
-            },
+            type: "context",
+            children: [
+              { type: "text", content: "Closed · " },
+              { type: "data", path: "close_reason" },
+              { type: "text", content: " · " },
+              { type: "data", path: "response_count" },
+              { type: "text", content: " participant(s)" },
+            ],
           },
           {
-            type: "text",
-            content: "{{response_count}} participant(s)",
+            type: "table",
+            props: {
+              title: "Results",
+              data: "{{results}}",
+              columns: ["option", "count"],
+            },
           },
         ],
       },

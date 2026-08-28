@@ -2,7 +2,9 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { autoLinkEvent } from '../../../utils/auto-linker';
+import { upsertEdges } from '../../../utils/edge-writes';
 import {
+  connectionRelationshipClaimKey,
   reconcileConnectorRelationshipClaims,
   RELATIONSHIP_CLAIMS_METADATA_KEY,
   retractConnectionRelationshipClaims,
@@ -89,8 +91,8 @@ describe('relationship source claims', () => {
     `;
     expect(rows).toHaveLength(1);
     expect(Object.keys(rows[0].metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).sort()).toEqual([
-      `feed:${connection.id}:invoice:source-a`,
-      `feed:${connection.id}:invoice:source-b`,
+      `connection:${connection.id}:feed:invoice:source-a`,
+      `connection:${connection.id}:feed:invoice:source-b`,
     ]);
 
     await sql.begin((tx) =>
@@ -106,7 +108,7 @@ describe('relationship source claims', () => {
     `;
     expect(retained.deleted_at).toBeNull();
     expect(Object.keys(retained.metadata[RELATIONSHIP_CLAIMS_METADATA_KEY])).toEqual([
-      `feed:${connection.id}:invoice:source-b`,
+      `connection:${connection.id}:feed:invoice:source-b`,
     ]);
   });
 
@@ -148,8 +150,8 @@ describe('relationship source claims', () => {
     expect(rows).toHaveLength(2);
     for (const row of rows) {
       expect(Object.keys(row.metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).sort()).toEqual([
-        `feed:${connection.id}:invoice:ordered-a`,
-        `feed:${connection.id}:invoice:ordered-b`,
+        `connection:${connection.id}:feed:invoice:ordered-a`,
+        `connection:${connection.id}:feed:invoice:ordered-b`,
       ]);
     }
   });
@@ -204,6 +206,23 @@ describe('relationship source claims', () => {
         })
       );
     }
+    const [type] = await sql`
+      SELECT id FROM entity_relationship_types
+      WHERE organization_id = ${workspace.org.id} AND slug = 'invoice_customer'
+    `;
+    for (const owner of ['config:access-graph', 'config:channel-about:invoices']) {
+      await upsertEdges({
+        db: sql,
+        organizationId: workspace.org.id,
+        relationshipTypeId: Number(type.id),
+        pairs: [
+          { fromEntityId: invoice.entity.id, toEntityId: customer.entity.id },
+        ],
+        source: 'feed',
+        claimKey: connectionRelationshipClaimKey(connection.id, owner),
+        onConflict: 'ignore',
+      });
+    }
     await sql.begin((tx) =>
       retractConnectionRelationshipClaims(tx, {
         organizationId: workspace.org.id,
@@ -244,7 +263,7 @@ describe('relationship source claims', () => {
     `;
     expect(row.metadata).not.toHaveProperty('requested');
     expect(Object.keys(row.metadata[RELATIONSHIP_CLAIMS_METADATA_KEY])).toEqual([
-      `feed:${connection.id}:invoice:source`,
+      `connection:${connection.id}:feed:invoice:source`,
     ]);
   });
 

@@ -47,6 +47,7 @@ import {
   withEntityWriteTransaction,
 } from '../utils/entity-management.js';
 import { ensureRelationshipType, upsertEdges } from '../utils/edge-writes.js';
+import { connectionRelationshipClaimKey } from '../utils/relationship-claims.js';
 import {
   PURPOSE_AUTHORIZATION,
   withAclEdgeWrite,
@@ -590,7 +591,7 @@ export async function buildAccessGraph(params: {
         source: 'feed',
         confidence: 1.0,
         createdBy: creatorUserId,
-        claimKey: `config:access-graph:${connectionId}`,
+        claimKey: connectionRelationshipClaimKey(connectionId, 'config:access-graph'),
         onConflict: 'ignore',
       });
 

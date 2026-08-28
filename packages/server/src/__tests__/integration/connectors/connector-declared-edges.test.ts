@@ -167,7 +167,7 @@ describe('connector-declared relationships', () => {
       metadata: {
         _lobu_claims: {
           manual: {},
-          [`feed:${connection.id}:${originId}`]: {},
+          [`connection:${connection.id}:feed:${originId}`]: {},
         },
       },
     });
@@ -178,7 +178,7 @@ describe('connector-declared relationships', () => {
       SELECT metadata FROM entity_relationships WHERE id = ${edges[0].id}
     `;
     expect(Object.keys(coOwned.metadata._lobu_claims).sort()).toEqual([
-      `feed:${connection.id}:${originId}`,
+      `connection:${connection.id}:feed:${originId}`,
       'manual',
     ]);
     await workspace.owner.entities.manage({
@@ -193,7 +193,7 @@ describe('connector-declared relationships', () => {
       reviewed: true,
       _lobu_claims: {
         manual: {},
-        [`feed:${connection.id}:${originId}`]: expect.any(Object),
+        [`connection:${connection.id}:feed:${originId}`]: expect.any(Object),
       },
     });
 
@@ -237,7 +237,7 @@ describe('connector-declared relationships', () => {
     const newSource = liveAfterMove.find((row) => row.to_name === 'Beta GmbH');
     expect(oldManual?.metadata).toEqual({ reviewed: true, _lobu_claims: { manual: {} } });
     expect(Object.keys(newSource?.metadata._lobu_claims ?? {})).toEqual([
-      `feed:${connection.id}:${originId}`,
+      `connection:${connection.id}:feed:${originId}`,
     ]);
 
     await expect(

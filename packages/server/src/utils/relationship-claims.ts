@@ -44,14 +44,17 @@ interface ClaimedRelationshipRow {
   from_entity_id: number | string;
   to_entity_id: number | string;
   relationship_type_id: number | string;
-  relationship_type_slug: string | null;
   metadata: unknown;
   confidence: number | null;
   source: string | null;
   inserted?: boolean;
 }
 
-interface ClaimedRelationshipWithPurposeRow extends ClaimedRelationshipRow {
+interface ClaimedRelationshipWithSlugRow extends ClaimedRelationshipRow {
+  relationship_type_slug: string | null;
+}
+
+interface ClaimedRelationshipWithPurposeRow extends ClaimedRelationshipWithSlugRow {
   relationship_type_purpose: string | null;
 }
 
@@ -65,11 +68,18 @@ function connectorRelationshipClaimKey(
   connectionId: number | string,
   originId: string
 ): string {
-  return `feed:${connectionId}:${originId}`;
+  return connectionRelationshipClaimKey(connectionId, `feed:${originId}`);
 }
 
-function connectorRelationshipClaimPrefix(connectionId: number | string): string {
-  return `feed:${connectionId}:`;
+function connectionRelationshipClaimPrefix(connectionId: number | string): string {
+  return `connection:${connectionId}:`;
+}
+
+export function connectionRelationshipClaimKey(
+  connectionId: number | string,
+  owner: string
+): string {
+  return `${connectionRelationshipClaimPrefix(connectionId)}${owner}`;
 }
 
 export function relationshipMetadataWithoutClaims(value: unknown): Record<string, unknown> | null {
@@ -313,7 +323,7 @@ async function retractLockedRelationshipClaims(
   params: {
     organizationId: string;
     claimKeys: readonly string[];
-    row: ClaimedRelationshipRow;
+    row: ClaimedRelationshipWithSlugRow;
     updatedBy?: string | null;
     clientId?: string | null;
   }
@@ -425,7 +435,7 @@ async function retractRelationshipClaimExcept(
     keepRelationshipIds: ReadonlySet<number>;
   }
 ): Promise<void> {
-  const rows = await tx<ClaimedRelationshipRow>`
+  const rows = await tx<ClaimedRelationshipWithSlugRow>`
     SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
            rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
     FROM entity_relationships r
@@ -543,20 +553,20 @@ export async function reconcileConnectorRelationshipClaims(
   });
 }
 
-/** Remove every connector-event claim owned by a connection. */
+/** Remove every feed or config relationship claim owned by a connection. */
 export async function retractConnectionRelationshipClaims(
   tx: DbClient,
   params: { organizationId: string; connectionId: number | string }
 ): Promise<void> {
   await lockOrganization(tx, params.organizationId);
-  const prefix = connectorRelationshipClaimPrefix(params.connectionId);
+  const prefix = connectionRelationshipClaimPrefix(params.connectionId);
   // One ascending-id pass over the org's live claimed edges, retracting every
   // key this connection owns per row. Resolving the distinct claim keys first
   // and re-scanning per key would cost one scan per ingested source item,
   // inside the connection-delete transaction that already holds these rows.
   // The prefix predicate cannot use the exact-claim GIN index, so this scan is
   // deliberately constrained to one organization and runs only on deletion.
-  const rows = await tx<ClaimedRelationshipRow>`
+  const rows = await tx<ClaimedRelationshipWithSlugRow>`
     SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
            rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
     FROM entity_relationships r

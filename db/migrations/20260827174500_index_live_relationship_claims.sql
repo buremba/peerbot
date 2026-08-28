@@ -1,8 +1,21 @@
 -- migrate:up transaction:false
 
+-- Existing relationships predate ownership claims, so the cutover treats them
+-- as manual. This is a one-time data stamp; runtime code has no legacy path.
+-- The table is currently small, so batching this update would add machinery
+-- without reducing deployment risk.
+UPDATE public.entity_relationships
+SET metadata = jsonb_set(
+      COALESCE(metadata, '{}'::jsonb),
+      ARRAY['_lobu_claims']::text[],
+      '{"manual": {}}'::jsonb,
+      true
+    ),
+    updated_at = current_timestamp
+WHERE deleted_at IS NULL
+  AND NOT (COALESCE(metadata, '{}'::jsonb) ? '_lobu_claims');
+
 -- Partial expression index used to find exact claims on live relationships.
--- This cutover deliberately does not infer ownership for pre-feature rows;
--- migrate or recreate those rows explicitly before connector ingestion.
 -- A failed concurrent build leaves an invalid index behind; remove it so a
 -- migration retry always performs a real build instead of trusting the name.
 DROP INDEX CONCURRENTLY IF EXISTS public.idx_entity_relationships_live_claims;

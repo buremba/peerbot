@@ -146,6 +146,24 @@ describe("identities rekey", () => {
     expect(calls).toHaveLength(1);
   });
 
+  test("an applied=false response on --apply is reported as a failure", async () => {
+    const response = {
+      namespace: "crm_customer",
+      applied: false,
+      live_identity_count: 1,
+      changed_identity_count: 1,
+    };
+    responses = [response, response];
+
+    await expect(
+      identitiesRekeyCommand("crm_customer", {
+        mapping: await mappingFile({ "101": "tenant-a" }),
+        apply: true,
+      })
+    ).rejects.toThrow(/reported applied=false/);
+    expect(calls).toHaveLength(2);
+  });
+
   test("reports the scope the server named, not an assumed one", async () => {
     responses = [
       {
@@ -189,6 +207,15 @@ describe("identities rekey", () => {
         mapping: await mappingFile({ "101": "   " }),
       })
     ).rejects.toThrow(/empty tenant key/i);
+    expect(calls).toEqual([]);
+  });
+
+  test("rejects padded tenant keys before making a request", async () => {
+    await expect(
+      identitiesRekeyCommand("crm_customer", {
+        mapping: await mappingFile({ "101": " tenant-a" }),
+      })
+    ).rejects.toThrow(/leading or trailing whitespace/i);
     expect(calls).toEqual([]);
   });
 

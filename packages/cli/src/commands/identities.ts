@@ -51,15 +51,26 @@ async function readIdentityMapping(path: string): Promise<IdentityMapping> {
         `--mapping value for identity ${id} must be a tenant-key string or null.`
       );
     }
-    if (typeof value === "string" && value.trim().length === 0) {
-      throw new ValidationError(
-        `--mapping value for identity ${id} must not be an empty tenant key.`
-      );
-    }
-    if (typeof value === "string" && value.includes("\u0000")) {
-      throw new ValidationError(
-        `--mapping value for identity ${id} must not contain NUL.`
-      );
+    if (value !== null) {
+      // A tenant key is sent and compared verbatim, so anything the eye cannot
+      // distinguish is rejected rather than repaired: padding would silently
+      // split one tenant across two scope keys, and NUL cannot be stored in a
+      // Postgres text column at all.
+      if (value.trim().length === 0) {
+        throw new ValidationError(
+          `--mapping value for identity ${id} must not be an empty tenant key.`
+        );
+      }
+      if (value !== value.trim()) {
+        throw new ValidationError(
+          `--mapping value for identity ${id} must not have leading or trailing whitespace.`
+        );
+      }
+      if (value.includes("\u0000")) {
+        throw new ValidationError(
+          `--mapping value for identity ${id} must not contain NUL.`
+        );
+      }
     }
     mapping[id] = value;
   }
@@ -134,6 +145,14 @@ export async function identitiesRekeyCommand(
   if (!options.json)
     printReport(dryRun, `Identity re-key dry run for ${orgSlug}`, namespace);
   const applied = await call(true);
+  // The response echoes whether the mutation happened. `applied: false` on an
+  // `apply: true` request contradicts it, so it must not be reported as a
+  // completed re-key; a response that omits the field asserts nothing.
+  if (applied.applied === false) {
+    throw new ApiError(
+      "Re-key was not applied: the server accepted the request but reported applied=false. Nothing changed."
+    );
+  }
   if (options.json) {
     printJson({ dry_run: dryRun, applied });
     return;

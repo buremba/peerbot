@@ -240,6 +240,15 @@ describe('derived entity routing (list + resolve_path)', () => {
     expect(first.rows.length).toBeLessThan(20);
     expect(first.has_more).toBe(true);
     expect(first.omitted_rows).toBe(20 - first.rows.length);
+    const resolverPage = await queryDerivedEntityView(
+      largeViewSql,
+      undefined,
+      { limit: 500, offset: 0 },
+      ownerToolContext(orgAId, userId),
+      { preservePageRows: true }
+    );
+    expect(resolverPage.rows).toHaveLength(20);
+    expect(resolverPage.rows.some((row) => row.slug === 'large-20')).toBe(true);
     const second = await queryDerivedEntityView(
       largeViewSql,
       undefined,

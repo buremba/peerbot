@@ -12,6 +12,7 @@ describe('finalizeDynamicQueryRows', () => {
     const result = finalizeDynamicQueryRows([{ payload_text: full }]);
 
     expect(result.omittedRows).toBe(0);
+    expect(result.sidecarCollisions).toEqual([]);
     expect(result.rows[0].payload_text).toBe(
       `${'a'.repeat(CONTENT_TEXT_HEAD_CHARS - 1)}😀… [truncated]`
     );
@@ -35,6 +36,21 @@ describe('finalizeDynamicQueryRows', () => {
     expect(result.rows[0].attachments).toBeNull();
     expect(result.rows[0].attachments_truncated).toBe(true);
     expect(result.rows[0].attachments_bytes).toBeGreaterThan(CONTENT_JSON_MAX_BYTES);
+    expect(result.sidecarCollisions).toEqual([]);
+  });
+
+  it('reports incompatible caller-projected sidecars without overwriting them', () => {
+    const result = finalizeDynamicQueryRows([
+      {
+        payload_text: 'x'.repeat(CONTENT_TEXT_HEAD_CHARS + 1),
+        payload_truncated: false,
+        content_length: 7,
+      },
+    ]);
+
+    expect(result.sidecarCollisions).toEqual(['content_length', 'payload_truncated']);
+    expect(result.rows[0].payload_truncated).toBe(false);
+    expect(result.rows[0].content_length).toBe(7);
   });
 
   it('enforces a hard serialized row-list cap after per-cell bounding', () => {

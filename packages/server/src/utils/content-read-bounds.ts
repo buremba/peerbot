@@ -90,6 +90,21 @@ function jsonBytes(value: unknown): number {
 export interface FinalizedDynamicRows {
   rows: Record<string, unknown>[];
   omittedRows: number;
+  sidecarCollisions: string[];
+}
+
+function assignGeneratedSidecar(
+  input: Record<string, unknown>,
+  row: Record<string, unknown>,
+  key: string,
+  value: unknown,
+  collisions: Set<string>
+): void {
+  if (Object.prototype.hasOwnProperty.call(input, key) && input[key] !== value) {
+    collisions.add(key);
+    return;
+  }
+  row[key] = value;
 }
 
 /**
@@ -102,6 +117,7 @@ export function finalizeDynamicQueryRows(
   maxSerializedBytes = QUERY_SQL_ROWS_MAX_BYTES
 ): FinalizedDynamicRows {
   const boundedRows: Record<string, unknown>[] = [];
+  const sidecarCollisions = new Set<string>();
   let serializedBytes = 2; // []
 
   for (const input of inputRows) {
@@ -113,8 +129,8 @@ export function finalizeDynamicQueryRows(
         if (!bounded.truncated) continue;
         row[key] = bounded.value;
         if (key === 'payload_text' || key === 'text_content') {
-          row.content_length = bounded.length;
-          row.payload_truncated = true;
+          assignGeneratedSidecar(input, row, 'content_length', bounded.length, sidecarCollisions);
+          assignGeneratedSidecar(input, row, 'payload_truncated', true, sidecarCollisions);
         }
         continue;
       }
@@ -124,8 +140,14 @@ export function finalizeDynamicQueryRows(
       if (bytes <= CONTENT_JSON_MAX_BYTES) continue;
       if (key === 'attachments') {
         row.attachments = null;
-        row.attachments_truncated = true;
-        row.attachments_bytes = Number.isFinite(bytes) ? bytes : null;
+        assignGeneratedSidecar(input, row, 'attachments_truncated', true, sidecarCollisions);
+        assignGeneratedSidecar(
+          input,
+          row,
+          'attachments_bytes',
+          Number.isFinite(bytes) ? bytes : null,
+          sidecarCollisions
+        );
       } else {
         row[key] = {
           _truncated: true,
@@ -145,5 +167,6 @@ export function finalizeDynamicQueryRows(
   return {
     rows: boundedRows,
     omittedRows: inputRows.length - boundedRows.length,
+    sidecarCollisions: [...sidecarCollisions].sort(),
   };
 }

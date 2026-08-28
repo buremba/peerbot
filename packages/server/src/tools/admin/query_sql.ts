@@ -20,7 +20,10 @@ import { SortOrderField } from './schemas/common-fields';
 import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } from "@lobu/core";
 import { ToolUserError } from '../../utils/errors';
-import { finalizeDynamicQueryRows } from '../../utils/content-read-bounds';
+import {
+  QUERY_SQL_ROWS_MAX_BYTES,
+  finalizeDynamicQueryRows,
+} from '../../utils/content-read-bounds';
 import { resolveGrantedWorkspaceTarget } from '../../auth/oauth/workspace-grants';
 
 export const QuerySqlSchema = Type.Object({
@@ -137,7 +140,7 @@ export const QuerySqlResultSchema = Type.Object({
     Type.Integer({
       minimum: 1,
       description:
-        'Rows fetched for this page but omitted by the serialized response-size ceiling. When present, continue from offset + rows.length rather than offset + limit, or retry with a smaller limit.',
+        'Rows fetched for this page but omitted by the serialized response-size ceiling. When rows are present, continue from offset + rows.length rather than offset + limit. If no bounded row fits, query_sql returns a VALIDATION error and the projection must be narrowed.',
     })
   ),
   execution_time_ms: Type.Number(),
@@ -172,6 +175,40 @@ function finalizeQuerySqlResult(
   maxSerializedRowsBytes?: number
 ): QuerySqlResult {
   const finalized = finalizeDynamicQueryRows(result.rows, maxSerializedRowsBytes);
+  if (finalized.sidecarCollisions.length > 0) {
+    return {
+      ...(result.title ? { title: result.title } : {}),
+      ...(result.sql ? { sql: result.sql } : {}),
+      rows: [],
+      columns: [],
+      total_count: 0,
+      has_more: false,
+      execution_time_ms: result.execution_time_ms,
+      error:
+        'query_sql cannot add truncation metadata because the projection defines ' +
+        `incompatible sidecar column(s): ${finalized.sidecarCollisions.join(', ')}. ` +
+        'Rename those aliases and retry.',
+      error_code: 'VALIDATION',
+      retryable: false,
+    };
+  }
+  if (finalized.rows.length === 0 && finalized.omittedRows > 0) {
+    return {
+      ...(result.title ? { title: result.title } : {}),
+      ...(result.sql ? { sql: result.sql } : {}),
+      rows: [],
+      columns: result.columns,
+      total_count: result.total_count,
+      has_more: false,
+      omitted_rows: finalized.omittedRows,
+      execution_time_ms: result.execution_time_ms,
+      error:
+        `The first bounded row exceeds the strict ${QUERY_SQL_ROWS_MAX_BYTES}-byte ` +
+        'query_sql response ceiling. Select fewer or narrower columns and retry.',
+      error_code: 'VALIDATION',
+      retryable: false,
+    };
+  }
   const columns = [...result.columns];
   const known = new Set(columns.map((column) => column.name));
   const additiveColumns = [

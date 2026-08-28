@@ -100,6 +100,43 @@ describe('query_sql internal-path pagination contract', () => {
     );
   });
 
+  it('rejects incompatible caller-projected truncation sidecars', async () => {
+    const res = await querySql(
+      {
+        sql: `SELECT repeat('x', 5000) AS payload_text,
+          false AS payload_truncated, 7 AS content_length`,
+        limit: 1,
+      },
+      {},
+      ownerCtx
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.retryable).toBe(false);
+    expect(res.error).toContain('content_length, payload_truncated');
+  });
+
+  it('fails closed when one bounded row cannot fit under the hard ceiling', async () => {
+    const wideColumns = Array.from(
+      { length: 280 },
+      (_, index) => `repeat('x', 4000) AS pad_${index}`
+    ).join(', ');
+    const res = await querySql(
+      { sql: `SELECT ${wideColumns}`, limit: 1 },
+      {},
+      ownerCtx
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(res.total_count).toBe(1);
+    expect(res.has_more).toBe(false);
+    expect(res.omitted_rows).toBe(1);
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.retryable).toBe(false);
+    expect(res.error).toContain('Select fewer or narrower columns');
+  });
+
   it('keeps total_count exact on an out-of-range offset (empty page fallback)', async () => {
     const res = await querySql(
       { sql: 'SELECT id FROM events', limit: 2, offset: 100 },

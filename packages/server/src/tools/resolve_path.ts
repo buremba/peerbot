@@ -981,7 +981,11 @@ async function resolveDerivedLeaf(
       backingSql,
       backingSource,
       { limit: PAGE, offset },
-      ctx
+      ctx,
+      // This is an internal exact-slug scan, not an agent response. Retain the
+      // database page cardinality so MAX_PAGES remains a source-row guard even
+      // when wide rows would produce tiny serialized response chunks.
+      { preservePageRows: true }
     );
     if (result.error) return null;
     match = result.rows.find((r) => derivedRowSlug(r) === segment.slug);

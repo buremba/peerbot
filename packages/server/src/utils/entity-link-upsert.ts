@@ -793,7 +793,7 @@ async function insertIdentities(
         AND retained.namespace = v.ns
         AND retained.identifier = v.ident
         AND retained.deleted_at IS NULL
-        AND v.scope = ANY(retained.scope_key_history)
+        AND COALESCE(v.scope, '') = ANY(retained.scope_key_history)
     )
     ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, ''))
       WHERE deleted_at IS NULL

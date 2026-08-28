@@ -11,6 +11,7 @@ import {
 import {
   applyEventAttributions,
   clearEntityLinkRulesCache,
+  resolveSenderIdentity,
 } from '../../../utils/entity-link-upsert';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -305,6 +306,34 @@ describe('connector identity scope lifecycle', () => {
     expect(preservedMetrics).toHaveLength(1);
     expect(Number(preservedMetrics[0]?.entity_id)).toBe(first.id);
     expect(Number(preservedMetrics[0]?.observations)).toBe(1);
+
+    // Hand-built identities outside connector attribution may still present
+    // the organization scope by omitting scopeKey. The retained organization
+    // sentinel must resolve to its original owner rather than minting a second
+    // identity after the connector has moved to tenant scope.
+    const organizationHistoryOwner = await resolveSenderIdentity(sql, {
+      orgId: org.id,
+      connectorKey: 'scope-history-probe',
+      mintEntityType: 'person',
+      identities: [
+        {
+          namespace,
+          identifier: '1001',
+          matchOnly: false,
+          primary: true,
+        },
+      ],
+    });
+    expect(organizationHistoryOwner).toBe(first.id);
+    const organizationClaimRows = await sql<{ count: number }[]>`
+      SELECT count(*)::integer AS count
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+        AND identifier = '1001'
+        AND deleted_at IS NULL
+    `;
+    expect(organizationClaimRows).toEqual([{ count: 1 }]);
 
     clearEntityLinkRulesCache();
     await expect(

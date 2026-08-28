@@ -204,17 +204,85 @@ export async function sendMessage(
       ? ` To reply in this message's thread later, send to target="${data!.thread}".`
       : "";
 
-    // The post landed in the conversation this run is already replying to, so
-    // the user has read it. Tell the gateway to drop the terminal reply (it
-    // would arrive as a second message), and tell the model so it does not
-    // spend its final answer narrating what it just said.
+    // The post landed in the conversation this run is already replying to.
+    // Tell the gateway to drop the terminal reply (it would arrive as a second
+    // message), and tell the model so it does not narrate the in-band post.
     if (data!.deliveredInBand) {
       hooks?.onDeliveredInBand?.();
       return textResult(
-        `Message sent.${threadNote} This posted into the conversation you are already replying to, so the user has now seen it — your reply for this turn is DONE. Do not repeat or summarize it in your final answer, and do not send it again.`
+        `Message sent.${threadNote} This in-band post is your reply for the turn. Do not repeat or summarize it in your final answer, and do not send it again.`
       );
     }
     return textResult(`Message sent.${threadNote}`);
+  });
+}
+
+/**
+ * Present an existing Lobu event in the conversation that triggered this turn.
+ * The server owns rendering and routing; the model supplies only the durable
+ * event id returned by knowledge.save.
+ */
+export async function presentEvent(
+  gateway: GatewayParams,
+  args: { event_id: number },
+  hooks?: { onDeliveredInBand?: () => void }
+): Promise<TextResult> {
+  return withErrorHandling("present_event", async () => {
+    if (!Number.isSafeInteger(args.event_id) || args.event_id < 1) {
+      return textResult("Error: event_id must be a positive integer.");
+    }
+    const { data, error } = await gatewayFetch<{
+      messageId: string | null;
+      deliveredInBand: boolean;
+    }>(
+      gateway,
+      "/internal/conversations/present-event",
+      {
+        method: "POST",
+        body: JSON.stringify({ eventId: args.event_id }),
+      },
+      "Failed to present event"
+    );
+    if (error) return error;
+    if (data?.deliveredInBand) hooks?.onDeliveredInBand?.();
+    return textResult(
+      "Event rendered and posted in the conversation you are already replying to. That in-band post is your reply for this turn. Do not repeat or summarize it in your final answer."
+    );
+  });
+}
+
+/** Schedule one durable wake-up back into the conversation driving this turn. */
+export async function scheduleFollowup(
+  gateway: GatewayParams,
+  args: { run_at: string; prompt: string; idempotency_key: string }
+): Promise<TextResult> {
+  return withErrorHandling("schedule_followup", async () => {
+    if (
+      !args.run_at?.trim() ||
+      !args.prompt?.trim() ||
+      !args.idempotency_key?.trim()
+    ) {
+      return textResult(
+        "Error: run_at, prompt, and idempotency_key are required."
+      );
+    }
+    const { error } = await gatewayFetch<{ scheduled: boolean }>(
+      gateway,
+      "/internal/conversations/schedule-followup",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          runAt: args.run_at,
+          prompt: args.prompt,
+          idempotencyKey: args.idempotency_key,
+        }),
+      },
+      "Failed to schedule follow-up"
+    );
+    if (error) return error;
+    return textResult(
+      `Follow-up scheduled for ${args.run_at}. It will wake you in this conversation.`
+    );
   });
 }
 
@@ -324,6 +392,38 @@ export function createConversationTools(params: ConversationPluginParams) {
         sendMessage(gateway, args, {
           onDeliveredInBand: params.onInBandReplyDelivered,
         }),
+    }),
+    defineGatewayTool({
+      name: "present_event",
+      parameters: Type.Object({
+        event_id: Type.Integer({
+          minimum: 1,
+          description: "Durable Lobu event id returned by knowledge.save",
+        }),
+      }),
+      run: (args) =>
+        presentEvent(gateway, args, {
+          onDeliveredInBand: params.onInBandReplyDelivered,
+        }),
+    }),
+    defineGatewayTool({
+      name: "schedule_followup",
+      parameters: Type.Object({
+        run_at: Type.String({
+          description: "Future ISO-8601 timestamp for the one-shot wake-up",
+        }),
+        prompt: Type.String({
+          minLength: 1,
+          maxLength: 2000,
+          description: "Instruction you should execute when the wake-up fires",
+        }),
+        idempotency_key: Type.String({
+          minLength: 1,
+          maxLength: 200,
+          description: "Stable key that makes retries return the same schedule",
+        }),
+      }),
+      run: (args) => scheduleFollowup(gateway, args),
     }),
     defineGatewayTool({
       name: "react",

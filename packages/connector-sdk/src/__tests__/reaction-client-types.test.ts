@@ -5,9 +5,10 @@ describe("ReactionClient knowledge.read input", () => {
   it("accepts the content_ids (array) shape save_memory's exact_read hint advertises", () => {
     // Compile-time contract: read_knowledge takes `content_ids: number[]` —
     // excess-property checking here would fail if the published type regressed
-    // to the singular `content_id` the live bug advertised.
+    // to the singular `content_id` the live bug advertised. Reaction scripts
+    // also bind Automation reads to the exact queued run.
     const call = (client: ReactionClient) =>
-      client.knowledge.read({ content_ids: [42] });
+      client.knowledge.read({ content_ids: [42], run_id: 7 });
     expect(typeof call).toBe("function");
   });
 });

@@ -5,6 +5,8 @@ const BASE_TOOLS = [
   "list_conversations",
   "read_conversation",
   "send_message",
+  "present_event",
+  "schedule_followup",
   "react",
   "edit_message",
   "delete_message",

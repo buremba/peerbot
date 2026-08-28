@@ -4,7 +4,13 @@ import {
 	type CardElement,
 } from "chat";
 import { loadConfiguredAutomationDeliveryTarget } from "../automations/delivery-target";
-import { getDb, parsePgNumberArray, pgBigintArray, pgTextArray } from "../db/client";
+import {
+	type DbClient,
+	getDb,
+	parsePgNumberArray,
+	pgBigintArray,
+	pgTextArray,
+} from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
@@ -436,38 +442,200 @@ type PersistedNotificationDeliveryRecord = Omit<
  * returns, and the durable notification write must not block on a best-effort
  * chat post.
  *
- * Best-effort: losing the record costs a later in-place edit, not the
- * notification itself.
+ * Best-effort by default: losing the record costs a later in-place edit, not
+ * the notification itself. `present_event` opts into required persistence
+ * because the pointer drives in-place refresh and deduplicates later calls.
  */
 async function persistDeliveryMetadata(
 	eventId: number,
 	deliveries: PersistedNotificationDeliveryRecord[],
 	card?: CardElement,
+	options?: { db?: DbClient; required?: boolean },
 ): Promise<void> {
 	// A record exists to be addressed later, and `editMessage(threadId, messageId)`
 	// cannot address an empty id — an adapter that returned no message id has
 	// given us nothing to point at. Dropping it here rather than at each caller
 	// keeps the one rule in the one place that writes the record.
 	const addressable = deliveries.filter((entry) => entry.messageId !== "");
-	if (addressable.length === 0) return;
+	if (addressable.length === 0) {
+		if (options?.required) {
+			throw new Error("Delivery did not return an addressable message id");
+		}
+		return;
+	}
+	const db = options?.db ?? getDb();
 	try {
-		const sql = getDb();
 		const deliveryMetadata = {
 			delivery: addressable,
 			...(card ? { card } : {}),
 		};
-		await sql`
+		await db`
       UPDATE events
       SET metadata = coalesce(metadata, '{}'::jsonb)
-        || ${sql.json(deliveryMetadata)}::jsonb
+        || ${db.json(deliveryMetadata)}::jsonb
       WHERE id = ${eventId}
     `;
 	} catch (err) {
+		if (options?.required) throw err;
 		logger.warn(
 			{ err, eventId },
 			"[Notifications] Failed to record delivery targets",
 		);
 	}
+}
+
+type StoredEventPresentationResult =
+	| {
+			ok: true;
+			messageId: string;
+			threadId: string;
+			fallbackText: string;
+	  }
+	| {
+			ok: false;
+			reason: "not_found" | "not_renderable" | "gateway_unavailable";
+	  };
+
+interface StoredEventPresentationParams {
+	organizationId: string;
+	eventId: number;
+	connectionId: string;
+	platform: string;
+	channelId: string;
+	channelKey: string;
+	threadId?: string;
+}
+
+/**
+ * Render one already-persisted event into the conversation that invoked the
+ * current agent turn.
+ *
+ * The event is the authority: the worker supplies only its id, while the
+ * server re-reads the tenant-scoped row, resolves the linked entity kind, and
+ * derives the native card from that kind's json_template. The worker never
+ * supplies a template, executable handler, action id, actor id, or platform
+ * destination. The destination coordinates are signed worker-token claims.
+ *
+ * Persisting the platform message pointer on the SAME event gives a later
+ * superseding event the routing data used by
+ * `queueInteractiveEventCardRefresh` for an in-place refresh attempt.
+ */
+export async function presentStoredEventToConversation(
+	params: StoredEventPresentationParams,
+): Promise<StoredEventPresentationResult> {
+	return getDb().begin((sql) =>
+		presentStoredEventToConversationLocked(params, sql),
+	);
+}
+
+async function presentStoredEventToConversationLocked(
+	params: StoredEventPresentationParams,
+	sql: DbClient,
+): Promise<StoredEventPresentationResult> {
+	const [row] = await sql<{
+		title: string | null;
+		entity_ids: unknown;
+		semantic_type: string;
+		payload_text: string | null;
+		payload_data: unknown;
+		metadata: unknown;
+		source_url: string | null;
+		superseded_by: number | null;
+	}>`
+    SELECT title, entity_ids, semantic_type, payload_text, payload_data,
+           metadata, source_url, superseded_by
+    FROM events
+    WHERE id = ${params.eventId}
+      AND organization_id = ${params.organizationId}
+    LIMIT 1
+    FOR UPDATE
+  `;
+	if (!row || row.superseded_by !== null) {
+		return { ok: false, reason: "not_found" };
+	}
+
+	const metadata = jsonRecord(row.metadata);
+	const fallbackText = row.payload_text
+		? `${row.title ?? row.semantic_type}\n\n${row.payload_text}`
+		: row.title ?? row.semantic_type;
+	// The row lock serializes concurrent retries across replicas. A completed
+	// presentation already has everything a retry needs, so replay it before
+	// resolving a template that may have changed since the original post.
+	const existingDelivery = deliveryRecords(metadata).find(
+		(delivery) =>
+			delivery.connectionId === params.connectionId &&
+			delivery.channelKey === params.channelKey,
+	);
+	if (existingDelivery) {
+		return {
+			ok: true,
+			messageId: existingDelivery.messageId,
+			threadId: existingDelivery.threadId,
+			fallbackText,
+		};
+	}
+
+	const kind = await resolveEventKindDefinition(
+		row.semantic_type,
+		params.organizationId,
+		parsePgNumberArray(row.entity_ids),
+	);
+	// `present_event` is deliberately narrower than the ordinary Activity view:
+	// only an explicitly authored portable template may become an unsolicited
+	// native chat card. A schema-derived fallback is useful in the web UI, but it
+	// is not an authored chat presentation contract.
+	if (!kind?.jsonTemplate) return { ok: false, reason: "not_renderable" };
+
+	const data =
+		typeof metadata.notification_type === "string"
+			? jsonRecord(row.payload_data)
+			: metadata;
+	const card = buildKindCard({
+		metadataSchema: kind.metadataSchema,
+		jsonTemplate: kind.jsonTemplate,
+		data,
+		title: row.title ?? row.semantic_type,
+		body: row.payload_text ?? undefined,
+		url: toAbsolutePermalink(
+			typeof metadata.resource_url === "string"
+				? metadata.resource_url
+				: row.source_url ?? undefined,
+		),
+		sourceEventId: params.eventId,
+		interactions: kind.interactions,
+	});
+	if (!card) return { ok: false, reason: "not_renderable" };
+
+	const manager = getChatInstanceManager();
+	if (!manager) return { ok: false, reason: "gateway_unavailable" };
+	const sent = await manager.postToConversation(params.connectionId, {
+		platform: params.platform,
+		channelKey: params.channelKey,
+		channelId: params.channelId,
+		threadId: params.threadId,
+		content: { card, fallbackText },
+		subscribe: true,
+	});
+	await persistDeliveryMetadata(
+		params.eventId,
+		[
+			...deliveryRecords(metadata),
+			{
+				connectionId: params.connectionId,
+				channelKey: params.channelKey,
+				messageId: sent.messageId,
+				threadId: sent.threadId,
+			},
+		],
+		card,
+		{ db: sql, required: true },
+	);
+	return {
+		ok: true,
+		messageId: sent.messageId,
+		threadId: sent.threadId,
+		fallbackText,
+	};
 }
 
 async function recordDeliveryError(

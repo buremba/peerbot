@@ -41,6 +41,14 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
     description:
       "Post a message to one of your conversations. Pass a conversation handle (from list_conversations) to post to the channel, or a thread handle (returned by a previous send_message) to reply in that thread. This is how an automated/scheduled run speaks in its channel.",
   },
+  present_event: {
+    description:
+      "Render an existing Lobu event in the current conversation through its declared json_template. Use the event id returned by knowledge.save; do not hand-author platform card JSON or action ids.",
+  },
+  schedule_followup: {
+    description:
+      "Schedule one durable future wake-up for yourself in the current conversation. The server fixes the agent and destination from the signed turn; provide a stable idempotency key so retries do not duplicate the wake-up.",
+  },
   react: {
     description:
       'Add (or remove) an emoji reaction on a message. Pass a conversation handle (from list_conversations/read_conversation) or a thread handle (from a previous send_message) plus the message id to react to — you can react to a message you only READ, using the id read_conversation surfaces. Use to acknowledge or triage a message without posting text (e.g. "eyes" while working, "white_check_mark" when done). Set remove=true to take a reaction back.',

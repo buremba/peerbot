@@ -110,6 +110,50 @@ describe('relationship source claims', () => {
     ]);
   });
 
+  it('locks concurrent multi-edge assertions in triple order', async () => {
+    const { sql, workspace, connection, desired } = await seedClaimGraph();
+    const secondCustomer = (await workspace.owner.entities.create({
+      type: 'customer',
+      name: 'Second Race Customer',
+    })) as { entity: { id: number } };
+    const secondEdge = {
+      ...desired[0],
+      toEntityId: secondCustomer.entity.id,
+    };
+
+    await Promise.all([
+      sql.begin((tx) =>
+        reconcileConnectorRelationshipClaims(tx, {
+          organizationId: workspace.org.id,
+          connectionId: connection.id,
+          originId: 'invoice:ordered-a',
+          desired: [desired[0], secondEdge],
+        })
+      ),
+      sql.begin((tx) =>
+        reconcileConnectorRelationshipClaims(tx, {
+          organizationId: workspace.org.id,
+          connectionId: connection.id,
+          originId: 'invoice:ordered-b',
+          desired: [secondEdge, desired[0]],
+        })
+      ),
+    ]);
+
+    const rows = await sql`
+      SELECT metadata FROM entity_relationships
+      WHERE organization_id = ${workspace.org.id} AND deleted_at IS NULL
+      ORDER BY id
+    `;
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(Object.keys(row.metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).sort()).toEqual([
+        `feed:${connection.id}:invoice:ordered-a`,
+        `feed:${connection.id}:invoice:ordered-b`,
+      ]);
+    }
+  });
+
   it('fails closed on an unclaimed pre-cutover row instead of silently adopting it', async () => {
     const { sql, workspace, connection, invoice, customer, desired } = await seedClaimGraph();
     const [type] = await sql`

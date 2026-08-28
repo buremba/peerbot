@@ -516,7 +516,13 @@ export async function reconcileConnectorRelationshipClaims(
 
   const claimKey = connectorRelationshipClaimKey(params.connectionId, params.originId);
   const keepRelationshipIds = new Set<number>();
-  for (const edge of aggregated.values()) {
+  const orderedEdges = [...aggregated.values()].sort(
+    (left, right) =>
+      left.fromEntityId - right.fromEntityId ||
+      left.toEntityId - right.toEntityId ||
+      left.relationshipTypeId - right.relationshipTypeId
+  );
+  for (const edge of orderedEdges) {
     const asserted = await mergeRelationshipClaim(tx, {
       organizationId: params.organizationId,
       fromEntityId: edge.fromEntityId,
@@ -548,6 +554,8 @@ export async function retractConnectionRelationshipClaims(
   // key this connection owns per row. Resolving the distinct claim keys first
   // and re-scanning per key would cost one scan per ingested source item,
   // inside the connection-delete transaction that already holds these rows.
+  // The prefix predicate cannot use the exact-claim GIN index, so this scan is
+  // deliberately constrained to one organization and runs only on deletion.
   const rows = await tx<ClaimedRelationshipRow>`
     SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
            rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source

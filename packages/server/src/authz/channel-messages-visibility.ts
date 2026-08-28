@@ -78,6 +78,7 @@ export function compileChannelMessagesVisibility(
     WHERE mei.organization_id = ${orgParam}
       AND mei.namespace = 'auth_user_id'
       AND mei.identifier = ${userParam}
+      AND mei.scope_key IS NULL
       AND mei.source_connector = 'auth:signup'
       AND mei.deleted_at IS NULL
     LIMIT 1
@@ -106,6 +107,7 @@ export function compileChannelMessagesVisibility(
           JOIN public.entity_identities cei
             ON cei.organization_id = ${orgParam}
            AND cei.namespace = '${channelNamespace}'
+           AND cei.scope_key IS NULL
            AND cei.deleted_at IS NULL
            AND cei.identifier = ${channelKeySql}
           JOIN public.entity_relationships rr

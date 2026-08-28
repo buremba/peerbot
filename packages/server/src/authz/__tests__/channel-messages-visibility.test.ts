@@ -52,6 +52,10 @@ describe('compileChannelMessagesVisibility', () => {
     expect(sql).toContain("rt.slug = 'member_of'");
     // requester resolved on the unforgeable auth-signup claim only.
     expect(sql).toContain("mei.source_connector = 'auth:signup'");
+    expect(sql).toContain('mei.scope_key IS NULL');
+    // Static ACL identities embed the upstream tenant in their identifier and
+    // are deliberately organization-scoped; a tenant-scoped lookalike is inert.
+    expect(sql).toContain('cei.scope_key IS NULL');
   });
 
   it('emits ONE platform-gated membership branch per registered chat platform', () => {

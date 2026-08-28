@@ -6,10 +6,7 @@ import {
   updateMemberEntityStatus,
 } from '../../../utils/member-entity';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import {
-  createTestOrganization,
-  createTestUser,
-} from '../../setup/test-fixtures';
+import { createTestOrganization, createTestUser } from '../../setup/test-fixtures';
 
 async function memberRow(organizationId: string, email: string) {
   const sql = getTestDb();
@@ -91,4 +88,5 @@ describe('$member entity lifecycle projections', () => {
     expect((await memberRow(first.id, user.email)).deleted_at).not.toBeNull();
     expect((await memberRow(second.id, user.email)).deleted_at).toBeNull();
   });
+
 });

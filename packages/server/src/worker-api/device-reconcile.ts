@@ -557,7 +557,6 @@ async function ensureDeviceConnectorWired(
         // points at the shared on-disk catalog → shared row.
         versionScope: source ? 'organization' : 'shared',
       });
-
       // Seed new/repaired auto-wired connections from the org's definition
       // default, exactly like manage_connections create/connect merge
       // `default_connection_config` into the new row's config — auto-wire is

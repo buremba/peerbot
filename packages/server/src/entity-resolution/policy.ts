@@ -13,8 +13,13 @@ import { createHash } from "node:crypto";
  * digests, which current recomputation cannot compare. Because the version
  * stamp was added later, unstamped mismatches are conservatively refreshed:
  * their exact historical format cannot be inferred from the digest alone.
+ * v2 → v3: #2849 added identity tenant scope keys to rule matching and the
+ * fingerprint. Equal normalized identifiers from different tenants are no
+ * longer merge evidence.
+ * v3 → v4: rule keys use canonical structured tuples instead of control-byte
+ * delimiters, so valid identifiers and tenant keys cannot collide.
  */
-export const RESOLUTION_FINGERPRINT_VERSION = 2;
+export const RESOLUTION_FINGERPRINT_VERSION = 4;
 
 type ResolutionDecision = "auto_merge" | "review";
 
@@ -26,6 +31,7 @@ export interface ResolutionEvidence {
 export interface ResolutionIdentity {
 	namespace: string;
 	identifier: string;
+	scopeKey?: string | null;
 }
 
 interface ResolutionEntity {
@@ -198,30 +204,82 @@ export function readEntityResolutionRules(
 	});
 }
 
+type NormalizedResolutionPart = readonly [value: string, scopeKey: string | null];
+
+/** Render a canonical structured rule key for human-facing evidence. */
+function renderRuleKey(key: string): string {
+	let decoded: unknown;
+	try {
+		decoded = JSON.parse(key);
+	} catch {
+		return key;
+	}
+	if (!Array.isArray(decoded)) return key;
+	const parts = decoded.flatMap((candidate): NormalizedResolutionPart[] => {
+		if (
+			!Array.isArray(candidate) ||
+			candidate.length !== 2 ||
+			typeof candidate[0] !== "string" ||
+			(candidate[1] !== null && typeof candidate[1] !== "string")
+		) {
+			return [];
+		}
+		return [[candidate[0], candidate[1]]];
+	});
+	if (parts.length !== decoded.length) return key;
+	return parts
+		.map(([value, scopeKey]) =>
+			scopeKey === null ? value : `${value} [tenant: ${scopeKey}]`,
+		)
+		.join(" · ");
+}
+
 export function normalizedResolutionRuleKeys(
 	entity: ResolutionEntity,
 	rule: ResolutionRule,
 ): string[] {
-	let combinations: string[][] = [[]];
+	let combinations: NormalizedResolutionPart[][] = [[]];
 	for (const field of rule.fields) {
 		// Identity-backed connector data follows the same field policy and
 		// normalization as metadata when its namespace names that field.
 		const raw = readPath(entity.metadata, field);
 		const fromMetadata = Array.isArray(raw) ? raw : [raw];
-		const fromIdentities = (entity.identities ?? [])
+		const identityValues: NormalizedResolutionPart[] = (entity.identities ?? [])
 			.filter((identity) => identity.namespace === field)
-			.map((identity) => identity.identifier);
-		const values = normalizeValues(
-			[...fromMetadata, ...fromIdentities],
-			rule.normalizer,
+			.flatMap((identity) => {
+				const value = normalizeScalar(identity.identifier, rule.normalizer);
+				return value === null
+					? []
+					: [[value, identity.scopeKey ?? null] as const];
+			});
+		// Attribution mirrors identity values into metadata. When a live identity
+		// row supplies the same normalized value, prefer its scoped form so that
+		// the metadata mirror cannot erase tenant separation during resolution.
+		const identityRawValues = new Set(
+			identityValues.map(([value]) => value),
 		);
+		const metadataValues: NormalizedResolutionPart[] = normalizeValues(
+			fromMetadata,
+			rule.normalizer,
+		)
+			.filter((value) => !identityRawValues.has(value))
+			.map((value) => [value, null] as const);
+		const valuesByEncoding = new Map(
+			[...metadataValues, ...identityValues].map((value) => [
+				canonicalJson(value),
+				value,
+			]),
+		);
+		const values = [...valuesByEncoding.entries()]
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([, value]) => value);
 		if (values.length === 0) return [];
 		combinations = combinations.flatMap((prefix) =>
 			values.map((value) => [...prefix, value]),
 		);
 		if (combinations.length > 256) return [];
 	}
-	return combinations.map((parts) => parts.join("\u001f")).sort();
+	return combinations.map((parts) => canonicalJson(parts)).sort();
 }
 
 /**
@@ -264,7 +322,7 @@ export function assessEntityResolution(input: {
 			for (const match of matches) {
 				evidence.push({
 					kind: rule.fields.join(" + "),
-					identifier: match.split("\u001f").join(" · "),
+					identifier: renderRuleKey(match),
 				});
 			}
 			if (rule.onMatch === "auto_merge") loserHasAutoMatch = true;
@@ -314,7 +372,9 @@ export function assessEntityResolution(input: {
 				const existingKeys = keysByLabel.get(label) ?? [];
 				keysByLabel.set(
 					label,
-					[...new Set([...existingKeys, ...ruleKeys])].sort(),
+					[
+						...new Set([...existingKeys, ...ruleKeys].map(renderRuleKey)),
+					].sort(),
 				);
 			});
 			return { id, keys: Object.fromEntries(keysByLabel) };

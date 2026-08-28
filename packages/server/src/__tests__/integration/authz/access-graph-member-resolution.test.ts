@@ -66,12 +66,17 @@ async function addIdentity(
   orgId: string,
   entityId: number,
   namespace: string,
-  identifier: string
+  identifier: string,
+  scopeKey: string | null = null
 ): Promise<void> {
   const sql = getTestDb();
   await sql`
-    INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
-    VALUES (${orgId}, ${entityId}, ${namespace}, ${identifier}, 'connector:github')
+    INSERT INTO entity_identities (
+      organization_id, entity_id, namespace, identifier, source_connector, scope_key
+    )
+    VALUES (
+      ${orgId}, ${entityId}, ${namespace}, ${identifier}, 'connector:github', ${scopeKey}
+    )
   `;
 }
 
@@ -165,6 +170,51 @@ describe('access graph member resolution', () => {
     const persons = await livePersons(org.id);
     expect(persons).toHaveLength(1);
     expect(edgeFroms).toEqual([persons[0].id]);
+  });
+
+  it('does not construct ACL edges from a tenant-scoped lookalike claim', async () => {
+    const { org, user } = await seedOrg('Tenant lookalike ACL org');
+    const gh = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      slug: CONN,
+      created_by: user.id,
+    });
+    const tenantOwner = await createTestEntity({
+      organization_id: org.id,
+      entity_type: 'person',
+      name: 'Other tenant owner',
+      created_by: user.id,
+    });
+    await addIdentity(org.id, tenantOwner.id, 'github_user_id', '501', 'tenant-other');
+
+    await buildGraph({
+      organizationId: org.id,
+      connectionId: String(gh.id),
+      repos: [
+        {
+          fullName: 'acme/widgets',
+          collaborators: [{ id: 501, login: 'new-org-claim' }],
+        },
+      ],
+    });
+
+    const edgeFroms = await memberOfFromIds(org.id);
+    expect(edgeFroms).toHaveLength(1);
+    expect(edgeFroms).not.toContain(tenantOwner.id);
+    const identities = await getTestDb()<
+      { entity_id: number | string; scope_key: string | null }[]
+    >`
+      SELECT entity_id, scope_key
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = 'github_user_id'
+        AND identifier = '501'
+        AND deleted_at IS NULL
+      ORDER BY scope_key NULLS FIRST
+    `;
+    expect(identities).toHaveLength(2);
+    expect(identities.some((identity) => identity.scope_key === null)).toBe(true);
   });
 
   it('resolves an ambiguous member deterministically via the PRIMARY identity', async () => {

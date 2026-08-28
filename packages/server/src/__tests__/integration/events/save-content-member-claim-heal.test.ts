@@ -5,8 +5,8 @@
  * The authz channel-visibility gate resolves a user to their $member via an
  * entity_identities row with namespace `auth_user_id` AND
  * `source_connector='auth:signup'`. save_content used to write that claim with
- * `source_connector='save_content'`; because idx_entity_identities_live_unique_scoped
- * is on (org, namespace, identifier), the wrong-source row BLOCKED the correct
+ * `source_connector='save_content'`; because idx_entity_identities_live_unique_tenant_scoped
+ * is on (org, namespace, identifier, COALESCE(scope_key, '')), the wrong-source row BLOCKED the correct
  * auth:signup insert forever — a permanent poison the member-claim-drift
  * detector reports but cannot repair. The fix writes `auth:signup` and heals
  * that legacy source on conflict without promoting other identity sources.
@@ -68,7 +68,7 @@ describe('saveContent > $member auth_user_id claim heals poison source', () => {
         (organization_id, entity_id, namespace, identifier, source_connector)
       VALUES
         (${org.id}, ${memberId}, 'auth_user_id', ${user.id}, 'save_content')
-      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))
+      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, ''))
         WHERE deleted_at IS NULL
       DO NOTHING
     `;

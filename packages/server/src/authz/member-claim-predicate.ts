@@ -43,6 +43,7 @@ export function resolvableMemberClaimExists(
       WHERE ei.organization_id = ${orgExpr}
         AND ei.namespace = 'auth_user_id'
         AND ei.identifier = ${userExpr}
+        AND ei.scope_key IS NULL
         AND ei.source_connector = 'auth:signup'
         AND ei.deleted_at IS NULL
     )

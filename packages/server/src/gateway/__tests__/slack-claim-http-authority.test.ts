@@ -79,7 +79,7 @@ async function linkSlackUser(teamId: string): Promise<void> {
     ) VALUES
       (${ORG_ID}, ${entityId}, 'auth_user_id', ${USER_ID}, 'auth:signup'),
       (${ORG_ID}, ${entityId}, 'slack_user_id', ${`${teamId.toUpperCase()}:${SLACK_USER_ID.toUpperCase()}`}, 'auth:signup')
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
     DO NOTHING
   `;
 }

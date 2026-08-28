@@ -285,7 +285,10 @@ export function isReadQuery(sql: string): boolean {
  *    in `WITH events AS (SELECT … FROM events)` is the CTE or the base table —
  *    so we forbid the ambiguity rather than risk an unscoped base-table read.
  */
-function extractTableRefs(query: string): string[] {
+function extractTableRefs(
+  query: string,
+  queryableTableNames: ReadonlySet<string> = QUERYABLE_TABLE_NAMES
+): string[] {
   const res = parseSql(stripPlaceholders(query), Dialect.PostgreSQL);
   if (!res.success || !res.ast) {
     throw new Error('Could not parse SQL query for table extraction');
@@ -312,7 +315,7 @@ function extractTableRefs(query: string): string[] {
   const cteNames = collectCteNames(root);
   // A CTE may not shadow a real/admin table name — see fail-closed note above.
   for (const cte of cteNames) {
-    if (QUERYABLE_TABLE_NAMES.has(cte) || ADMIN_ONLY_QUERYABLE_TABLES.has(cte)) {
+    if (queryableTableNames.has(cte) || ADMIN_ONLY_QUERYABLE_TABLES.has(cte)) {
       throw new Error(
         `CTE name '${cte}' collides with a reserved table name; rename the CTE.`
       );
@@ -386,7 +389,9 @@ export function validateAndScopeQuery(
   }
 
   // Schema-level validation via SQL parser (rejects unknown tables/columns, mutations, etc.)
-  const validation = validateTableQuery(trimmed);
+  const safeColumns = options?.safeColumns ?? SAFE_COLUMN_DEFS;
+  const queryableTableNames = new Set(safeColumns.keys());
+  const validation = validateTableQuery(trimmed, safeColumns);
   if (!validation.valid) {
     throw new Error(validation.errors.join('; '));
   }
@@ -394,10 +399,10 @@ export function validateAndScopeQuery(
   // COMPLETE table extraction (union of getTableNames + raw walk, CTE names
   // excluded). Drives the unknown-table check, the admin gate, AND org-scoping,
   // so an expression-nested table is caught by all three.
-  const tableRefs = extractTableRefs(trimmed);
-  const unknown = tableRefs.filter((t) => !QUERYABLE_TABLE_NAMES.has(t));
+  const tableRefs = extractTableRefs(trimmed, queryableTableNames);
+  const unknown = tableRefs.filter((t) => !queryableTableNames.has(t));
   if (unknown.length > 0) {
-    throw new Error(formatUnknownTablesError(unknown));
+    throw new Error(formatUnknownTablesError(unknown, queryableTableNames));
   }
 
   if (options?.restrictedTables) {
@@ -869,6 +874,15 @@ export function buildScopedQuery(
         `"${safeName}" AS (SELECT ${sel(table, 'rt')} FROM public.entity_relationship_types rt ` +
           'LEFT JOIN public.organization o ON o.id = rt.organization_id ' +
           `WHERE rt.deleted_at IS NULL AND (rt.organization_id = ${orgP} OR o.visibility = 'public'))`
+      );
+    } else if (table === 'entity_identities') {
+      // Internal metric compilation opts this relation into its private safe
+      // column map. It is intentionally absent from QUERYABLE_SCHEMA, so raw
+      // member/admin SQL and view templates cannot enumerate identity claims.
+      // security-allowed: see block comment above the for-loop
+      ctes.push(
+        `"${safeName}" AS (SELECT ${sel(table, 'ei')} FROM public.entity_identities ei ` +
+          `WHERE ei.organization_id = ${orgP})`
       );
     } else {
       // Treat as entity_type slug — uses entities columns

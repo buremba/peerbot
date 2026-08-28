@@ -468,7 +468,14 @@ export async function transcribeOne(
         embeddingModel,
         supersedesEventId: base.id,
       },
-      { sql: tx }
+      {
+        sql: tx,
+        // This successor copies metadata from the already-persisted base row,
+        // not from a connector payload. Keep the canonical tenant projections
+        // that attribution stamped on that base so the current event head
+        // remains recallable after transcription.
+        trustedIdentityScopeProjections: true,
+      }
     );
   });
 }

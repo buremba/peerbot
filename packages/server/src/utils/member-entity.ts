@@ -142,11 +142,11 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
   if (params.userId && memberEntityId !== null) {
     await sql`
       INSERT INTO entity_identities (
-        organization_id, entity_id, namespace, identifier, source_connector
+        organization_id, entity_id, namespace, identifier, source_connector, scope_key
       ) VALUES (
-        ${params.organizationId}, ${memberEntityId}, 'auth_user_id', ${params.userId}, 'auth:signup'
+        ${params.organizationId}, ${memberEntityId}, 'auth_user_id', ${params.userId}, 'auth:signup', NULL
       )
-      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
       DO NOTHING
     `;
   }

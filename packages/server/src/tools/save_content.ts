@@ -415,6 +415,7 @@ async function saveContentImpl(
         WHERE ei.organization_id = ${ctx.organizationId}
           AND ei.namespace = 'auth_user_id'
           AND ei.identifier = ${authId}
+          AND ei.scope_key IS NULL
           AND ei.deleted_at IS NULL
           AND et.slug = ${MEMBER_ENTITY_TYPE_SLUG}
           AND e.deleted_at IS NULL
@@ -435,6 +436,7 @@ async function saveContentImpl(
           WHERE ei.organization_id = ${ctx.organizationId}
             AND ei.namespace = 'email'
             AND ei.identifier = ${userEmail}
+            AND ei.scope_key IS NULL
             AND ei.deleted_at IS NULL
             AND et.slug = ${MEMBER_ENTITY_TYPE_SLUG}
             AND e.deleted_at IS NULL
@@ -449,7 +451,7 @@ async function saveContentImpl(
     // guard); this call is a verified signed-in user resolved to their own
     // member, so it IS that trusted tier. save_content historically wrote the
     // claim with source 'save_content', which — because the live-unique index
-    // is on (org, namespace, identifier, COALESCE(scope_connection_id, 0)) and
+    // is on (org, namespace, identifier, COALESCE(scope_key, '')) and
     // this claim is org-scoped (NULL) — permanently blocks the correct insert
     // and poisons the member for the authz gate. Only that legacy source
     // is eligible for promotion: upgrading an arbitrary conflicting source
@@ -458,11 +460,11 @@ async function saveContentImpl(
       const memberId = Number(memberRows[0].id);
       await sql`
         INSERT INTO entity_identities (
-          organization_id, entity_id, namespace, identifier, source_connector
+          organization_id, entity_id, namespace, identifier, source_connector, scope_key
         ) VALUES (
-          ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'auth:signup'
+          ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'auth:signup', NULL
         )
-        ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+        ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
         DO UPDATE SET
           source_connector = 'auth:signup',
           entity_id = EXCLUDED.entity_id

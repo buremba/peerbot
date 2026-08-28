@@ -16,6 +16,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,20 +48,40 @@ const PROVISIONING_HELPER = "resolveNewAgentProvisioningDefaults";
 
 function findAgentInsertSites(): string[] {
 	// `git grep` keeps this honest against the real tree (respects .gitignore,
-	// no stale build output) and is fast enough to run inline.
+	// no stale build output) and is fast enough to run inline. Daytona's exact
+	// staged-tree runner intentionally omits `.git`, so fall back to walking the
+	// source directory there rather than silently reporting zero insert sites.
 	const res = spawnSync(
 		"git",
 		["grep", "-l", "INSERT INTO agents", "--", "src/**/*.ts"],
 		{ cwd: path.resolve(SERVER_SRC, ".."), encoding: "utf8" },
 	);
-	return res.stdout
+	const gitFiles = (res.stdout ?? "")
 		.split("\n")
 		.map((line) => line.trim())
-		.filter(Boolean)
-		.map((line) => line.replace(/^src\//, ""))
+		.filter(Boolean);
+	const files =
+		res.status === 0 && gitFiles.length > 0
+			? gitFiles.map((line) => line.replace(/^src\//, ""))
+			: walkTypeScriptFiles(SERVER_SRC).filter((file) =>
+					readFileSync(path.join(SERVER_SRC, file), "utf8").includes(
+						"INSERT INTO agents",
+					),
+				);
+	return files
 		// Tests may insert agent rows freely — they are not production paths.
 		.filter((file) => !file.includes("__tests__"))
 		.sort();
+}
+
+function walkTypeScriptFiles(directory: string, prefix = ""): string[] {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+		if (entry.isDirectory()) {
+			return walkTypeScriptFiles(path.join(directory, entry.name), relative);
+		}
+		return entry.isFile() && entry.name.endsWith(".ts") ? [relative] : [];
+	});
 }
 
 describe("agents insert-site guard", () => {

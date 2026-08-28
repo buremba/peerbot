@@ -22,6 +22,20 @@ describe('buildOrgScopeWhere', () => {
     expect(result.params).toEqual([]);
   });
 
+  it('keeps the org fence for strict entity-scoped MCP recall', () => {
+    const result = buildOrgScopeWhere({
+      entity_id: 42,
+      organization_id: 'org_selected',
+      strict_organization_scope: true,
+      baseParamIndex: 3,
+    });
+
+    expect(result.sql).toContain('f.organization_id = $3::text');
+    expect(result.sql).toContain('ent_org.organization_id = $3::text');
+    expect(result.sql).toContain('c.organization_id = $3::text');
+    expect(result.params).toEqual(['org_selected']);
+  });
+
   it('returns empty SQL when organization_id is missing (caller has no org binding)', () => {
     const result = buildOrgScopeWhere({ baseParamIndex: 1 });
     expect(result.sql).toBe('');

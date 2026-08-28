@@ -8,7 +8,9 @@
  */
 
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
+import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { hashToken } from '../../../auth/oauth/utils';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -410,6 +412,173 @@ describe('MCP Authentication', () => {
       );
     });
 
+    it('enforces OAuth workspace grants on REST tools and rejects MCP audience replay', async () => {
+      const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+      const grantedRead = await post(`/api/${org.slug}/search_memory`, {
+        body: { query: 'oauth-rest-grant-probe', include_public_catalogs: false },
+        token,
+      });
+      expect(grantedRead.status).toBe(200);
+
+      const ungrantedRead = await post(`/api/${org2.slug}/search_memory`, {
+        body: { query: 'oauth-rest-ungranted-probe', include_public_catalogs: false },
+        token,
+      });
+      const ungrantedWrite = await post(`/api/${org2.slug}/save_memory`, {
+        body: {},
+        token,
+      });
+      expect(ungrantedRead.status).toBe(403);
+      expect(ungrantedWrite.status).toBe(403);
+      const unavailable = {
+        error: 'forbidden',
+        error_description: 'Workspace is not available for this authorization',
+      };
+      const ungrantedReadBody = await ungrantedRead.json();
+      expect(ungrantedReadBody).toEqual(unavailable);
+      expect(await ungrantedWrite.json()).toEqual(unavailable);
+
+      const unknownRead = await post('/api/unknown-oauth-workspace/search_memory', {
+        body: { query: 'oauth-rest-unknown-probe', include_public_catalogs: false },
+        token,
+      });
+      expect(unknownRead.status).toBe(ungrantedRead.status);
+      expect(await unknownRead.json()).toEqual(ungrantedReadBody);
+
+      const initializeBody = {
+        jsonrpc: '2.0',
+        id: 'workspace-oracle-probe',
+        method: 'initialize',
+        params: {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: { name: 'workspace-oracle-test', version: '1.0.0' },
+        },
+      };
+      const ungrantedMcp = await post(`/mcp/${org2.slug}`, {
+        body: initializeBody,
+        token,
+      });
+      const unknownMcp = await post('/mcp/unknown-oauth-workspace', {
+        body: initializeBody,
+        token,
+      });
+      const ungrantedMcpBody = await ungrantedMcp.json();
+      expect(ungrantedMcp.status).toBe(403);
+      expect(ungrantedMcpBody).toEqual(unavailable);
+      expect(unknownMcp.status).toBe(ungrantedMcp.status);
+      expect(await unknownMcp.json()).toEqual(ungrantedMcpBody);
+
+      const { token: mcpBoundToken } = await createTestAccessToken(
+        user.id,
+        org.id,
+        client.client_id,
+        { resource: `http://localhost/mcp/${org.slug}` }
+      );
+      const replay = await post(`/api/${org.slug}/search_memory`, {
+        body: { query: 'oauth-rest-audience-probe', include_public_catalogs: false },
+        token: mcpBoundToken,
+      });
+      expect(replay.status).toBe(401);
+      expect(await replay.json()).toMatchObject({ error: 'invalid_token' });
+    });
+
+    it('gates hidden resolve_path targets at the MCP and REST tool boundaries', async () => {
+      const secretEntityName = 'Private B Resolve Path Secret';
+      await createTestEntity({
+        name: secretEntityName,
+        entity_type: 'brand',
+        organization_id: org2.id,
+      });
+      const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+      const unavailable = 'Workspace is not available for this authorization';
+
+      const deniedPaths = [
+        { path: `/${org2.slug}` },
+        { path: `/${org2.slug}/brand/private-b-resolve-path-secret` },
+        { path: `/${org2.slug}`, include_bootstrap: true },
+      ];
+      for (const args of deniedPaths) {
+        const denied = await mcpRequest<any>(
+          'tools/call',
+          { name: 'resolve_path', arguments: args },
+          { token }
+        );
+        expect(denied.error).toBeUndefined();
+        expect(denied.result?.isError).toBe(true);
+        const text = String(denied.result?.content?.[0]?.text);
+        expect(text).toBe(unavailable);
+        expect(text).not.toContain(org2.slug);
+        expect(text).not.toContain(secretEntityName);
+      }
+
+      const unknown = await mcpRequest<any>(
+        'tools/call',
+        { name: 'resolve_path', arguments: { path: '/unknown-resolve-path-workspace' } },
+        { token }
+      );
+      expect(unknown.result?.isError).toBe(true);
+      expect(unknown.result?.content?.[0]?.text).toBe(unavailable);
+
+      const foreignNamespaceUser = await createTestUser({ name: 'Private Namespace User' });
+      await getTestDb()`
+        INSERT INTO namespace (slug, type, ref_id)
+        VALUES ('private-namespace-user', 'user', ${foreignNamespaceUser.id})
+      `;
+      const userNamespace = await mcpRequest<any>(
+        'tools/call',
+        { name: 'resolve_path', arguments: { path: '/@private-namespace-user' } },
+        { token }
+      );
+      expect(userNamespace.result?.isError).toBe(true);
+      expect(userNamespace.result?.content?.[0]?.text).toBe(unavailable);
+
+      const urlBodyMismatch = await post(`/api/${org.slug}/resolve_path`, {
+        body: { path: `/${org2.slug}`, include_bootstrap: true },
+        token,
+      });
+      expect(urlBodyMismatch.status).toBe(404);
+      expect(await urlBodyMismatch.json()).toEqual({ error: unavailable });
+
+      const publicBrowse = await mcpToolsCall<any>(
+        'resolve_path',
+        { path: `/${publicOrg.slug}/brand/public-brand` },
+        { token }
+      );
+      expect(publicBrowse.workspace).toMatchObject({
+        id: publicOrg.id,
+        slug: publicOrg.slug,
+      });
+      expect(publicBrowse.entity).toMatchObject({ id: publicEntity.id });
+
+      const { token: grantedToken } = await createTestAccessToken(
+        user.id,
+        org.id,
+        client.client_id
+      );
+      await getTestDb()`
+        UPDATE oauth_tokens
+        SET granted_organization_ids = ARRAY[${org.id}, ${org2.id}]::text[]
+        WHERE token_hash = ${hashToken(grantedToken)}
+      `;
+      const grantedBrowse = await mcpToolsCall<any>(
+        'resolve_path',
+        { path: `/${org2.slug}/brand/private-b-resolve-path-secret`, include_bootstrap: true },
+        { token: grantedToken }
+      );
+      expect(grantedBrowse.workspace).toMatchObject({ id: org2.id, slug: org2.slug });
+      expect(grantedBrowse.entity).toMatchObject({ name: secretEntityName });
+      expect(grantedBrowse.bootstrap).not.toBeNull();
+
+      const agentBound = await mcpRequest<any>(
+        'tools/call',
+        { name: 'resolve_path', arguments: { path: `/${org2.slug}` } },
+        { token: grantedToken, agentId: agent.agentId }
+      );
+      expect(agentBound.result?.isError).toBe(true);
+      expect(agentBound.result?.content?.[0]?.text).toBe(unavailable);
+    });
+
     it('allows a public-org scoped OAuth token for a non-member and only exposes public tools', async () => {
       const { token } = await createTestAccessToken(user.id, publicOrg.id, client.client_id, {
         scope: 'mcp:read profile:read',
@@ -424,6 +593,38 @@ describe('MCP Authentication', () => {
       expect(toolNames).not.toContain('query_sql');
       expect(toolNames).not.toContain('run_sdk');
       expect(toolNames).not.toContain('manage_entity');
+    });
+
+    it('keeps a public workspace readable when it is not in the OAuth workspace grant', async () => {
+      const { token } = await createTestAccessToken(user.id, org.id, client.client_id, {
+        scope: 'mcp:read profile:read',
+      });
+      await getTestDb()`
+        UPDATE oauth_tokens
+        SET granted_organization_ids = ARRAY[${org.id}]::text[]
+        WHERE token_hash = ${hashToken(token)}
+      `;
+
+      const result = await mcpListTools({ token, orgSlug: publicOrg.slug });
+      const toolNames = result.tools.map((tool) => tool.name);
+
+      expect(toolNames).toContain('search_memory');
+      expect(toolNames).toContain('search_sdk');
+      expect(toolNames).not.toContain('save_memory');
+      expect(toolNames).not.toContain('query_sql');
+      expect(toolNames).not.toContain('run_sdk');
+
+      const publicRead = await mcpToolsCall<any>(
+        'resolve_path',
+        { path: `/${publicOrg.slug}/brand/public-brand` },
+        { token, orgSlug: publicOrg.slug }
+      );
+      expect(publicRead.workspace).toMatchObject({ id: publicOrg.id, slug: publicOrg.slug });
+      expect(publicRead.entity).toMatchObject({ id: publicEntity.id });
+
+      clearInMemoryMcpSessionsForTests();
+      const recovered = await mcpListTools({ token, orgSlug: publicOrg.slug });
+      expect(recovered.tools.map((tool) => tool.name)).toContain('search_memory');
     });
 
     it('should reject expired OAuth access token', async () => {
@@ -529,16 +730,30 @@ describe('MCP Authentication', () => {
 
       clearInMemoryMcpSessionsForTests();
 
-      const recoveredResponse = await post(`/mcp/${org.slug}`, {
-        body: {
-          jsonrpc: '2.0',
-          id: 2,
-          method: 'tools/call',
-          params: {
-            name: 'search_memory',
-            arguments: { query: 'recovery-probe-nonexistent-12345' },
-          },
+      const recoveredToolCall = {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'search_memory',
+          arguments: { query: 'recovery-probe-nonexistent-12345' },
         },
+      };
+      const headerlessRecovery = await post(`/mcp/${org.slug}`, {
+        body: recoveredToolCall,
+        headers: { 'X-MCP-Format': 'json', 'mcp-session-id': sessionId! },
+      });
+      expect(headerlessRecovery.status).toBe(401);
+      expect(headerlessRecovery.headers.get('WWW-Authenticate')).toContain(
+        '/.well-known/oauth-protected-resource'
+      );
+      const retainedRows = await getTestDb()`
+        SELECT 1 FROM mcp_sessions WHERE session_id = ${sessionId}
+      `;
+      expect(retainedRows).toHaveLength(1);
+
+      const recoveredResponse = await post(`/mcp/${org.slug}`, {
+        body: recoveredToolCall,
         headers: { 'X-MCP-Format': 'json', 'mcp-session-id': sessionId! },
         token,
       });
@@ -547,6 +762,123 @@ describe('MCP Authentication', () => {
       const recoveredBody = await recoveredResponse.json();
       expect(recoveredBody.error).toBeUndefined();
       expect(recoveredBody.result?.isError).not.toBe(true);
+    });
+
+    it('requires the OAuth bearer on follow-ups and immediately applies membership and token revocation', async () => {
+      const sql = getTestDb();
+      const liveOrg = await createTestOrganization({ name: 'Live OAuth Session Org' });
+      const liveUser = await createTestUser({ name: 'Live OAuth Session User' });
+      const memberId = await addUserToOrganization(liveUser.id, liveOrg.id, 'owner');
+      const liveClient = await createTestOAuthClient({ client_name: 'Live OAuth Session Client' });
+      const { token } = await createTestAccessToken(
+        liveUser.id,
+        liveOrg.id,
+        liveClient.client_id
+      );
+
+      const initResponse = await post('/mcp', {
+        body: {
+          jsonrpc: '2.0',
+          id: '__live_auth_init__',
+          method: 'initialize',
+          params: {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: 'live-auth-test', version: '1.0' },
+          },
+        },
+        token,
+      });
+      const sessionId = initResponse.headers.get('mcp-session-id');
+      expect(sessionId).toBeTruthy();
+      await post('/mcp', {
+        body: { jsonrpc: '2.0', method: 'notifications/initialized' },
+        headers: { 'mcp-session-id': sessionId! },
+        token,
+      });
+
+      const toolCall = {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'search_memory',
+          arguments: { query: 'live-oauth-session-probe' },
+        },
+      };
+      const headerless = await post('/mcp', {
+        body: toolCall,
+        headers: { 'mcp-session-id': sessionId! },
+      });
+      expect(headerless.status).toBe(401);
+
+      const withBearer = await post('/mcp', {
+        body: toolCall,
+        headers: { 'mcp-session-id': sessionId! },
+        token,
+      });
+      expect(withBearer.status).toBe(200);
+
+      const headerlessGet = await get('/mcp', {
+        headers: { Accept: 'text/event-stream', 'mcp-session-id': sessionId! },
+      });
+      expect(headerlessGet.status).toBe(401);
+      const headerlessDelete = await del('/mcp', {
+        headers: { 'mcp-session-id': sessionId! },
+      });
+      expect(headerlessDelete.status).toBe(401);
+
+      const deleteInitResponse = await post('/mcp', {
+        body: {
+          jsonrpc: '2.0',
+          id: '__delete_auth_init__',
+          method: 'initialize',
+          params: {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: 'delete-auth-test', version: '1.0' },
+          },
+        },
+        token,
+      });
+      const deleteSessionId = deleteInitResponse.headers.get('mcp-session-id');
+      expect(deleteSessionId).toBeTruthy();
+      await post('/mcp', {
+        body: { jsonrpc: '2.0', method: 'notifications/initialized' },
+        headers: { 'mcp-session-id': deleteSessionId! },
+        token,
+      });
+      const validDelete = await del('/mcp', {
+        headers: { 'mcp-session-id': deleteSessionId! },
+        token,
+      });
+      expect(validDelete.status).toBe(200);
+      const afterDelete = await post('/mcp', {
+        body: toolCall,
+        headers: { 'mcp-session-id': deleteSessionId! },
+        token,
+      });
+      expect(afterDelete.status).toBe(404);
+
+      await sql`DELETE FROM "member" WHERE id = ${memberId}`;
+      const afterMembershipRevoke = await post('/mcp', {
+        body: toolCall,
+        headers: { 'mcp-session-id': sessionId! },
+        token,
+      });
+      expect(afterMembershipRevoke.status).toBe(403);
+
+      await addUserToOrganization(liveUser.id, liveOrg.id, 'owner');
+      await sql`
+        UPDATE oauth_tokens SET revoked_at = NOW()
+        WHERE token_hash = ${hashToken(token)}
+      `;
+      const afterTokenRevoke = await post('/mcp', {
+        body: toolCall,
+        headers: { 'mcp-session-id': sessionId! },
+        token,
+      });
+      expect(afterTokenRevoke.status).toBe(401);
     });
 
     it('binds an MCP session to a durable agent and updates last_used_at', async () => {
@@ -622,7 +954,7 @@ describe('MCP Authentication', () => {
         },
         headers: { 'mcp-session-id': activeSessionId! },
       });
-      expect(preRevokeResponse.status).toBe(200);
+      expect(preRevokeResponse.status).toBe(401);
 
       await getTestDb()`
         INSERT INTO mcp_sessions (
@@ -686,9 +1018,7 @@ describe('MCP Authentication', () => {
         WHERE client_id = ${scopedClient.client_id}
         ORDER BY session_id ASC
       `;
-      expect(sessionRows).toHaveLength(1);
-      expect(sessionRows[0].session_id).toBe('session-org-2');
-      expect(sessionRows[0].organization_id).toBe(org2.id);
+      expect(sessionRows).toHaveLength(0);
 
       const postRevokeResponse = await post('/mcp', {
         body: {
@@ -710,6 +1040,89 @@ describe('MCP Authentication', () => {
         WHERE id = ${scopedClient.client_id}
       `;
       expect(clientRows).toHaveLength(1);
+    });
+
+    it('lists and revokes first-ever approved codes before they can mint tokens', async () => {
+      const revoker = await createTestUser({});
+      await addUserToOrganization(revoker.id, org.id, 'owner');
+      const revokerSession = await createTestSession(revoker.id);
+      const pendingClient = await createTestOAuthClient({
+        client_name: 'Unredeemed Grant Client',
+        grant_types: [
+          'authorization_code',
+          'refresh_token',
+          'urn:ietf:params:oauth:grant-type:device_code',
+        ],
+      });
+      const verifier = 'unredeemed-code-verifier-for-revocation';
+      const challenge = createHash('sha256').update(verifier).digest('base64url');
+      const authorizationCode = `unredeemed-auth-${pendingClient.client_id}`;
+      const deviceCode = `unredeemed-device-${pendingClient.client_id}`;
+      const sql = getTestDb();
+      await sql`
+        INSERT INTO oauth_authorization_codes (
+          code, client_id, user_id, organization_id, granted_organization_ids,
+          code_challenge, code_challenge_method, redirect_uri, scope, resource, expires_at
+        ) VALUES (
+          ${authorizationCode}, ${pendingClient.client_id}, ${revoker.id}, ${org.id},
+          ARRAY[${org.id}]::text[], ${challenge}, 'S256', ${pendingClient.redirect_uris[0]},
+          'mcp:read', 'http://localhost/mcp', NOW() + INTERVAL '10 minutes'
+        )
+      `;
+      await sql`
+        INSERT INTO oauth_device_codes (
+          device_code, user_code, client_id, scope, resource, user_id,
+          organization_id, granted_organization_ids, status, expires_at
+        ) VALUES (
+          ${deviceCode}, 'UNREDEEM', ${pendingClient.client_id}, 'mcp:read',
+          'http://localhost/mcp', ${revoker.id}, ${org.id}, ARRAY[${org.id}]::text[],
+          'approved', NOW() + INTERVAL '10 minutes'
+        )
+      `;
+
+      const inventory = await get(`/api/${org.slug}/clients`, {
+        cookie: revokerSession.cookieHeader,
+      });
+      expect(inventory.status).toBe(200);
+      const inventoryBody = (await inventory.json()) as { clients: { id: string }[] };
+      expect(inventoryBody.clients.map((entry) => entry.id)).toContain(
+        pendingClient.client_id
+      );
+
+      const revoked = await del(`/api/${org.slug}/clients/mcp/${pendingClient.client_id}`, {
+        cookie: revokerSession.cookieHeader,
+      });
+      expect(revoked.status).toBe(200);
+      const remainingCodes = await sql`
+        SELECT code AS id FROM oauth_authorization_codes WHERE code = ${authorizationCode}
+        UNION ALL
+        SELECT device_code AS id FROM oauth_device_codes WHERE device_code = ${deviceCode}
+      `;
+      expect(remainingCodes).toHaveLength(0);
+
+      const authExchange = await post('/oauth/token', {
+        body: {
+          grant_type: 'authorization_code',
+          code: authorizationCode,
+          client_id: pendingClient.client_id,
+          client_secret: pendingClient.client_secret,
+          redirect_uri: pendingClient.redirect_uris[0],
+          code_verifier: verifier,
+          resource: 'http://localhost/mcp',
+        },
+      });
+      expect(authExchange.status).toBe(400);
+
+      const deviceExchange = await post('/oauth/token', {
+        body: {
+          grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+          device_code: deviceCode,
+          client_id: pendingClient.client_id,
+          client_secret: pendingClient.client_secret,
+          resource: 'http://localhost/mcp',
+        },
+      });
+      expect(deviceExchange.status).toBe(400);
     });
 
     it('revoking the displayed owner of a shared registration keeps the coworker connected', async () => {
@@ -1045,16 +1458,7 @@ describe('MCP Authentication', () => {
       );
     });
 
-    it('allows OAuth access token to cross-org when user has membership', async () => {
-      // PATs are intentionally org-scoped (above), but OAuth tokens bind to
-      // whichever org the user picked at consent time and the membership
-      // check is the real authorization gate. Without this, `lobu login`
-      // (which OAuths into one org) would lock the user out of every other
-      // org they're admin in — including from minting a PAT for that org.
-      //
-      // We assert the auth gate passes (not 403 with the cross-org message),
-      // not full MCP-handshake success — that needs initialize + notify and
-      // is covered elsewhere.
+    it('rejects an OAuth target outside the immutable grant even when the user is a member', async () => {
       const org2 = await createTestOrganization({
         name: 'OAuth Cross-Org Target',
       });
@@ -1071,10 +1475,11 @@ describe('MCP Authentication', () => {
         token,
       });
 
-      // Anything but the cross-org auth rejection is fine — 400 (missing
-      // MCP session) is the expected next failure since the test skips
-      // initialize, but 200 is also OK if the route gets that far.
-      expect(response.status).not.toBe(403);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: 'forbidden',
+        error_description: 'Workspace is not available for this authorization',
+      });
     });
 
     it('rejects OAuth cross-org call when user is not a member', async () => {
@@ -1095,7 +1500,7 @@ describe('MCP Authentication', () => {
       expect(response.status).toBe(403);
       const body = await response.json();
       expect(body.error).toBe('forbidden');
-      expect(body.error_description).toContain('not a member');
+      expect(body.error_description).toBe('Workspace is not available for this authorization');
     });
 
     it('should reject PAT without owl_pat_ prefix', async () => {
@@ -1148,6 +1553,70 @@ describe('MCP Authentication', () => {
       expect(result.return_value?.denied).toBe(false);
     });
 
+    it('allows a bare OAuth client to explicitly target its sole granted workspace', async () => {
+      const singletonOrg = await createTestOrganization({
+        name: 'Singleton Explicit Grant Org',
+        slug: 'singleton-explicit-grant-org',
+      });
+      const singletonUser = await createTestUser({});
+      await addUserToOrganization(singletonUser.id, singletonOrg.id, 'member');
+      const { token } = await createTestAccessToken(
+        singletonUser.id,
+        singletonOrg.id,
+        client.client_id,
+        { scope: 'mcp:read mcp:write' }
+      );
+      await getTestDb()`
+        UPDATE oauth_tokens
+        SET granted_organization_ids = ARRAY[${singletonOrg.id}]::text[]
+        WHERE token_hash = ${hashToken(token)}
+      `;
+
+      const sdk = await mcpToolsCall<any>(
+        'run_sdk',
+        {
+          script: `export default async (_ctx, client) => {
+            const target = await client.org(${JSON.stringify(singletonOrg.slug)});
+            return target.organizations.current();
+          };`,
+        },
+        { token }
+      );
+      expect(sdk.success).toBe(true);
+      expect(sdk.return_value).toMatchObject({ id: singletonOrg.id, slug: singletonOrg.slug });
+
+      const result = await mcpToolsCall<any>(
+        'query_sql',
+        {
+          sql: 'SELECT 1 AS ok',
+          org_slug: singletonOrg.slug,
+        },
+        { token }
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.rows).toEqual([{ ok: 1 }]);
+
+      const init = await post('/mcp', {
+        body: {
+          jsonrpc: '2.0',
+          id: 'single-grant-init',
+          method: 'initialize',
+          params: {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: 'single-grant-test', version: '1.0' },
+          },
+        },
+        token,
+      });
+      const initBody = await init.json();
+      expect(initBody.result?.instructions).toContain('Search and writes use the primary workspace.');
+      expect(initBody.result?.instructions).not.toContain(
+        'Unqualified search searches all granted workspaces'
+      );
+    });
+
     it('uses the selected workspace role for cross-org SDK mutations on unscoped OAuth only', async () => {
       const defaultOrg = await createTestOrganization({
         name: 'Cross-Org SDK Default',
@@ -1180,6 +1649,11 @@ describe('MCP Authentication', () => {
         client.client_id,
         { scope: 'mcp:read mcp:write mcp:admin' }
       );
+      await sql`
+        UPDATE oauth_tokens
+        SET granted_organization_ids = ARRAY[${defaultOrg.id}, ${targetOrg.id}]::text[]
+        WHERE token_hash = ${hashToken(token)}
+      `;
 
       const listed = await mcpListTools({ token });
       expect(listed.tools.some((tool: any) => tool.name === 'run_sdk')).toBe(true);
@@ -1286,6 +1760,11 @@ describe('MCP Authentication', () => {
         client.client_id,
         { scope: 'mcp:read mcp:write mcp:admin' }
       );
+      await getTestDb()`
+        UPDATE oauth_tokens
+        SET granted_organization_ids = ARRAY[${defaultOrg.id}, ${targetOrg.id}]::text[]
+        WHERE token_hash = ${hashToken(token)}
+      `;
 
       const denied = await mcpToolsCall<any>(
         'run_sdk',

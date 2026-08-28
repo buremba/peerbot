@@ -77,7 +77,11 @@ import {
 	previewMerge,
 } from "../../utils/entity-merge";
 import { ToolUserError } from "../../utils/errors";
-import { persistEntityWritePolicyDenial } from "../../utils/entity-write-denial-audit";
+import {
+	EntityPolicyDenialError,
+	type EntityWriteDenialDescription,
+	recordEntityWriteDenial,
+} from "../../utils/entity-write-denial-audit";
 import {
 	insertChangeEventInTransaction,
 	insertEdgeChangeEventInTransaction,
@@ -150,6 +154,42 @@ function attributionFor(actor: ActingPrincipal): ApprovalAttributionType {
 	return actor.kind === "automation"
 		? ApprovalAttribution.Automation
 		: ApprovalAttribution.Agent;
+}
+
+/** A write-rule refusal, in the shape the denial audit records. */
+function ruleDenialFrom(error: unknown): EntityWriteDenialDescription | null {
+	if (
+		!(error instanceof EntityRowValidationError) ||
+		error.verdict.outcome !== "deny"
+	) {
+		return null;
+	}
+	return {
+		denialSource: "rule",
+		operation: error.verdict.operation,
+		reason: error.verdict.reason,
+		deniedFields: error.verdict.fields,
+		entityId: error.verdict.entityId,
+		entityType: error.verdict.entityType,
+		entityOrganizationId: error.verdict.entityOrganizationId,
+	};
+}
+
+function recordToolDenial(params: {
+	ctx: ToolContext;
+	attemptId: string;
+	actor: ActingPrincipal;
+	automationId: number | null;
+	denial: EntityWriteDenialDescription;
+}): Promise<void> {
+	return recordEntityWriteDenial({
+		...params.denial,
+		organizationId: params.ctx.organizationId,
+		ctx: params.ctx,
+		attemptId: params.attemptId,
+		actor: params.actor,
+		automationId: params.automationId,
+	});
 }
 
 /**
@@ -361,6 +401,7 @@ async function handleCreate(
 		metadata: entityData.metadata ?? {},
 	};
 	const actor = await actingPrincipalFor(args, ctx);
+	const denialAttemptId = randomUUID();
 	// Resolved once for the create path: the gate, the deferral, and the audit
 	// row it produces must all name the SAME Automation, or an approval card and
 	// its provenance disagree about who proposed the row.
@@ -385,11 +426,14 @@ async function handleCreate(
 		proposal,
 	});
 	if (createDecision.outcome === "deny") {
-		await persistEntityWritePolicyDenial({
+		await recordEntityWriteDenial({
+			organizationId: ctx.organizationId,
 			ctx,
-			attemptId: randomUUID(),
+			attemptId: denialAttemptId,
+			denialSource: "policy",
 			operation: "create",
 			reason: createDecision.reason,
+			deniedFields: [],
 			entityId: null,
 			entityType: args.entity_type,
 			entityOrganizationId: null,
@@ -430,6 +474,18 @@ async function handleCreate(
 			},
 		});
 	} catch (err) {
+		const denial = ruleDenialFrom(err);
+		if (denial) {
+			// createEntity owned and rolled back its transaction before this catch.
+			await recordToolDenial({
+				ctx,
+				attemptId: denialAttemptId,
+				actor,
+				automationId: createAttribution.automationId,
+				denial,
+			});
+			throw err;
+		}
 		if (
 			!(err instanceof EntityRowValidationError) ||
 			err.verdict.outcome !== "escalate"
@@ -605,6 +661,7 @@ async function handleUpdate(
 		ctx,
 		args.automation_source
 	);
+	const denialAttemptId = randomUUID();
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
 		policyPrincipalKind: updateActor.kind,
 		attribution: attributionFor(updateActor),
@@ -675,6 +732,22 @@ async function handleUpdate(
 				tx,
 			);
 		},
+	}).catch(async (err: unknown) => {
+		const denial =
+			err instanceof EntityPolicyDenialError
+				? err.denial
+				: ruleDenialFrom(err);
+		if (denial) {
+			// updateEntity owned and rolled back its transaction before this catch.
+			await recordToolDenial({
+				ctx,
+				attemptId: denialAttemptId,
+				actor: updateActor,
+				automationId: updateAttribution.automationId,
+				denial,
+			});
+		}
+		throw err;
 	});
 	const entityDetails =
 		(await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;
@@ -763,6 +836,7 @@ async function handleMerge(
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	const actor = await actingPrincipalFor(args, ctx);
+	const denialAttemptId = randomUUID();
 	if (actor.kind === "user" && !isAdminOrOwnerRole(ctx.memberRole)) {
 		throw new ToolUserError("Only an admin or owner may merge entities", 403);
 	}
@@ -991,6 +1065,17 @@ async function handleMerge(
 						},
 		});
 	} catch (err) {
+		const denial = ruleDenialFrom(err);
+		if (denial) {
+			// applyMergeGroup rolled back before this handler regains control.
+			await recordToolDenial({
+				ctx,
+				attemptId: denialAttemptId,
+				actor,
+				automationId: mergeAttribution.automationId,
+				denial,
+			});
+		}
 		// The write rule judges the merge under lock inside the kernel, so its
 		// verdict arrives only once the policy has already decided to apply. Route
 		// the one escalation this card can replay — the merge card's grant is the
@@ -1525,6 +1610,7 @@ async function handleDelete(
 	}
 
 	const deleteActor = await actingPrincipalFor(args, ctx);
+	const denialAttemptId = randomUUID();
 	const deleteAttribution = await resolveAutomationAttribution(
 		ctx,
 		args?.automation_source
@@ -1556,11 +1642,14 @@ async function handleDelete(
 		current,
 	});
 	if (deleteDecision.outcome === "deny") {
-		await persistEntityWritePolicyDenial({
+		await recordEntityWriteDenial({
+			organizationId: ctx.organizationId,
 			ctx,
-			attemptId: randomUUID(),
+			attemptId: denialAttemptId,
+			denialSource: "policy",
 			operation: "delete",
 			reason: deleteDecision.reason,
+			deniedFields: [],
 			entityId: entity.id,
 			entityType: entity.entity_type,
 			entityOrganizationId: entity.organization_id ?? null,
@@ -1618,6 +1707,18 @@ async function handleDelete(
 	try {
 		result = await deleteEntity(entityId, force, env, ctx);
 	} catch (err) {
+		const denial = ruleDenialFrom(err);
+		if (denial) {
+			// deleteEntity owned and rolled back its transaction before this catch.
+			await recordToolDenial({
+				ctx,
+				attemptId: denialAttemptId,
+				actor: deleteActor,
+				automationId: deleteAttribution.automationId,
+				denial,
+			});
+			throw err;
+		}
 		// Row rules run after the principal gate — under lock inside the delete
 		// transaction, and once on the pool beforehand when the type has a
 		// beforeDelete hook, so the hook's cleanup never precedes the verdict.

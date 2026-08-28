@@ -11,12 +11,8 @@ import {
 	SAFE_COLUMN_DEFS,
 } from "../utils/table-schema";
 import type { ToolContext } from "../tools/registry";
+import { resolveGrantedWorkspaceTarget } from "../auth/oauth/workspace-grants";
 import { raceAbort } from "../utils/race-abort";
-import {
-	getCachedMembershipRole,
-	getCachedOrgBySlug,
-	getOrgById,
-} from "../workspace/multi-tenant";
 import { METHOD_METADATA } from "./method-metadata";
 import type { SDKMode } from "./sdk-manifest";
 
@@ -104,63 +100,10 @@ class SdkError extends Error {
 	}
 }
 
-export class AccessDeniedError extends SdkError {
-	constructor(message: string) {
-		super("AccessDenied", message);
-	}
-}
-
-export class OrgNotFoundError extends SdkError {
-	constructor(message: string) {
-		super("OrgNotFound", message);
-	}
-}
-
 export class CrossOrgAccessDenied extends SdkError {
 	constructor(message: string) {
 		super("CrossOrgAccessDenied", message);
 	}
-}
-
-interface ResolvedOrgMembership {
-	orgId: string;
-	slug: string;
-	role: string | null;
-	visibility: "public" | "private";
-}
-
-export async function resolveOrgMembership(
-	slugOrId: string,
-	ctx: ToolContext
-): Promise<ResolvedOrgMembership> {
-	let orgId: string;
-	let slug: string;
-	let visibility: "public" | "private";
-
-	const bySlug = await getCachedOrgBySlug(slugOrId);
-	if (bySlug) {
-		orgId = bySlug.id;
-		slug = slugOrId;
-		visibility = bySlug.visibility === "public" ? "public" : "private";
-	} else {
-		const byId = await getOrgById(slugOrId);
-		if (!byId) {
-			throw new OrgNotFoundError(`Organization '${slugOrId}' not found.`);
-		}
-		orgId = slugOrId;
-		slug = byId.slug;
-		visibility = byId.visibility === "public" ? "public" : "private";
-	}
-
-	const role = await getCachedMembershipRole(orgId, ctx.userId);
-
-	if (visibility === "private" && role === null) {
-		throw new AccessDeniedError(
-			`You are not a member of organization '${slug}'.`
-		);
-	}
-
-	return { orgId, slug, role, visibility };
 }
 
 /**
@@ -179,10 +122,32 @@ export async function resolveCrossOrgToolContext(
 			"Cross-org access is not available on this connection. Use the unscoped /mcp endpoint with an OAuth session, or reconnect to /mcp/{slug} for the target workspace."
 		);
 	}
-	const member = await resolveOrgMembership(slugOrId, ctx);
+	if (!ctx.userId || !Array.isArray(ctx.grantedOrganizationIds)) {
+		throw new CrossOrgAccessDenied(
+			"Workspace is not available for this authorization."
+		);
+	}
+	const member = await resolveGrantedWorkspaceTarget({
+		userId: ctx.userId,
+		grantedOrganizationIds: ctx.grantedOrganizationIds,
+		slugOrId,
+	});
+	if (!member) {
+		throw new CrossOrgAccessDenied(
+			"Workspace is not available for this authorization."
+		);
+	}
+	if (
+		member.id !== ctx.organizationId &&
+		(ctx.agentId || ctx.actingAutomationId != null)
+	) {
+		throw new CrossOrgAccessDenied(
+			"Agent- and automation-bound sessions cannot change workspaces. Reconnect without that binding for cross-workspace access."
+		);
+	}
 	return {
 		...ctx,
-		organizationId: member.orgId,
+		organizationId: member.id,
 		memberRole: member.role,
 	};
 }
@@ -217,6 +182,9 @@ export function buildClientSDK(
 		...ctx,
 		mcpAppsSupported: false,
 		headlessResult: true,
+		// Nested SDK calls are explicit single-workspace operations. Only the
+		// directly invoked search tool may use the bare-session federation bit.
+		directSearchFederation: false,
 	};
 	ctx = opts?.abortSignal
 		? { ...headlessCtx, abortSignal: opts.abortSignal }

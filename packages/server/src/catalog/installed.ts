@@ -173,6 +173,8 @@ export async function listOrgInstalled(
 			tokenType: "session",
 			scopedToOrg: true,
 			allowCrossOrg: false,
+			grantedOrganizationIds: null,
+			directSearchFederation: false,
 			requestUrl: "",
 		};
 		const listed = await handleList({ status: "active" }, {} as Env, toolCtx);

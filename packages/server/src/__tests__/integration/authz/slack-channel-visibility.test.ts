@@ -1107,6 +1107,7 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 			query: "quarterly revenue",
       contentAgentId: undefined,
       contentLimit: 20,
+      workspaceSlug: org.slug,
     } as unknown as RecallContext;
 
     // A member sees only her own channel (#eng), never #secret.

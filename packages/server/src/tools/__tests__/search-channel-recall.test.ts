@@ -91,6 +91,10 @@ describe("search_memory channel recall", () => {
     );
 
     expect(result.conversation_messages).toBeDefined();
+    expect(result.conversation_messages?.every((message) => message.message_id > 0)).toBe(true);
+    expect(
+      result.conversation_messages?.every((message) => message.workspace_slug === org.slug)
+    ).toBe(true);
     const texts = (result.conversation_messages ?? []).map((m) => m.text);
 		expect(texts.some((t) => t.includes("quarterly revenue forecast"))).toBe(
 			true,

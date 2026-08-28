@@ -265,8 +265,10 @@ describe('MCP member write access', () => {
     expect(afterResponse.status).toBe(403);
     const afterBody = await afterResponse.json();
     expect(afterBody.error).toBe('forbidden');
+    // OAuth callers get the indistinguishable grant-denial message so a
+    // removed member cannot distinguish revocation from an unknown workspace.
     expect(afterBody.error_description).toContain(
-      'Token owner is not a member of this organization'
+      'Workspace is not available for this authorization'
     );
   });
 

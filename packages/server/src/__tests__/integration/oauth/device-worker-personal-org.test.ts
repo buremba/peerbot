@@ -18,9 +18,11 @@
 
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { OAuthProvider } from '../../../auth/oauth/provider';
 import type { Env } from '../../../index';
 import { oauthRoutes } from '../../../auth/oauth/routes';
 import { hashToken } from '../../../auth/oauth/utils';
+import { parsePgTextArray } from '../../../db/client';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -50,7 +52,7 @@ function call(
   app: Hono<{ Bindings: Env }>,
   method: string,
   path: string,
-  opts?: { body?: unknown; headers?: Record<string, string> }
+  opts?: { body?: unknown; headers?: Record<string, string>; env?: Partial<Env> }
 ): Promise<Response> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -63,7 +65,7 @@ function call(
       headers,
       ...(opts?.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
     }),
-    TEST_ENV
+    { ...TEST_ENV, ...opts?.env }
   );
 }
 
@@ -159,19 +161,58 @@ describe('device-worker grant always binds to the personal org', () => {
       },
     });
     expect(tokenRes.status).toBe(200);
-    const tokens = (await tokenRes.json()) as { access_token: string };
+    const tokens = (await tokenRes.json()) as {
+      access_token: string;
+      refresh_token: string;
+    };
 
     // The persisted access token is bound to the PERSONAL org, not the team org
     // the resource pointed at.
     const rows = (await sql`
-      SELECT organization_id FROM oauth_tokens
+      SELECT organization_id, authorization_grant_type FROM oauth_tokens
       WHERE token_hash = ${hashToken(tokens.access_token)}
         AND token_type = 'access'
       LIMIT 1
-    `) as unknown as Array<{ organization_id: string | null }>;
+    `) as unknown as Array<{
+      organization_id: string | null;
+      authorization_grant_type: string | null;
+    }>;
     expect(rows.length).toBe(1);
     expect(rows[0].organization_id).toBe(personalOrg.id);
     expect(rows[0].organization_id).not.toBe(teamOrg.id);
+    expect(rows[0].authorization_grant_type).toBe('device_code');
+    const verified = await new OAuthProvider(sql, ORIGIN).verifyAccessToken(tokens.access_token);
+    expect(verified?.authorizationGrantType).toBe('device_code');
+    expect(verified?.scopes).toContain('device_worker:run');
+    expect(verified?.scopes).toContain('connections:token');
+
+    const refreshRes = await call(app, 'POST', '/oauth/token', {
+      body: {
+        grant_type: 'refresh_token',
+        refresh_token: tokens.refresh_token,
+        client_id: client.client_id,
+      },
+    });
+    expect(refreshRes.status).toBe(200);
+    const refreshed = (await refreshRes.json()) as {
+      access_token: string;
+      refresh_token: string;
+    };
+    const refreshedRows = await sql`
+      SELECT token_type, authorization_grant_type
+      FROM oauth_tokens
+      WHERE token_hash = ${hashToken(refreshed.access_token)}
+         OR token_hash = ${hashToken(refreshed.refresh_token)}
+      ORDER BY token_type
+    `;
+    expect(refreshedRows).toHaveLength(2);
+    expect(refreshedRows.every((row) => row.authorization_grant_type === 'device_code')).toBe(true);
+    const refreshedAuth = await new OAuthProvider(sql, ORIGIN).verifyAccessToken(
+      refreshed.access_token
+    );
+    expect(refreshedAuth?.scopes).toEqual(
+      expect.arrayContaining(['device_worker:run', 'connections:token'])
+    );
   });
 
   it('exposes personal_org_slug and marks the personal org on /oauth/userinfo', async () => {
@@ -234,6 +275,145 @@ describe('device-worker grant always binds to the personal org', () => {
     expect(personalEntry?.personal).toBe(true);
     // No other org is marked personal.
     expect(info.organizations.filter((o) => o.personal).length).toBe(1);
+    expect(info.organizations.some((o) => o.slug === teamOrg.slug)).toBe(false);
+  });
+
+  it('keeps a combined CLI device grant personal-anchored and rolls back a disabled exchange', async () => {
+    const app = buildApp();
+    const sql = getTestDb();
+    const personalOrg = await createTestOrganization({ name: 'CLI Personal' });
+    const teamOrg = await createTestOrganization({ name: 'CLI Team' });
+    const user = await createTestUser({ name: 'CLI Multi User' });
+    await markPersonalOrg(personalOrg.id, user.id);
+    await addUserToOrganization(user.id, personalOrg.id, 'owner');
+    await addUserToOrganization(user.id, teamOrg.id, 'member');
+    const session = await createTestSession(user.id);
+    const multiWorkspaceEnv = { LOBU_OAUTH_MULTI_WORKSPACE_GRANTS: '1' };
+
+    const reg = await call(app, 'POST', '/oauth/register', {
+      body: {
+        client_name: 'Lobu CLI explicit grants',
+        grant_types: ['urn:ietf:params:oauth:grant-type:device_code', 'refresh_token'],
+        token_endpoint_auth_method: 'none',
+      },
+    });
+    const client = (await reg.json()) as { client_id: string };
+    const deviceAuth = await call(app, 'POST', '/oauth/device_authorization', {
+      body: {
+        client_id: client.client_id,
+        scope: 'device_worker:run mcp:read mcp:write profile:read',
+      },
+    });
+    const da = (await deviceAuth.json()) as {
+      device_code: string;
+      user_code: string;
+    };
+    const infoRes = await call(
+      app,
+      'GET',
+      `/oauth/device/info?user_code=${encodeURIComponent(da.user_code)}`,
+      { headers: { Cookie: session.cookieHeader }, env: multiWorkspaceEnv },
+    );
+    const deviceInfo = (await infoRes.json()) as {
+      resource: string | null;
+      scopes: string[];
+      multi_workspace_grants_enabled: boolean;
+    };
+    expect(deviceInfo.resource).toBeNull();
+    expect(deviceInfo.scopes).toContain('mcp:read');
+    expect(deviceInfo.multi_workspace_grants_enabled).toBe(true);
+
+    const disabledApprove = await call(app, 'POST', '/oauth/device/approve', {
+      body: {
+        user_code: da.user_code,
+        approved: true,
+        organization_id: personalOrg.id,
+        organization_ids: [personalOrg.id, teamOrg.id],
+        workspace_access: 'all_current',
+      },
+      headers: { Cookie: session.cookieHeader },
+    });
+    expect(disabledApprove.status).toBe(400);
+    expect(await disabledApprove.json()).toMatchObject({
+      error: 'invalid_request',
+      error_description: 'Multiple-workspace authorization is not enabled',
+    });
+
+    const approve = await call(app, 'POST', '/oauth/device/approve', {
+      body: {
+        user_code: da.user_code,
+        approved: true,
+        organization_id: personalOrg.id,
+        organization_ids: [personalOrg.id, teamOrg.id],
+        workspace_access: 'all_current',
+      },
+      headers: { Cookie: session.cookieHeader },
+      env: multiWorkspaceEnv,
+    });
+    expect(approve.status).toBe(200);
+
+    // Approval can land on an enabled pod immediately before token exchange
+    // reaches a disabled pod during rollout. The exchange must fail closed
+    // without consuming the approved code, so a later enabled pod can finish.
+    const disabledTokenRes = await call(app, 'POST', '/oauth/token', {
+      body: {
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: da.device_code,
+        client_id: client.client_id,
+      },
+    });
+    expect(disabledTokenRes.status).toBe(400);
+    expect(await disabledTokenRes.json()).toMatchObject({
+      error: 'invalid_grant',
+      error_description: 'Multiple-workspace authorization is not enabled',
+    });
+    const preservedCodeRows = await sql`
+      SELECT status, granted_organization_ids
+      FROM oauth_device_codes
+      WHERE device_code = ${da.device_code}
+    `;
+    expect(preservedCodeRows[0]?.status).toBe('approved');
+    expect(
+      parsePgTextArray(preservedCodeRows[0]?.granted_organization_ids as string | null)
+    ).toEqual([personalOrg.id, teamOrg.id]);
+    const disabledExchangeTokens = await sql`
+      SELECT 1 FROM oauth_tokens WHERE client_id = ${client.client_id}
+    `;
+    expect(disabledExchangeTokens).toHaveLength(0);
+
+    const tokenRes = await call(app, 'POST', '/oauth/token', {
+      body: {
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: da.device_code,
+        client_id: client.client_id,
+      },
+      env: multiWorkspaceEnv,
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokens = (await tokenRes.json()) as { access_token: string };
+    const rows = await sql`
+      SELECT organization_id, granted_organization_ids
+      FROM oauth_tokens
+      WHERE token_hash = ${hashToken(tokens.access_token)}
+        AND token_type = 'access'
+      LIMIT 1
+    `;
+    expect(rows[0]?.organization_id).toBe(personalOrg.id);
+    expect(parsePgTextArray(rows[0]?.granted_organization_ids as string | null)).toEqual([
+      personalOrg.id,
+      teamOrg.id,
+    ]);
+
+    const userInfoRes = await call(app, 'GET', '/oauth/userinfo', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+    const userInfo = (await userInfoRes.json()) as {
+      organizations: { id: string }[];
+    };
+    expect(userInfo.organizations.map((organization) => organization.id)).toEqual([
+      personalOrg.id,
+      teamOrg.id,
+    ]);
   });
 
   it('refuses a device-worker grant when the user has no personal org', async () => {

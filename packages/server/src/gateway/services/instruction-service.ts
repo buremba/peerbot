@@ -337,13 +337,12 @@ export class InstructionService {
       }
     }
 
-    // NOTE: org-wide `guidance` is NOT injected here. Workers receive it
-    // through the mandatory `lobu-memory` MCP server's instructions
-    // (buildWorkspaceInstructions renders the "Organization Context" section),
-    // which the worker folds into its prompt as MCP server instructions. Both
-    // that server and this injection are gated by the same org-scope condition,
-    // so injecting here too would place identical guidance in the prompt twice.
-    // buildWorkspaceInstructions is the single render site for both surfaces.
+    // NOTE: org-wide `guidance` is NOT injected here. Verified workers receive
+    // it through the mandatory `lobu-memory` MCP server's managed-agent
+    // instructions (buildWorkspaceInstructions renders the "Organization
+    // Context" section), which the worker folds into its prompt. Direct MCP
+    // clients receive the directory-safe audience instead. Injecting here too
+    // would place identical guidance in a managed worker prompt twice.
 
     // Get skills instructions (includes enabled skills from agent settings)
     let skillsInstructions = "";

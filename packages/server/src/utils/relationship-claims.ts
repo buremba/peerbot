@@ -45,11 +45,14 @@ interface ClaimedRelationshipRow {
   to_entity_id: number | string;
   relationship_type_id: number | string;
   relationship_type_slug: string | null;
-  relationship_type_purpose?: string | null;
   metadata: unknown;
   confidence: number | null;
   source: string | null;
   inserted?: boolean;
+}
+
+interface ClaimedRelationshipWithPurposeRow extends ClaimedRelationshipRow {
+  relationship_type_purpose: string | null;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -386,7 +389,7 @@ export async function retractManualRelationshipClaim(
   }
 ): Promise<{ relationshipRemoved: boolean }> {
   await lockOrganization(tx, params.organizationId);
-  const rows = await tx<ClaimedRelationshipRow>`
+  const rows = await tx<ClaimedRelationshipWithPurposeRow>`
     SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
            rt.slug AS relationship_type_slug, rt.purpose AS relationship_type_purpose,
            r.metadata, r.confidence, r.source

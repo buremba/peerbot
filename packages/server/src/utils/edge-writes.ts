@@ -125,7 +125,7 @@ export async function upsertEdges(params: UpsertEdgesParams): Promise<number[]> 
       : db`DO UPDATE SET
             metadata = jsonb_set(
               COALESCE(entity_relationships.metadata, '{}'::jsonb),
-              '{_lobu_claims}',
+              ARRAY[${RELATIONSHIP_CLAIMS_METADATA_KEY}]::text[],
               COALESCE(
                 entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY},
                 '{}'::jsonb

@@ -18,7 +18,7 @@ import {
 } from './relationship-validation';
 
 export const RELATIONSHIP_CLAIMS_METADATA_KEY = '_lobu_claims';
-const MANUAL_RELATIONSHIP_CLAIM_KEY = 'manual';
+export const MANUAL_RELATIONSHIP_CLAIM_KEY = 'manual';
 
 export interface ConnectorRelationshipDeclaration {
   type: string;
@@ -171,7 +171,7 @@ async function assertRelationshipClaim(
       : tx`DO UPDATE SET
           metadata = jsonb_set(
             COALESCE(entity_relationships.metadata, '{}'::jsonb),
-            '{_lobu_claims}',
+            ARRAY[${RELATIONSHIP_CLAIMS_METADATA_KEY}]::text[],
             (entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY})
               || jsonb_build_object(${params.claimKey}::text, ${tx.json(params.claim)}::jsonb),
             true
@@ -300,7 +300,7 @@ async function retractLockedRelationshipClaims(
       UPDATE entity_relationships
       SET metadata = jsonb_set(
             metadata,
-            '{_lobu_claims}',
+            ARRAY[${RELATIONSHIP_CLAIMS_METADATA_KEY}]::text[],
             (metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) - ${pgTextArray([...retracted])}::text[],
             true
           ),

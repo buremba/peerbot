@@ -8,6 +8,7 @@
 import { getDb } from '../db/client';
 import { ensureRelationshipType, upsertEdges } from './edge-writes';
 import logger from './logger';
+import { MANUAL_RELATIONSHIP_CLAIM_KEY } from './relationship-claims';
 
 interface AutoLinkParams {
   eventId: number;
@@ -113,7 +114,7 @@ export async function autoLinkEvent(params: AutoLinkParams): Promise<void> {
     })),
     source: 'feed',
     confidence: 0.4,
-    claimKey: 'config:auto-linker',
+    claimKey: MANUAL_RELATIONSHIP_CLAIM_KEY,
     onConflict: 'ignore',
   });
   const created = createdIds.length;

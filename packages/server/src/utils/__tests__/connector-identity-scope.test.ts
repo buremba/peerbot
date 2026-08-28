@@ -55,6 +55,31 @@ describe('connector identity scope manifest validation', () => {
     ).toThrow(/erp_customer.*workspace.*organization.*tenant/i);
   });
 
+  it('rejects NUL in identity namespaces and tenant scope paths', () => {
+    expect(() =>
+      validateConnectorMetadata(
+        metadata({
+          customers: feed('customer.created', [
+            identity('erp\0customer', 'metadata.id'),
+          ]),
+        })
+      )
+    ).toThrow(/identity namespace.*must not contain NUL/i);
+
+    expect(() =>
+      validateConnectorMetadata(
+        metadata({
+          customers: feed('customer.created', [
+            identity('erp_customer', 'metadata.id', {
+              scope: 'tenant',
+              scopeKeyPath: 'metadata.tenant\0id',
+            }),
+          ]),
+        })
+      )
+    ).toThrow(/scopeKeyPath.*must not contain NUL/i);
+  });
+
   it('names both declarations when one namespace has conflicting shapes', () => {
     expect(() =>
       validateConnectorMetadata(
@@ -91,5 +116,4 @@ describe('connector identity scope manifest validation', () => {
       )
     ).toThrow(/erp_customer.*customer\.created.*invoice\.created/i);
   });
-
 });

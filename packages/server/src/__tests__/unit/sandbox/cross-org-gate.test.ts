@@ -25,18 +25,16 @@ describe("cross-org gate", () => {
     await expect(sdk.org("acme")).rejects.toBeInstanceOf(CrossOrgAccessDenied);
   });
 
-  it("allowCrossOrg: true reaches the membership lookup (which throws OrgNotFound on a missing slug)", async () => {
-    const sdk = buildClientSDK(ctx({}), env, {
+  it("allowCrossOrg: true still denies a caller without a workspace grant snapshot", async () => {
+    // Unknown, ungranted, and missing-snapshot targets are deliberately
+    // indistinguishable: client.org() never acts as an org-name oracle. The
+    // DB-backed unknown/ungranted cases live in client-sdk-org.test.ts.
+    const sdk = buildClientSDK(ctx({ grantedOrganizationIds: null }), env, {
       mode: "read",
       allowCrossOrg: true,
     });
-    let err: unknown;
-    try {
-      await sdk.org("does-not-exist-xyz");
-    } catch (e) {
-      err = e;
-    }
-    expect(err).toBeDefined();
-    expect(err).not.toBeInstanceOf(CrossOrgAccessDenied);
+    await expect(sdk.org("does-not-exist-xyz")).rejects.toBeInstanceOf(
+      CrossOrgAccessDenied,
+    );
   });
 });

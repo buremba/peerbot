@@ -15,7 +15,7 @@ import { search } from '../../../tools/search';
 import type { ToolContext } from '../../../tools/registry';
 import { getEntityHooks } from '../../../utils/entity-hooks';
 import { initWorkspaceProvider } from '../../../workspace';
-import { cleanupTestDatabase } from '../../setup/test-db';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
   createTestEntity,
@@ -491,33 +491,43 @@ describe('workspace-identity audit events > public-read exclusion', () => {
   it('owner of another org does not see this org workspace audit via bootstrap', async () => {
     // memberRole is scoped to ctx.organizationId. An owner of org A resolving
     // public org B must not inherit owner visibility on B's audit rows.
+    // resolve_path now only crosses workspaces into a granted or PUBLIC
+    // target, so make the browsed org actually public for this test.
     const otherOrg = await createTestOrganization({
       visibility: 'private',
       name: 'Other owner org',
     });
     await addUserToOrganization(alice.id, otherOrg.id, 'owner');
 
-    const slug = (org as unknown as { slug: string }).slug;
-    const result = await resolvePath(
-      { path: `/${slug}`, include_bootstrap: true } as never,
-      {} as never,
-      {
-        organizationId: otherOrg.id,
-        userId: alice.id,
-        memberRole: 'owner',
-        isAuthenticated: true,
-        tokenType: 'oauth',
-        scopedToOrg: false,
-        allowCrossOrg: true,
-        scopes: ['mcp:read'],
-      } as ToolContext
-    );
-    const recentIds = new Set(
-      ((result.bootstrap as { recent_content?: Array<{ id: number }> })
-        ?.recent_content ?? []).map((c) => c.id)
-    );
-    expect(recentIds.has(orgWideWorkspaceAuditEventId)).toBe(false);
-    expect(recentIds.has(normalEventId)).toBe(true);
+    const sql = getTestDb();
+    await sql`UPDATE organization SET visibility = 'public' WHERE id = ${org.id}`;
+    try {
+      const slug = (org as unknown as { slug: string }).slug;
+      const result = await resolvePath(
+        { path: `/${slug}`, include_bootstrap: true } as never,
+        {} as never,
+        {
+          organizationId: otherOrg.id,
+          userId: alice.id,
+          memberRole: 'owner',
+          isAuthenticated: true,
+          tokenType: 'oauth',
+          scopedToOrg: false,
+          allowCrossOrg: true,
+          grantedOrganizationIds: [otherOrg.id],
+          directSearchFederation: false,
+          scopes: ['mcp:read'],
+        } as ToolContext
+      );
+      const recentIds = new Set(
+        ((result.bootstrap as { recent_content?: Array<{ id: number }> })
+          ?.recent_content ?? []).map((c) => c.id)
+      );
+      expect(recentIds.has(orgWideWorkspaceAuditEventId)).toBe(false);
+      expect(recentIds.has(normalEventId)).toBe(true);
+    } finally {
+      await sql`UPDATE organization SET visibility = 'private' WHERE id = ${org.id}`;
+    }
   });
 
   it('anonymous content_ids exact-ID read excludes workspace audit but keeps ordinary events', async () => {

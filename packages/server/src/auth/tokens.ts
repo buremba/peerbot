@@ -113,6 +113,7 @@ export class PersonalAccessTokenService {
     return {
       userId: pat.user_id,
       organizationId: pat.organization_id,
+      grantedOrganizationIds: null,
       clientId: `pat_${pat.id}`,
       scopes: parseScopes(pat.scope),
       expiresAt: pat.expires_at

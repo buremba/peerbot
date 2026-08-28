@@ -415,7 +415,11 @@ interface HomeFeedRow {
    * heuristic when present.
    */
   author_control_label?: string;
-  /** Exact post permalink recovered from LinkedIn's own Copy link action. */
+  /**
+   * Post permalink, when a row carries one. The scrape spec that fed this is
+   * inert on current cards (see `post_url` in HOME_FEED_SCRAPE_CONFIG), so
+   * treat it as best-effort and prefer `post_identity` for durable identity.
+   */
   post_url?: string;
   /** Rendered identifier containing LinkedIn's stable shareId / ugcPostId. */
   post_identity?: string;
@@ -454,6 +458,8 @@ const HOME_FEED_COMMENT_COUNT_LABEL_SELECTOR =
   '.social-details-social-counts [aria-label*="comment" i], [aria-label$=" comment" i]:not([id^="replaceableComment_"] *), [aria-label$=" comments" i]:not([id^="replaceableComment_"] *)';
 const HOME_FEED_POST_CONTROL_SELECTOR =
   '[role="button"]:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *), button:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *), a:not([id^="replaceableComment_"] *):not([componentkey^="commentsSectionContainer"] *)';
+const HOME_FEED_POST_IDENTITY_SELECTOR =
+  '[id*="shareId="], [id*="ugcPostId="], [id*="urn:li:activity:"]';
 
 /**
  * Selectors for the virtualized linkedin.com/feed/ DOM. Home-feed posts are
@@ -472,6 +478,16 @@ const HOME_FEED_SCRAPE_CONFIG = {
     // share the FeedType suffix but must never drive another post's controls.
     rowSelector:
       'div[componentkey^="expanded"][componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
+    // LinkedIn swaps the whole card for a fresh element mid-expansion (sorting
+    // by "Most recent" is enough to trigger it). Without a row-local durable
+    // id the extension cannot tell a replacement from a recycled slot, so it
+    // abandons the thread. Same selector as post_identity below: the two must
+    // resolve to the same post or expansion proof binds to the wrong row.
+    identity: {
+      selector: HOME_FEED_POST_IDENTITY_SELECTOR,
+      take: "attr",
+      attr: "id",
+    },
     expected: {
       // Keep this aligned with the post-level comment count fields below. The
       // count is not always interactive: LinkedIn also renders it as a plain
@@ -555,9 +571,9 @@ const HOME_FEED_SCRAPE_CONFIG = {
     },
     post_url: {
       // Current cards expose neither a permalink anchor nor a post URN. Their
-      // control menu still has LinkedIn's own "Copy link to post" action. The
-      // generic scraper intercepts clipboard.writeText BEFORE clicking it, so
-      // this reads the canonical URL without changing the user's clipboard.
+      // control menu still has LinkedIn's own "Copy link to post" action, but
+      // the extension does not click clipboard-writing actions. `post_url` is
+      // therefore best-effort/empty; `post_identity` below is the durable key.
       take: "clipboardAction",
       triggerSelector: 'button[aria-label*="control menu for post by"]',
       actionSelector: '[role="menuitem"]',
@@ -568,8 +584,7 @@ const HOME_FEED_SCRAPE_CONFIG = {
     post_identity: {
       // Current feed cards embed the durable id in a translatable-commentary
       // element id even when every visible anchor points back to /feed/.
-      selector:
-        '[id*="shareId="], [id*="ugcPostId="], [id*="urn:li:activity:"]',
+      selector: HOME_FEED_POST_IDENTITY_SELECTOR,
       take: "attr",
       attr: "id",
     },
@@ -1238,12 +1253,12 @@ function isHomeFeedRowNoise(
 }
 
 /**
- * Map cs_scrape home-feed rows to event envelopes. The permalink recovered
- * from LinkedIn's Copy-link action is the canonical post identity; an embedded
- * activity/share/ugcPost id is used when the permalink is unavailable. The
- * scrape-only componentkey never becomes an event origin, and a post without
- * either durable identity is not emitted. Native comments carry their own
- * durable id and point at the stable parent-post origin.
+ * Map cs_scrape home-feed rows to event envelopes. A scraped permalink still
+ * wins when a row carries one, but current cards expose none, so the canonical
+ * post identity is normally the activity/share/ugcPost id embedded in
+ * `post_identity`. The scrape-only componentkey never becomes an event origin,
+ * and a post without either durable identity is not emitted. Native comments
+ * carry their own durable id and point at the stable parent-post origin.
  * Home-feed posts expose no reliable timestamp, so the caller stamps
  * occurred_at with the sync time.
  */
@@ -1372,9 +1387,9 @@ export function buildHomeFeedEvents(
     seenOrigins.add(originId);
     const counts = parseHomeFeedEngagement(row);
     // The identity key already proved a durable post id, so a canonical URL is
-    // always derivable. Deriving it from the key covers the case where the
-    // scraped permalink did not normalize (post_url held the bare /feed/
-    // surface) but post_identity still carried the urn.
+    // always derivable. Deriving it from the key is the normal path now that
+    // post_url comes back empty; it also covers a scraped permalink that did
+    // not normalize (post_url holding the bare /feed/ surface).
     const sourceUrl =
       context.postUrl ?? normalizeLinkedInPostUrl(`urn:li:${identityKey}`);
 

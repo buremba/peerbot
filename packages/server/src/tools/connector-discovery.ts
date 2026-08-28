@@ -25,11 +25,16 @@ import { getWorkspaceProvider } from '../workspace';
 import type { OrgInfo } from '../workspace/types';
 import { METHOD_METADATA } from '../sandbox/method-metadata';
 import { resolveSdkAccessGuidance } from '../sandbox/sdk-method-access';
+import { listLiveGrantedMemberWorkspaces } from '../auth/oauth/workspace-grants';
 
 export interface ConnectorDiscoveryDeps {
   manageCatalog: typeof manageCatalog;
   manageConnections: typeof manageConnections;
   listOrganizations: (userId: string) => Promise<OrgInfo[]>;
+  listLiveGrantedOrganizations: (
+    userId: string,
+    grantedOrganizationIds: readonly string[]
+  ) => Promise<Array<{ id: string }>>;
 }
 
 const DEFAULT_DEPS: ConnectorDiscoveryDeps = {
@@ -37,6 +42,8 @@ const DEFAULT_DEPS: ConnectorDiscoveryDeps = {
   manageConnections,
   listOrganizations: async (userId) =>
     getWorkspaceProvider().listOrganizations(undefined, userId),
+  listLiveGrantedOrganizations: async (userId, grantedOrganizationIds) =>
+    listLiveGrantedMemberWorkspaces({ userId, grantedOrganizationIds }),
 };
 
 function asArray<T = Record<string, unknown>>(value: unknown): T[] {
@@ -130,6 +137,26 @@ export async function searchLiveConnectors(
       // the catalog. Keep that base path available if org discovery fails.
       deps.listOrganizations(ctx.userId).catch(() => []),
     ]);
+    const liveGrantIds =
+      Array.isArray(ctx.grantedOrganizationIds)
+        ? new Set(
+            (
+              await deps.listLiveGrantedOrganizations(
+                ctx.userId,
+                ctx.grantedOrganizationIds
+              )
+            ).map((workspace) => workspace.id)
+          )
+        : null;
+    // Only PRIVATE memberships outside the grant snapshot are confidential;
+    // public managed-auth offers stay discoverable for their members.
+    const visibleOrganizations = organizations.filter(
+      (organization) =>
+        liveGrantIds === null ||
+        !organization.is_member ||
+        organization.visibility === 'public' ||
+        liveGrantIds.has(organization.id)
+    );
     const installed = asArray<{
       id: string;
       name?: string;
@@ -151,7 +178,7 @@ export async function searchLiveConnectors(
         localBootstrapCommand: string;
       }>
     >();
-    for (const organization of organizations) {
+    for (const organization of visibleOrganizations) {
       for (const offer of organization.managed_auth?.connectors ?? []) {
         const entries = managedOffers.get(offer.connector_key) ?? [];
         entries.push({

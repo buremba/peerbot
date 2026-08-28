@@ -271,6 +271,49 @@ describe('migration invariants', () => {
 			expect(feed.next_run_at).toBeNull();
 		});
 
+		it('schedule-auto-paused Automations cannot retain or resurrect a cursor', async () => {
+			const org = await createTestOrganization({
+				name: 'Automation Pause Invariant Org',
+			});
+			const user = await createTestUser({
+				email: 'automation-pause-invariant@example.com',
+			});
+			await addUserToOrganization(user.id, org.id, 'owner');
+			const sql = getTestDb();
+			const [automation] = await sql`
+				INSERT INTO automations (
+					organization_id, created_by, automation_group_id, name, slug,
+					status, version, schedule, next_run_at,
+					consecutive_scheduled_failures, schedule_auto_paused_at
+				) VALUES (
+					${org.id}, ${user.id}, 0, 'Paused Automation Invariant',
+					'paused-automation-invariant', 'active', 1, '0 * * * *',
+					current_timestamp + interval '1 hour', 5, current_timestamp
+				)
+				RETURNING id, next_run_at
+			`;
+			expect(automation.next_run_at).toBeNull();
+
+			const [stillPaused] = await sql`
+				UPDATE automations
+				SET next_run_at = current_timestamp + interval '2 hours'
+				WHERE id = ${automation.id}
+				RETURNING next_run_at
+			`;
+			expect(stillPaused.next_run_at).toBeNull();
+
+			const [resumed] = await sql`
+				UPDATE automations
+				SET schedule_auto_paused_at = NULL,
+					consecutive_scheduled_failures = 0,
+					next_run_at = current_timestamp + interval '1 hour'
+				WHERE id = ${automation.id}
+				RETURNING next_run_at, consecutive_scheduled_failures
+			`;
+			expect(resumed.next_run_at).not.toBeNull();
+			expect(Number(resumed.consecutive_scheduled_failures)).toBe(0);
+		});
+
     it('redundant/dead indexes are dropped while their covering indexes remain (2026-06-16 audit round 2)', async () => {
       const sql = getTestDb();
       // Dropped: idx_events_source_embedding (redundant btree(event_id) before

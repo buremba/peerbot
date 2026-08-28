@@ -98,6 +98,15 @@ describe('relationship source claims', () => {
       `connection:${connection.id}:feed:invoice:source-a`,
       `connection:${connection.id}:feed:invoice:source-b`,
     ]);
+    const [relationshipEvents] = await sql`
+      SELECT count(*)::int AS count
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND metadata->>'_lobu_relationship_change' = 'true'
+    `;
+    // Connector projections maintain graph state but are not semantic user
+    // mutations, so they must not implicitly activate relationship Automations.
+    expect(relationshipEvents.count).toBe(0);
 
     await sql.begin((tx) =>
       reconcileConnectorRelationshipClaims(tx, {

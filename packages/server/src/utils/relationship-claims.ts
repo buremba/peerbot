@@ -9,7 +9,6 @@
 
 import { type DbClient, pgBigintArray, pgTextArray } from '../db/client';
 import { ToolUserError } from './errors';
-import { insertEdgeChangeEventInTransaction } from './insert-event';
 import {
   assertNotAclManagedEdge,
   canonicalizeSymmetricEdge,
@@ -51,11 +50,8 @@ interface ClaimedRelationshipRow {
   inserted?: boolean;
 }
 
-interface ClaimedRelationshipWithSlugRow extends ClaimedRelationshipRow {
+interface ClaimedRelationshipWithPurposeRow extends ClaimedRelationshipRow {
   relationship_type_slug: string | null;
-}
-
-interface ClaimedRelationshipWithPurposeRow extends ClaimedRelationshipWithSlugRow {
   relationship_type_purpose: string | null;
 }
 
@@ -139,7 +135,7 @@ export async function lockOrganizationForRelationshipClaims(
   if (rows.length === 0) throw new ToolUserError('Organization not found', 404);
 }
 
-async function lockLiveConnection(
+export async function lockLiveConnectionForRelationshipClaims(
   tx: DbClient,
   organizationId: string,
   connectionId: number
@@ -161,13 +157,11 @@ interface RelationshipClaimParams {
   fromEntityId: number;
   toEntityId: number;
   relationshipTypeId: number;
-  relationshipTypeSlug: string;
   claimKey: string;
   claim: Record<string, unknown>;
   source: string;
   confidence?: number | null;
   createdBy?: string | null;
-  clientId?: string | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -200,34 +194,8 @@ async function lockExistingRelationship(
   return rows[0];
 }
 
-async function finishRelationshipClaimWrite(
-  tx: DbClient,
-  params: RelationshipClaimParams,
-  row: ClaimedRelationshipRow
-): Promise<RelationshipClaimResult> {
+function finishRelationshipClaimWrite(row: ClaimedRelationshipRow): RelationshipClaimResult {
   const inserted = row.inserted === true;
-  if (inserted) {
-    await insertEdgeChangeEventInTransaction(
-      {
-        organizationId: params.organizationId,
-        relationshipId: Number(row.id),
-        fromEntityId: params.fromEntityId,
-        toEntityId: params.toEntityId,
-        relationshipTypeId: params.relationshipTypeId,
-        relationshipTypeSlug: params.relationshipTypeSlug,
-        op: 'link',
-        changes: [
-          { field: 'exists', old: false, new: true },
-          { field: 'metadata', old: null, new: params.metadata ?? null },
-          { field: 'confidence', old: null, new: params.confidence ?? null },
-          { field: 'source', old: null, new: params.source },
-        ],
-        createdBy: params.createdBy ?? null,
-        clientId: params.clientId ?? null,
-      },
-      tx
-    );
-  }
   return { id: Number(row.id), inserted, claimAdded: true };
 }
 
@@ -251,7 +219,7 @@ async function insertOnlyRelationshipClaim(
     RETURNING id, from_entity_id, to_entity_id, relationship_type_id,
               metadata, confidence, source, true AS inserted
   `;
-  if (written[0]) return finishRelationshipClaimWrite(tx, params, written[0]);
+  if (written[0]) return finishRelationshipClaimWrite(written[0]);
   const existing = await lockExistingRelationship(tx, params);
   return { id: Number(existing.id), inserted: false, claimAdded: false };
 }
@@ -287,7 +255,7 @@ async function mergeRelationshipClaim(
     RETURNING id, from_entity_id, to_entity_id, relationship_type_id,
               metadata, confidence, source, (xmax = 0) AS inserted
   `;
-  if (written[0]) return finishRelationshipClaimWrite(tx, params, written[0]);
+  if (written[0]) return finishRelationshipClaimWrite(written[0]);
 
   const existing = await lockExistingRelationship(tx, params);
   const claims = claimsFromMetadata(existing.metadata);
@@ -306,11 +274,9 @@ export async function assertManualRelationshipClaim(
     fromEntityId: number;
     toEntityId: number;
     relationshipTypeId: number;
-    relationshipTypeSlug: string;
     source: string;
     confidence?: number | null;
     createdBy?: string | null;
-    clientId?: string | null;
     metadata?: Record<string, unknown> | null;
   }
 ): Promise<RelationshipClaimResult> {
@@ -325,11 +291,9 @@ export async function assertManualRelationshipClaim(
 async function retractLockedRelationshipClaims(
   tx: DbClient,
   params: {
-    organizationId: string;
     claimKeys: readonly string[];
-    row: ClaimedRelationshipWithSlugRow;
+    row: ClaimedRelationshipRow;
     updatedBy?: string | null;
-    clientId?: string | null;
   }
 ): Promise<{ relationshipRemoved: boolean }> {
   const claims = claimsFromMetadata(params.row.metadata);
@@ -365,30 +329,6 @@ async function retractLockedRelationshipClaims(
         updated_at = current_timestamp
     WHERE id = ${relationshipId} AND deleted_at IS NULL
   `;
-  await insertEdgeChangeEventInTransaction(
-    {
-      organizationId: params.organizationId,
-      relationshipId,
-      fromEntityId: Number(params.row.from_entity_id),
-      toEntityId: Number(params.row.to_entity_id),
-      relationshipTypeId: Number(params.row.relationship_type_id),
-      relationshipTypeSlug: params.row.relationship_type_slug,
-      op: 'unlink',
-      changes: [
-        { field: 'exists', old: true, new: false },
-        {
-          field: 'metadata',
-          old: relationshipMetadataWithoutClaims(params.row.metadata),
-          new: null,
-        },
-        { field: 'confidence', old: params.row.confidence, new: null },
-        { field: 'source', old: params.row.source, new: null },
-      ],
-      createdBy: params.updatedBy ?? null,
-      clientId: params.clientId ?? null,
-    },
-    tx
-  );
   return { relationshipRemoved: true };
 }
 
@@ -399,9 +339,20 @@ export async function retractManualRelationshipClaim(
     organizationId: string;
     relationshipId: number;
     updatedBy?: string | null;
-    clientId?: string | null;
   }
-): Promise<{ relationshipRemoved: boolean }> {
+): Promise<{
+  relationshipRemoved: boolean;
+  relationship: {
+    id: number;
+    fromEntityId: number;
+    toEntityId: number;
+    relationshipTypeId: number;
+    relationshipTypeSlug: string | null;
+    metadata: Record<string, unknown> | null;
+    confidence: number | null;
+    source: string | null;
+  };
+}> {
   await lockOrganizationForRelationshipClaims(tx, params.organizationId);
   const rows = await tx<ClaimedRelationshipWithPurposeRow>`
     SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
@@ -422,16 +373,27 @@ export async function retractManualRelationshipClaim(
     'unlink'
   );
   assertManualRelationshipMutationAllowed(row, 'unlinked');
-  return retractLockedRelationshipClaims(tx, {
-    organizationId: params.organizationId,
+  const result = await retractLockedRelationshipClaims(tx, {
     claimKeys: [MANUAL_RELATIONSHIP_CLAIM_KEY],
     row,
     updatedBy: params.updatedBy,
-    clientId: params.clientId,
   });
+  return {
+    ...result,
+    relationship: {
+      id: Number(row.id),
+      fromEntityId: Number(row.from_entity_id),
+      toEntityId: Number(row.to_entity_id),
+      relationshipTypeId: Number(row.relationship_type_id),
+      relationshipTypeSlug: row.relationship_type_slug,
+      metadata: relationshipMetadataWithoutClaims(row.metadata),
+      confidence: row.confidence,
+      source: row.source,
+    },
+  };
 }
 
-async function retractRelationshipClaimExcept(
+export async function retractRelationshipClaimExcept(
   tx: DbClient,
   params: {
     organizationId: string;
@@ -439,11 +401,10 @@ async function retractRelationshipClaimExcept(
     keepRelationshipIds: ReadonlySet<number>;
   }
 ): Promise<void> {
-  const rows = await tx<ClaimedRelationshipWithSlugRow>`
+  const rows = await tx<ClaimedRelationshipRow>`
     SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
-           rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
+           r.metadata, r.confidence, r.source
     FROM entity_relationships r
-    JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
     WHERE r.organization_id = ${params.organizationId}
       AND r.deleted_at IS NULL
       AND r.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
@@ -455,7 +416,6 @@ async function retractRelationshipClaimExcept(
   for (const row of rows) {
     if (params.keepRelationshipIds.has(Number(row.id))) continue;
     await retractLockedRelationshipClaims(tx, {
-      organizationId: params.organizationId,
       claimKeys: [params.claimKey],
       row,
     });
@@ -473,11 +433,10 @@ export async function retractRelationshipClaimFromDepartures(
     keepFromEntityIds: readonly number[];
   }
 ): Promise<number> {
-  const rows = await tx<ClaimedRelationshipWithSlugRow>`
+  const rows = await tx<ClaimedRelationshipRow>`
     SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
-           rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
+           r.metadata, r.confidence, r.source
     FROM entity_relationships r
-    JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
     WHERE r.organization_id = ${params.organizationId}
       AND r.relationship_type_id = ${params.relationshipTypeId}
       AND r.to_entity_id = ${params.toEntityId}
@@ -492,7 +451,6 @@ export async function retractRelationshipClaimFromDepartures(
   let removedRelationships = 0;
   for (const row of rows) {
     const { relationshipRemoved } = await retractLockedRelationshipClaims(tx, {
-      organizationId: params.organizationId,
       claimKeys: [params.claimKey],
       row,
     });
@@ -526,7 +484,11 @@ export async function reconcileConnectorRelationshipClaims(
   }
 
   await lockOrganizationForRelationshipClaims(tx, params.organizationId);
-  await lockLiveConnection(tx, params.organizationId, params.connectionId);
+  await lockLiveConnectionForRelationshipClaims(
+    tx,
+    params.organizationId,
+    params.connectionId
+  );
 
   const typeSlugs = [...new Set(params.desired.map((edge) => edge.declaration.type))];
   const typeRows =
@@ -555,7 +517,6 @@ export async function reconcileConnectorRelationshipClaims(
       fromEntityId: number;
       toEntityId: number;
       relationshipTypeId: number;
-      relationshipTypeSlug: string;
     }
   >();
   for (const desired of params.desired) {
@@ -576,7 +537,6 @@ export async function reconcileConnectorRelationshipClaims(
         fromEntityId: endpoints.from,
         toEntityId: endpoints.to,
         relationshipTypeId: Number(type.id),
-        relationshipTypeSlug: type.slug,
       });
     }
   }
@@ -594,7 +554,6 @@ export async function reconcileConnectorRelationshipClaims(
       fromEntityId: edge.fromEntityId,
       toEntityId: edge.toEntityId,
       relationshipTypeId: edge.relationshipTypeId,
-      relationshipTypeSlug: edge.relationshipTypeSlug,
       claimKey,
       claim: {},
       source: 'feed',
@@ -623,11 +582,10 @@ export async function retractConnectionRelationshipClaims(
     // inside the connection-delete transaction that already holds these rows.
     // The prefix predicate cannot use the exact-claim GIN index, so this scan is
     // deliberately constrained to one organization and runs only on deletion.
-    const rows = await tx<ClaimedRelationshipWithSlugRow>`
+    const rows = await tx<ClaimedRelationshipRow>`
       SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
-             rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
+             r.metadata, r.confidence, r.source
       FROM entity_relationships r
-      JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
       WHERE r.organization_id = ${params.organizationId}
         AND r.deleted_at IS NULL
         AND r.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
@@ -644,7 +602,6 @@ export async function retractConnectionRelationshipClaims(
       const claims = claimsFromMetadata(row.metadata);
       if (!claims) throw migrationRequired(row);
       await retractLockedRelationshipClaims(tx, {
-        organizationId: params.organizationId,
         claimKeys: Object.keys(claims).filter((key) => key.startsWith(prefix)),
         row,
       });

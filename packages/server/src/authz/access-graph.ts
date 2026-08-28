@@ -49,6 +49,8 @@ import {
 import { ensureRelationshipType, upsertEdges } from '../utils/edge-writes.js';
 import {
   connectionRelationshipClaimKey,
+  lockLiveConnectionForRelationshipClaims,
+  lockOrganizationForRelationshipClaims,
   retractRelationshipClaimFromDepartures,
 } from '../utils/relationship-claims.js';
 import {
@@ -587,6 +589,14 @@ export async function buildAccessGraph(params: {
   const { createdEdges, removedEdges } = await withAclEdgeWrite(
     sql,
     async (tx) => {
+      if (identityConnectionId !== null) {
+        await lockOrganizationForRelationshipClaims(tx, organizationId);
+        await lockLiveConnectionForRelationshipClaims(
+          tx,
+          organizationId,
+          identityConnectionId
+        );
+      }
       // Connection cleanup is keyed by the stored row id. Chat ACL syncs use a
       // runtime id derived from the row slug, so claiming under that runtime id
       // would leave authorization edges behind when the numeric row is deleted.

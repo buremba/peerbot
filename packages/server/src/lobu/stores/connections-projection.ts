@@ -248,6 +248,15 @@ export async function upsertChatConnectionProjection(
         `chatconn:${orgId}:${conn.platform}:enterprise:${enterpriseId}`,
       ]);
     }
+    if (
+      credentialMode === "managed" &&
+      enterpriseId &&
+      enterpriseId !== externalTenantId
+    ) {
+      // Organization deletion locks the parent before cascading into connection
+      // rows. Take the same order before either retirement UPDATE below.
+      await lockOrganizationForRelationshipClaims(sql, orgId);
+    }
 
     // Same-org one-active-per-(org, platform, tenant): demote any OTHER active
     // sibling in THIS org so the partial-unique `connections_active_chat_tenant`
@@ -284,9 +293,6 @@ export async function upsertChatConnectionProjection(
       enterpriseId &&
       enterpriseId !== externalTenantId
     ) {
-      // Match organization deletion's parent -> child lock order before any
-      // connection retirement below.
-      await lockOrganizationForRelationshipClaims(sql, orgId);
       const supersededEnterprise = await sql`
         UPDATE connections SET deleted_at = now(), status = 'paused', updated_at = now()
         WHERE organization_id = ${orgId}

@@ -1973,12 +1973,10 @@ async function handleLink(
 			fromEntityId: fromId,
 			toEntityId: toId,
 			relationshipTypeId: typeId,
-			relationshipTypeSlug: args.relationship_type_slug!,
 			metadata: args.metadata ?? null,
 			confidence,
 			source,
 			createdBy: ctx.userId,
-			clientId: ctx.clientId,
 		});
 		if (!asserted.claimAdded) {
 			throw new ToolUserError(
@@ -1993,6 +1991,26 @@ async function handleLink(
 			[relationshipId],
   );
 
+		await insertEdgeChangeEventInTransaction(
+			{
+				organizationId: ctx.organizationId,
+				relationshipId,
+				fromEntityId: fromId,
+				toEntityId: toId,
+				relationshipTypeId: typeId,
+				relationshipTypeSlug: args.relationship_type_slug ?? null,
+				op: "link",
+				changes: [
+					{ field: "exists", old: false, new: true },
+					{ field: "metadata", old: null, new: args.metadata ?? null },
+					{ field: "confidence", old: null, new: confidence },
+					{ field: "source", old: null, new: source },
+				],
+				createdBy: ctx.userId,
+				clientId: ctx.clientId,
+			},
+			tx,
+		);
 		return createdRows[0];
 	});
 
@@ -2008,14 +2026,37 @@ async function handleUnlink(
 
   const sql = getDb();
 
-	const result = await sql.begin((tx) =>
-		retractManualRelationshipClaim(tx, {
+	const result = await sql.begin(async (tx) => {
+		const retracted = await retractManualRelationshipClaim(tx, {
 			organizationId: ctx.organizationId,
 			relationshipId: args.relationship_id!,
 			updatedBy: ctx.userId,
-			clientId: ctx.clientId,
-		}),
-	);
+		});
+		if (retracted.relationshipRemoved) {
+			const edge = retracted.relationship;
+			await insertEdgeChangeEventInTransaction(
+				{
+					organizationId: ctx.organizationId,
+					relationshipId: edge.id,
+					fromEntityId: edge.fromEntityId,
+					toEntityId: edge.toEntityId,
+					relationshipTypeId: edge.relationshipTypeId,
+					relationshipTypeSlug: edge.relationshipTypeSlug,
+					op: "unlink",
+					changes: [
+						{ field: "exists", old: true, new: false },
+						{ field: "metadata", old: edge.metadata, new: null },
+						{ field: "confidence", old: edge.confidence, new: null },
+						{ field: "source", old: edge.source, new: null },
+					],
+					createdBy: ctx.userId,
+					clientId: ctx.clientId,
+				},
+				tx,
+			);
+		}
+		return retracted;
+	});
 
 	return {
 		action: "unlink",

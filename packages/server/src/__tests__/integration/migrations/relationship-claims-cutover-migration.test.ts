@@ -11,6 +11,7 @@ import {
 import { withAclEdgeWrite } from '../../../utils/relationship-validation';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
+  createTestConnection,
   createTestEntity,
   createTestOrganization,
 } from '../../setup/test-fixtures';
@@ -34,7 +35,7 @@ describe('relationship claims cutover migration', () => {
     await cleanupTestDatabase();
   });
 
-  it('stamps ordinary rows and retires unattributable authorization rows', async () => {
+  it('preserves attributable ownership and retires unsafe legacy rows', async () => {
     const sql = getDb();
     const org = await createTestOrganization({ name: 'Relationship claim cutover' });
     const from = await createTestEntity({
@@ -47,17 +48,23 @@ describe('relationship claims cutover migration', () => {
       entity_type: 'thing',
       name: 'To',
     });
-    const types = await sql<{ id: number; purpose: string | null }[]>`
+    const types = await sql<{ id: number; slug: string; purpose: string | null }[]>`
       INSERT INTO entity_relationship_types
         (organization_id, slug, name, is_symmetric, purpose, created_at, updated_at)
       VALUES
         (${org.id}, 'ordinary_cutover', 'Ordinary cutover', false, NULL,
          current_timestamp, current_timestamp),
+        (${org.id}, 'about', 'About', false, NULL,
+         current_timestamp, current_timestamp),
+        (${org.id}, 'member_of', 'Member of', false, NULL,
+         current_timestamp, current_timestamp),
         (${org.id}, 'authorization_cutover', 'Authorization cutover', false,
          'authorization', current_timestamp, current_timestamp)
-      RETURNING id, purpose
+      RETURNING id, slug, purpose
     `;
-    const ordinaryTypeId = Number(types.find((row) => row.purpose === null)?.id);
+    const ordinaryTypeId = Number(types.find((row) => row.slug === 'ordinary_cutover')?.id);
+    const aboutTypeId = Number(types.find((row) => row.slug === 'about')?.id);
+    const memberOfTypeId = Number(types.find((row) => row.slug === 'member_of')?.id);
     const authorizationTypeId = Number(
       types.find((row) => row.purpose === 'authorization')?.id
     );
@@ -79,18 +86,46 @@ describe('relationship claims cutover migration', () => {
               current_timestamp, current_timestamp, current_timestamp)
       RETURNING id
     `;
-    const [authorization] = await withAclEdgeWrite(sql, (tx) =>
-      tx<{ id: number }[]>`
+    const authorizationRows = await withAclEdgeWrite(sql, (tx) =>
+      tx<{ id: number; relationship_type_id: number }[]>`
         INSERT INTO entity_relationships
           (organization_id, from_entity_id, to_entity_id, relationship_type_id,
            source, created_at, updated_at)
-        VALUES (${org.id}, ${to.id}, ${from.id}, ${authorizationTypeId}, 'feed',
-                current_timestamp, current_timestamp)
-        RETURNING id
+        VALUES
+          (${org.id}, ${to.id}, ${from.id}, ${authorizationTypeId}, 'feed',
+           current_timestamp, current_timestamp),
+          (${org.id}, ${from.id}, ${to.id}, ${memberOfTypeId}, 'feed',
+           current_timestamp, current_timestamp)
+        RETURNING id, relationship_type_id
       `
     );
+    const authorization = authorizationRows.find(
+      (row) => Number(row.relationship_type_id) === authorizationTypeId
+    )!;
+    const unclassifiedMemberOf = authorizationRows.find(
+      (row) => Number(row.relationship_type_id) === memberOfTypeId
+    )!;
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'slack',
+      createDefaultFeed: false,
+    });
+    const [ownedAbout, orphanedAbout] = await sql<{ id: number }[]>`
+      INSERT INTO entity_relationships
+        (organization_id, from_entity_id, to_entity_id, relationship_type_id,
+         metadata, source, created_at, updated_at)
+      VALUES
+        (${org.id}, ${from.id}, ${to.id}, ${aboutTypeId},
+         ${sql.json({ connection_id: String(connection.id), channel_key: 'T01:C01', visible: true })},
+         'manual', current_timestamp, current_timestamp),
+        (${org.id}, ${to.id}, ${from.id}, ${aboutTypeId},
+         ${sql.json({ connection_id: '999999999', channel_key: 'T01:C02' })},
+         'manual', current_timestamp, current_timestamp)
+      RETURNING id
+    `;
 
     const up = loadMigrationUp(resolveMigrationsDir(), MIGRATION);
+    await executeMigrationSection((statement) => sql.unsafe(statement), up);
     await executeMigrationSection((statement) => sql.unsafe(statement), up);
 
     const [ordinaryAfter] = await sql`
@@ -109,6 +144,37 @@ describe('relationship claims cutover migration', () => {
     `;
     expect(authorizationAfter.deleted_at).not.toBeNull();
     expect(authorizationAfter.metadata).toBeNull();
+
+    const [unclassifiedMemberOfAfter] = await sql`
+      SELECT deleted_at, metadata
+      FROM entity_relationships
+      WHERE id = ${unclassifiedMemberOf.id}
+    `;
+    expect(unclassifiedMemberOfAfter.deleted_at).not.toBeNull();
+    expect(unclassifiedMemberOfAfter.metadata).toBeNull();
+
+    const [ownedAboutAfter] = await sql`
+      SELECT deleted_at, metadata FROM entity_relationships WHERE id = ${ownedAbout.id}
+    `;
+    expect(ownedAboutAfter.deleted_at).toBeNull();
+    expect(ownedAboutAfter.metadata).toEqual({
+      visible: true,
+      _lobu_claims: {
+        [`connection:${connection.id}:config:channel-about:T01:C01`]: {
+          connection_id: String(connection.id),
+          channel_key: 'T01:C01',
+        },
+      },
+    });
+
+    const [orphanedAboutAfter] = await sql`
+      SELECT deleted_at, metadata FROM entity_relationships WHERE id = ${orphanedAbout.id}
+    `;
+    expect(orphanedAboutAfter.deleted_at).not.toBeNull();
+    expect(orphanedAboutAfter.metadata).toEqual({
+      connection_id: '999999999',
+      channel_key: 'T01:C02',
+    });
 
     const [index] = await sql<{ indisvalid: boolean }[]>`
       SELECT i.indisvalid

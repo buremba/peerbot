@@ -36,6 +36,7 @@ interface UpsertEdgesParams {
   createdBy?: string | null;
   metadata?: object | null;
   claimKey: string;
+  claim?: object;
   onConflict: 'ignore' | 'update';
 }
 
@@ -102,7 +103,7 @@ export async function upsertEdges(params: UpsertEdgesParams): Promise<number[]> 
   const froms = pairs.map((p) => p.fromEntityId);
   const tos = pairs.map((p) => p.toEntityId);
 
-  const claim = { [params.claimKey]: {} };
+  const claim = { [params.claimKey]: params.claim ?? {} };
   const metadata = {
     ...(params.metadata ?? {}),
     [RELATIONSHIP_CLAIMS_METADATA_KEY]: claim,

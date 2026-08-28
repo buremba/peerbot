@@ -20,12 +20,14 @@ export async function resolveClaimingUserSlackIdentities(
       ON auth_ei.organization_id = m."organizationId"
      AND auth_ei.namespace = 'auth_user_id'
      AND auth_ei.identifier = m."userId"
+     AND auth_ei.scope_key IS NULL
      AND auth_ei.source_connector = 'auth:signup'
      AND auth_ei.deleted_at IS NULL
     JOIN entity_identities ei
       ON ei.organization_id = auth_ei.organization_id
      AND ei.entity_id = auth_ei.entity_id
      AND ei.namespace = ${SLACK_IDENTITY.USER_ID}
+     AND ei.scope_key IS NULL
      AND ei.deleted_at IS NULL
     WHERE m."userId" = ${userId}
   `) as Array<{ identifier: string }>;

@@ -881,13 +881,16 @@ function outputAliases(sql: string): Set<string> {
 }
 
 /** Build one actionable error covering all unknown tables in a query. */
-export function formatUnknownTablesError(tableNames: Iterable<string>): string {
+export function formatUnknownTablesError(
+  tableNames: Iterable<string>,
+  queryableTableNames: Iterable<string> = QUERYABLE_TABLE_NAMES
+): string {
   const names = [...new Set(tableNames)].sort();
   const subject =
     names.length === 1
       ? `Unknown table '${names[0]}'`
       : `Unknown tables ${names.map((name) => `'${name}'`).join(', ')}`;
-  const queryableTables = [...QUERYABLE_TABLE_NAMES].sort().join(', ');
+  const queryableTables = [...queryableTableNames].sort().join(', ');
   return (
     `${subject} — not in the queryable allowlist, so the query did not run. ` +
     `This is an error, not an empty result. ` +
@@ -895,8 +898,14 @@ export function formatUnknownTablesError(tableNames: Iterable<string>): string {
   );
 }
 
-export function validateTableQuery(sql: string): { valid: boolean; errors: string[] } {
-  const result = validateWithSchema(sql, QUERYABLE_SCHEMA, 'postgresql', { checkReferences: true });
+export function validateTableQuery(
+  sql: string,
+  safeColumns: Map<string, ColumnDef[]> = SAFE_COLUMN_DEFS
+): { valid: boolean; errors: string[] } {
+  const schema = {
+    tables: [...safeColumns].map(([name, columns]) => ({ name, columns })),
+  };
+  const result = validateWithSchema(sql, schema, 'postgresql', { checkReferences: true });
   const aliases = outputAliases(sql);
   const errors = (result.errors ?? []).filter((e: { code: string; message: string }) => {
     // E201 = unknown column. A reference to the query's OWN output alias (e.g.
@@ -916,7 +925,7 @@ export function validateTableQuery(sql: string): { valid: boolean; errors: strin
     else messages.push(error.message);
   }
   if (unknownTables.length > 0) {
-    messages.unshift(formatUnknownTablesError(unknownTables));
+    messages.unshift(formatUnknownTablesError(unknownTables, safeColumns.keys()));
   }
   return {
     valid: messages.length === 0,

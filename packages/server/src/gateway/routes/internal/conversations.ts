@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import { Hono, type Context } from "hono";
 import {
@@ -11,7 +12,12 @@ import {
   conversationRefsMatch,
   parseConversationRef,
 } from "../../conversations/conversation-ref.js";
+import { stripPlatformPrefix } from "../../channels/bound-channels.js";
 import { getChatInstanceManager } from "../../../lobu/gateway.js";
+import { presentStoredEventToConversation } from "../../../notifications/service.js";
+import { isDeliverableChatPlatform } from "../../../scheduled/scheduled-jobs-service.js";
+import { manageSchedules } from "../../../tools/admin/manage_schedules.js";
+import type { ToolContext } from "../../../tools/registry.js";
 import {
   captureChannelMessage,
   readChannelTranscript,
@@ -271,6 +277,214 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       });
     } catch (error) {
       logger.error(`send conversation failed: ${String(error)}`);
+      return errorResponse(c, "Internal server error", 500);
+    }
+  });
+
+  // POST /conversations/present-event { eventId }
+  //
+  // Unlike send_message, this route accepts no destination or authored card.
+  // It renders a tenant-owned durable event through its declared json_template
+  // and posts it back into the signed source conversation. That keeps event
+  // actions portable across web/Slack/Google Chat without teaching the model
+  // platform card JSON or internal action-id formats.
+  router.post("/conversations/present-event", authenticateWorker, async (c) => {
+    try {
+      const worker = getVerifiedWorker(c);
+      if (
+        !worker.agentId ||
+        !worker.organizationId ||
+        !worker.connectionId ||
+        !worker.platform ||
+        !worker.channelId
+      ) {
+        return errorResponse(
+          c,
+          "This turn is not attached to an active chat conversation",
+          403
+        );
+      }
+      const body = (await c.req.json().catch(() => null)) as {
+        eventId?: unknown;
+      } | null;
+      const eventId = Number(body?.eventId);
+      if (!Number.isSafeInteger(eventId) || eventId < 1) {
+        return errorResponse(c, "eventId must be a positive integer", 400);
+      }
+
+      const captured = await captureSideEffect(c, "conversations.present-event", {
+        eventId,
+        conversationId: worker.conversationId,
+      });
+      if (captured) return captured;
+
+      const presentation = await presentStoredEventToConversation({
+        organizationId: worker.organizationId,
+        eventId,
+        connectionId: worker.connectionId,
+        platform: worker.platform,
+        channelId: worker.channelId,
+        channelKey: `${worker.platform}:${stripPlatformPrefix(
+          worker.platform,
+          worker.channelId
+        )}`,
+        conversationId: worker.conversationId,
+        threadId:
+          worker.responseThreadId ??
+          parseConversationRef(worker.conversationId)?.threadId,
+      });
+      if (!presentation.ok) {
+        if (presentation.reason === "not_found") {
+          return errorResponse(c, "Event not found or already replaced", 404);
+        }
+        if (presentation.reason === "not_renderable") {
+          return errorResponse(
+            c,
+            "Event has no renderable declared json_template",
+            422
+          );
+        }
+        return errorResponse(c, "Chat instance manager unavailable", 503);
+      }
+
+      captureChannelMessage({
+        organizationId: worker.organizationId,
+        connectionId: worker.connectionId,
+        platform: worker.platform,
+        channelId: worker.channelId,
+        threadId: presentation.threadId,
+        platformMessageId: presentation.messageId,
+        authorId: worker.agentId,
+        authorName: worker.agentId,
+        teamId: worker.teamId ?? null,
+        isBot: true,
+        text: presentation.fallbackText,
+        occurredAt: new Date(),
+      });
+
+      return c.json({
+        messageId: presentation.messageId,
+        deliveredInBand: true,
+      });
+    } catch (error) {
+      logger.error(`present event failed: ${String(error)}`);
+      return errorResponse(c, "Internal server error", 500);
+    }
+  });
+
+  // POST /conversations/schedule-followup { runAt, prompt, idempotencyKey }
+  //
+  // This is the user-level, conversation-scoped subset of manage_schedules:
+  // one shot, same signed agent, same signed conversation. The model cannot
+  // choose another destination/agent, create a cron, or fan out a notification.
+  router.post("/conversations/schedule-followup", authenticateWorker, async (c) => {
+    try {
+      const worker = getVerifiedWorker(c);
+      if (
+        !worker.agentId ||
+        !worker.organizationId ||
+        !worker.connectionId ||
+        !worker.platform ||
+        !worker.channelId ||
+        !worker.conversationId
+      ) {
+        return errorResponse(
+          c,
+          "This turn is not attached to an active chat conversation",
+          403
+        );
+      }
+      if (!isDeliverableChatPlatform(worker.platform)) {
+        return errorResponse(
+          c,
+          "Scheduled follow-ups are not supported on this chat platform",
+          422
+        );
+      }
+      const body = (await c.req.json().catch(() => null)) as {
+        runAt?: unknown;
+        prompt?: unknown;
+        idempotencyKey?: unknown;
+      } | null;
+      const runAt = typeof body?.runAt === "string" ? body.runAt.trim() : "";
+      const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+      const idempotencyKey =
+        typeof body?.idempotencyKey === "string"
+          ? body.idempotencyKey.trim()
+          : "";
+      const runAtDate = new Date(runAt);
+      if (!runAt || Number.isNaN(runAtDate.getTime())) {
+        return errorResponse(c, "runAt must be an ISO timestamp", 400);
+      }
+      if (runAtDate.getTime() <= Date.now()) {
+        return errorResponse(c, "runAt must be in the future", 400);
+      }
+      if (!prompt || prompt.length > 2_000) {
+        return errorResponse(c, "prompt must be 1-2000 characters", 400);
+      }
+      if (!idempotencyKey || idempotencyKey.length > 200) {
+        return errorResponse(c, "idempotencyKey must be 1-200 characters", 400);
+      }
+
+      const captured = await captureSideEffect(
+        c,
+        "conversations.schedule-followup",
+        { runAt, prompt, idempotencyKey }
+      );
+      if (captured) return captured;
+
+      // scheduled_jobs idempotency is organization-wide. Scope the caller's
+      // stable key to the signed agent and conversation so another chat cannot
+      // replay an unrelated schedule that happens to use the same key.
+      const scopedIdempotencyKey = `conversation-followup:${createHash("sha256")
+        .update(`${worker.agentId}\0${worker.conversationId}\0${idempotencyKey}`)
+        .digest("hex")}`;
+      const schedule = await manageSchedules(
+        {
+          action: "create",
+          description: `Follow up in ${worker.platform} conversation`,
+          run_at: runAt,
+          idempotency_key: scopedIdempotencyKey,
+          source_thread_id: worker.conversationId,
+          payload: {
+            type: "wake_agent",
+            agent_id: worker.agentId,
+            prompt,
+          },
+        },
+        {} as never,
+        {
+          organizationId: worker.organizationId,
+          // Chat platform user ids are not Lobu user-row ids. Keep durable
+          // creator attribution on the signed agent and retain the platform
+          // principal only inside the trusted delivery context.
+          userId: null,
+          memberRole: null,
+          agentId: worker.agentId,
+          sourceContext: {
+            platform: worker.platform,
+            connectionId: worker.connectionId,
+            channelId: worker.channelId,
+            conversationId: worker.conversationId,
+            teamId: worker.teamId,
+            userId: worker.userId,
+          },
+          isAuthenticated: true,
+          clientId: "lobu-worker",
+          scopes: null,
+          tokenType: "session",
+          scopedToOrg: true,
+          allowCrossOrg: false,
+          grantedOrganizationIds: null,
+          directSearchFederation: false,
+        } satisfies ToolContext
+      );
+      if (schedule.error) {
+        return errorResponse(c, schedule.error, 422);
+      }
+      return c.json({ scheduled: true, schedule: schedule.schedule });
+    } catch (error) {
+      logger.error(`schedule followup failed: ${String(error)}`);
       return errorResponse(c, "Internal server error", 500);
     }
   });

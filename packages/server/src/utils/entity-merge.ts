@@ -340,11 +340,11 @@ async function applyMergeInTransaction(
   `;
 
   // 1. Move the loser's LIVE identities to the winner. The move can never hit
-  //    `idx_entity_identities_live_unique_scoped`: `entity_id` is not part of that
+  //    `idx_entity_identities_live_unique_tenant_scoped`: `entity_id` is not part of that
   //    index, so repointing a row leaves its key
-  //    (org, namespace, identifier, COALESCE(scope_connection_id, 0))
+  //    (org, namespace, identifier, COALESCE(scope_key, ''))
   //    untouched. That holds even when loser and winner both claim the same
-  //    (namespace, identifier) under DIFFERENT connection scopes, which the
+  //    (namespace, identifier) under DIFFERENT upstream tenant scopes, which the
   //    index legitimately permits as two live rows. Stamp
   //    origin with COALESCE so an identity that already carries a marker (moved
   //    here by an EARLIER merge, e.g. L→W then W→V) keeps its INNERMOST origin —

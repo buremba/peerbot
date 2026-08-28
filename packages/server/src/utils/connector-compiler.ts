@@ -10,6 +10,7 @@ import type { ConnectorAgentTooling } from '@lobu/connector-sdk';
 import { type CompileResult, compileSource, extractMetadata } from './compiler-core';
 import { isReservedConnectorKey } from './reserved';
 import { validateConnectorRelationshipDeclarations } from './connector-relationship-declarations';
+import { connectorIdentityScopeDeclarations } from './connector-identity-scopes';
 
 export interface ConnectorMetadata {
   key: string;
@@ -221,5 +222,6 @@ export function validateConnectorMetadata(metadata: ConnectorMetadata): void {
       `Connector key '${metadata.key}' is reserved by a /connectors/ route. Pick another key.`
     );
   }
+  connectorIdentityScopeDeclarations(metadata);
   validateConnectorRelationshipDeclarations(metadata);
 }

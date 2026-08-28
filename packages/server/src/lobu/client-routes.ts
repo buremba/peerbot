@@ -207,6 +207,7 @@ routes.get("/", mcpAuth, async (c) => {
          AND et.slug = '$member'
         WHERE ei.organization_id = ${organizationId}
           AND ei.namespace = 'auth_user_id'
+          AND ei.scope_key IS NULL
           AND ei.source_connector = 'auth:signup'
           AND ei.deleted_at IS NULL
           AND ei.identifier = ANY(${pgTextArray(ownerUserIds)}::text[])

@@ -8,6 +8,7 @@ import {
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
+import { IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY } from '../../identity/scope-projection';
 import { buildEntityLinkUnion, fetchEntityIdentityScopes } from '../content-search/entity-link';
 
 describe('content-search X identity recall', () => {
@@ -47,7 +48,11 @@ describe('content-search X identity recall', () => {
     });
 
     const scopes = await fetchEntityIdentityScopes(sql, person.id);
-    expect(scopes).toContainEqual({ namespace: X_IDENTITY.USER_ID, identifier: '12345' });
+    expect(scopes).toContainEqual({
+      namespace: X_IDENTITY.USER_ID,
+      identifier: '12345',
+      scopeKey: null,
+    });
 
     const predicate = buildEntityLinkUnion({
       entityIdLiteral: person.id,
@@ -61,5 +66,66 @@ describe('content-search X identity recall', () => {
     );
 
     expect(rows.map((row) => Number(row.id))).toEqual([event.id]);
+  });
+
+  it('does not cross-link equal identifiers from different tenant scopes', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Tenant X Identity Recall Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const tenantA = await createTestEntity({
+      name: 'Tenant A person',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    const tenantB = await createTestEntity({
+      name: 'Tenant B person',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, scope_key, created_at, updated_at
+      ) VALUES
+        (${org.id}, ${tenantA.id}, ${X_IDENTITY.USER_ID}, 'shared-upstream-id', 'tenant-a', NOW(), NOW()),
+        (${org.id}, ${tenantB.id}, ${X_IDENTITY.USER_ID}, 'shared-upstream-id', 'tenant-b', NOW(), NOW())
+    `;
+    const eventA = await createTestEvent({
+      organization_id: org.id,
+      content: 'tenant a event',
+      connector_key: 'x-tenant-test',
+      metadata: {
+        x_user_id: 'shared-upstream-id',
+        [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: 'tenant-a' },
+      },
+    });
+    const eventB = await createTestEvent({
+      organization_id: org.id,
+      content: 'tenant b event',
+      connector_key: 'x-tenant-test',
+      metadata: {
+        x_user_id: 'shared-upstream-id',
+        [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: 'tenant-b' },
+      },
+    });
+    for (const [entityId, expectedEventId] of [
+      [tenantA.id, eventA.id],
+      [tenantB.id, eventB.id],
+    ] as const) {
+      const scopes = await fetchEntityIdentityScopes(sql, entityId);
+      const predicate = buildEntityLinkUnion({
+        entityIdLiteral: entityId,
+        scopes,
+        alias: 'f',
+        baseParamIndex: 1,
+      });
+      const rows = await sql.unsafe(
+        `SELECT f.id FROM events f WHERE ${predicate.sql} ORDER BY f.id`,
+        predicate.params
+      );
+      expect(rows.map((row) => Number(row.id))).toEqual([expectedEventId]);
+    }
   });
 });

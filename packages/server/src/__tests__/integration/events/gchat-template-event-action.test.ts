@@ -25,7 +25,10 @@ import {
 } from "../../../interactions/template-event-actions.js";
 import { __setChatInstanceManagerForTests } from "../../../lobu/gateway.js";
 import { runtimeConnectionIdToSlug } from "../../../lobu/stores/connections-projection.js";
-import { resolveNotificationKindCard } from "../../../notifications/service.js";
+import {
+	presentStoredEventToConversation,
+	refreshInteractiveEventCardTask,
+} from "../../../notifications/service.js";
 import { registerScheduledJobsTicker } from "../../../scheduled/scheduled-jobs-service.js";
 import { manageSchedules } from "../../../tools/admin/manage_schedules.js";
 import type { ToolContext } from "../../../tools/registry.js";
@@ -424,41 +427,111 @@ describe("Google Chat declared event action adapter", () => {
 		const { chat, postMessage, threadId } = await createGoogleChatHarness(
 			workspace.org.id,
 		);
+		const editMessageContent = vi.fn(async () => undefined);
+		const postToConversation = vi.fn(
+			async (
+				_connectionId: string,
+				request: { channelId: string; threadId?: string },
+			) => ({
+				messageId:
+					request.channelId !== SPACE_NAME
+						? `${request.channelId}/messages/poll-card`
+						: request.threadId === "thread-two"
+							? `${SPACE_NAME}/messages/poll-card-thread-two`
+							: MESSAGE_NAME,
+				threadId: request.threadId ?? threadId,
+			}),
+		);
+		__setChatInstanceManagerForTests({
+			postToConversation,
+			editMessageContent,
+		});
 		const source = await insertEvent({
 			entityIds: [board.id, poll.id],
 			organizationId: workspace.org.id,
 			originId: `poll-opened:${pollId}`,
 			title: question,
 			payloadType: "empty",
-			payloadData: initialPoll,
 			semanticType: "poll_opened",
-			metadata: {
-				notification_type: "generic",
-				delivery: [
-					{
-						connectionId: CONNECTION_ID,
-						messageId: MESSAGE_NAME,
-						threadId,
-					},
-				],
-			},
+			metadata: initialPoll,
 		});
 		const actionId = templateEventActionId(source.id, "vote");
-		const rendered = await resolveNotificationKindCard(
-			{
+		const presentations = await Promise.all([
+			presentStoredEventToConversation({
 				organizationId: workspace.org.id,
-				type: "agent_message",
-				title: question,
-				semanticType: "poll_opened",
-				entityIds: [board.id, poll.id],
-				payloadData: initialPoll,
-			},
-			source.id,
-		);
-		expect(JSON.stringify(rendered)).toContain(actionId);
-
-		const editMessageContent = vi.fn(async () => undefined);
-		__setChatInstanceManagerForTests({ editMessageContent });
+				eventId: source.id,
+				connectionId: CONNECTION_ID,
+				platform: "gchat",
+				channelId: SPACE_NAME,
+				channelKey: `gchat:${SPACE_NAME}`,
+				conversationId: `gchat:${SPACE_NAME}:${threadId}`,
+				threadId,
+			}),
+			presentStoredEventToConversation({
+				organizationId: workspace.org.id,
+				eventId: source.id,
+				connectionId: CONNECTION_ID,
+				platform: "gchat",
+				channelId: SPACE_NAME,
+				channelKey: `gchat:${SPACE_NAME}`,
+				conversationId: `gchat:${SPACE_NAME}:${threadId}`,
+				threadId,
+			}),
+		]);
+		expect(presentations).toEqual([
+			expect.objectContaining({ ok: true, messageId: MESSAGE_NAME }),
+			expect.objectContaining({ ok: true, messageId: MESSAGE_NAME }),
+		]);
+		expect(JSON.stringify(postToConversation.mock.calls)).toContain(actionId);
+		expect(postToConversation).toHaveBeenCalledTimes(1);
+		expect(
+			await presentStoredEventToConversation({
+				organizationId: workspace.org.id,
+				eventId: source.id,
+				connectionId: CONNECTION_ID,
+				platform: "gchat",
+				channelId: SPACE_NAME,
+				channelKey: `gchat:${SPACE_NAME}`,
+				conversationId: `gchat:${SPACE_NAME}:thread-two`,
+				threadId: "thread-two",
+			}),
+		).toMatchObject({
+			ok: true,
+			messageId: `${SPACE_NAME}/messages/poll-card-thread-two`,
+		});
+		expect(
+			await presentStoredEventToConversation({
+				organizationId: workspace.org.id,
+				eventId: source.id,
+				connectionId: CONNECTION_ID,
+				platform: "gchat",
+				channelId: `${SPACE_NAME}/secondary`,
+				channelKey: `gchat:${SPACE_NAME}/secondary`,
+				conversationId: `gchat:${SPACE_NAME}/secondary:${threadId}`,
+				threadId,
+			}),
+		).toMatchObject({
+			ok: true,
+			messageId: `${SPACE_NAME}/secondary/messages/poll-card`,
+		});
+		expect(
+			await presentStoredEventToConversation({
+				organizationId: workspace.org.id,
+				eventId: source.id,
+				connectionId: CONNECTION_ID,
+				platform: "gchat",
+				channelId: SPACE_NAME,
+				channelKey: `gchat:${SPACE_NAME}`,
+				conversationId: `gchat:${SPACE_NAME}:${threadId}`,
+				threadId,
+			}),
+		).toMatchObject({ ok: true, messageId: MESSAGE_NAME });
+		expect(postToConversation).toHaveBeenCalledTimes(3);
+		expect(
+			(await sql<{ metadata: { delivery: unknown[] } }>`
+				SELECT metadata FROM events WHERE id = ${source.id}
+			`)[0]?.metadata.delivery,
+		).toHaveLength(3);
 		const reduceVote = async (voteEventId: number) => {
 			const [vote] = await sql<{
 				metadata: {
@@ -526,7 +599,7 @@ describe("Google Chat declared event action adapter", () => {
 				responses: [response],
 			});
 			if (reachedQuorum) {
-				await agentApi.knowledge.save({
+				const successor = await agentApi.knowledge.save({
 					entity_ids: [board.id, poll.id],
 					content: `Poll closed after ${winningChoice} reached quorum 2.`,
 					title: `${question} — closed`,
@@ -535,6 +608,10 @@ describe("Google Chat declared event action adapter", () => {
 					metadata: pollOutput,
 					supersedes_event_id: source.id,
 					idempotency_key: `poll-close:${pollId}`,
+				});
+				await refreshInteractiveEventCardTask({
+					organizationId: workspace.org.id,
+					replacementEventId: Number(successor.id),
 				});
 			}
 			return pollOutput;
@@ -643,7 +720,7 @@ describe("Google Chat declared event action adapter", () => {
 			close_reason: "quorum",
 		});
 
-		await vi.waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(1));
+		await vi.waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(3));
 		const responses = await sql<{
 			metadata: { actor_id: string; choice: string };
 		}>`
@@ -697,7 +774,7 @@ describe("Google Chat declared event action adapter", () => {
 				  AND semantic_type = 'poll_vote_cast'
 			`,
 		).toHaveLength(3);
-		expect(editMessageContent).toHaveBeenCalledTimes(1);
+		expect(editMessageContent).toHaveBeenCalledTimes(3);
 		expect(JSON.stringify(postMessage.mock.calls)).toContain(
 			"This interaction is closed or has been replaced.",
 		);
@@ -839,7 +916,7 @@ describe("Google Chat declared event action adapter", () => {
 					metadata: closed,
 				});
 			}
-			await agentApi.knowledge.save({
+			const successor = await agentApi.knowledge.save({
 				entity_ids: [board.id, params.entityId],
 				content: `Poll closed by ${closed.close_reason}.`,
 				title: `${params.state.question} — closed`,
@@ -848,6 +925,10 @@ describe("Google Chat declared event action adapter", () => {
 				metadata: closed,
 				supersedes_event_id: params.sourceEventId,
 				idempotency_key: `poll-close:${params.state.poll_id}`,
+			});
+			await refreshInteractiveEventCardTask({
+				organizationId: workspace.org.id,
+				replacementEventId: Number(successor.id),
 			});
 			return true;
 		};
@@ -881,7 +962,7 @@ describe("Google Chat declared event action adapter", () => {
 				{ pollId: deadlinePoll.poll_id, closed: true },
 			].sort((a, b) => a.pollId.localeCompare(b.pollId)),
 		);
-		await vi.waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(2));
+		expect(editMessageContent).toHaveBeenCalledTimes(4);
 		const [deadlineClosed] = await sql<{ metadata: typeof deadlinePoll }>`
 			SELECT metadata FROM entities
 			WHERE organization_id = ${workspace.org.id}

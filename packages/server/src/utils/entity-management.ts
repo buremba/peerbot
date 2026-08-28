@@ -898,7 +898,6 @@ export async function createEntity(
 	if (!data.organization_id) {
 		throw new Error("Organization ID is required");
 	}
-
 	const sql = opts?.sql ?? getDb();
 
 	try {

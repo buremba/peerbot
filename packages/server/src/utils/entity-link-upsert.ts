@@ -6,7 +6,7 @@
  * The ingestion pipeline:
  *   1) Extracts + normalizes identifiers from each event.
  *   2) Looks them up in the normalized `entity_identities` table
- *      (UNIQUE per (org, namespace, identifier, COALESCE(scope_connection_id, 0))
+ *      (UNIQUE per (org, namespace, identifier, COALESCE(scope_key, ''))
  *       — see EntityIdentitySpec.scope).
  *   3) Links to the matched entity, creates on miss (when autoCreate=true),
  *      logs a merge candidate when one event's identifiers resolve to
@@ -33,6 +33,10 @@ import { normalizeIdentifier } from '@lobu/connector-sdk/identity-normalize';
 import { ensureResourceEntityType } from '../authz/acl-resource-type';
 import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client';
 import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
+import {
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  ORGANIZATION_SCOPE_PROJECTION,
+} from '../identity/scope-projection';
 import {
   hardDeleteEntityRows,
   patchEntityRows,
@@ -63,6 +67,38 @@ interface RuleMap {
   [kind: string]: ResolvedEventAttributionRule[];
 }
 
+function ownValue<T>(record: Record<string, unknown>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? (record[key] as T) : undefined;
+}
+
+function ownRecord(
+  record: Record<string, unknown>,
+  key: string
+): Record<string, unknown> | undefined {
+  const value = ownValue<unknown>(record, key);
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Define hostile-but-valid identity keys such as `__proto__` as data. */
+function setOwn(record: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
+/** Connector payloads may not author the server's tenant-scope projections. */
+function scrubIdentityScopeProjections(items: BatchItem[]): void {
+  for (const item of items) {
+    if (!item.metadata) continue;
+    delete item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY];
+  }
+}
+
 type EventKindAttributionDefinition = {
   attributions?: EventAttributionRule[];
 };
@@ -82,7 +118,13 @@ function resolveEventAttributions(
         autoCreate: rule.autoCreate,
         createWhen: rule.target.createWhen,
         titlePath: rule.target.titlePath,
-        identities,
+        identities: identities.map((identity) => ({
+          ...identity,
+          namespace: identity.namespace.trim(),
+          ...(identity.scopeKeyPath === undefined
+            ? {}
+            : { scopeKeyPath: identity.scopeKeyPath.trim() }),
+        })),
         traits: rule.traits,
       },
     ];
@@ -144,7 +186,6 @@ async function loadEventAttributionRules(
         AND status = 'active'
       LIMIT 1
     `;
-
     const result: RuleMap = {};
     const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
     const feedDef = feedsSchema?.[params.feedKey];
@@ -234,8 +275,7 @@ export type ResolvedIdentity = {
   primary: boolean;
   /**
    * Uniqueness scope, resolved once at extraction from the spec's `scope` and
-   * the ingesting connection. `null` = org-wide, which is every identity a
-   * connector has not explicitly declared connection-scoped.
+   * the connector-declared tenant key path. `null` = org-wide.
    *
    * Carried on the identity rather than read from params at each use site so
    * matching and insertion cannot disagree: `lookupMatches` and
@@ -247,38 +287,38 @@ export type ResolvedIdentity = {
    * legitimately mean org scope; requiring the field would break them without
    * the compiler noticing, because the server tsconfig excludes `__tests__`.
    * Omission is safe in the only direction that matters: it can never
-   * accidentally CLAIM a connection scope, only decline one.
+   * accidentally CLAIM a tenant scope, only decline one.
    */
-  scopeConnectionId?: number | null;
+  scopeKey?: string | null;
 };
 
 /**
- * The sentinel the unique index COALESCEs a NULL scope to. `connections.id` is
- * a bigserial, so 0 can never collide with a real connection.
+ * The sentinel the unique index COALESCEs a NULL scope to. Tenant keys are
+ * required to be non-empty, so the empty string cannot collide with one.
  *
- * Every `ON CONFLICT` below writes this sentinel as a LITERAL `0`, never as a
+ * Every `ON CONFLICT` below writes this sentinel as a LITERAL `''`, never as a
  * bound parameter: conflict inference matches the target expression against the
  * index's, and a Param node never equals the index's Const node — a
- * parameterized `COALESCE(scope_connection_id, $n)` fails with "there is no
+ * parameterized `COALESCE(scope_key, $n)` fails with "there is no
  * unique or exclusion constraint matching the ON CONFLICT specification". If
  * this value ever changes, the SQL literals must be updated by hand.
  */
-const ORG_SCOPE_SENTINEL = 0;
+const ORG_SCOPE_SENTINEL = '';
 
-/** Index-shaped scope value: mirrors `COALESCE(scope_connection_id, 0)`. */
-function scopeKeyOf(identity: { scopeConnectionId?: number | null }): number {
-  return identity.scopeConnectionId ?? ORG_SCOPE_SENTINEL;
+/** Index-shaped scope value: mirrors `COALESCE(scope_key, '')`. */
+function scopeKeyOf(identity: { scopeKey?: string | null }): string {
+  return identity.scopeKey ?? ORG_SCOPE_SENTINEL;
 }
 
 /**
- * Match key for an identity. Includes the scope so a connection-scoped
- * `erp_customer:CARI-001` never resolves to another connection's row — the
+ * Match key for an identity. Includes the scope so a tenant-scoped
+ * `erp_customer:CARI-001` never resolves to another tenant's row — the
  * whole point of the scope column.
  */
 function identityKey(identity: {
   namespace: string;
   identifier: string;
-  scopeConnectionId?: number | null;
+  scopeKey?: string | null;
 }): string {
   // NUL separator, as the pre-scope key used: a namespace or identifier may
   // contain any printable character, so only a byte that cannot appear in
@@ -294,8 +334,17 @@ function identityKey(identity: {
 type AttachedIdentity = {
   namespace: string;
   identifier: string;
-  scopeConnectionId: number | null;
+  scopeKey: string | null;
 };
+
+function appendIdentityIfMissing(
+  identities: AttachedIdentity[],
+  identity: AttachedIdentity
+): void {
+  if (!identities.some((candidate) => identityKey(candidate) === identityKey(identity))) {
+    identities.push(identity);
+  }
+}
 
 type ExtractedLink = {
   identities: ResolvedIdentity[];
@@ -322,11 +371,9 @@ function passesCreateWhen(predicate: EntityLinkPredicate | undefined, item: Batc
 }
 
 /**
- * Ensure each identifier value is present in `entities.metadata.aliases` — the
- * flat alias array the metric compiler resolves event fields against
- * (`metadata->'aliases'`). entity_identities serves recall/authz; aliases serve
- * metrics; both must carry a contact's identifiers or its per-entity metrics
- * silently drop.
+ * Ensure each organization-scoped attached identity is present in the legacy
+ * flat alias surface. Tenant-scoped metric resolution reads entity_identities
+ * directly and must never enter this scope-blind array.
  *
  * Lock before merging so concurrent connector transactions cannot clobber one
  * another's aliases or traits. Passing the entity's full identifier set (not
@@ -335,9 +382,14 @@ function passesCreateWhen(predicate: EntityLinkPredicate | undefined, item: Batc
  */
 async function ensureAliases(
   sql: DbClient,
-  params: { orgId: string; entityId: number; identifiers: string[] }
+  params: { orgId: string; entityId: number; identities: AttachedIdentity[] }
 ): Promise<void> {
-  if (params.identifiers.length === 0) return;
+  if (params.identities.length === 0) return;
+  const organizationIdentifiers = params.identities
+    .filter((identity) => identity.scopeKey === null)
+    .map((identity) => identity.identifier);
+  if (organizationIdentifiers.length === 0) return;
+
   const rows = await sql<{ metadata: Record<string, unknown> | null }>`
     SELECT metadata
     FROM entities
@@ -352,7 +404,10 @@ async function ensureAliases(
   const aliases = Array.isArray(current.aliases)
     ? current.aliases.filter((value): value is string => typeof value === 'string')
     : [];
-  if (params.identifiers.every((identifier) => aliases.includes(identifier))) return;
+  const nextAliases = [...new Set([...aliases, ...organizationIdentifiers])].sort();
+  if (organizationIdentifiers.every((identifier) => aliases.includes(identifier))) {
+    return;
+  }
 
   await patchEntityRows({
     tx: sql,
@@ -363,7 +418,7 @@ async function ensureAliases(
       patch: {
         metadata: {
           ...current,
-          aliases: [...new Set([...aliases, ...params.identifiers])].sort(),
+          aliases: nextAliases,
         },
       },
     }),
@@ -383,19 +438,17 @@ function normalizeIdentityValue(namespace: string, raw: string): string | null {
 
 /**
  * Extraction is the one place scope is decided. Everything downstream —
- * matching, creation, insertion — reads `scopeConnectionId` off the identity
+ * matching, creation, insertion — reads `scopeKey` off the identity
  * rather than consulting the spec again, so there is no way for the lookup and
  * the write to disagree about which row they mean.
  *
- * `scope: 'connection'` with no ingesting connection falls back to org scope:
- * the webhook and manual paths pass `connectionId: null`, and inventing a
- * scope there would strand those identities in a bucket nothing else can ever
- * match.
+ * Tenant scope never depends on Lobu's connection row. Missing or empty tenant
+ * keys fail hard rather than silently widening the identity to organization
+ * scope.
  */
 function extractLink(
   item: BatchItem,
-  rule: ResolvedEventAttributionRule,
-  connectionId: number | null
+  rule: ResolvedEventAttributionRule
 ): ExtractedLink | null {
   const identities: ExtractedLink['identities'] = [];
   for (const spec of rule.identities) {
@@ -403,12 +456,32 @@ function extractLink(
     if (typeof raw !== 'string' || raw.length === 0) continue;
     const normalized = normalizeIdentityValue(spec.namespace, raw);
     if (!normalized) continue;
+    let scopeKey: string | null = null;
+    if (spec.scope === 'tenant') {
+      const scopeKeyPath = spec.scopeKeyPath?.trim();
+      if (!scopeKeyPath) {
+        throw new Error(
+          `Identity namespace '${spec.namespace}' has tenant scope and requires a non-empty scopeKeyPath.`
+        );
+      }
+      const rawScopeKey = getValueAtPath(item, scopeKeyPath);
+      scopeKey = rawScopeKey === null || rawScopeKey === undefined ? '' : String(rawScopeKey).trim();
+      if (!scopeKey || scopeKey.includes('\u0000')) {
+        throw new Error(
+          `Identity namespace '${spec.namespace}' at '${scopeKeyPath}' requires a non-empty tenant scope key.`
+        );
+      }
+    } else if (spec.scopeKeyPath !== undefined) {
+      throw new Error(
+        `Identity namespace '${spec.namespace}' is organization-scoped, so scopeKeyPath must be omitted.`
+      );
+    }
     identities.push({
       namespace: spec.namespace,
       identifier: normalized,
       matchOnly: spec.matchOnly === true,
       primary: spec.primary === true,
-      scopeConnectionId: spec.scope === 'connection' ? connectionId : null,
+      scopeKey,
     });
   }
   if (identities.length === 0) return null;
@@ -430,12 +503,10 @@ function extractLink(
 /**
  * Resolve identity keys to their owning entity — TYPE-AGNOSTIC.
  *
- * An identity value belongs to at most ONE entity within its scope (the
- * `idx_entity_identities_live_unique_scoped` index on
- * `(org, namespace, identifier, COALESCE(scope_connection_id, 0))`), so a key
- * resolves to a single entity of ANY type. Org-scoped identities carry a NULL
+ * An identity value belongs to at most ONE entity within its declared scope.
+ * The live-key index enforces that claim. Org-scoped identities carry a NULL
  * scope and therefore still resolve org-wide, which is every identity a
- * connector has not declared `scope: 'connection'`. We deliberately do NOT
+ * connector has not declared `scope: 'tenant'`. We deliberately do NOT
  * filter by the rule's target `entityType`: a `slack_user_id` owned by a
  * signed-in `$member` must resolve to that `$member` even when a `person`-typed
  * rule looks it up, so attribution and ACL converge on one entity instead of
@@ -461,7 +532,7 @@ async function lookupMatches(
 
   const namespaces: string[] = [];
   const identifiers: string[] = [];
-  const scopes: number[] = [];
+  const scopes: string[] = [];
   for (const id of wanted.values()) {
     namespaces.push(id.namespace);
     identifiers.push(id.identifier);
@@ -472,21 +543,21 @@ async function lookupMatches(
     entity_id: number | string;
     namespace: string;
     identifier: string;
-    scope_key: number | string;
+    scope_key: string;
   }>`
     SELECT ei.entity_id, ei.namespace, ei.identifier,
-           COALESCE(ei.scope_connection_id, 0) AS scope_key
+           COALESCE(ei.scope_key, '') AS scope_key
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
     WHERE ei.organization_id = ${params.orgId}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
-      AND (ei.namespace, ei.identifier, COALESCE(ei.scope_connection_id, 0)) IN (
+      AND (ei.namespace, ei.identifier, COALESCE(ei.scope_key, '')) IN (
         SELECT ns, ident, scope
         FROM unnest(
           ${pgTextArray(namespaces)}::text[],
           ${pgTextArray(identifiers)}::text[],
-          ${pgBigintArray(scopes)}::bigint[]
+          ${pgTextArray(scopes)}::text[]
         ) AS u(ns, ident, scope)
       )
   `;
@@ -500,7 +571,7 @@ async function lookupMatches(
         // COALESCE already collapsed NULL to the sentinel; map it back so the
         // key built from a DB row matches the key built from an extracted
         // identity, whose org scope is null.
-        scopeConnectionId: Number(row.scope_key) || null,
+        scopeKey: row.scope_key || null,
       }),
       Number(row.entity_id)
     );
@@ -667,13 +738,11 @@ async function createEntityWithIdentities(
     connectionId: params.connectionId,
     identities: persisted,
   });
-  // Seed metadata.aliases from the identifiers that actually attached, so the
-  // metric compiler (which resolves event fields against metadata->'aliases')
-  // can attribute this contact's events from the moment it's created.
+  // Only organization-scoped identities enter the legacy flat alias surface.
   await ensureAliases(sql, {
     orgId: params.orgId,
     entityId,
-    identifiers: attached.map((a) => a.identifier),
+    identities: attached,
   });
   return { entityId, attached };
 }
@@ -685,7 +754,7 @@ async function createEntityWithIdentities(
  *
  * The scope is RETURNED, not just written, because callers key the in-memory
  * claim map on it. Returning `(namespace, identifier)` alone would let a
- * connection-scoped identity be re-keyed as org-scoped on the way back, and the
+ * tenant-scoped identity be re-keyed as org-scoped on the way back, and the
  * rest of the batch would then resolve it to the wrong entity.
  */
 async function insertIdentities(
@@ -702,19 +771,17 @@ async function insertIdentities(
   const namespaces = params.identities.map((i) => i.namespace);
   const identifiers = params.identities.map((i) => i.identifier);
   // NULL, not the sentinel: the sentinel exists only inside the index
-  // expression. Storing 0 would make the row claim connection 0.
-  // `?? null` collapses undefined into null BEFORE serialization. Without it an
-  // omitted scope reached the array literal as String(undefined) === "undefined",
-  // which Postgres rejects with `invalid input syntax for type bigint`.
-  const scopes = params.identities.map((i) => i.scopeConnectionId ?? null);
+  // expression. `?? null` collapses hand-built identity omissions to org scope
+  // before serialization.
+  const scopes = params.identities.map((i) => i.scopeKey ?? null);
   const attached = await sql<{
     namespace: string;
     identifier: string;
-    scope_connection_id: number | string | null;
+    scope_key: string | null;
   }>`
     INSERT INTO entity_identities (
       organization_id, entity_id, namespace, identifier, source_connector, connection_id,
-      scope_connection_id
+      scope_key
     )
     SELECT ${params.orgId}, ${params.entityId}, v.ns, v.ident,
            ${`connector:${params.connectorKey}`}, ${params.connectionId ?? null},
@@ -722,20 +789,20 @@ async function insertIdentities(
     FROM unnest(
       ${pgTextArray(namespaces)}::text[],
       ${pgTextArray(identifiers)}::text[],
-      ${pgTextArray(scopes.map((v) => (v === null ? null : String(v))))}::bigint[]
+      ${pgTextArray(scopes)}::text[]
     ) AS v(ns, ident, scope)
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, ''))
       WHERE deleted_at IS NULL
     DO UPDATE SET connection_id = EXCLUDED.connection_id
     WHERE entity_identities.entity_id = EXCLUDED.entity_id
       AND entity_identities.connection_id IS NULL
       AND EXCLUDED.connection_id IS NOT NULL
-    RETURNING namespace, identifier, scope_connection_id
+    RETURNING namespace, identifier, scope_key
   `;
   return attached.map((r) => ({
     namespace: r.namespace,
     identifier: r.identifier,
-    scopeConnectionId: r.scope_connection_id === null ? null : Number(r.scope_connection_id),
+    scopeKey: r.scope_key,
   }));
 }
 
@@ -767,7 +834,7 @@ async function applyTraits(
   }
   if (Object.keys(overwrite).length === 0 && Object.keys(preferNonEmpty).length === 0) return;
 
-  // Serialize the metadata read-modify-write with alias and trait projections
+  // Serialize the metadata read-modify-write with aliases and traits
   // from concurrent connector transactions.
   const rows = await sql<{ metadata: Record<string, unknown> | null }>`
     SELECT metadata
@@ -824,6 +891,7 @@ export async function applyEventAttributions(
   // back tx so auto-created entities disappear with their events.
   sql?: DbClient
 ): Promise<void> {
+  scrubIdentityScopeProjections(params.items);
   if (!params.feedKey || params.items.length === 0) return;
 
   // Resolved BEFORE the rule load: the sync dry-run path supplies its
@@ -862,7 +930,7 @@ export async function applyEventAttributions(
  * `events.entity_ids` (a webhook row is read by id, not via a feed-time JOIN).
  * `rules` is keyed by event kind (origin_type). Tenant-scoped on `orgId`;
  * entity_identities are UNIQUE per
- * (org, namespace, identifier, COALESCE(scope_connection_id, 0)), so resolution
+ * (org, namespace, identifier, COALESCE(scope_key, '')), so resolution
  * never crosses organizations.
  */
 export async function resolveEventAttributionsForItems(
@@ -878,7 +946,9 @@ export async function resolveEventAttributionsForItems(
   // handle opens a transaction here.
   sql?: DbClient
 ): Promise<Map<number, number[]>> {
+  scrubIdentityScopeProjections(params.items);
   if (params.items.length === 0) return new Map();
+  if (Object.keys(params.rules).length === 0) return new Map();
   const db = sql ?? getDb();
   return withEntityWriteTransaction(db, (tx) =>
     resolveLinksByKind(
@@ -914,6 +984,7 @@ async function resolveLinksByKind(
   sql: DbClient
 ): Promise<Map<number, number[]>> {
   const resolvedByItem = new Map<number, number[]>();
+  scrubIdentityScopeProjections(params.items);
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
     return resolvedByItem;
   }
@@ -935,7 +1006,7 @@ async function resolveLinksByKind(
     const rules = params.rulesByKind[kind];
     if (!rules) return;
     for (const rule of rules) {
-      const link = extractLink(item, rule, params.connectionId ?? null);
+      const link = extractLink(item, rule);
       if (!link) continue;
       // Metadata stamping is deferred to post-resolution (below) — only
       // attached identifiers are stamped, so a stale one (e.g. a vacated
@@ -948,6 +1019,9 @@ async function resolveLinksByKind(
       bucket.push({ index, item, link });
     }
   });
+
+  // The reserved projections were scrubbed before extraction and are rebuilt
+  // below only from identities that actually attach to an entity.
   if (byRule.size === 0) return resolvedByItem;
 
   // Resolve first, then lock every existing entity in one ascending-id pass.
@@ -1025,6 +1099,10 @@ async function resolveLinksByKind(
       // that ON CONFLICT-skipped because another entity already owns it stays
       // with that entity, so the map must not mis-claim it for this one.
       let attached: AttachedIdentity[] = [];
+      // matchOnly tuples may prove which entity owns this event without being
+      // persisted as an entity identity or alias. Keep that recall surface
+      // separate from the durable attachment set.
+      const eventOnlyIdentities: AttachedIdentity[] = [];
       if (entityId !== null) {
         // Matched an existing entity: accrete the non-matchOnly identities; the
         // identifier(s) we matched on already belong to this entity.
@@ -1036,27 +1114,35 @@ async function resolveLinksByKind(
           identities: link.identities.filter((i) => !i.matchOnly),
         });
         attached = [...fresh];
-        // Mirror this link's non-matchOnly identifiers into metadata.aliases for
-        // metric resolution. Passing the full set (not just `fresh`) repairs a
-        // legacy entity whose identities predate aliases-on-create; ensureAliases
-        // skips the write once the aliases are complete, so a repeat message from
-        // a known sender stays cheap.
-        await ensureAliases(sql, {
-          orgId: params.orgId,
-          entityId,
-          identifiers: link.identities.filter((i) => !i.matchOnly).map((i) => i.identifier),
-        });
-        // The matched identifiers themselves are this entity's even if a
-        // re-insert was a no-op (they were how we found it), so claim them too.
+        // Matched, persistent identifiers are this entity's even if a re-insert
+        // was a no-op (they were how we found it), so claim them too. A
+        // matchOnly identifier stays out of entity identity/alias projections;
+        // if it matched, event projection is handled separately below.
         for (const id of link.identities) {
-          if (matches.get(identityKey(id)) === entityId) {
-            attached.push({
+          if (!id.matchOnly && matches.get(identityKey(id)) === entityId) {
+            const matched = {
               namespace: id.namespace,
               identifier: id.identifier,
-              scopeConnectionId: id.scopeConnectionId ?? null,
+              scopeKey: id.scopeKey ?? null,
+            };
+            appendIdentityIfMissing(attached, matched);
+          } else if (id.matchOnly && matches.get(identityKey(id)) === entityId) {
+            appendIdentityIfMissing(eventOnlyIdentities, {
+              namespace: id.namespace,
+              identifier: id.identifier,
+              scopeKey: id.scopeKey ?? null,
             });
           }
         }
+        // Project only tuples that the resolved entity actually owns. A
+        // non-governing secondary may already belong to another entity; its
+        // ON CONFLICT no-op must never become an alias on this one. Including
+        // the matched rows still repairs legacy owners that predate projections.
+        await ensureAliases(sql, {
+          orgId: params.orgId,
+          entityId,
+          identities: attached,
+        });
       } else if (rule.autoCreate && passesCreateWhen(rule.createWhen, item)) {
         if (!creatorUserId) {
           logger.warn(
@@ -1102,11 +1188,15 @@ async function resolveLinksByKind(
             entityId = winnerTier;
             for (const id of link.identities) {
               if (winner.get(identityKey(id)) === entityId) {
-                attached.push({
+                const matched = {
                   namespace: id.namespace,
                   identifier: id.identifier,
-                  scopeConnectionId: id.scopeConnectionId ?? null,
-                });
+                  scopeKey: id.scopeKey ?? null,
+                };
+                appendIdentityIfMissing(
+                  id.matchOnly ? eventOnlyIdentities : attached,
+                  matched
+                );
               }
             }
           }
@@ -1138,8 +1228,14 @@ async function resolveLinksByKind(
         for (const ruleMatches of matchesByRule.values()) ruleMatches.set(key, entityId);
       }
 
-      // Stamp metadata slots for attached identifiers only — read-time JOINs key
-      // on events.metadata->>namespace, so a stale slot would mis-attribute.
+      // Stamp metadata slots and their scope projections for identities that
+      // actually resolved this event. This includes a matched matchOnly tuple:
+      // it remains absent from entity_identities and entity aliases, but the
+      // pre-existing claim still needs the event tuple for read-time recall.
+      // Read-time recall compares the full
+      // (namespace, identifier, scope key) tuple; metrics compare the same
+      // complete tuple. A stale identifier or tenant key would
+      // mis-attribute an append-only event.
       //
       // A namespace slot holds ONE value, but an event can carry multiple
       // attribution rules that resolve the SAME namespace to DIFFERENT entities
@@ -1151,10 +1247,24 @@ async function resolveLinksByKind(
       // Making role queryable at read time is deliberately a separate change (it
       // touches the shared recall SQL + every call site) — until then this is the
       // honest boundary, not a workaround.
-      const md = (item.metadata ??= {});
-      for (const id of attached) {
-        const existing = md[id.namespace];
-        if (existing !== undefined && existing !== id.identifier) {
+      const md = item.metadata ?? {};
+      item.metadata = md;
+      let byNamespace = ownRecord(md, IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY) as
+        | Record<string, string>
+        | undefined;
+      if (!byNamespace) {
+        byNamespace = {};
+        setOwn(md, IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY, byNamespace);
+      }
+      for (const id of [...attached, ...eventOnlyIdentities]) {
+        const existing = ownValue<unknown>(md, id.namespace);
+        const projectedScope = id.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION;
+        const existingScope = ownValue<string>(byNamespace, id.namespace);
+        if (
+          existing !== undefined &&
+          (existing !== id.identifier ||
+            (existingScope !== undefined && existingScope !== projectedScope))
+        ) {
           logger.warn(
             {
               orgId: params.orgId,
@@ -1162,13 +1272,16 @@ async function resolveLinksByKind(
               namespace: id.namespace,
               kept: existing,
               dropped: id.identifier,
+              keptScope: existingScope,
+              droppedScope: projectedScope,
               role: rule.role,
             },
-            'attribution metadata slot collision — a later rule resolved the same namespace to a different identifier; keeping the first-stamped value (read-time recall matches only one)'
+            'attribution metadata slot collision — a later rule resolved the same namespace to a different identity scope; keeping the first-stamped tuple (read-time recall matches only one)'
           );
           continue;
         }
-        md[id.namespace] = id.identifier;
+        setOwn(md, id.namespace, id.identifier);
+        setOwn(byNamespace, id.namespace, projectedScope);
       }
     }
   }

@@ -24,8 +24,9 @@ export async function loadLiveEntityIdentities(
 		entity_id: number;
 		namespace: string;
 		identifier: string;
+		scope_key: string | null;
 	}>`
-		SELECT entity_id, namespace, identifier
+		SELECT entity_id, namespace, identifier, scope_key
 		FROM entity_identities
 		WHERE organization_id = ${input.organizationId}
 		  AND entity_id = ANY(${pgBigintArray(input.entityIds)}::bigint[])
@@ -36,7 +37,11 @@ export async function loadLiveEntityIdentities(
 	for (const row of rows) {
 		const entityId = Number(row.entity_id);
 		const bucket = identities.get(entityId) ?? [];
-		bucket.push({ namespace: row.namespace, identifier: row.identifier });
+		bucket.push({
+			namespace: row.namespace,
+			identifier: row.identifier,
+			scopeKey: row.scope_key,
+		});
 		identities.set(entityId, bucket);
 	}
 	return identities;

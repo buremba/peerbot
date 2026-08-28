@@ -262,7 +262,11 @@ interface AutomationQueryRow {
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
   // jsonb_agg of identity scopes for primary entity
-  entity_scopes: Array<{ namespace: string; identifier: string }> | null;
+  entity_scopes: Array<{
+    namespace: string;
+    identifier: string;
+    scopeKey: string | null;
+  }> | null;
 }
 
 function parseAutomationSources(value: unknown): AutomationSource[] {
@@ -596,7 +600,11 @@ async function getAutomationImpl(
             AND action_output IS NOT NULL) as latest_window_end,
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
-        (SELECT jsonb_agg(jsonb_build_object('namespace', namespace, 'identifier', identifier))
+        (SELECT jsonb_agg(jsonb_build_object(
+           'namespace', ei.namespace,
+           'identifier', ei.identifier,
+           'scopeKey', ei.scope_key
+         ))
          FROM entity_identities ei
          WHERE ei.entity_id = (i.entity_ids)[1]
            AND ei.deleted_at IS NULL

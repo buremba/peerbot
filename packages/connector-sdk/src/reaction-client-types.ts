@@ -57,6 +57,8 @@ export interface KnowledgeReadInput {
   /** Fetch specific content events by id (read_knowledge takes an array). */
   content_ids?: number[];
   automation_id?: number;
+  /** Bind the read to the exact queued Automation run and trigger snapshot. */
+  run_id?: number;
   since?: string;
   until?: string;
   limit?: number;

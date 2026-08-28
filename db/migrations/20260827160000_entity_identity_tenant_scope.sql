@@ -1,0 +1,235 @@
+-- migrate:up transaction:false
+
+-- Intentionally no `lobu:no-quiesce`: this migration is the contract half of
+-- the unadopted #2846 storage shape and removes a column/index referenced by
+-- the pre-#2849 server. Per docs/MIGRATIONS.md, the unmarked pre-upgrade hook
+-- scales every application replica to zero before dbmate runs, so no old
+-- replica can issue scope_connection_id SQL against the post-migration schema.
+-- Adding the no-quiesce marker here would make the rollout unsafe.
+
+-- Identity scope belongs to the upstream tenant/account/database, not to a
+-- Lobu `connections` row. Reconnecting may mint a new connection id, while two
+-- connections can legitimately address the same upstream tenant. The connector
+-- therefore supplies a stable text scope key from each event.
+ALTER TABLE public.entity_identities
+  ADD COLUMN IF NOT EXISTS scope_key text;
+
+-- Tenant keys are always non-empty. NULL remains the organization-wide scope.
+DO $constraints$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'entity_identities_scope_key_nonempty_check'
+      AND conrelid = 'public.entity_identities'::regclass
+  ) THEN
+    ALTER TABLE public.entity_identities
+      ADD CONSTRAINT entity_identities_scope_key_nonempty_check CHECK (
+        scope_key IS NULL OR length(btrim(scope_key)) > 0
+      ) NOT VALID;
+  END IF;
+END
+$constraints$;
+
+-- squawk-ignore prefer-robust-stmts -- transaction:false is required below; validation is idempotent on replay
+ALTER TABLE public.entity_identities VALIDATE CONSTRAINT entity_identities_scope_key_nonempty_check;
+
+-- #2846 shipped the connection-shaped column before a production connector
+-- adopted it. Refuse to guess a tenant key if that assumption is ever false.
+DO $scope_guard$
+DECLARE
+  has_scoped_rows boolean;
+  has_connection_declarations boolean;
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'entity_identities'
+      AND column_name = 'scope_connection_id'
+  ) THEN
+    EXECUTE 'SELECT EXISTS (
+      SELECT 1 FROM public.entity_identities WHERE scope_connection_id IS NOT NULL
+    )' INTO has_scoped_rows;
+
+    IF has_scoped_rows THEN
+      RAISE EXCEPTION USING
+        MESSAGE = 'entity identity tenant-scope migration refused: scope_connection_id contains non-NULL rows',
+        HINT = 'Re-key those identities explicitly before retrying the migration.';
+    END IF;
+  END IF;
+
+  -- The clean vocabulary break is only safe while #2846 remains unadopted.
+  -- Check the durable active manifests as well as identity rows: a connector
+  -- can declare connection scope before its first event creates a scoped row.
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.connector_definitions definition
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(definition.feeds_schema, '{}'::jsonb)
+    ) AS feed(feed_key, feed_value)
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(feed.feed_value -> 'eventKinds', '{}'::jsonb)
+    ) AS event_kind(event_kind_key, event_kind_value)
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(event_kind.event_kind_value -> 'attributions', '[]'::jsonb)
+    ) AS attribution(value)
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(attribution.value -> 'target' -> 'identities', '[]'::jsonb)
+    ) AS identity(value)
+    WHERE definition.status = 'active'
+      AND identity.value ->> 'scope' = 'connection'
+  ) INTO has_connection_declarations;
+
+  IF has_connection_declarations THEN
+    RAISE EXCEPTION USING
+      MESSAGE = 'entity identity tenant-scope migration refused: active connector declarations still use connection scope',
+      HINT = 'Apply organization- or tenant-scoped connector declarations before retrying the migration.';
+  END IF;
+END
+$scope_guard$;
+
+-- A crashed concurrent build leaves an INVALID same-named index. Heal it on a
+-- retry so IF NOT EXISTS cannot record a non-enforcing arbiter as success.
+DO $heal$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'idx_entity_identities_live_unique_tenant_scoped'
+      AND NOT i.indisvalid
+  ) THEN
+    EXECUTE 'DROP INDEX public.idx_entity_identities_live_unique_tenant_scoped';
+  END IF;
+END
+$heal$;
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_entity_identities_live_unique_tenant_scoped
+  ON public.entity_identities (organization_id, namespace, identifier, COALESCE(scope_key, ''))
+  WHERE deleted_at IS NULL;
+
+-- Durable declaration shape. Scope changes with live identities fail at apply;
+-- an operator migrates the rows and this registry together before retrying.
+CREATE TABLE IF NOT EXISTS public.connector_identity_scope_registry (
+  organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
+  connector_key text NOT NULL,
+  namespace text NOT NULL,
+  scope text NOT NULL,
+  scope_key_path text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT connector_identity_scope_registry_pkey
+    PRIMARY KEY (organization_id, connector_key, namespace),
+  CONSTRAINT connector_identity_scope_registry_shape_check CHECK (
+    (scope = 'organization' AND scope_key_path IS NULL)
+    OR
+    (scope = 'tenant' AND scope_key_path IS NOT NULL AND length(btrim(scope_key_path)) > 0)
+  )
+);
+
+DROP INDEX CONCURRENTLY IF EXISTS public.idx_entity_identities_live_unique_scoped;
+
+-- squawk-ignore ban-drop-column -- #2846 was unadopted; the guard above proves there is no scoped data to preserve
+ALTER TABLE public.entity_identities
+  DROP COLUMN IF EXISTS scope_connection_id;
+
+-- migrate:down transaction:false
+
+DO $scope_guard_down$
+DECLARE
+  has_scoped_rows boolean;
+  has_tenant_registry boolean := false;
+  has_tenant_declarations boolean := false;
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'entity_identities'
+      AND column_name = 'scope_key'
+  ) THEN
+    EXECUTE 'SELECT EXISTS (
+      SELECT 1
+      FROM public.entity_identities
+      WHERE scope_key IS NOT NULL
+    )' INTO has_scoped_rows;
+
+    IF has_scoped_rows THEN
+      RAISE EXCEPTION USING
+        MESSAGE = 'entity identity tenant-scope rollback refused: scope_key contains tenant-scoped rows',
+        HINT = 'Migrate those identities to organization scope before retrying the rollback.';
+    END IF;
+  END IF;
+
+  IF to_regclass('public.connector_identity_scope_registry') IS NOT NULL THEN
+    EXECUTE 'SELECT EXISTS (
+      SELECT 1
+      FROM public.connector_identity_scope_registry
+      WHERE scope = ''tenant''
+    )' INTO has_tenant_registry;
+  END IF;
+  IF has_tenant_registry THEN
+    RAISE EXCEPTION USING
+      MESSAGE = 'entity identity tenant-scope rollback refused: tenant declaration registry rows still exist',
+      HINT = 'Remove or re-key every tenant identity declaration before retrying the rollback.';
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.connector_definitions definition
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(definition.feeds_schema, '{}'::jsonb)
+    ) AS feed(feed_key, feed_value)
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(feed.feed_value -> 'eventKinds', '{}'::jsonb)
+    ) AS event_kind(event_kind_key, event_kind_value)
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(event_kind.event_kind_value -> 'attributions', '[]'::jsonb)
+    ) AS attribution(value)
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(attribution.value -> 'target' -> 'identities', '[]'::jsonb)
+    ) AS identity(value)
+    WHERE definition.status = 'active'
+      AND identity.value ->> 'scope' = 'tenant'
+  ) INTO has_tenant_declarations;
+  IF has_tenant_declarations THEN
+    RAISE EXCEPTION USING
+      MESSAGE = 'entity identity tenant-scope rollback refused: active connector declarations still use tenant scope',
+      HINT = 'Apply organization-scoped connector declarations before retrying the rollback.';
+  END IF;
+END
+$scope_guard_down$;
+
+ALTER TABLE public.entity_identities
+  ADD COLUMN IF NOT EXISTS scope_connection_id bigint;
+
+DO $heal_down$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_index i
+    JOIN pg_class c ON c.oid = i.indexrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = 'idx_entity_identities_live_unique_scoped'
+      AND NOT i.indisvalid
+  ) THEN
+    EXECUTE 'DROP INDEX public.idx_entity_identities_live_unique_scoped';
+  END IF;
+END
+$heal_down$;
+
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_entity_identities_live_unique_scoped
+  ON public.entity_identities (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))
+  WHERE deleted_at IS NULL;
+
+DROP INDEX CONCURRENTLY IF EXISTS public.idx_entity_identities_live_unique_tenant_scoped;
+
+-- squawk-ignore ban-drop-table -- rollback path for the registry introduced above
+DROP TABLE IF EXISTS public.connector_identity_scope_registry;
+
+-- squawk-ignore ban-drop-column -- rollback path for the column introduced above
+ALTER TABLE public.entity_identities
+  DROP COLUMN IF EXISTS scope_key;

@@ -9,6 +9,10 @@ import {
 } from "../../../db/migration-loader";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase } from "../../setup/test-db";
+import {
+	createTestConnectorDefinition,
+	createTestOrganization,
+} from "../../setup/test-fixtures";
 
 /**
  * Concurrent CREATE INDEX IF NOT EXISTS silently no-ops when an INVALID
@@ -113,6 +117,14 @@ const HEAL_MIGRATIONS = [
 		seedSql: `
       CREATE INDEX IF NOT EXISTS idx_events_metadata_linkedin_member_id
         ON events (id)
+    `,
+	},
+	{
+		files: ["20260827160000_entity_identity_tenant_scope.sql"],
+		index: "idx_entity_identities_live_unique_tenant_scoped",
+		seedSql: `
+      CREATE INDEX IF NOT EXISTS idx_entity_identities_live_unique_tenant_scoped
+        ON entity_identities (id)
     `,
 	},
 ] as const;
@@ -261,5 +273,213 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 			index_exists: true,
 			foreign_key_exists: true,
 		});
+	});
+
+	it("refuses tenant-scope rollback while zero-row declarations remain", async () => {
+		const migrationsDir = resolveMigrationsDir();
+		const file = "20260827160000_entity_identity_tenant_scope.sql";
+		const sql = getDb();
+		const execute = (statement: string) => sql.unsafe(statement);
+		const org = await createTestOrganization({ name: "Tenant rollback guard org" });
+
+		await sql`
+			INSERT INTO connector_identity_scope_registry (
+				organization_id, connector_key, namespace, scope, scope_key_path
+			) VALUES (
+				${org.id}, 'rollback-registry-probe', 'erp_customer',
+				'tenant', 'metadata.tenant_id'
+			)
+		`;
+		await expect(
+			executeMigrationSection(
+				execute,
+				loadMigrationDown(migrationsDir, file),
+			),
+		).rejects.toThrow(/tenant declaration registry rows still exist/i);
+		await sql`
+			DELETE FROM connector_identity_scope_registry
+			WHERE organization_id = ${org.id}
+		`;
+		await sql`ALTER TABLE entity_identities DROP COLUMN IF EXISTS scope_connection_id`;
+
+		await createTestConnectorDefinition({
+			key: "rollback-active-probe",
+			name: "Rollback active probe",
+			organization_id: org.id,
+			feeds_schema: {
+				customers: {
+					eventKinds: {
+						customer: {
+							attributions: [
+								{
+									role: "about",
+									target: {
+										entityType: "person",
+										identities: [
+											{
+												namespace: "erp_customer",
+												eventPath: "metadata.customer_id",
+												scope: "tenant",
+												scopeKeyPath: "metadata.tenant_id",
+											},
+										],
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		});
+		await expect(
+			executeMigrationSection(
+				execute,
+				loadMigrationDown(migrationsDir, file),
+			),
+		).rejects.toThrow(/active connector declarations still use tenant scope/i);
+		await sql`
+			DELETE FROM connector_definitions
+			WHERE organization_id = ${org.id}
+			  AND key = 'rollback-active-probe'
+		`;
+		await sql`ALTER TABLE entity_identities DROP COLUMN IF EXISTS scope_connection_id`;
+	});
+
+	it("round-trips and replays the entity identity tenant-scope schema", async () => {
+		const migrationsDir = resolveMigrationsDir();
+		const file = "20260827160000_entity_identity_tenant_scope.sql";
+		const sql = getDb();
+		const execute = (statement: string) => sql.unsafe(statement);
+
+		await executeMigrationSection(
+			execute,
+			loadMigrationDown(migrationsDir, file),
+		);
+
+			const [afterDown] = await sql<{
+				scope_key_exists: boolean;
+				connection_scope_exists: boolean;
+			registry_exists: boolean;
+			legacy_index_exists: boolean;
+		}>`
+			SELECT
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_key'
+				) AS scope_key_exists,
+					EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_connection_id'
+				) AS connection_scope_exists,
+				to_regclass('public.connector_identity_scope_registry') IS NOT NULL
+					AS registry_exists,
+				to_regclass('public.idx_entity_identities_live_unique_scoped') IS NOT NULL
+					AS legacy_index_exists
+		`;
+			expect(afterDown).toEqual({
+				scope_key_exists: false,
+				connection_scope_exists: true,
+			registry_exists: false,
+			legacy_index_exists: true,
+		});
+
+		const up = loadMigrationUp(migrationsDir, file);
+		await executeMigrationSection(execute, up);
+		// A production runner can replay the body after the final column drop but
+		// before recording the migration. The old-column guard must stay valid.
+		await executeMigrationSection(execute, up);
+
+			const [afterReplay] = await sql<{
+				scope_key_exists: boolean;
+				connection_scope_exists: boolean;
+			registry_exists: boolean;
+			tenant_index_valid: boolean;
+		}>`
+			SELECT
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_key'
+				) AS scope_key_exists,
+					EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_connection_id'
+				) AS connection_scope_exists,
+				to_regclass('public.connector_identity_scope_registry') IS NOT NULL
+					AS registry_exists,
+				COALESCE((
+					SELECT i.indisvalid
+					FROM pg_index i
+					WHERE i.indexrelid =
+						to_regclass('public.idx_entity_identities_live_unique_tenant_scoped')
+				), false) AS tenant_index_valid
+		`;
+			expect(afterReplay).toEqual({
+				scope_key_exists: true,
+				connection_scope_exists: false,
+			registry_exists: true,
+			tenant_index_valid: true,
+		});
+	});
+
+	it("refuses the clean vocabulary break while an active connection-scoped declaration remains", async () => {
+		const migrationsDir = resolveMigrationsDir();
+		const file = "20260827160000_entity_identity_tenant_scope.sql";
+		const sql = getDb();
+		const execute = (statement: string) => sql.unsafe(statement);
+
+		await executeMigrationSection(
+			execute,
+			loadMigrationDown(migrationsDir, file),
+		);
+		const org = await createTestOrganization({
+			name: "Connection declaration migration guard org",
+		});
+		await createTestConnectorDefinition({
+			key: "connection-scope-upgrade-probe",
+			name: "Connection scope upgrade probe",
+			organization_id: org.id,
+			feeds_schema: {
+				customers: {
+					eventKinds: {
+						customer: {
+							attributions: [
+								{
+									role: "about",
+									target: {
+										entityType: "person",
+										identities: [
+											{
+												namespace: "erp_customer",
+												eventPath: "metadata.customer_id",
+												scope: "connection",
+											},
+										],
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		});
+
+		const up = loadMigrationUp(migrationsDir, file);
+		await expect(executeMigrationSection(execute, up)).rejects.toThrow(
+			/active connector declarations still use connection scope/i,
+		);
+		await sql`
+			DELETE FROM connector_definitions
+			WHERE organization_id = ${org.id}
+			  AND key = 'connection-scope-upgrade-probe'
+		`;
+		await executeMigrationSection(execute, up);
 	});
 });

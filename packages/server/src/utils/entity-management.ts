@@ -30,6 +30,7 @@ import {
 	automationIdFromPrincipalId,
 } from "../authz/entity-policy";
 import { type DbClient, getDb, pgBigintArray, pgTextArray } from "../db/client";
+import { stripIdentityScopeProjectionMetadata } from "../identity/scope-projection";
 import type { Env } from "../index";
 import { querySqlImpl } from "../tools/admin/query_sql";
 import type { ToolContext } from "../tools/registry";
@@ -897,12 +898,19 @@ export async function createEntity(
 	if (!data.organization_id) {
 		throw new Error("Organization ID is required");
 	}
+	// Public CRUD metadata is untrusted. Tenant-scope projections participate in
+	// recall and metric identity joins, so only the connector/re-key kernels may
+	// author them from durable entity_identities rows.
+	const sanitizedData: EntityData = {
+		...data,
+		metadata: stripIdentityScopeProjectionMetadata(data.metadata),
+	};
 
 	const sql = opts?.sql ?? getDb();
 
 	try {
 		const created = await withEntityWriteTransaction(sql, async (tx) => {
-			let createData = data;
+			let createData = sanitizedData;
 			if (!opts?.skipHooks && opts?.hookContext) {
 				const hooks = getEntityHooks(createData.entity_type);
 				if (hooks?.beforeCreate) {
@@ -1036,7 +1044,7 @@ export async function updateEntity(
 
 	const metadataUpdates = mergeConvenienceFields(
 		data,
-		data.metadata ?? {},
+		stripIdentityScopeProjectionMetadata(data.metadata) ?? {},
 		"update",
 	);
 	const hasMetadataUpdates = Object.keys(metadataUpdates).length > 0;

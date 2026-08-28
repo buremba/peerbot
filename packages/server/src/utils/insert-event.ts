@@ -7,6 +7,7 @@
 
 import { retryWithBackoff } from '@lobu/core';
 import { type DbClient, getDb } from '../db/client';
+import { stripIdentityScopeProjectionMetadata } from '../identity/scope-projection';
 import { getActingAutomationScope } from './acting-automation-context';
 import {
   enqueueWorkspaceEventActivations,
@@ -619,12 +620,23 @@ export async function insertEvent(
     sourceOriginId?: string;
     /** Transactional hook for durable derived work such as Automation runs. */
     afterPersist?: (event: InsertedEvent, sql: DbClient) => Promise<void>;
+    /**
+     * Set only after connector attribution has scrubbed and rebuilt the
+     * server-owned identity-scope projection keys from durable identities.
+     */
+    trustedIdentityScopeProjections?: boolean;
   }
 ): Promise<InsertedEvent> {
   // This is the physical write funnel for event content. Connector items,
   // Automation output, and approval metadata all converge here. stripNulDeep
   // preserves Dates and other class instances.
   params = stripNulDeep(params) as InsertEventParams;
+  if (!options?.trustedIdentityScopeProjections) {
+    params = {
+      ...params,
+      metadata: stripIdentityScopeProjectionMetadata(params.metadata),
+    };
+  }
   const sourceOriginId = stripNul(options?.sourceOriginId ?? params.originId);
   const sql = options?.sql ?? getDb();
   // Explicit successors inherit connector lineage from their predecessor even

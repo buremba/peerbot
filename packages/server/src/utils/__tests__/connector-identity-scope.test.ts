@@ -70,4 +70,25 @@ describe('connector identity scope manifest validation', () => {
       )
     ).toThrow(/erp_customer.*customer\.created.*invoice\.created/i);
   });
+
+  it('keeps scopeKeyPath exact across event kinds within one connector', () => {
+    expect(() =>
+      validateConnectorMetadata(
+        metadata({
+          customers: feed('customer.created', [
+            identity('erp_customer', 'metadata.id', {
+              scope: 'tenant',
+              scopeKeyPath: 'metadata.tenant_id',
+            }),
+          ]),
+          invoices: feed('invoice.created', [
+            identity('erp_customer', 'metadata.customer_id', {
+              scope: 'tenant',
+              scopeKeyPath: 'metadata.account_id',
+            }),
+          ]),
+        })
+      )
+    ).toThrow(/erp_customer.*customer\.created.*invoice\.created/i);
+  });
 });

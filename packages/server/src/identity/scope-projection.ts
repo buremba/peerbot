@@ -14,6 +14,35 @@ export const IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY = "__lobu_alias_scope_keys";
 export const SCOPED_IDENTITY_ALIASES_METADATA_KEY =
 	"__lobu_scoped_identity_aliases";
 
+const IDENTITY_SCOPE_PROJECTION_METADATA_KEYS = [
+	IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+	IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
+	SCOPED_IDENTITY_ALIASES_METADATA_KEY,
+] as const;
+
+/**
+ * Remove server-authored tenant-scope projections from an untrusted metadata
+ * object. The exact-key allowlist is intentional: connectors and entity types
+ * may use arbitrary ordinary metadata, while these three keys participate in
+ * authorization-adjacent recall/metric joins and therefore must only be
+ * rebuilt from durable identity rows.
+ */
+export function stripIdentityScopeProjectionMetadata(
+	metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | undefined {
+	if (!metadata) return metadata ?? undefined;
+	if (
+		!IDENTITY_SCOPE_PROJECTION_METADATA_KEYS.some((key) =>
+			Object.hasOwn(metadata, key),
+		)
+	) {
+		return metadata;
+	}
+	const clean = { ...metadata };
+	for (const key of IDENTITY_SCOPE_PROJECTION_METADATA_KEYS) delete clean[key];
+	return clean;
+}
+
 /** Mirrors `COALESCE(entity_identities.scope_key, '')` in read-time SQL. */
 export const ORGANIZATION_SCOPE_PROJECTION = "";
 

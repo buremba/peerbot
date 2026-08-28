@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { IdentityRekeyError, rekeyEntityIdentities } from '../../../identity/rekey';
+import {
+  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  SCOPED_IDENTITY_ALIASES_METADATA_KEY,
+} from '../../../identity/scope-projection';
 import { runMetric } from '../../../metrics/run-metric';
 import type { ConnectorMetadata } from '../../../utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../../../utils/connector-definition-install';
@@ -13,6 +18,8 @@ import {
   clearEntityLinkRulesCache,
   resolveSenderIdentity,
 } from '../../../utils/entity-link-upsert';
+import { createEntity } from '../../../utils/entity-management';
+import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -165,6 +172,225 @@ describe('connector identity scope lifecycle', () => {
     expect(rows).toEqual([
       { scope: 'tenant', scope_key_path: 'metadata.tenant_id', shape_version: 2 },
     ]);
+  });
+
+  it('allows connectors sharing a tenant namespace to use connector-local scope paths', async () => {
+    const org = await createTestOrganization({ name: 'Shared tenant path org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    await getTestDb()`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+    `;
+    await install(
+      org.id,
+      metadata(
+        '1.0.0',
+        { scope: 'tenant', scopeKeyPath: 'metadata.tenant_id' },
+        'scope-path-a'
+      )
+    );
+    clearEntityLinkRulesCache();
+    await applyEventAttributions({
+      connectorKey: 'scope-path-a',
+      feedKey: 'customers',
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'customer',
+          metadata: {
+            customer_id: '1001',
+            customer_name: 'Path A customer',
+            tenant_id: 'tenant-a',
+          },
+        },
+      ],
+    });
+    await expect(
+      install(
+        org.id,
+        metadata(
+          '1.0.0',
+          { scope: 'tenant', scopeKeyPath: 'metadata.account.database_id' },
+          'scope-path-b'
+        )
+      )
+    ).resolves.toBeDefined();
+    clearEntityLinkRulesCache();
+    await expect(
+      applyEventAttributions({
+        connectorKey: 'scope-path-b',
+        feedKey: 'customers',
+        orgId: org.id,
+        items: [
+          {
+            origin_type: 'customer',
+            metadata: {
+              customer_id: '1002',
+              customer_name: 'Path B customer',
+              account: { database_id: 'tenant-b' },
+            },
+          },
+        ],
+      })
+    ).resolves.toBeUndefined();
+
+    const rows = await getTestDb()<
+      { connector_key: string; scope: string; scope_key_path: string | null }[]
+    >`
+      SELECT connector_key, scope, scope_key_path
+      FROM connector_identity_scope_registry
+      WHERE organization_id = ${org.id} AND namespace = ${namespace}
+      ORDER BY connector_key
+    `;
+    expect(rows).toEqual([
+      {
+        connector_key: 'scope-path-a',
+        scope: 'tenant',
+        scope_key_path: 'metadata.tenant_id',
+      },
+      {
+        connector_key: 'scope-path-b',
+        scope: 'tenant',
+        scope_key_path: 'metadata.account.database_id',
+      },
+    ]);
+    const identities = await getTestDb()<
+      { identifier: string; scope_key: string | null }[]
+    >`
+      SELECT identifier, scope_key
+      FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = ${namespace}
+      ORDER BY identifier
+    `;
+    expect(identities).toEqual([
+      { identifier: '1001', scope_key: 'tenant-a' },
+      { identifier: '1002', scope_key: 'tenant-b' },
+    ]);
+  });
+
+  it('strips forged scope projections at the event and entity write funnels', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Projection boundary org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+    `;
+    const forged = {
+      [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { [namespace]: 'tenant-forged' },
+      [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { '1001': 'tenant-forged' },
+      [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
+        { namespace, identifier: '1001', scopeKey: 'tenant-forged' },
+      ],
+      visible: 'kept',
+    };
+
+    const event = await insertEvent({
+      organizationId: org.id,
+      entityIds: [],
+      originId: 'forged-scope-projection',
+      semanticType: 'content',
+      metadata: forged,
+    });
+    const [eventRow] = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM events WHERE id = ${event.id}
+    `;
+    expect(eventRow?.metadata).toEqual({ visible: 'kept' });
+
+    const entity = await createEntity({
+      organization_id: org.id,
+      entity_type: 'person',
+      name: 'Projection boundary person',
+      created_by: user.id,
+      metadata: forged,
+    });
+    const [entityRow] = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM entities WHERE id = ${entity.id}
+    `;
+    expect(entityRow?.metadata).toEqual({ visible: 'kept' });
+
+    const trusted = await insertEvent(
+      {
+        organizationId: org.id,
+        entityIds: [],
+        originId: 'trusted-scope-projection',
+        semanticType: 'content',
+        metadata: forged,
+      },
+      { trustedIdentityScopeProjections: true }
+    );
+    const [trustedRow] = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM events WHERE id = ${trusted.id}
+    `;
+    expect(trustedRow?.metadata).toEqual(forged);
+  });
+
+  it('takes entity locks before the identity table during re-key', async () => {
+    const { org, ids, first } = await seedRows();
+    const [firstIdentityId, secondIdentityId] = ids;
+    if (!firstIdentityId || !secondIdentityId) throw new Error('Expected two identities');
+    await expect(
+      install(
+        org.id,
+        metadata('2.0.0', { scope: 'tenant', scopeKeyPath: 'metadata.tenant_id' })
+      )
+    ).rejects.toThrow(/live identity rows/i);
+
+    const sql = getTestDb();
+    let releaseEntityLock!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseEntityLock = resolve;
+    });
+    let entityLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      entityLocked = resolve;
+    });
+    const blocker = sql.begin(async (tx) => {
+      await tx`SELECT id FROM entities WHERE id = ${first.id} FOR UPDATE`;
+      entityLocked();
+      await release;
+    });
+    await locked;
+
+    const rekey = rekeyEntityIdentities({
+      organizationId: org.id,
+      namespace,
+      mapping: { [firstIdentityId]: 'tenant-a', [secondIdentityId]: 'tenant-b' },
+      apply: true,
+    });
+    try {
+      let rekeyHoldsAdvisoryLock = false;
+      for (let attempt = 0; attempt < 100 && !rekeyHoldsAdvisoryLock; attempt++) {
+        rekeyHoldsAdvisoryLock = await sql.begin(async (tx) => {
+          const [row] = await tx<{ acquired: boolean }[]>`
+            SELECT pg_try_advisory_xact_lock(
+              hashtext('lobu:identity-rekey'),
+              hashtext(${`${org.id}:${namespace}`})
+            ) AS acquired
+          `;
+          return row?.acquired === false;
+        });
+        if (!rekeyHoldsAdvisoryLock) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      expect(rekeyHoldsAdvisoryLock).toBe(true);
+
+      // The re-key is waiting on the entity row and therefore must not yet own
+      // the conflicting identity-table lock. The old inverted order fails this
+      // NOWAIT probe and can deadlock with merge/unmerge.
+      await expect(
+        sql.begin(async (tx) => {
+          await tx`LOCK TABLE entity_identities IN ROW EXCLUSIVE MODE NOWAIT`;
+        })
+      ).resolves.toBeUndefined();
+    } finally {
+      releaseEntityLock();
+      await blocker;
+    }
+    await expect(rekey).resolves.toMatchObject({ applied: true });
   });
 
   it('blocks a live shape change, re-keys atomically, and lets the next apply succeed', async () => {
@@ -711,7 +937,7 @@ describe('connector identity scope lifecycle', () => {
           conflictingConnector
         )
       )
-    ).rejects.toThrow(/scope-shared-first.*organization.*same scope shape/i);
+    ).rejects.toThrow(/scope-shared-first.*organization.*same organization\/tenant scope/i);
 
     const rows = await getTestDb()<
       { connector_key: string; scope: string; scope_key_path: string | null }[]

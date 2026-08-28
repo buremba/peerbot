@@ -522,6 +522,9 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 					},
 					{
 						onConflictUpdate: true,
+						// applyEventAttributions scrubbed connector input and rebuilt
+						// these reserved fields from identities in the transaction above.
+						trustedIdentityScopeProjections: true,
 						sourceOriginId,
 						// Dry path only: the tx that gets rolled back — the INSERT
 						// genuinely executes, so every constraint, trigger and NOT NULL

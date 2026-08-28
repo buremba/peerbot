@@ -28,6 +28,19 @@ function sameShape(
   return left.scope === right.scope && left.scopeKeyPath === right.scopeKeyPath;
 }
 
+/**
+ * Namespace ownership is semantic across connectors: two connectors may read
+ * the same upstream tenant id from different payload paths. The full shape is
+ * still exact within one connector (and across its versions), as required by
+ * the public manifest contract.
+ */
+function sameScope(
+  left: ConnectorIdentityScopeShape,
+  right: ConnectorIdentityScopeShape
+): boolean {
+  return left.scope === right.scope;
+}
+
 function renderShape(shape: ConnectorIdentityScopeShape): string {
   return shape.scope === 'tenant'
     ? `{ scope: 'tenant', scopeKeyPath: '${shape.scopeKeyPath}' }`
@@ -187,7 +200,7 @@ export async function assertConnectorIdentityScopesActive(params: {
       }
     }
     const incompatible = namespaceRows.find((row) =>
-      !sameShape(active, { scope: row.scope, scopeKeyPath: row.scope_key_path })
+      !sameScope(active, { scope: row.scope, scopeKeyPath: row.scope_key_path })
     );
     if (incompatible) {
       throw new Error(
@@ -195,7 +208,7 @@ export async function assertConnectorIdentityScopesActive(params: {
           `'${incompatible.connector_key}' is registered as ` +
           `${renderShape({ scope: incompatible.scope, scopeKeyPath: incompatible.scope_key_path })}, ` +
           `which does not match connector '${params.connectorKey}' at ${renderShape(active)}. ` +
-          'Finish applying the same namespace scope shape to every connector before ingesting more events.'
+          'Finish applying the same namespace scope to every connector before ingesting more events.'
       );
     }
   }
@@ -296,7 +309,7 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
         const incompatibleActive = [...registryByConnector.values()].find(
           (row) =>
             activeNamespaceDeclarations.has(row.connector_key) &&
-            !sameShape(declaration, {
+            !sameScope(declaration, {
               scope: row.scope,
               scopeKeyPath: row.scope_key_path,
             })
@@ -307,7 +320,7 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
             `${renderShape(declaration)} for connector '${params.metadata.key}' because connector ` +
             `'${incompatibleActive.connector_key}' already uses ` +
             `${renderShape({ scope: incompatibleActive.scope, scopeKeyPath: incompatibleActive.scope_key_path })}. ` +
-            'Connectors sharing an identity namespace must declare the same scope shape.';
+            'Connectors sharing an identity namespace must declare the same organization/tenant scope; their payload paths may differ.';
           break;
         }
 
@@ -316,7 +329,7 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
           [...registryByConnector.values()].some(
             (row) =>
               !activeNamespaceDeclarations.has(row.connector_key) &&
-              !sameShape(declaration, {
+              !sameScope(declaration, {
                 scope: row.scope,
                 scopeKeyPath: row.scope_key_path,
               })
@@ -381,7 +394,7 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
         const incompatibleDormant = [...registryByConnector.values()].filter(
           (row) =>
             !activeNamespaceDeclarations.has(row.connector_key) &&
-            !sameShape(declaration, {
+            !sameScope(declaration, {
               scope: row.scope,
               scopeKeyPath: row.scope_key_path,
             })
@@ -450,7 +463,7 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
         (row) =>
           row.connector_key !== params.metadata.key &&
           !activeNamespaceDeclarations.has(row.connector_key) &&
-          !sameShape(declaration, {
+          !sameScope(declaration, {
             scope: row.scope,
             scopeKeyPath: row.scope_key_path,
           })

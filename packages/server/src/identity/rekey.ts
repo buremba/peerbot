@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { validateEntityRowPatch } from '../authz/entity-row-validation';
-import { type DbClient, getDb, pgTextArray } from '../db/client';
+import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client';
 import {
   SCOPED_IDENTITY_ALIASES_METADATA_KEY,
   scopedIdentityAliasProjectionKey,
@@ -9,6 +9,10 @@ import {
 import { patchEntityRows } from '../utils/entity-management';
 
 export class IdentityRekeyError extends Error {}
+
+class IdentityRekeyLockRetry extends Error {}
+
+const MAX_LOCK_ORDER_RETRIES = 3;
 
 type RekeyTarget = {
   scope: 'organization' | 'tenant';
@@ -96,13 +100,14 @@ async function loadTarget(
   const first = pending[0]!;
   for (const row of rows) {
     const targetScope = row.pending_scope ?? row.scope;
-    const targetScopeKeyPath =
-      row.pending_scope === null ? row.scope_key_path : row.pending_scope_key_path;
-    if (targetScope !== first.pending_scope || targetScopeKeyPath !== first.pending_scope_key_path) {
+    // scopeKeyPath is connector-local payload layout. Connectors sharing a
+    // namespace must converge on organization-vs-tenant semantics, but may
+    // extract the same upstream tenant key from different event paths.
+    if (targetScope !== first.pending_scope) {
       throw new IdentityRekeyError(
         `Identity namespace '${namespace}' cannot be re-keyed while connector ` +
-          `'${row.connector_key}' remains registered with a different declaration shape. ` +
-          'Every connector sharing the namespace must already match or have the same pending target.'
+          `'${row.connector_key}' remains registered with a different scope. ` +
+          'Every connector sharing the namespace must already match or have the same pending organization/tenant target.'
       );
     }
   }
@@ -321,6 +326,22 @@ async function refreshMetricIdentityAliases(params: {
   }
 }
 
+async function loadLiveIdentityEntityIds(params: {
+  db: DbClient;
+  organizationId: string;
+  namespace: string;
+}): Promise<number[]> {
+  const rows = await params.db<{ entity_id: number | string }>`
+    SELECT DISTINCT entity_id
+    FROM entity_identities
+    WHERE organization_id = ${params.organizationId}
+      AND namespace = ${params.namespace}
+      AND deleted_at IS NULL
+    ORDER BY entity_id
+  `;
+  return rows.map((row) => Number(row.entity_id));
+}
+
 export async function rekeyEntityIdentities(params: {
   organizationId: string;
   namespace: string;
@@ -341,33 +362,71 @@ export async function rekeyEntityIdentities(params: {
     });
   }
 
-  return sql.begin(async (tx) => {
-    await tx`
-      SELECT pg_advisory_xact_lock(
-        hashtext('lobu:identity-rekey'),
-        hashtext(${`${params.organizationId}:${namespace}`})
-      )
-    `;
-    // The mapping must cover the complete live set observed below. A row-level
-    // FOR UPDATE cannot lock a not-yet-inserted identity, so briefly stop all
-    // identity writers during this rare administrative rewrite; reads continue.
-    await tx`LOCK TABLE entity_identities IN SHARE ROW EXCLUSIVE MODE`;
-    const report = await buildReport({
-      db: tx,
-      organizationId: params.organizationId,
-      namespace,
-      mapping,
-      forUpdate: true,
-    });
-    const ids = report.changes.map((change) => change.id);
-    if (ids.length > 0) {
-      // Preserve the previous scope as an authoritative read projection before
-      // moving the live uniqueness key. Events are append-only: an event
-      // observed while this identity was organization-scoped has no tenant key
-      // stamped on it, so dropping the old scope would strand that history from
-      // identity recall and metrics. The empty string is the same unambiguous
-      // organization sentinel used by the unique index.
-      await tx`
+  for (let attempt = 1; attempt <= MAX_LOCK_ORDER_RETRIES; attempt++) {
+    try {
+      return await sql.begin(async (tx) => {
+        await tx`
+          SELECT pg_advisory_xact_lock(
+            hashtext('lobu:identity-rekey'),
+            hashtext(${`${params.organizationId}:${namespace}`})
+          )
+        `;
+
+        // Every ordinary identity path that also touches entity metadata takes
+        // entity rows before entity_identities (connector attribution and
+        // merge/unmerge included). Match that global order: discover and lock
+        // the current owners first, then take the brief table lock that closes
+        // the insert gap a row-level FOR UPDATE cannot cover.
+        const observedEntityIds = await loadLiveIdentityEntityIds({
+          db: tx,
+          organizationId: params.organizationId,
+          namespace,
+        });
+        const lockedEntityIds =
+          observedEntityIds.length === 0
+            ? []
+            : await tx<{ id: number | string }>`
+                SELECT id
+                FROM entities
+                WHERE organization_id = ${params.organizationId}
+                  AND id = ANY(${pgBigintArray(observedEntityIds)}::bigint[])
+                ORDER BY id
+                FOR UPDATE
+              `;
+        await tx`LOCK TABLE entity_identities IN SHARE ROW EXCLUSIVE MODE`;
+
+        // An already-running merge can move an identity to an owner that was
+        // not in the unlocked discovery snapshot before we reached its entity
+        // lock. Never acquire that new row after the table lock (the old lock
+        // inversion); roll back and retry the ordered acquisition instead.
+        const stableEntityIds = await loadLiveIdentityEntityIds({
+          db: tx,
+          organizationId: params.organizationId,
+          namespace,
+        });
+        const locked = new Set(lockedEntityIds.map((row) => Number(row.id)));
+        if (stableEntityIds.some((entityId) => !locked.has(entityId))) {
+          throw new IdentityRekeyLockRetry(
+            `Identity namespace '${namespace}' changed owners during lock acquisition.`
+          );
+        }
+
+        const report = await buildReport({
+          db: tx,
+          organizationId: params.organizationId,
+          namespace,
+          mapping,
+          forUpdate: true,
+        });
+        const ids = report.changes.map((change) => change.id);
+        if (ids.length > 0) {
+          // Preserve the previous scope as an authoritative read projection before
+          // moving the live uniqueness key. Events are append-only: an event
+          // observed while this identity was organization-scoped has no tenant key
+          // stamped on it, so dropping the old scope would strand that history from
+          // identity recall and metrics. The empty string is the same unambiguous
+          // organization sentinel used by the unique index.
+          await tx`
         UPDATE entity_identities identity
         SET scope_key_history = CASE
           WHEN COALESCE(identity.scope_key, '') = COALESCE(proposed.scope_key, '')
@@ -383,17 +442,17 @@ export async function rekeyEntityIdentities(params: {
           AND identity.namespace = ${namespace}
           AND identity.deleted_at IS NULL
           AND identity.id::text = proposed.id
-      `;
-      const temporaryPrefix = `__lobu_rekey__:${randomUUID()}:`;
-      await tx`
+          `;
+          const temporaryPrefix = `__lobu_rekey__:${randomUUID()}:`;
+          await tx`
         UPDATE entity_identities
         SET scope_key = ${temporaryPrefix} || id::text
         WHERE organization_id = ${params.organizationId}
           AND namespace = ${namespace}
           AND deleted_at IS NULL
           AND id::text = ANY(${pgTextArray(ids)}::text[])
-      `;
-      await tx`
+          `;
+          await tx`
         UPDATE entity_identities identity
         SET scope_key = proposed.scope_key
         FROM unnest(
@@ -404,35 +463,46 @@ export async function rekeyEntityIdentities(params: {
           AND identity.namespace = ${namespace}
           AND identity.deleted_at IS NULL
           AND identity.id::text = proposed.id
-      `;
+          `;
+        }
+        const affectedEntities = await tx<{ entity_id: number | string }>`
+          SELECT DISTINCT entity_id
+          FROM entity_identities
+          WHERE organization_id = ${params.organizationId}
+            AND namespace = ${namespace}
+            AND deleted_at IS NULL
+            AND id::text = ANY(${pgTextArray(ids)}::text[])
+          ORDER BY entity_id
+        `;
+        await refreshMetricIdentityAliases({
+          db: tx,
+          organizationId: params.organizationId,
+          entityIds: affectedEntities.map((row) => Number(row.entity_id)),
+        });
+        await tx`
+          UPDATE connector_identity_scope_registry
+          SET scope = pending_scope,
+              scope_key_path = pending_scope_key_path,
+              pending_scope = NULL,
+              pending_scope_key_path = NULL,
+              shape_version = shape_version + 1,
+              updated_at = now()
+          WHERE organization_id = ${params.organizationId}
+            AND namespace = ${namespace}
+            AND connector_key = ANY(${pgTextArray(report.connectorKeys)}::text[])
+            AND pending_scope IS NOT NULL
+        `;
+        return { ...report, applied: true };
+      });
+    } catch (error) {
+      if (!(error instanceof IdentityRekeyLockRetry)) throw error;
+      if (attempt === MAX_LOCK_ORDER_RETRIES) {
+        throw new IdentityRekeyError(
+          `Identity namespace '${namespace}' kept changing owners during re-key. Retry after concurrent merges finish.`
+        );
+      }
     }
-    const affectedEntities = await tx<{ entity_id: number | string }>`
-      SELECT DISTINCT entity_id
-      FROM entity_identities
-      WHERE organization_id = ${params.organizationId}
-        AND namespace = ${namespace}
-        AND deleted_at IS NULL
-        AND id::text = ANY(${pgTextArray(ids)}::text[])
-      ORDER BY entity_id
-    `;
-    await refreshMetricIdentityAliases({
-      db: tx,
-      organizationId: params.organizationId,
-      entityIds: affectedEntities.map((row) => Number(row.entity_id)),
-    });
-    await tx`
-      UPDATE connector_identity_scope_registry
-      SET scope = pending_scope,
-          scope_key_path = pending_scope_key_path,
-          pending_scope = NULL,
-          pending_scope_key_path = NULL,
-          shape_version = shape_version + 1,
-          updated_at = now()
-      WHERE organization_id = ${params.organizationId}
-        AND namespace = ${namespace}
-        AND connector_key = ANY(${pgTextArray(report.connectorKeys)}::text[])
-        AND pending_scope IS NOT NULL
-    `;
-    return { ...report, applied: true };
-  });
+  }
+
+  throw new IdentityRekeyError(`Identity namespace '${namespace}' could not be re-keyed.`);
 }

@@ -78,6 +78,7 @@ function scrubIdentityScopeProjections(items: BatchItem[]): void {
     if (!item.metadata) continue;
     delete item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY];
     delete item.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY];
+    delete item.metadata[SCOPED_IDENTITY_ALIASES_METADATA_KEY];
   }
 }
 

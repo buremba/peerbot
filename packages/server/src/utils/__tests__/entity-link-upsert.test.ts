@@ -12,6 +12,7 @@ import {
 import {
   IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
   IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  SCOPED_IDENTITY_ALIASES_METADATA_KEY,
 } from '../../identity/scope-projection';
 import {
   applyEventAttributions,
@@ -119,6 +120,9 @@ describe('applyEventAttributions', () => {
         visible: 'kept',
         [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: 'forged-tenant' },
         [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { author: 'forged-tenant' },
+        [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
+          { namespace: 'x_user_id', identifier: 'author', scopeKey: 'forged-tenant' },
+        ],
       },
     };
 
@@ -136,6 +140,9 @@ describe('applyEventAttributions', () => {
         visible: 'also-kept',
         [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: 'forged-tenant' },
         [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { author: 'forged-tenant' },
+        [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
+          { namespace: 'x_user_id', identifier: 'author', scopeKey: 'forged-tenant' },
+        ],
       },
     };
     await expect(

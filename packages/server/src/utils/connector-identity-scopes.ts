@@ -54,6 +54,9 @@ export function connectorIdentityScopeDeclarations(
           const namespace =
             typeof identity.namespace === 'string' ? identity.namespace.trim() : '';
           if (!namespace) return;
+          if (namespace.includes('\0')) {
+            throw new Error('Identity namespace must not contain NUL.');
+          }
           const declaration =
             `feed '${feedKey}', event kind '${eventKind}', attribution #${attributionIndex + 1}, ` +
             `identity #${identityIndex + 1}`;
@@ -74,6 +77,11 @@ export function connectorIdentityScopeDeclarations(
             typeof identity.scopeKeyPath === 'string'
               ? identity.scopeKeyPath.trim()
               : null;
+          if (scopeKeyPath?.includes('\0')) {
+            throw new Error(
+              `Identity namespace '${namespace}' in ${declaration} has a scopeKeyPath that must not contain NUL.`
+            );
+          }
           if (scope === 'tenant' && !scopeKeyPath) {
             throw new Error(
               `Identity namespace '${namespace}' in ${declaration} requires a non-empty scopeKeyPath for tenant scope.`

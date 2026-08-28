@@ -794,7 +794,7 @@ async function findApprovalRow(
   // can redact secrets first and then apply its own view limits. Re-read the
   // already-authorized event through the exact-id path rather than bypassing
   // get_content visibility with a direct table query.
-  const exact = await getContent({ content_ids: [listedRow.id] }, env, ctx);
+  const exact = await getContent({ content_ids: [listedRow.id], limit: 200 }, env, ctx);
   const row = exact.content.find(
     (item): item is ApprovalContentItem =>
       isApprovalContentItem(item, runId) && item.id === listedRow.id

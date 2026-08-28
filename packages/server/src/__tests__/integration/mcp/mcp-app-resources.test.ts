@@ -1741,6 +1741,55 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     );
   });
 
+  it('re-reads the current approval past the default exact-id supersede page', async () => {
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'action', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    let current = await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_deep_approval_${runId}_0`,
+      title: 'Deep approval 0 — pending approval',
+      content: 'Initial approval version.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+    });
+    for (let index = 1; index <= 50; index += 1) {
+      current = await insertEvent({
+        entityIds: [],
+        organizationId: org.id,
+        originId: `mcp_app_deep_approval_${runId}_${index}`,
+        title: `Deep approval ${index} — pending approval`,
+        content: `Approval version ${index}.`,
+        semanticType: 'operation',
+        runId,
+        interactionType: 'approval',
+        interactionStatus: 'pending',
+        supersedesEventId: Number(current.id),
+      });
+    }
+
+    const sessionId = await initSession(`/mcp/${org.slug}`);
+    const response = await post(`/mcp/${org.slug}`, {
+      body: {
+        jsonrpc: '2.0',
+        id: 'deep-approval-chain',
+        method: 'tools/call',
+        params: { name: 'get_approval', arguments: { run_id: runId } },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?.structuredContent?.title).toContain('Deep approval 50');
+  });
+
   it('redacts approval secrets before key context is lost and enforces view limits', async () => {
     const [run] = await getDb()<{ id: number }>`
       INSERT INTO runs (organization_id, run_type, status, approval_status)

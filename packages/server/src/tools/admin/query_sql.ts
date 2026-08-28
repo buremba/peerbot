@@ -127,7 +127,10 @@ export const QuerySqlResultSchema = Type.Object({
         'The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu.',
     })
   ),
-  rows: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+  rows: Type.Array(Type.Record(Type.String(), Type.Unknown()), {
+    description:
+      'Returned rows. String cells longer than 4,000 Unicode code points contain the 4,000-character head followed by the literal suffix "… [truncated]". payload_text and text_content also receive content_length and payload_truncated sidecars.',
+  }),
   columns: Type.Array(
     Type.Object({
       name: Type.String(),

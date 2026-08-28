@@ -94,7 +94,9 @@ function printReport(
     .join(", ");
   console.log(chalk.bold(`\n  ${label}`));
   console.log(`  Namespace: ${namespace}`);
-  console.log(`  Current:   ${current || "unknown"}`);
+  // `from_shapes` is the shape the rows are keyed by *before* the re-key, so it
+  // is only the current shape while nothing has been written yet.
+  if (!report.applied) console.log(`  Current:   ${current || "unknown"}`);
   console.log(`  Target:    ${shapeText(report.to_shape)}`);
   console.log(`  Live rows: ${report.live_identity_count ?? "unknown"}`);
   console.log(`  Changes:   ${report.changed_identity_count ?? "unknown"}`);

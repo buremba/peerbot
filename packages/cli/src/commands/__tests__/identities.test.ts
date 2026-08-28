@@ -192,6 +192,31 @@ describe("identities rekey", () => {
     expect(report).toContain("tenant (metadata.tenant_id)");
   });
 
+  test("the applied report drops the pre-re-key shape instead of restating it as current", async () => {
+    const report = {
+      namespace: "crm_customer",
+      live_identity_count: 2,
+      changed_identity_count: 2,
+      from_shapes: [
+        { connector_key: "crm", scope: "organization", scope_key_path: null },
+      ],
+      to_shape: { scope: "tenant", scope_key_path: "metadata.tenant_id" },
+    };
+    responses = [
+      { ...report, applied: false },
+      { ...report, applied: true },
+    ];
+
+    await identitiesRekeyCommand("crm_customer", {
+      mapping: await mappingFile({ "101": "tenant-a", "102": "tenant-b" }),
+      apply: true,
+    });
+
+    const lines = logged.join("\n").split("\n");
+    expect(lines.filter((line) => line.includes("Current:"))).toHaveLength(1);
+    expect(lines.filter((line) => line.includes("Target:"))).toHaveLength(2);
+  });
+
   test("rejects invalid identity ids before making a request", async () => {
     await expect(
       identitiesRekeyCommand("crm_customer", {

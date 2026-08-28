@@ -1759,9 +1759,9 @@ async function lockEdgeForMutation(
 			403,
 		);
 	}
-	// Both callers of this loader (unlink, update_link) mutate the edge, so the
-	// authorization guard belongs here rather than in each of them. Soft-deleting
-	// an ACL edge revokes access exactly as surely as creating one grants it.
+	// This loader's caller (update_link) mutates the edge, so the authorization
+	// guard belongs here rather than in it. Changing an ACL edge alters access
+	// exactly as surely as creating one grants it.
 	assertNotAclManagedEdge(
 		{ slug: rows[0].relationship_type_slug, purpose: rows[0].purpose },
 		action,

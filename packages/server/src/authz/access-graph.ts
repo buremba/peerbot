@@ -590,6 +590,7 @@ export async function buildAccessGraph(params: {
         source: 'feed',
         confidence: 1.0,
         createdBy: creatorUserId,
+        claimKey: `config:access-graph:${connectionId}`,
         onConflict: 'ignore',
       });
 

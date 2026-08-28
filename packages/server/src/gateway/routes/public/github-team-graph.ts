@@ -305,6 +305,7 @@ export async function buildGithubTeamGraph(params: {
 			source: "feed",
 			confidence: 1.0,
 			createdBy: creatorUserId,
+			claimKey: `config:github-team-graph:${params.account.id ?? params.account.login}`,
 			onConflict: "ignore",
 		}),
 	);

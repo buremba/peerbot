@@ -195,6 +195,7 @@ async function upsertAboutEdges(opts: {
 		confidence: 1.0,
 		createdBy: opts.userId ?? null,
 		metadata: opts.metadata,
+		claimKey: `config:channel-about:${opts.metadata.connection_id}:${opts.metadata.channel_key}`,
 		onConflict: 'update',
 	});
 }

@@ -347,28 +347,3 @@ export async function validateTypeRule(
     );
   }
 }
-
-/**
- * Check for duplicate active edge between two entities of the same type.
- */
-export async function checkDuplicateEdge(
-  fromId: number,
-  toId: number,
-  typeId: number,
-  sql: DbClient
-): Promise<void> {
-  const existing = await sql`
-    SELECT id FROM entity_relationships
-    WHERE from_entity_id = ${fromId}
-      AND to_entity_id = ${toId}
-      AND relationship_type_id = ${typeId}
-      AND deleted_at IS NULL
-    LIMIT 1
-  `;
-  if (existing.length > 0) {
-    throw new ToolUserError(
-      `An active relationship of this type already exists between entities ${fromId} and ${toId}`,
-      409
-    );
-  }
-}

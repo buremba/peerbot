@@ -18,7 +18,7 @@ import {
 } from './relationship-validation';
 
 export const RELATIONSHIP_CLAIMS_METADATA_KEY = '_lobu_claims';
-export const MANUAL_RELATIONSHIP_CLAIM_KEY = 'manual';
+const MANUAL_RELATIONSHIP_CLAIM_KEY = 'manual';
 
 export interface ConnectorRelationshipDeclaration {
   type: string;
@@ -26,7 +26,7 @@ export interface ConnectorRelationshipDeclaration {
   to: string;
 }
 
-export interface DesiredConnectorRelationship {
+interface DesiredConnectorRelationship {
   declaration: ConnectorRelationshipDeclaration;
   fromEntityId: number;
   toEntityId: number;
@@ -62,7 +62,7 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function connectorRelationshipClaimKey(
+function connectorRelationshipClaimKey(
   connectionId: number | string,
   originId: string
 ): string {
@@ -158,12 +158,28 @@ async function assertRelationshipClaim(
     createdBy?: string | null;
     clientId?: string | null;
     metadata?: Record<string, unknown> | null;
+    mergeExisting?: boolean;
   }
 ): Promise<{ id: number; inserted: boolean; claimAdded: boolean }> {
   const initialMetadata = {
     ...(params.metadata ?? {}),
     [RELATIONSHIP_CLAIMS_METADATA_KEY]: { [params.claimKey]: params.claim },
   };
+  const conflictAction =
+    params.mergeExisting === false
+      ? tx`DO NOTHING`
+      : tx`DO UPDATE SET
+          metadata = jsonb_set(
+            COALESCE(entity_relationships.metadata, '{}'::jsonb),
+            '{_lobu_claims}',
+            (entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY})
+              || jsonb_build_object(${params.claimKey}::text, ${tx.json(params.claim)}::jsonb),
+            true
+          ),
+          updated_at = current_timestamp
+        WHERE entity_relationships.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
+          AND entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY} -> ${params.claimKey}
+              IS DISTINCT FROM ${tx.json(params.claim)}::jsonb`;
   const written = await tx<ClaimedRelationshipRow>`
     INSERT INTO entity_relationships (
       organization_id, from_entity_id, to_entity_id, relationship_type_id,
@@ -176,18 +192,7 @@ async function assertRelationshipClaim(
     )
     ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
       WHERE deleted_at IS NULL
-    DO UPDATE SET
-      metadata = jsonb_set(
-        COALESCE(entity_relationships.metadata, '{}'::jsonb),
-        '{_lobu_claims}',
-        (entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY})
-          || jsonb_build_object(${params.claimKey}::text, ${tx.json(params.claim)}::jsonb),
-        true
-      ),
-      updated_at = current_timestamp
-    WHERE entity_relationships.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
-      AND entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY} -> ${params.claimKey}
-          IS DISTINCT FROM ${tx.json(params.claim)}::jsonb
+    ${conflictAction}
     RETURNING id, from_entity_id, to_entity_id, relationship_type_id,
               metadata, confidence, source, (xmax = 0) AS inserted
   `;
@@ -208,6 +213,9 @@ async function assertRelationshipClaim(
     `;
     row = existing[0];
     if (!row) throw new Error('Relationship claim upsert returned no live relationship');
+    if (params.mergeExisting === false) {
+      return { id: Number(row.id), inserted: false, claimAdded: false };
+    }
     const claims = claimsFromMetadata(row.metadata);
     if (!claims) throw migrationRequired(row);
     if (!Object.hasOwn(claims, params.claimKey)) {
@@ -263,14 +271,15 @@ export async function assertManualRelationshipClaim(
     ...params,
     claimKey: MANUAL_RELATIONSHIP_CLAIM_KEY,
     claim: {},
+    mergeExisting: false,
   });
 }
 
-async function retractLockedRelationshipClaim(
+async function retractLockedRelationshipClaims(
   tx: DbClient,
   params: {
     organizationId: string;
-    claimKey: string;
+    claimKeys: readonly string[];
     row: ClaimedRelationshipRow;
     updatedBy?: string | null;
     clientId?: string | null;
@@ -278,18 +287,21 @@ async function retractLockedRelationshipClaim(
 ): Promise<{ relationshipRemoved: boolean }> {
   const claims = claimsFromMetadata(params.row.metadata);
   if (!claims) throw migrationRequired(params.row);
-  if (!Object.hasOwn(claims, params.claimKey)) {
-    throw new Error(`Relationship ${params.row.id} does not carry claim '${params.claimKey}'`);
+  const retracted = params.claimKeys.filter((key) => Object.hasOwn(claims, key));
+  if (retracted.length === 0) {
+    throw new Error(
+      `Relationship ${params.row.id} does not carry claim '${params.claimKeys.join("', '")}'`
+    );
   }
   const relationshipId = Number(params.row.id);
-  const remainingClaims = Object.keys(claims).filter((key) => key !== params.claimKey);
+  const remainingClaims = Object.keys(claims).filter((key) => !retracted.includes(key));
   if (remainingClaims.length > 0) {
     await tx`
       UPDATE entity_relationships
       SET metadata = jsonb_set(
             metadata,
             '{_lobu_claims}',
-            (metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) - ${params.claimKey},
+            (metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) - ${pgTextArray([...retracted])}::text[],
             true
           ),
           updated_by = COALESCE(${params.updatedBy ?? null}, updated_by),
@@ -363,9 +375,9 @@ export async function retractManualRelationshipClaim(
     'unlink'
   );
   assertManualRelationshipMutationAllowed(row, 'unlinked');
-  return retractLockedRelationshipClaim(tx, {
+  return retractLockedRelationshipClaims(tx, {
     organizationId: params.organizationId,
-    claimKey: MANUAL_RELATIONSHIP_CLAIM_KEY,
+    claimKeys: [MANUAL_RELATIONSHIP_CLAIM_KEY],
     row,
     updatedBy: params.updatedBy,
     clientId: params.clientId,
@@ -395,9 +407,9 @@ async function retractRelationshipClaimExcept(
 
   for (const row of rows) {
     if (params.keepRelationshipIds.has(Number(row.id))) continue;
-    await retractLockedRelationshipClaim(tx, {
+    await retractLockedRelationshipClaims(tx, {
       organizationId: params.organizationId,
-      claimKey: params.claimKey,
+      claimKeys: [params.claimKey],
       row,
     });
   }
@@ -508,23 +520,34 @@ export async function retractConnectionRelationshipClaims(
 ): Promise<void> {
   await lockOrganization(tx, params.organizationId);
   const prefix = connectorRelationshipClaimPrefix(params.connectionId);
-  const keys = await tx<{ claim_key: string }>`
-    SELECT DISTINCT claim.key AS claim_key
+  // One ascending-id pass over the org's live claimed edges, retracting every
+  // key this connection owns per row. Resolving the distinct claim keys first
+  // and re-scanning per key would cost one scan per ingested source item,
+  // inside the connection-delete transaction that already holds these rows.
+  const rows = await tx<ClaimedRelationshipRow>`
+    SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
+           rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
     FROM entity_relationships r
-    CROSS JOIN LATERAL jsonb_object_keys(
-      COALESCE(r.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}, '{}'::jsonb)
-    ) AS claim(key)
+    JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
     WHERE r.organization_id = ${params.organizationId}
       AND r.deleted_at IS NULL
-      AND left(claim.key, length(${prefix})) = ${prefix}
-    ORDER BY claim.key
+      AND r.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
+      AND EXISTS (
+        SELECT 1
+        FROM jsonb_object_keys(r.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) AS claim(key)
+        WHERE left(claim.key, length(${prefix})) = ${prefix}
+      )
+    ORDER BY r.id
+    FOR UPDATE OF r
   `;
 
-  for (const row of keys) {
-    await retractRelationshipClaimExcept(tx, {
+  for (const row of rows) {
+    const claims = claimsFromMetadata(row.metadata);
+    if (!claims) throw migrationRequired(row);
+    await retractLockedRelationshipClaims(tx, {
       organizationId: params.organizationId,
-      claimKey: row.claim_key,
-      keepRelationshipIds: new Set(),
+      claimKeys: Object.keys(claims).filter((key) => key.startsWith(prefix)),
+      row,
     });
   }
 }

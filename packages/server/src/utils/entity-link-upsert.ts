@@ -80,7 +80,9 @@ interface AttributionResolution {
   namedEntityIdsByItem: Map<number, Map<string, number>>;
 }
 
-export interface AppliedEventAttributions extends AttributionResolution {
+interface AppliedEventAttributions {
+  /** Entity id per attribution `name`, keyed by the caller's item index. */
+  namedEntityIdsByItem: Map<number, Map<string, number>>;
   relationshipsByKind: Record<string, ConnectorRelationshipDeclaration[]>;
 }
 
@@ -849,7 +851,6 @@ export async function applyEventAttributions(
   sql?: DbClient
 ): Promise<AppliedEventAttributions> {
   const empty: AppliedEventAttributions = {
-    entityIdsByItem: new Map(),
     namedEntityIdsByItem: new Map(),
     relationshipsByKind: {},
   };
@@ -880,7 +881,10 @@ export async function applyEventAttributions(
       tx
     )
   );
-  return { ...resolved, relationshipsByKind: plan.relationshipsByKind };
+  return {
+    namedEntityIdsByItem: resolved.namedEntityIdsByItem,
+    relationshipsByKind: plan.relationshipsByKind,
+  };
 }
 
 /**

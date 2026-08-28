@@ -9,8 +9,8 @@
  * Not a replacement for `relationship-validation.ts`, which guards the
  * caller-facing `manage_entity` surface: its `validateSource` accepts only
  * `ui|llm|feed|api` and would reject the `config`/`manual` sources reconcilers
- * own, and its `checkDuplicateEdge` raises a 409 where a materializer wants an
- * idempotent no-op.
+ * own, and that surface raises a 409 on a duplicate triple where a materializer
+ * wants an idempotent no-op.
  *
  * Not a general edge kernel either: `entity-merge`'s repoint/tombstone and
  * `force_delete_tree`'s hard delete stay where they are, because their SQL is
@@ -18,6 +18,7 @@
  */
 
 import { type DbClient, getDb, pgBigintArray } from '../db/client';
+import { RELATIONSHIP_CLAIMS_METADATA_KEY } from './relationship-claims';
 import type { RelationshipTypePurpose } from './relationship-validation';
 
 interface EdgePair {
@@ -34,6 +35,7 @@ interface UpsertEdgesParams {
   confidence?: number | null;
   createdBy?: string | null;
   metadata?: object | null;
+  claimKey: string;
   onConflict: 'ignore' | 'update';
 }
 
@@ -100,23 +102,52 @@ export async function upsertEdges(params: UpsertEdgesParams): Promise<number[]> 
   const froms = pairs.map((p) => p.fromEntityId);
   const tos = pairs.map((p) => p.toEntityId);
 
+  const claim = { [params.claimKey]: {} };
+  const metadata = {
+    ...(params.metadata ?? {}),
+    [RELATIONSHIP_CLAIMS_METADATA_KEY]: claim,
+  };
   const conflictAction =
     onConflict === 'update'
       ? db`DO UPDATE SET
-            metadata = EXCLUDED.metadata,
+            metadata =
+              (EXCLUDED.metadata - ${RELATIONSHIP_CLAIMS_METADATA_KEY})
+              || jsonb_build_object(
+                   ${RELATIONSHIP_CLAIMS_METADATA_KEY}::text,
+                   COALESCE(
+                     entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY},
+                     '{}'::jsonb
+                   ) || (EXCLUDED.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY})
+                 ),
             source = EXCLUDED.source,
             updated_by = EXCLUDED.updated_by,
             updated_at = current_timestamp`
-      : db`DO NOTHING`;
+      : db`DO UPDATE SET
+            metadata = jsonb_set(
+              COALESCE(entity_relationships.metadata, '{}'::jsonb),
+              '{_lobu_claims}',
+              COALESCE(
+                entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY},
+                '{}'::jsonb
+              ) || (EXCLUDED.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}),
+              true
+            ),
+            updated_at = current_timestamp
+          WHERE NOT (
+            COALESCE(
+              entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY},
+              '{}'::jsonb
+            ) ? ${params.claimKey}
+          )`;
 
-  const written = await db<{ id: number }>`
+  const written = await db<{ id: number; inserted: boolean }>`
     INSERT INTO entity_relationships (
       organization_id, from_entity_id, to_entity_id, relationship_type_id,
       metadata, confidence, source, created_by, updated_by, created_at, updated_at
     )
     SELECT
       ${organizationId}, v.f, v.t, ${relationshipTypeId},
-      ${params.metadata == null ? null : db.json(params.metadata)},
+      ${db.json(metadata)},
       ${params.confidence ?? null}, ${source},
       ${params.createdBy ?? null}, ${params.createdBy ?? null},
       current_timestamp, current_timestamp
@@ -124,8 +155,10 @@ export async function upsertEdges(params: UpsertEdgesParams): Promise<number[]> 
     ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
       WHERE deleted_at IS NULL
     ${conflictAction}
-    RETURNING id
+    RETURNING id, (xmax = 0) AS inserted
   `;
 
-  return written.map((row) => Number(row.id));
+  return written
+    .filter((row) => onConflict === 'update' || row.inserted === true)
+    .map((row) => Number(row.id));
 }

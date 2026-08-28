@@ -86,6 +86,26 @@ describe('connector-declared relationships', () => {
       created_by: workspace.users.owner.id,
       createDefaultFeed: false,
     });
+    const manualInvoice = (await workspace.owner.entities.create({
+      type: 'invoice',
+      name: 'INV-1001',
+    })) as { entity: { id: number } };
+    const manualCustomer = (await workspace.owner.entities.create({
+      type: 'customer',
+      name: 'Acme Ltd',
+    })) as { entity: { id: number } };
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES
+        (${workspace.org.id}, ${manualInvoice.entity.id}, 'erp_invoice_id', 'inv-1001'),
+        (${workspace.org.id}, ${manualCustomer.entity.id}, 'crm_customer_id', 'cust-42')
+    `;
+    const manualAssertion = (await workspace.owner.entities.link({
+      from_entity_id: manualInvoice.entity.id,
+      to_entity_id: manualCustomer.entity.id,
+      relationship_type_slug: 'invoice_customer',
+    })) as { relationship: { metadata: Record<string, unknown> | null } };
+    expect(manualAssertion.relationship.metadata).toBeNull();
     const [feed] = await sql`
       INSERT INTO feeds (
         organization_id, connection_id, feed_key, status, created_at, updated_at
@@ -146,6 +166,7 @@ describe('connector-declared relationships', () => {
       type: 'invoice_customer',
       metadata: {
         _lobu_claims: {
+          manual: {},
           [`feed:${connection.id}:${originId}`]: {
             rules: ['invoice_customer:invoice->customer'],
           },
@@ -153,14 +174,8 @@ describe('connector-declared relationships', () => {
       },
     });
 
-    // A manual assertion co-owns the same graph fact instead of creating a
-    // duplicate row. Its claim is independent of the connector event claim.
-    const manualAssertion = (await workspace.owner.entities.link({
-      from_entity_id: Number(edges[0].from_entity_id),
-      to_entity_id: Number(edges[0].to_entity_id),
-      relationship_type_slug: 'invoice_customer',
-    })) as { relationship: { metadata: Record<string, unknown> | null } };
-    expect(manualAssertion.relationship.metadata).toBeNull();
+    // The connector merged its claim into the manual graph fact instead of
+    // creating a duplicate row. Each owner can retract independently.
     const [coOwned] = await sql`
       SELECT metadata FROM entity_relationships WHERE id = ${edges[0].id}
     `;

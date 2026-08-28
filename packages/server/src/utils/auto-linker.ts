@@ -113,6 +113,7 @@ export async function autoLinkEvent(params: AutoLinkParams): Promise<void> {
     })),
     source: 'feed',
     confidence: 0.4,
+    claimKey: 'config:auto-linker',
     onConflict: 'ignore',
   });
   const created = createdIds.length;

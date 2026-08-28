@@ -535,10 +535,14 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						// (connection_id, origin_id) across replicas.
 						sql: isDry ? db : undefined,
 						afterPersist: async (persisted, tx) => {
-							const relationshipDeclarations =
-								appliedAttributions.relationshipsByKind[
-									itemOriginType ?? itemSemanticType
-								] ?? [];
+							// Keyed by `origin_type` alone, exactly as the attribution
+							// resolver keys its rules: a declaration whose named
+							// attributions were never resolved must not reach
+							// reconciliation, where an empty desired set reads as
+							// "this source item declares no edges" and retracts.
+							const relationshipDeclarations = itemOriginType
+								? (appliedAttributions.relationshipsByKind[itemOriginType] ?? [])
+								: [];
 							if (relationshipDeclarations.length > 0) {
 								if (run.connection_id == null) {
 									throw new Error(

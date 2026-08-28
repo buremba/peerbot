@@ -20,6 +20,7 @@ type LiveIdentity = {
   id: string;
   identifier: string;
   scope_key: string | null;
+  scope_key_history: string[];
 };
 
 export type IdentityRekeyReport = {
@@ -127,7 +128,8 @@ async function buildReport(params: {
   );
   const lock = params.forUpdate ? params.db`FOR UPDATE` : params.db``;
   const rows = await params.db<LiveIdentity>`
-    SELECT id::text AS id, identifier, scope_key
+    SELECT id::text AS id, identifier, scope_key,
+           to_json(scope_key_history) AS scope_key_history
     FROM entity_identities
     WHERE organization_id = ${params.organizationId}
       AND namespace = ${params.namespace}
@@ -184,6 +186,42 @@ async function buildReport(params: {
     proposed.set(key, change.id);
   }
 
+  // A previous scope is retained so append-only events observed under that key
+  // keep resolving to the same entity. A new mapping therefore cannot assign a
+  // historical key to a different identity, even when the proposed *current*
+  // key set alone would be unique (for example, swapping tenant A and B).
+  const rowById = new Map(rows.map((row) => [row.id, row]));
+  const retained = new Map<string, string>();
+  for (const change of changes) {
+    const row = rowById.get(change.id)!;
+    const priorScopes = [
+      ...row.scope_key_history,
+      ...(change.fromScopeKey !== change.toScopeKey ? [change.fromScopeKey ?? ''] : []),
+    ];
+    for (const scopeKey of priorScopes) {
+      const key = `${change.identifier}\u0000${scopeKey}`;
+      const prior = retained.get(key);
+      if (prior && prior !== change.id) {
+        throw new IdentityRekeyError(
+          `Historical re-key collision for identifier '${change.identifier}' and scope ` +
+            `'${scopeKey || '<organization>'}': identity ids ${prior} and ${change.id}.`
+        );
+      }
+      retained.set(key, change.id);
+    }
+  }
+  for (const change of changes) {
+    const key = `${change.identifier}\u0000${change.toScopeKey ?? ''}`;
+    const historicalOwner = retained.get(key);
+    if (historicalOwner && historicalOwner !== change.id) {
+      throw new IdentityRekeyError(
+        `Re-key collision for identifier '${change.identifier}' and scope ` +
+          `'${change.toScopeKey ?? '<organization>'}': proposed identity id ${change.id} ` +
+          `conflicts with retained historical scope on identity id ${historicalOwner}.`
+      );
+    }
+  }
+
   return {
     namespace: params.namespace,
     targetScope: target.scope,
@@ -221,8 +259,10 @@ async function refreshMetricIdentityAliases(params: {
       namespace: string;
       identifier: string;
       scope_key: string | null;
+      scope_key_history: string[];
     }>`
-      SELECT namespace, identifier, scope_key
+      SELECT namespace, identifier, scope_key,
+             to_json(scope_key_history) AS scope_key_history
       FROM entity_identities
       WHERE organization_id = ${params.organizationId}
         AND entity_id = ${entityId}
@@ -247,13 +287,18 @@ async function refreshMetricIdentityAliases(params: {
         ...organizationIdentifiers,
       ]),
     ].sort();
-    const projections = identities
-      .map<ScopedIdentityAliasProjection>((identity) => ({
-        namespace: identity.namespace,
-        identifier: identity.identifier,
-        scopeKey: identity.scope_key ?? '',
-      }))
-      .sort((left, right) =>
+    const projectionByKey = new Map<string, ScopedIdentityAliasProjection>();
+    for (const identity of identities) {
+      for (const scopeKey of [identity.scope_key ?? '', ...identity.scope_key_history]) {
+        const projection = {
+          namespace: identity.namespace,
+          identifier: identity.identifier,
+          scopeKey,
+        };
+        projectionByKey.set(scopedIdentityAliasProjectionKey(projection), projection);
+      }
+    }
+    const projections = [...projectionByKey.values()].sort((left, right) =>
         scopedIdentityAliasProjectionKey(left).localeCompare(
           scopedIdentityAliasProjectionKey(right)
         )
@@ -316,6 +361,29 @@ export async function rekeyEntityIdentities(params: {
     });
     const ids = report.changes.map((change) => change.id);
     if (ids.length > 0) {
+      // Preserve the previous scope as an authoritative read projection before
+      // moving the live uniqueness key. Events are append-only: an event
+      // observed while this identity was organization-scoped has no tenant key
+      // stamped on it, so dropping the old scope would strand that history from
+      // identity recall and metrics. The empty string is the same unambiguous
+      // organization sentinel used by the unique index.
+      await tx`
+        UPDATE entity_identities identity
+        SET scope_key_history = CASE
+          WHEN COALESCE(identity.scope_key, '') = COALESCE(proposed.scope_key, '')
+            OR COALESCE(identity.scope_key, '') = ANY(identity.scope_key_history)
+          THEN identity.scope_key_history
+          ELSE array_append(identity.scope_key_history, COALESCE(identity.scope_key, ''))
+        END
+        FROM unnest(
+          ${pgTextArray(ids)}::text[],
+          ${pgTextArray(report.changes.map((change) => change.toScopeKey))}::text[]
+        ) AS proposed(id, scope_key)
+        WHERE identity.organization_id = ${params.organizationId}
+          AND identity.namespace = ${namespace}
+          AND identity.deleted_at IS NULL
+          AND identity.id::text = proposed.id
+      `;
       const temporaryPrefix = `__lobu_rekey__:${randomUUID()}:`;
       await tx`
         UPDATE entity_identities

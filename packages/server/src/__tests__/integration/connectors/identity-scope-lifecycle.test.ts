@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { IdentityRekeyError, rekeyEntityIdentities } from '../../../identity/rekey';
+import { runMetric } from '../../../metrics/run-metric';
 import type { ConnectorMetadata } from '../../../utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../../../utils/connector-definition-install';
+import {
+  buildEntityLinkUnion,
+  entityLinkMatchSql,
+  fetchEntityIdentityScopes,
+} from '../../../utils/content-search/entity-link';
 import {
   applyEventAttributions,
   clearEntityLinkRulesCache,
@@ -10,12 +16,15 @@ import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
   createTestEntity,
+  createTestEvent,
   createTestOrganization,
   createTestUser,
 } from '../../setup/test-fixtures';
 
 const connectorKey = 'scope-lifecycle-erp';
-const namespace = 'erp_customer';
+// Use a recall-indexed namespace so the lifecycle test proves both indexed
+// content recall and metric attribution survive an explicit scope re-key.
+const namespace = 'x_user_id';
 
 function metadata(
   version: string,
@@ -93,16 +102,18 @@ async function seedRows(options?: { duplicateIdentifier?: boolean }) {
   `;
   const first = await createTestEntity({
     name: 'First customer',
-    entity_type: '$member',
+    entity_type: 'person',
     organization_id: org.id,
+    created_by: user.id,
   });
   const second = await createTestEntity({
     name: 'Second customer',
-    entity_type: '$member',
+    entity_type: 'person',
     organization_id: org.id,
+    created_by: user.id,
   });
   await install(org.id, metadata('1.0.0', {}));
-  const identifiers = options?.duplicateIdentifier ? ['CARI-001', 'CARI-001'] : ['CARI-001', 'CARI-002'];
+  const identifiers = options?.duplicateIdentifier ? ['1001', '1001'] : ['1001', '1002'];
   const scopes = options?.duplicateIdentifier ? ['legacy-a', 'legacy-b'] : [null, null];
   const rows = await sql<{ id: string }[]>`
     INSERT INTO entity_identities (
@@ -125,7 +136,7 @@ async function seedRows(options?: { duplicateIdentifier?: boolean }) {
     )
     WHERE id IN (${first.id}, ${second.id})
   `;
-  return { org, ids: rows.map((row) => row.id) };
+  return { org, ids: rows.map((row) => row.id), first, second };
 }
 
 describe('connector identity scope lifecycle', () => {
@@ -156,13 +167,32 @@ describe('connector identity scope lifecycle', () => {
   });
 
   it('blocks a live shape change, re-keys atomically, and lets the next apply succeed', async () => {
-    const { org, ids } = await seedRows();
+    const { org, ids, first } = await seedRows();
+    const sql = getTestDb();
+    await sql`
+      UPDATE entity_types
+      SET metrics_config = ${sql.json({
+        eventSets: {
+          observations: { by: 'alias', field: `metadata->>'${namespace}'` },
+        },
+        measures: {
+          observations: { eventSet: 'observations', agg: 'count' },
+        },
+      })}
+      WHERE organization_id = ${org.id} AND slug = 'person'
+    `;
+    const historicalEvent = await createTestEvent({
+      organization_id: org.id,
+      content: 'Observed before tenant scope existed',
+      connector_key: connectorKey,
+      metadata: { [namespace]: '1001' },
+    });
     const next = metadata('2.0.0', {
       scope: 'tenant',
       scopeKeyPath: 'metadata.tenant_id',
     });
     await expect(install(org.id, next)).rejects.toThrow(
-      /erp_customer.*2 live identity rows.*Old shape.*organization.*New shape.*tenant.*lobu identities rekey/i
+      /x_user_id.*2 live identity rows.*Old shape.*organization.*New shape.*tenant.*lobu identities rekey/i
     );
 
     await expect(
@@ -230,13 +260,51 @@ describe('connector identity scope lifecycle', () => {
     expect(metricAliases).toEqual([
       {
         aliases: [],
-        scoped_aliases: [{ namespace, identifier: 'CARI-001', scopeKey: 'tenant-a' }],
+        scoped_aliases: [
+          { namespace, identifier: '1001', scopeKey: '' },
+          { namespace, identifier: '1001', scopeKey: 'tenant-a' },
+        ],
       },
       {
         aliases: [],
-        scoped_aliases: [{ namespace, identifier: 'CARI-002', scopeKey: 'tenant-b' }],
+        scoped_aliases: [
+          { namespace, identifier: '1002', scopeKey: '' },
+          { namespace, identifier: '1002', scopeKey: 'tenant-b' },
+        ],
       },
     ]);
+
+    const historicalScopes = await fetchEntityIdentityScopes(sql, first.id);
+    expect(historicalScopes).toEqual(
+      expect.arrayContaining([
+        { namespace, identifier: '1001', scopeKey: null },
+        { namespace, identifier: '1001', scopeKey: 'tenant-a' },
+      ])
+    );
+    const historicalLink = buildEntityLinkUnion({
+      entityIdLiteral: first.id,
+      scopes: historicalScopes,
+      alias: 'event',
+      baseParamIndex: 1,
+    });
+    const recalled = await sql.unsafe(
+      `SELECT event.id FROM events event WHERE ${historicalLink.sql}`,
+      historicalLink.params
+    );
+    expect(recalled.map((row) => Number(row.id))).toContain(historicalEvent.id);
+    const staticallyRecalled = await sql.unsafe(
+      `SELECT event.id FROM events event WHERE ${entityLinkMatchSql(`${first.id}::bigint`, 'event')}`
+    );
+    expect(staticallyRecalled.map((row) => Number(row.id))).toContain(historicalEvent.id);
+    const preservedMetrics = await runMetric({
+      organizationId: org.id,
+      entityType: 'person',
+      entityId: first.id,
+      measure: 'observations',
+    });
+    expect(preservedMetrics).toHaveLength(1);
+    expect(Number(preservedMetrics[0]?.entity_id)).toBe(first.id);
+    expect(Number(preservedMetrics[0]?.observations)).toBe(1);
 
     clearEntityLinkRulesCache();
     await expect(
@@ -248,21 +316,21 @@ describe('connector identity scope lifecycle', () => {
           {
             origin_type: 'customer',
             metadata: {
-              customer_id: 'CARI-003',
+              customer_id: '1003',
               customer_name: 'Blocked during activation gap',
               tenant_id: 'tenant-c',
             },
           },
         ],
       })
-    ).rejects.toThrow(/erp_customer.*ingestion is paused.*lobu apply/i);
+    ).rejects.toThrow(/x_user_id.*ingestion is paused.*lobu apply/i);
 
     const blockedRows = await getTestDb()<{ count: number }[]>`
       SELECT count(*)::integer AS count
       FROM entity_identities
       WHERE organization_id = ${org.id}
         AND namespace = ${namespace}
-        AND identifier = 'CARI-003'
+        AND identifier = '1003'
         AND deleted_at IS NULL
     `;
     expect(blockedRows[0]?.count).toBe(0);
@@ -278,7 +346,7 @@ describe('connector identity scope lifecycle', () => {
           {
             origin_type: 'customer',
             metadata: {
-              customer_id: 'CARI-003',
+              customer_id: '1003',
               customer_name: 'Allowed after apply',
               tenant_id: 'tenant-c',
             },
@@ -292,7 +360,7 @@ describe('connector identity scope lifecycle', () => {
       FROM entity_identities
       WHERE organization_id = ${org.id}
         AND namespace = ${namespace}
-        AND identifier = 'CARI-003'
+        AND identifier = '1003'
         AND deleted_at IS NULL
     `;
     expect(activatedRows).toEqual([{ scope_key: 'tenant-c' }]);
@@ -313,7 +381,7 @@ describe('connector identity scope lifecycle', () => {
         org.id,
         metadata('2.0.0', { scope: 'tenant', scopeKeyPath: 'metadata.tenant_id' })
       )
-    ).rejects.toThrow(/erp_customer.*2 live identity rows.*Old shape.*organization.*New shape.*tenant/i);
+    ).rejects.toThrow(/x_user_id.*2 live identity rows.*Old shape.*organization.*New shape.*tenant/i);
 
     const rows = await sql<
       { scope: string; scope_key_path: string | null; pending_scope: string | null }[]
@@ -457,6 +525,38 @@ describe('connector identity scope lifecycle', () => {
     ]);
   });
 
+  it('commits a blocked pending target through a caller-owned transaction', async () => {
+    const { org } = await seedRows();
+    const sql = getTestDb();
+    const result = await sql.begin((tx) =>
+      install(
+        org.id,
+        metadata('2.0.0', { scope: 'tenant', scopeKeyPath: 'metadata.tenant_id' }),
+        tx
+      )
+    );
+    expect(result.blockedMessage).toMatch(/2 live identity rows.*lobu identities rekey/i);
+
+    const rows = await sql<
+      { scope: string; pending_scope: string | null; active_version: string }[]
+    >`
+      SELECT registry.scope,
+             registry.pending_scope,
+             definition.version AS active_version
+      FROM connector_identity_scope_registry registry
+      JOIN connector_definitions definition
+        ON definition.organization_id = registry.organization_id
+       AND definition.key = registry.connector_key
+       AND definition.status = 'active'
+      WHERE registry.organization_id = ${org.id}
+        AND registry.connector_key = ${connectorKey}
+        AND registry.namespace = ${namespace}
+    `;
+    expect(rows).toEqual([
+      { scope: 'organization', pending_scope: 'tenant', active_version: '1.0.0' },
+    ]);
+  });
+
   it('keeps registry and active definition aligned across concurrent installs', async () => {
     const org = await createTestOrganization({ name: 'Concurrent scope install org' });
     await install(org.id, metadata('1.0.0', {}));
@@ -511,6 +611,14 @@ describe('connector identity scope lifecycle', () => {
         namespace,
         mapping: { [ids[0]!]: 'same-tenant', [ids[1]!]: 'same-tenant' },
       })
-    ).rejects.toThrow(/collision.*CARI-001.*same-tenant.*identity ids/i);
+    ).rejects.toThrow(/collision.*1001.*same-tenant.*identity ids/i);
+
+    await expect(
+      rekeyEntityIdentities({
+        organizationId: org.id,
+        namespace,
+        mapping: { [ids[0]!]: 'legacy-b', [ids[1]!]: 'legacy-a' },
+      })
+    ).rejects.toThrow(/collision.*1001.*retained historical scope/i);
   });
 });

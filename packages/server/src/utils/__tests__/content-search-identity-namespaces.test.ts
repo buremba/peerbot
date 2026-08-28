@@ -23,6 +23,7 @@ describe('content-search identity namespace registry bridge', () => {
     const sql = entityLinkMatchSql('$1', 'f');
     expect(sql).toContain("ei.namespace = 'x_user_id'");
     expect(sql).toContain("e2.metadata ? 'x_user_id'");
+    expect(sql).toContain('ei.scope_key_history');
   });
 
   it('emits indexed LinkedIn identity branches for entity-link matching', () => {

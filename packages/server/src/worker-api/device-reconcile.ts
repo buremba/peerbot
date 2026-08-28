@@ -495,6 +495,7 @@ async function ensureDeviceConnectorWired(
     }
 
     let connectionId: number | undefined;
+    let blockedInstallMessage: string | null = null;
     const wireOnce = () => sql.begin(async (tx): Promise<ManifestClaimAuthorization | null> => {
       // Serialize per (user, connector): two concurrent polls / two devices
       // both reach here, but only one holds the lock at a time, so the
@@ -538,7 +539,7 @@ async function ensureDeviceConnectorWired(
       if (suppressed.length > 0) return null;
 
       // 2. Ensure the connector definition + version are installed (idempotent).
-      await upsertConnectorDefinitionRecords({
+      const installResult = await upsertConnectorDefinitionRecords({
         sql: tx,
         organizationId,
         metadata,
@@ -557,6 +558,14 @@ async function ensureDeviceConnectorWired(
         // points at the shared on-disk catalog → shared row.
         versionScope: source ? 'organization' : 'shared',
       });
+      if (installResult.blockedMessage) {
+        // This callback owns more work but not the transaction boundary. Stop
+        // here and return normally so the pending scope target commits; the
+        // caller raises after `sql.begin` resolves. Throwing here would roll the
+        // target back and leave `lobu identities rekey` with nothing to apply.
+        blockedInstallMessage = installResult.blockedMessage;
+        return null;
+      }
 
       // Seed new/repaired auto-wired connections from the org's definition
       // default, exactly like manage_connections create/connect merge
@@ -735,6 +744,8 @@ async function ensureDeviceConnectorWired(
       );
       authorization = await wireOnce();
     }
+
+    if (blockedInstallMessage) throw new Error(blockedInstallMessage);
 
     if (connectionId) {
       logger.info(

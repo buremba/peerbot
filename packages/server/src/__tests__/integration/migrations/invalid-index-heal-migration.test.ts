@@ -284,6 +284,7 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 
 		const [afterDown] = await sql<{
 			scope_key_exists: boolean;
+			scope_key_history_exists: boolean;
 			connection_scope_exists: boolean;
 			registry_exists: boolean;
 			legacy_index_exists: boolean;
@@ -299,6 +300,12 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 					SELECT 1 FROM information_schema.columns
 					WHERE table_schema = 'public'
 					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_key_history'
+				) AS scope_key_history_exists,
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
 					  AND column_name = 'scope_connection_id'
 				) AS connection_scope_exists,
 				to_regclass('public.connector_identity_scope_registry') IS NOT NULL
@@ -308,6 +315,7 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 		`;
 		expect(afterDown).toEqual({
 			scope_key_exists: false,
+			scope_key_history_exists: false,
 			connection_scope_exists: true,
 			registry_exists: false,
 			legacy_index_exists: true,
@@ -321,6 +329,7 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 
 		const [afterReplay] = await sql<{
 			scope_key_exists: boolean;
+			scope_key_history_exists: boolean;
 			connection_scope_exists: boolean;
 			registry_exists: boolean;
 			tenant_index_valid: boolean;
@@ -332,6 +341,12 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 					  AND table_name = 'entity_identities'
 					  AND column_name = 'scope_key'
 				) AS scope_key_exists,
+				EXISTS (
+					SELECT 1 FROM information_schema.columns
+					WHERE table_schema = 'public'
+					  AND table_name = 'entity_identities'
+					  AND column_name = 'scope_key_history'
+				) AS scope_key_history_exists,
 				EXISTS (
 					SELECT 1 FROM information_schema.columns
 					WHERE table_schema = 'public'
@@ -349,6 +364,7 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 		`;
 		expect(afterReplay).toEqual({
 			scope_key_exists: true,
+			scope_key_history_exists: true,
 			connection_scope_exists: false,
 			registry_exists: true,
 			tenant_index_valid: true,

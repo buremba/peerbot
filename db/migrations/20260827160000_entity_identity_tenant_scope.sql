@@ -5,7 +5,41 @@
 -- connections can legitimately address the same upstream tenant. The connector
 -- therefore supplies a stable text scope key from each event.
 ALTER TABLE public.entity_identities
-  ADD COLUMN IF NOT EXISTS scope_key text;
+  ADD COLUMN IF NOT EXISTS scope_key text,
+  ADD COLUMN IF NOT EXISTS scope_key_history text[] NOT NULL DEFAULT '{}';
+
+-- The current tenant key is always non-empty. Historical keys use the same
+-- empty-string sentinel as the unique index to remember a prior organization
+-- scope without making a second live identity claim.
+DO $constraints$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'entity_identities_scope_key_nonempty_check'
+      AND conrelid = 'public.entity_identities'::regclass
+  ) THEN
+    ALTER TABLE public.entity_identities
+      ADD CONSTRAINT entity_identities_scope_key_nonempty_check CHECK (
+        scope_key IS NULL OR length(btrim(scope_key)) > 0
+      ) NOT VALID;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'entity_identities_scope_key_history_no_nulls_check'
+      AND conrelid = 'public.entity_identities'::regclass
+  ) THEN
+    ALTER TABLE public.entity_identities
+      ADD CONSTRAINT entity_identities_scope_key_history_no_nulls_check CHECK (
+        array_position(scope_key_history, NULL) IS NULL
+      ) NOT VALID;
+  END IF;
+END
+$constraints$;
+
+-- squawk-ignore prefer-robust-stmts -- transaction:false is required below; validation is idempotent on replay
+ALTER TABLE public.entity_identities VALIDATE CONSTRAINT entity_identities_scope_key_nonempty_check;
+-- squawk-ignore prefer-robust-stmts -- transaction:false is required below; validation is idempotent on replay
+ALTER TABLE public.entity_identities VALIDATE CONSTRAINT entity_identities_scope_key_history_no_nulls_check;
 
 -- #2846 shipped the connection-shaped column before a production connector
 -- adopted it. Refuse to guess a tenant key if that assumption is ever false.
@@ -73,14 +107,15 @@ CREATE TABLE IF NOT EXISTS public.connector_identity_scope_registry (
   CONSTRAINT connector_identity_scope_registry_shape_check CHECK (
     (scope = 'organization' AND scope_key_path IS NULL)
     OR
-    (scope = 'tenant' AND length(btrim(scope_key_path)) > 0)
+    (scope = 'tenant' AND scope_key_path IS NOT NULL AND length(btrim(scope_key_path)) > 0)
   ),
   CONSTRAINT connector_identity_scope_registry_pending_shape_check CHECK (
     (pending_scope IS NULL AND pending_scope_key_path IS NULL)
     OR
     (pending_scope = 'organization' AND pending_scope_key_path IS NULL)
     OR
-    (pending_scope = 'tenant' AND length(btrim(pending_scope_key_path)) > 0)
+    (pending_scope = 'tenant' AND pending_scope_key_path IS NOT NULL
+      AND length(btrim(pending_scope_key_path)) > 0)
   )
 );
 
@@ -107,12 +142,14 @@ BEGIN
       AND column_name = 'scope_key'
   ) THEN
     EXECUTE 'SELECT EXISTS (
-      SELECT 1 FROM public.entity_identities WHERE scope_key IS NOT NULL
+      SELECT 1
+      FROM public.entity_identities
+      WHERE scope_key IS NOT NULL OR cardinality(scope_key_history) > 0
     )' INTO has_scoped_rows;
 
     IF has_scoped_rows THEN
       RAISE EXCEPTION USING
-        MESSAGE = 'entity identity tenant-scope rollback refused: scope_key contains non-NULL rows',
+        MESSAGE = 'entity identity tenant-scope rollback refused: scope_key or scope_key_history contains scoped rows',
         HINT = 'Re-key those identities to organization scope before retrying the rollback.';
     END IF;
   END IF;
@@ -146,4 +183,5 @@ DROP TABLE IF EXISTS public.connector_identity_scope_registry;
 
 -- squawk-ignore ban-drop-column -- rollback path for the column introduced above
 ALTER TABLE public.entity_identities
-  DROP COLUMN IF EXISTS scope_key;
+  DROP COLUMN IF EXISTS scope_key,
+  DROP COLUMN IF EXISTS scope_key_history;

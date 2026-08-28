@@ -320,7 +320,7 @@ type UpsertConnectorDefinitionRecordsParams = {
   replaceVersionArtifact?: boolean;
 };
 
-type UpsertConnectorDefinitionTransactionResult = {
+export type UpsertConnectorDefinitionResult = {
   updated: boolean;
   blockedMessage?: string;
 };
@@ -331,26 +331,30 @@ type UpsertConnectorDefinitionTransactionResult = {
  * remain held until the active definition and version rows agree with the
  * registry; a later write failure rolls the registry change back too.
  *
- * A blocked live-row transition is the intentional exception: the transaction
- * commits its pending target, then this wrapper throws so the operator can run
- * the explicit re-key command without losing the requested shape.
+ * A blocked live-row transition is the intentional exception. When this
+ * function owns the transaction it commits the pending target and then throws.
+ * With a caller-owned transaction it returns `blockedMessage`; that owner must
+ * stop its remaining writes, commit, and raise only outside its boundary so the
+ * explicit re-key command does not lose the requested shape.
  */
 export async function upsertConnectorDefinitionRecords(
   params: UpsertConnectorDefinitionRecordsParams
-): Promise<{ updated: boolean }> {
+): Promise<UpsertConnectorDefinitionResult> {
   const run = (sql: SqlClient) =>
     upsertConnectorDefinitionRecordsInTransaction({ ...params, sql });
-  const result =
-    typeof params.sql.savepoint === 'function'
-      ? await params.sql.savepoint(run)
-      : await params.sql.begin(run);
-  if (result.blockedMessage) throw new Error(result.blockedMessage);
-  return { updated: result.updated };
+  const callerOwnsTransaction = typeof params.sql.savepoint === 'function';
+  const result = callerOwnsTransaction
+    ? await params.sql.savepoint(run)
+    : await params.sql.begin(run);
+  if (result.blockedMessage && !callerOwnsTransaction) {
+    throw new Error(result.blockedMessage);
+  }
+  return result;
 }
 
 async function upsertConnectorDefinitionRecordsInTransaction(
   params: UpsertConnectorDefinitionRecordsParams
-): Promise<UpsertConnectorDefinitionTransactionResult> {
+): Promise<UpsertConnectorDefinitionResult> {
   const { sql } = params;
   const { metadata } = params;
 

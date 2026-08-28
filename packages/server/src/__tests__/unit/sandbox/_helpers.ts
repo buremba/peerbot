@@ -34,6 +34,8 @@ export const baseCtx: ToolContext = {
   tokenType: "oauth",
   scopedToOrg: false,
   allowCrossOrg: true,
+  grantedOrganizationIds: ["org_test"],
+  directSearchFederation: false,
 };
 
 export function ctx(overrides: Partial<ToolContext>): ToolContext {

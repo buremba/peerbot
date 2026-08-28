@@ -33,6 +33,15 @@ not advance it, so the same period remains visible in `pending_analysis` and can
 be attempted again. Backlog counts and `gaps` therefore include completed periods
 that have not yet materialized as run results.
 
+Repeated execution failures are bounded by a schedule circuit breaker. After
+`AUTOMATION_PAUSE_AFTER_CONSECUTIVE_FAILURES` consecutive scheduled runs fail or
+time out (default five), Lobu keeps the Automation active but stamps
+`schedule_auto_paused_at` and clears `next_run_at`. Event, eval, manual,
+dispatch-only, cancelled, and never-executed runs do not increment the counter.
+A successful scheduled or manual window, or a real schedule/timezone change,
+clears the failure state and resumes the cursor. A scheduled notification sweep
+durably notifies workspace admins and owners once per pause generation.
+
 `pending_analysis.pending_period_count` is the explicit logical-window backlog;
 `unprocessed_count` carries the same missing-period value for existing clients.
 `unprocessed_content_count` separately counts source items not linked to a

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { hashToken } from '../../../auth/oauth/utils';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { LOBU_INTERACTION_RESOURCE_URI } from '../../../mcp-app-resource-uris';
@@ -224,6 +225,9 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(content?._meta?.ui?.permissions).toEqual({ clipboardWrite: {} });
     expect(content?._meta?.ui?.prefersBorder).toBe(true);
     expect(content?._meta?.ui?.domain).toBe('http://localhost');
+    expect(content?._meta?.['openai/widgetDescription']).toBe(
+      'Interactive Lobu cards rendered in a sandboxed iframe; actions use standard MCP tool calls or host-mediated external links.'
+    );
   });
 
   it('serves the stamped external template and registered stable assets', async () => {
@@ -392,6 +396,10 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     expect(resource._meta?.ui?.prefersBorder).toBe(true);
     expect(resource._meta?.ui?.domain).toBe('http://localhost');
+    // Same reason as `domain`: ChatGPT reads the component's model-facing
+    // summary off the template it captured at connect time, so the key rides
+    // the listing, not only `resources/read`.
+    expect(resource._meta?.['openai/widgetDescription']).toBe(resource.description);
   });
 
   it('omits the app domain for a host that advertises Apps without OpenAI visibility', async () => {
@@ -1139,6 +1147,50 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     expect(settled).toMatchObject({ approval_status: 'rejected' });
   });
 
+  it('renders an explicitly targeted approval in the sole granted workspace', async () => {
+    const sessionId = await initSession('/mcp');
+    const [run] = await getDb()<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'action', 'pending', 'pending')
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+    await insertEvent({
+      entityIds: [],
+      organizationId: org.id,
+      originId: `mcp_app_single_grant_approval_${runId}`,
+      title: 'Single-grant review — pending approval',
+      content: 'Review in the sole granted workspace.',
+      semanticType: 'operation',
+      runId,
+      interactionType: 'approval',
+      interactionStatus: 'pending',
+    });
+
+    const response = await post('/mcp', {
+      body: {
+        jsonrpc: '2.0',
+        id: 'single-grant-get-approval',
+        method: 'tools/call',
+        params: {
+          name: 'get_approval',
+          arguments: { run_id: runId, organization: org.slug },
+        },
+      },
+      headers: { 'mcp-session-id': sessionId },
+      token,
+    });
+    const body = await response.json();
+    expect(body.result?.isError).not.toBe(true);
+    expect(body.result?._meta?.['lobu/member-role']).toBe('owner');
+    expect(body.result?.structuredContent?.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'approve' }),
+        expect.objectContaining({ id: 'reject' }),
+      ])
+    );
+  });
+
   it('renders and resolves a target-workspace approval through one unscoped OAuth session', async () => {
     const defaultOrg = await createTestOrganization({
       name: 'Approval Default Org',
@@ -1155,6 +1207,14 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
         scope: 'mcp:read mcp:write mcp:admin',
       })
     ).token;
+    // Cross-workspace approval rendering now requires the target workspace in
+    // the token's explicit consent snapshot; a legacy NULL grant stays pinned
+    // to its anchor workspace.
+    await getDb()`
+      UPDATE oauth_tokens
+      SET granted_organization_ids = ARRAY[${defaultOrg.id}, ${targetOrg.id}]::text[]
+      WHERE token_hash = ${hashToken(crossOrgToken)}
+    `;
     const sessionId = await initSession('/mcp', { sessionToken: crossOrgToken });
 
     const [run] = await getDb()<{ id: number }>`

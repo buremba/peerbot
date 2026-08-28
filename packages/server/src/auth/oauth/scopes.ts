@@ -5,7 +5,7 @@
  * that normalize, compare, and persist scope lists across auth_data records.
  */
 
-/** All available scopes (including first-party / device-flow-only grants). */
+/** All available scopes (including device-flow-only grants). */
 export const AVAILABLE_SCOPES = [
   'mcp:read',
   'mcp:write',
@@ -25,13 +25,17 @@ export const AVAILABLE_SCOPES = [
  * granted on the authorization-code consent path.
  *
  * Third-party MCP clients (Slack, Claude Desktop, Cursor, …) often request
- * every scope listed in discovery. Advertising these first-party scopes there
+ * every scope listed in discovery. Advertising these device-flow-only scopes there
  * caused Slack to ask for `device_worker:run`, which the auth-code consent
  * handler correctly refused.
  *
+ * These are high-privilege, explicitly user-consented device-code scopes. DCR
+ * does not authenticate an app as first-party, so the issuing grant type—not
+ * client-supplied name/software metadata—is the enforceable boundary.
+ *
  * - `device_worker:run` — personal device workers only (device-code grant).
- * - `connections:token` — first-party `lobu login` device-code grant or an
- *   explicitly minted PAT; never third-party auth-code tokens.
+ * - `connections:token` — device-code grant or an explicitly minted PAT;
+ *   never authorization-code tokens.
  */
 export const NON_PUBLIC_OAUTH_SCOPES = ['device_worker:run', 'connections:token'] as const;
 
@@ -67,7 +71,7 @@ export const AVAILABLE_PAT_SCOPES = [
  * The least-privilege scope a token must carry to fetch a managed connector's
  * access token via POST /oauth/connection-token.
  *
- * It is granted ONLY on the first-party `lobu login` device-code grant, and
+ * It is granted ONLY on an explicitly approved device-code grant, and
  * only when that grant EXPLICITLY REQUESTS it (the CLI now includes
  * `connections:token` in the scope it sends to the device-authorization
  * endpoint; see `packages/cli/src/internal/oauth.ts`). The device-approve
@@ -87,7 +91,7 @@ export const CONNECTIONS_TOKEN_SCOPE = 'connections:token';
 export const DEFAULT_SCOPES_STRING = DEFAULT_SCOPES.join(' ');
 
 /**
- * Drop first-party-only scopes from an authorization-code request.
+ * Drop device-flow-only scopes from an authorization-code request.
  *
  * MCP clients that already cached a broad `scopes_supported` list may still
  * request `device_worker:run` / `connections:token`. Stripping (rather than
@@ -129,29 +133,6 @@ export function filterScopeByRole(
     return null;
   }
   return granted.join(' ');
-}
-
-/**
- * Filter an MCP grant against the role that governs it. A workspace-scoped
- * resource is permanently bound to that workspace, so its role can cap the
- * token. An unscoped resource may target any authorized workspace at runtime;
- * its selected/default workspace is navigation state and must not strip a
- * capability that the user can exercise as an owner elsewhere.
- *
- * The unscoped branch strips nothing, so it only normalizes the request and
- * cannot produce an all-stripped `null` grant.
- */
-export function filterScopeForWorkspaceGrant(
-  scope: string | undefined | null,
-  memberRole: string | null,
-  workspaceScoped: boolean
-): string | null {
-  if (workspaceScoped) return filterScopeByRole(scope, memberRole);
-  return (scope || '')
-    .split(/\s+/)
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .join(' ');
 }
 
 export function normalizeScopeList(value: unknown): string[] {

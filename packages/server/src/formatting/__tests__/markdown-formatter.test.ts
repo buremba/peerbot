@@ -15,6 +15,7 @@ describe('formatToolResult', () => {
           parent_id: null,
           match_reason: 'name_match',
           match_score: 0.95,
+          workspace_slug: 'federation-alpha',
           metadata: { domain: 'test.com' },
           stats: {
             content_count: 10,
@@ -30,6 +31,7 @@ describe('formatToolResult', () => {
             parent_id: null,
             match_reason: 'name_match',
             match_score: 0.95,
+            workspace_slug: 'federation-alpha',
             metadata: { domain: 'test.com' },
             stats: {
               content_count: 10,
@@ -43,6 +45,7 @@ describe('formatToolResult', () => {
       const md = formatToolResult('search_memory', result);
       expect(md).toContain('Search Results');
       expect(md).toContain('Entity ID');
+      expect(md).toContain('Workspace**: `federation-alpha`');
     });
 
     it('should format empty search result', () => {
@@ -63,6 +66,7 @@ describe('formatToolResult', () => {
             author_name: 'Alice',
             text: 'We reviewed the quarterly revenue forecast',
             occurred_at: '2026-06-26T10:00:00.000Z',
+            workspace_slug: 'federation-alpha',
           },
         ],
       };
@@ -71,6 +75,7 @@ describe('formatToolResult', () => {
       expect(md).toContain('Channel Conversation');
       expect(md).toContain('quarterly revenue forecast');
       expect(md).toContain('Alice');
+      expect(md).toContain('workspace `federation-alpha`');
     });
 
     it('renders stable event ids for related content follow-ups', () => {
@@ -83,12 +88,16 @@ describe('formatToolResult', () => {
             title: 'A collected item',
             platform: 'hackernews',
             text_content: 'Collected text',
+            workspace_slug: 'federation-alpha',
+            workspace_slugs: ['federation-alpha', 'federation-beta'],
           },
         ],
       };
 
       const md = formatToolResult('search_memory', result);
       expect(md).toContain('Lobu event ID**: 66');
+      expect(md).toContain('Visible through workspaces');
+      expect(md).toContain('`federation-alpha`, `federation-beta`');
     });
 
     it('renders the local/source boundary and explicit feed IDs', () => {
@@ -99,6 +108,12 @@ describe('formatToolResult', () => {
           local_sources: ['events', 'channel_messages'],
           source_queried: false,
           source_feed_discovery: 'complete',
+          scope: 'all_granted',
+          status: 'partial',
+          workspaces: [
+            { workspace_slug: 'federation-alpha', status: 'complete' },
+            { workspace_slug: 'federation-beta', status: 'unavailable' },
+          ],
           source_feeds: [
             {
               feed_id: 42,
@@ -107,6 +122,7 @@ describe('formatToolResult', () => {
               connector_key: 'whatsapp.local',
               display_name: 'WhatsApp messages',
               status: 'not_queried',
+              workspace_slug: 'federation-alpha',
             },
           ],
           more_source_feeds: false,
@@ -115,6 +131,8 @@ describe('formatToolResult', () => {
 
       const md = formatToolResult('search_memory', result);
       expect(md).toContain('Search Coverage');
+      expect(md).toContain('Scope: all_granted. Status: partial.');
+      expect(md).toContain('`federation-beta`: unavailable');
       expect(md).toContain('Local stores searched: events, channel_messages');
       expect(md).toContain('Connected source feeds were not queried');
       expect(md).toContain('Feed 42: `whatsapp-personal/messages`');

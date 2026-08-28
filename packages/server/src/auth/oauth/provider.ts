@@ -5,11 +5,20 @@
  * Supports PKCE, token exchange, and refresh tokens.
  */
 
-import type { DbClient } from '../../db/client';
+import { type DbClient, pgTextArray } from '../../db/client';
 import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { PersonalAccessTokenService } from '../tokens';
 import { OAuthClientsStore } from './clients';
-import { DISCOVERY_SCOPES } from './scopes';
+import {
+  DEFAULT_SCOPES_STRING,
+  DISCOVERY_SCOPES,
+  NON_PUBLIC_OAUTH_SCOPES,
+  stripNonPublicOAuthScopes,
+} from './scopes';
+import {
+  listLiveGrantedMemberWorkspaces,
+  normalizeStoredGrantedOrganizationIds,
+} from './workspace-grants';
 import type {
   AuthInfo,
   AuthorizationParams,
@@ -41,6 +50,13 @@ import {
   verifyCodeChallenge,
 } from './utils';
 
+class OAuthTransactionRollback extends Error {
+  constructor(readonly response: OAuthError) {
+    super(response.error_description ?? response.error);
+    this.name = 'OAuthTransactionRollback';
+  }
+}
+
 /**
  * OAuth 2.1 Server Provider
  */
@@ -49,7 +65,8 @@ export class OAuthProvider {
 
   constructor(
     private sql: DbClient,
-    private baseUrl: string
+    private baseUrl: string,
+    private multiWorkspaceGrantIssuanceEnabled: boolean = false
   ) {
     this.clientsStore = new OAuthClientsStore(sql);
   }
@@ -71,14 +88,15 @@ export class OAuthProvider {
   async createAuthorizationCode(
     params: AuthorizationParams,
     userId: string,
-    organizationId: string | null
+    organizationId: string | null,
+    grantedOrganizationIds: readonly string[] = organizationId ? [organizationId] : []
   ): Promise<string> {
     const code = generateAuthorizationCode();
     const expiresAt = calculateExpiry(AUTHORIZATION_CODE_LIFETIME_SECONDS);
 
     await this.sql`
       INSERT INTO oauth_authorization_codes (
-        code, client_id, user_id, organization_id,
+        code, client_id, user_id, organization_id, granted_organization_ids,
         code_challenge, code_challenge_method,
         redirect_uri, scope, state, resource, expires_at
       ) VALUES (
@@ -86,6 +104,7 @@ export class OAuthProvider {
         ${params.client_id},
         ${userId},
         ${organizationId},
+        ${pgTextArray([...grantedOrganizationIds])}::text[],
         ${params.code_challenge},
         ${params.code_challenge_method},
         ${params.redirect_uri},
@@ -161,14 +180,52 @@ export class OAuthProvider {
       return createOAuthError('invalid_grant', 'Invalid code_verifier');
     }
 
-    // Generate tokens
-    return this.issueTokens(
-      authCode.client_id,
-      authCode.user_id,
-      authCode.organization_id,
-      authCode.scope,
-      authCode.resource
+    // Defense in depth for authorization codes minted before consent started
+    // stripping device-flow-only scopes. Auth-code clients must never receive
+    // device or managed-connector credentials, even across a rolling deploy.
+    const authorizedScope = stripNonPublicOAuthScopes(
+      authCode.scope === null ? DEFAULT_SCOPES_STRING : authCode.scope
     );
+    if (!authorizedScope) {
+      return createOAuthError('invalid_scope', 'Authorization code has no public scopes');
+    }
+
+    // Re-read and lock the claimed code while its tokens are inserted. A
+    // connected-app workspace revoke may delete an anchor code or narrow a
+    // secondary grant after the initial claim; using the live row here makes
+    // revoke and exchange serialize without resurrecting stale grants.
+    return this.sql.begin(async (tx) => {
+      await tx`
+        SELECT id FROM oauth_clients WHERE id = ${authCode.client_id} FOR UPDATE
+      `;
+      const liveCodeRows = await tx`
+        SELECT organization_id, granted_organization_ids
+        FROM oauth_authorization_codes
+        WHERE code = ${authCode.code}
+          AND used_at IS NOT NULL
+        FOR UPDATE
+      `;
+      if (liveCodeRows.length === 0) {
+        return createOAuthError('invalid_grant', 'Invalid or expired authorization code');
+      }
+      const liveCode = liveCodeRows[0] as Pick<
+        StoredAuthorizationCode,
+        'organization_id' | 'granted_organization_ids'
+      >;
+      return this.issueTokens(
+        authCode.client_id,
+        authCode.user_id,
+        authCode.organization_id,
+        authorizedScope,
+        authCode.resource,
+        'authorization_code',
+        normalizeStoredGrantedOrganizationIds(
+          liveCode.granted_organization_ids,
+          liveCode.organization_id
+        ),
+        tx
+      );
+    });
   }
 
   /**
@@ -212,6 +269,27 @@ export class OAuthProvider {
     }
 
     const oldRefreshToken = tokenResult[0] as StoredOAuthToken;
+    if (
+      normalizeStoredGrantedOrganizationIds(
+        oldRefreshToken.granted_organization_ids,
+        oldRefreshToken.organization_id
+      ).length > 1 &&
+      !this.multiWorkspaceGrantIssuanceEnabled
+    ) {
+      return createOAuthError('invalid_grant', 'Multiple-workspace authorization is not enabled');
+    }
+
+    // Rows created before grant provenance was persisted are safe for ordinary
+    // OAuth scopes, but a legacy token carrying a device-flow-only scope could
+    // have originated from the old auth-code leak. Fail closed and require a
+    // fresh device authorization rather than guessing its provenance.
+    const originalScopes = parseScopes(oldRefreshToken.scope);
+    const hasNonPublicScope = originalScopes.some((scope) =>
+      (NON_PUBLIC_OAUTH_SCOPES as readonly string[]).includes(scope)
+    );
+    if (hasNonPublicScope && oldRefreshToken.authorization_grant_type !== 'device_code') {
+      return createOAuthError('invalid_grant', 'Re-authorization required');
+    }
 
     // Validate client_id matches
     if (oldRefreshToken.client_id !== params.client_id) {
@@ -223,11 +301,12 @@ export class OAuthProvider {
     }
 
     const resource = oldRefreshToken.resource || params.resource || null;
-
     // Use requested scope only if it is a subset of the original grant.
     let scope = oldRefreshToken.scope;
     if (params.scope !== undefined) {
-      const originalScopes = parseScopes(oldRefreshToken.scope);
+      if (params.scope.trim().length === 0) {
+        return createOAuthError('invalid_scope', 'Requested scope must not be empty');
+      }
       const requestedScopesRaw = params.scope.split(' ').filter(Boolean);
       const requestedScopes = parseScopes(params.scope);
       if (requestedScopesRaw.length !== requestedScopes.length) {
@@ -255,27 +334,57 @@ export class OAuthProvider {
     const refreshExpiresAt = calculateExpiry(REFRESH_TOKEN_LIFETIME_SECONDS);
 
     // Revoke old refresh token and issue new tokens atomically
-    await this.sql.begin(async (tx) => {
+    const rotated = await this.sql.begin(async (tx) => {
+      // Registration-row mutex shared with connected-app revoke and every
+      // token-issuing grant path. Waiting here completes before the token claim
+      // starts, so all later statements observe the revoke's committed grant.
       await tx`
+        SELECT id FROM oauth_clients WHERE id = ${oldRefreshToken.client_id} FOR UPDATE
+      `;
+      // Claim the live refresh row inside the same transaction that mints its
+      // children. This serializes with grant removal/revocation and prevents a
+      // stale pre-transaction snapshot from resurrecting removed workspaces.
+      const claimed = await tx`
         UPDATE oauth_tokens
         SET revoked_at = NOW()
         WHERE id = ${oldRefreshToken.id}
+          AND revoked_at IS NULL
+          AND expires_at > NOW()
+        RETURNING granted_organization_ids, organization_id, authorization_grant_type
       `;
+      if (claimed.length === 0) return false;
+      const liveRefreshToken = claimed[0] as Pick<
+        StoredOAuthToken,
+        'granted_organization_ids' | 'organization_id' | 'authorization_grant_type'
+      >;
+      const grantedOrganizationIds = normalizeStoredGrantedOrganizationIds(
+        liveRefreshToken.granted_organization_ids,
+        liveRefreshToken.organization_id
+      );
 
       await tx`
         INSERT INTO oauth_tokens (
           id, token_type, token_hash,
-          client_id, user_id, organization_id,
-          scope, resource, parent_token_id, expires_at
+          client_id, user_id, organization_id, granted_organization_ids,
+          authorization_grant_type, scope, resource, parent_token_id, expires_at
         ) VALUES
           (${accessTokenId}, 'access', ${hashToken(accessToken)},
            ${oldRefreshToken.client_id}, ${oldRefreshToken.user_id}, ${oldRefreshToken.organization_id},
+           ${pgTextArray(grantedOrganizationIds)}::text[],
+           ${liveRefreshToken.authorization_grant_type},
            ${scope}, ${resource}, ${refreshTokenId}, ${accessExpiresAt}),
           (${refreshTokenId}, 'refresh', ${hashToken(newRefreshToken)},
            ${oldRefreshToken.client_id}, ${oldRefreshToken.user_id}, ${oldRefreshToken.organization_id},
+           ${pgTextArray(grantedOrganizationIds)}::text[],
+           ${liveRefreshToken.authorization_grant_type},
            ${scope}, ${resource}, ${oldRefreshToken.id}, ${refreshExpiresAt})
       `;
+      return true;
     });
+
+    if (!rotated) {
+      return createOAuthError('invalid_grant', 'Invalid or expired refresh token');
+    }
 
     return {
       access_token: accessToken,
@@ -295,8 +404,14 @@ export class OAuthProvider {
     userId: string,
     organizationId: string | null,
     scope: string | null,
-    resource: string | null
-  ): Promise<OAuthTokenResponse> {
+    resource: string | null,
+    authorizationGrantType: 'authorization_code' | 'device_code',
+    grantedOrganizationIds: readonly string[] = organizationId ? [organizationId] : [],
+    sql: DbClient = this.sql
+  ): Promise<OAuthTokenResponse | OAuthError> {
+    if (grantedOrganizationIds.length > 1 && !this.multiWorkspaceGrantIssuanceEnabled) {
+      return createOAuthError('invalid_grant', 'Multiple-workspace authorization is not enabled');
+    }
     const accessToken = generateAccessToken();
     const refreshToken = generateRefreshToken();
 
@@ -307,18 +422,20 @@ export class OAuthProvider {
     const refreshExpiresAt = calculateExpiry(REFRESH_TOKEN_LIFETIME_SECONDS);
 
     // Insert both tokens
-    await this.sql`
+    await sql`
       INSERT INTO oauth_tokens (
         id, token_type, token_hash,
-        client_id, user_id, organization_id,
-        scope, resource, expires_at
+        client_id, user_id, organization_id, granted_organization_ids,
+        authorization_grant_type, scope, resource, expires_at
       ) VALUES
         (${accessTokenId}, 'access', ${hashToken(accessToken)},
          ${clientId}, ${userId}, ${organizationId},
-         ${scope}, ${resource}, ${accessExpiresAt}),
+         ${pgTextArray([...grantedOrganizationIds])}::text[],
+         ${authorizationGrantType}, ${scope}, ${resource}, ${accessExpiresAt}),
         (${refreshTokenId}, 'refresh', ${hashToken(refreshToken)},
          ${clientId}, ${userId}, ${organizationId},
-         ${scope}, ${resource}, ${refreshExpiresAt})
+         ${pgTextArray([...grantedOrganizationIds])}::text[],
+         ${authorizationGrantType}, ${scope}, ${resource}, ${refreshExpiresAt})
     `;
 
     return {
@@ -405,11 +522,24 @@ export class OAuthProvider {
       user_name: string;
     };
 
+    const scopes = parseScopes(tokenData.scope);
+    const hasNonPublicScope = scopes.some((scope) =>
+      (NON_PUBLIC_OAUTH_SCOPES as readonly string[]).includes(scope)
+    );
+    if (hasNonPublicScope && tokenData.authorization_grant_type !== 'device_code') {
+      return null;
+    }
+
     return {
       userId: tokenData.user_id,
       organizationId: tokenData.organization_id,
+      grantedOrganizationIds: normalizeStoredGrantedOrganizationIds(
+        tokenData.granted_organization_ids,
+        tokenData.organization_id
+      ),
+      authorizationGrantType: tokenData.authorization_grant_type,
       clientId: tokenData.client_id,
-      scopes: parseScopes(tokenData.scope),
+      scopes,
       expiresAt: Math.floor(new Date(tokenData.expires_at).getTime() / 1000),
       resource: tokenData.resource || undefined,
       tokenType: 'access_token',
@@ -481,7 +611,23 @@ export class OAuthProvider {
       organizationSlug = personalOrg?.slug ?? null;
     }
 
-    const orgs = await this.sql`
+    // Any token carrying MCP capabilities OR a nonempty workspace snapshot is
+    // limited to that snapshot. Refresh downscoping may remove every `mcp:*`
+    // scope while retaining the original workspace consent; it must not turn a
+    // selected-workspace token into a full membership-directory credential.
+    // Initial profile-only grants intentionally store an empty snapshot and
+    // keep their existing account-inventory semantics.
+    const hasMcpCapability = authInfo.scopes.some((scope) => scope.startsWith('mcp:'));
+    const hasWorkspaceGrant = (authInfo.grantedOrganizationIds?.length ?? 0) > 0;
+    const restrictOrganizationInventory = hasMcpCapability || hasWorkspaceGrant;
+    const grantedOrgs = restrictOrganizationInventory
+      ? await listLiveGrantedMemberWorkspaces({
+          sql: this.sql,
+          userId: authInfo.userId,
+          grantedOrganizationIds: authInfo.grantedOrganizationIds ?? [],
+        })
+      : null;
+    const orgs = grantedOrgs ?? await this.sql`
       SELECT o.id, o.slug, o.name
       FROM "member" m
       JOIN "organization" o ON o.id = m."organizationId"
@@ -502,7 +648,10 @@ export class OAuthProvider {
       name: user.name,
       picture: user.image,
       organization_slug: organizationSlug,
-      personal_org_slug: personalOrg?.slug ?? null,
+      personal_org_slug:
+        !restrictOrganizationInventory || grantedOrgs?.some((org) => org.id === personalOrgId)
+          ? (personalOrg?.slug ?? null)
+          : null,
       organizations: orgs.map((o) => ({
         id: o.id as string,
         slug: o.slug as string,
@@ -648,13 +797,15 @@ export class OAuthProvider {
     userCode: string,
     userId: string,
     organizationId: string | null,
-    scopeOverride?: string | null
+    scopeOverride?: string | null,
+    grantedOrganizationIds: readonly string[] = organizationId ? [organizationId] : []
   ): Promise<boolean> {
     if (scopeOverride !== undefined) {
       const result = await this.sql`
         UPDATE oauth_device_codes
         SET status = 'approved',
             organization_id = ${organizationId},
+            granted_organization_ids = ${pgTextArray([...grantedOrganizationIds])}::text[],
             scope = ${scopeOverride}
         WHERE user_code = ${userCode}
           AND user_id = ${userId}
@@ -667,7 +818,8 @@ export class OAuthProvider {
     const result = await this.sql`
       UPDATE oauth_device_codes
       SET status = 'approved',
-          organization_id = ${organizationId}
+          organization_id = ${organizationId},
+          granted_organization_ids = ${pgTextArray([...grantedOrganizationIds])}::text[]
       WHERE user_code = ${userCode}
         AND user_id = ${userId}
         AND status = 'pending'
@@ -771,29 +923,57 @@ export class OAuthProvider {
 
     // Atomically claim approved device codes to prevent TOCTOU race conditions.
     // DELETE...RETURNING ensures only one concurrent request can consume the code.
-    const approved = await this.sql`
-      DELETE FROM oauth_device_codes
-      WHERE device_code = ${params.device_code}
-        AND client_id = ${params.client_id}
-        AND status = 'approved'
-        AND (resource IS NULL OR resource = ${params.resource || null})
-        AND expires_at > NOW()
-      RETURNING *
-    `;
+    // Returning an OAuth error from a postgres.js transaction would commit the
+    // DELETE, so throw expected errors and translate them back after rollback.
+    let approvedExchange: OAuthTokenResponse | null;
+    try {
+      approvedExchange = await this.sql.begin(async (tx) => {
+        await tx`
+          SELECT id FROM oauth_clients WHERE id = ${params.client_id} FOR UPDATE
+        `;
+        const approved = await tx`
+          DELETE FROM oauth_device_codes
+          WHERE device_code = ${params.device_code}
+            AND client_id = ${params.client_id}
+            AND status = 'approved'
+            AND (resource IS NULL OR resource = ${params.resource || null})
+            AND expires_at > NOW()
+          RETURNING *
+        `;
 
-    if (approved.length > 0) {
-      const deviceCode = approved[0] as StoredDeviceCode;
-      if (!deviceCode.user_id) {
-        return createOAuthError('server_error', 'Approved device code missing user_id');
+        if (approved.length === 0) return null;
+        const deviceCode = approved[0] as StoredDeviceCode;
+        if (!deviceCode.user_id) {
+          throw new OAuthTransactionRollback(
+            createOAuthError('server_error', 'Approved device code missing user_id')
+          );
+        }
+        const issued = await this.issueTokens(
+          deviceCode.client_id,
+          deviceCode.user_id,
+          deviceCode.organization_id,
+          deviceCode.scope,
+          deviceCode.resource,
+          'device_code',
+          normalizeStoredGrantedOrganizationIds(
+            deviceCode.granted_organization_ids,
+            deviceCode.organization_id
+          ),
+          tx
+        );
+        if ('error' in issued) {
+          throw new OAuthTransactionRollback(issued);
+        }
+        return issued;
+      });
+    } catch (error) {
+      if (error instanceof OAuthTransactionRollback) {
+        return error.response;
       }
-      return this.issueTokens(
-        deviceCode.client_id,
-        deviceCode.user_id,
-        deviceCode.organization_id,
-        deviceCode.scope,
-        deviceCode.resource
-      );
+      throw error;
     }
+
+    if (approvedExchange) return approvedExchange;
 
     // Atomic claim returned nothing — check why (pending, denied, expired, or unknown)
     const result = await this.sql`

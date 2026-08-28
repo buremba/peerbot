@@ -348,6 +348,12 @@ export async function handleCreateVersion(
       const effectiveTimezone = touchesCadence
         ? timezoneValue
         : ((automationRows[0].timezone as string | null) ?? null);
+      const cadenceChanged =
+        touchesCadence &&
+        (effectiveSchedule !==
+          ((automationRows[0].schedule as string | null) ?? null) ||
+          effectiveTimezone !==
+            ((automationRows[0].timezone as string | null) ?? null));
       const projectionNow = new Date();
       const previousGranularity = inferAutomationGranularityFromSchedule(
         (automationRows[0].schedule as string | null) ?? null
@@ -385,6 +391,8 @@ export async function handleCreateVersion(
           timezone = CASE WHEN ${touchesCadence} THEN ${timezoneValue} ELSE timezone END,
           triggers = CASE WHEN ${touchesCadence} THEN ${tx.json(triggerWrite.triggers)} ELSE triggers END,
           next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
+          consecutive_scheduled_failures = CASE WHEN ${cadenceChanged} THEN 0 ELSE consecutive_scheduled_failures END,
+          schedule_auto_paused_at = CASE WHEN ${cadenceChanged} THEN NULL ELSE schedule_auto_paused_at END,
           next_window_start = CASE WHEN ${resetsWindowProjection} THEN ${resetWindowStart.toISOString()}::timestamptz ELSE next_window_start END,
           completed_window_coverage = CASE WHEN ${resetsWindowProjection} THEN '{}'::tstzmultirange ELSE completed_window_coverage END,
           window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END,

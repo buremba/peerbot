@@ -458,7 +458,8 @@ export default class RedditConnector extends ConnectorRuntime {
   }): string {
     const { baseUrl, subreddit, searchTerms, username, contentType, after, isOAuth } = params;
     const jsonSuffix = isOAuth ? '' : '.json';
-    const afterParam = after ? `&after=${after}` : '';
+    const afterParam = after ? `&after=${encodeURIComponent(after)}` : '';
+    const subredditPath = subreddit ? encodeURIComponent(subreddit) : undefined;
 
     if (contentType === 'overview') {
       if (!username) {
@@ -469,29 +470,33 @@ export default class RedditConnector extends ConnectorRuntime {
 
     if (contentType === 'comment') {
       // Comments from a subreddit
-      if (subreddit) {
-        return `${baseUrl}/r/${subreddit}/comments${jsonSuffix}?limit=100${afterParam}`;
+      if (subredditPath) {
+        return `${baseUrl}/r/${subredditPath}/comments${jsonSuffix}?limit=100${afterParam}`;
       }
       // Comments aren't searchable via Reddit search API, fall back to r/all
       return `${baseUrl}/r/all/comments${jsonSuffix}?limit=100${afterParam}`;
     }
 
-    // Posts mode
+    // Posts mode. The sync loop stops at the first item older than the lookback
+    // cutoff, so a listing has to come back newest-first: under `sort=relevance`
+    // one old-but-relevant hit ends the sync and hides the newer matches behind
+    // it. `t=all` because lookback_days allows up to 730.
     if (searchTerms) {
       const query = encodeURIComponent(searchTerms);
-      if (subreddit) {
-        return `${baseUrl}/r/${subreddit}/search${jsonSuffix}?q=${query}&restrict_sr=on&sort=relevance&t=year&limit=100${afterParam}`;
+      if (subredditPath) {
+        return `${baseUrl}/r/${subredditPath}/search${jsonSuffix}?q=${query}&restrict_sr=on&sort=new&t=all&limit=100${afterParam}`;
       }
-      return `${baseUrl}/search${jsonSuffix}?q=${query}&sort=relevance&t=year&limit=100${afterParam}`;
+      return `${baseUrl}/search${jsonSuffix}?q=${query}&sort=new&t=all&limit=100${afterParam}`;
     }
 
-    // Subreddit listing
-    if (subreddit) {
-      return `${baseUrl}/r/${subreddit}/new${jsonSuffix}?t=year&limit=100${afterParam}`;
+    // Subreddit listing. `/new` is already chronological and takes no time
+    // window, so a `t=` here would either be ignored or cap the lookback.
+    if (subredditPath) {
+      return `${baseUrl}/r/${subredditPath}/new${jsonSuffix}?limit=100${afterParam}`;
     }
 
     // Fallback to r/all
-    return `${baseUrl}/r/all/new${jsonSuffix}?t=year&limit=100${afterParam}`;
+    return `${baseUrl}/r/all/new${jsonSuffix}?limit=100${afterParam}`;
   }
 
   // -------------------------------------------------------------------------

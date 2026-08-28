@@ -41,14 +41,20 @@ export type ValidatedEntityRowPatch = EntityRowPatch & {
 	readonly [validatedBrand]: true;
 };
 
+/** The entity write a verdict judged, in the vocabulary the audit records. */
+export type EntityWriteOperation = "create" | "update" | "delete" | "merge";
+
 /** What a rule decided, carried on the error so a caller can route it. */
 export interface EntityRowValidationVerdict {
 	outcome: "deny" | "escalate";
 	reason: string;
-	/** Fields the rule named when escalating; empty when it named none. */
+	/** Changed fields for a deny; fields named by the rule for an escalation. */
 	fields: string[];
+	operation: EntityWriteOperation;
 	/** The row judged, or null for a create — there is no row yet. */
 	entityId: number | null;
+	entityType: string | null;
+	entityOrganizationId: string | null;
 }
 
 /**
@@ -148,8 +154,23 @@ function flatten(
 	return flat;
 }
 
+/**
+ * The fields a denied write would actually have changed — names only, never the
+ * attempted values, so the audit row stays privacy-safe.
+ */
+function changedFields(row: EntityRuleRow | undefined): string[] {
+	if (!row) return [];
+	const stable = (value: unknown) =>
+		JSON.stringify(value === undefined ? null : value);
+	return Object.keys(row.patch).filter(
+		(field) => stable(row.committed[field]) !== stable(row.patch[field]),
+	);
+}
+
 interface CommittedRow {
 	id: number;
+	organization_id: string;
+	entity_type: string;
 	metadata: unknown;
 	rules_compiled: string | null;
 	name: string | null;
@@ -205,6 +226,7 @@ export async function validateEntityRowPatch(params: {
 	tx: DbClient;
 	ids: number[];
 	patch: EntityRowPatch;
+	operation?: EntityWriteOperation;
 }): Promise<ValidatedEntityRowPatch> {
 	return validateEntityRowPatchGrantingApprovedFields({
 		...params,
@@ -262,11 +284,12 @@ export async function validateEntityRowPatchGrantingApprovedFields(params: {
 	tx: DbClient;
 	ids: number[];
 	patch: EntityRowPatch;
+	operation?: EntityWriteOperation;
 	/** REQUIRED. Fields a human already approved; anything an escalate names
 	 * outside this list throws with the gap spelled out. */
 	approvedFields: readonly string[];
 }): Promise<ValidatedEntityRowPatch> {
-	const { tx, ids, patch, approvedFields } = params;
+	const { tx, ids, patch, approvedFields, operation = "update" } = params;
 	const branded = patch as ValidatedEntityRowPatch;
 	if (ids.length === 0) return branded;
 	// Fast path: nothing a rule could govern, so no read and no evaluation.
@@ -277,6 +300,7 @@ export async function validateEntityRowPatchGrantingApprovedFields(params: {
 		ids,
 		flatPatch: flatten(patch, patch.metadata),
 		approvedFields,
+		operation,
 	});
 	return branded;
 }
@@ -295,8 +319,9 @@ async function enforceCompiledRules(params: {
 	ids: number[];
 	flatPatch: Record<string, unknown>;
 	approvedFields: readonly string[];
+	operation: EntityWriteOperation;
 }): Promise<void> {
-	const { tx, ids, flatPatch, approvedFields } = params;
+	const { tx, ids, flatPatch, approvedFields, operation } = params;
 
 	// The pool runs with `fetch_types: false`, so a raw JS array binds as
 	// "malformed array literal". Bind the formatted `{n,n}` text and cast, exactly
@@ -305,7 +330,8 @@ async function enforceCompiledRules(params: {
 	// `rules_compiled` rides the join this query already makes, so rule lookup
 	// costs no extra round trip.
 	const rows = await tx<CommittedRow>`
-    SELECT e.id, e.metadata, e.name, e.slug, e.parent_id, e.content,
+    SELECT e.id, e.organization_id, et.slug AS entity_type,
+           e.metadata, e.name, e.slug, e.parent_id, e.content,
            e.deleted_at, e.merged_into, et.rules_compiled
     FROM entities e
     JOIN entity_types et ON et.id = e.entity_type_id
@@ -315,11 +341,14 @@ async function enforceCompiledRules(params: {
 	// One group per distinct compiled rule. Types without rules never reach an
 	// isolate at all, which keeps an unruled org's writes exactly as cheap as
 	// they are today.
-	const groups = new Map<string, { ids: number[]; rows: EntityRuleRow[] }>();
+	const groups = new Map<
+		string,
+		{ targets: CommittedRow[]; rows: EntityRuleRow[] }
+	>();
 	for (const row of rows) {
 		if (!row.rules_compiled) continue;
-		const group = groups.get(row.rules_compiled) ?? { ids: [], rows: [] };
-		group.ids.push(row.id);
+		const group = groups.get(row.rules_compiled) ?? { targets: [], rows: [] };
+		group.targets.push(row);
 		group.rows.push({ committed: committedState(row), patch: flatPatch });
 		groups.set(row.rules_compiled, group);
 	}
@@ -332,7 +361,10 @@ async function enforceCompiledRules(params: {
 			op: "update",
 		});
 		for (const [index, verdict] of verdicts.entries()) {
-			const entityId = group.ids[index] ?? null;
+			const target = group.targets[index];
+			const entityId = target?.id ?? null;
+			const entityType = target?.entity_type ?? null;
+			const entityOrganizationId = target?.organization_id ?? null;
 			if (verdict.outcome === "deny") {
 				// The ONLY trace a denial leaves. Without it a rule that rejects a
 				// write in prod is structurally invisible — no event, no audit row —
@@ -348,7 +380,15 @@ async function enforceCompiledRules(params: {
 				);
 				throw new EntityRowValidationError(
 					`entity ${entityId}: ${verdict.reason}`,
-					{ outcome: "deny", reason: verdict.reason, fields: [], entityId },
+					{
+						outcome: "deny",
+						reason: verdict.reason,
+						fields: changedFields(group.rows[index]),
+						operation,
+						entityId,
+						entityType,
+						entityOrganizationId,
+					},
 				);
 			}
 			if (verdict.outcome === "escalate") {
@@ -370,7 +410,10 @@ async function enforceCompiledRules(params: {
 						outcome: "escalate",
 						reason: verdict.reason,
 						fields: verdict.fields,
+						operation,
 						entityId,
+						entityType,
+						entityOrganizationId,
 					},
 				);
 			}
@@ -420,6 +463,7 @@ export async function validateEntityRowMergeGrantingApprovedFields(params: {
 		ids: loserIds,
 		flatPatch: { [RESERVED_COLUMN_NAMES.mergedInto]: mergedInto },
 		approvedFields,
+		operation: "merge",
 	});
 }
 
@@ -509,11 +553,25 @@ export async function validateEntityRowInsertGrantingApprovedFields(params: {
 	const { tx, row, approvedFields } = params;
 	const branded = row as ValidatedEntityRowInsert;
 
-	const types = await tx<{ rules_compiled: string | null }>`
-    SELECT rules_compiled FROM entity_types WHERE id = ${row.entityTypeId}
+	const types = await tx<{
+		rules_compiled: string | null;
+		slug: string;
+	}>`
+    SELECT rules_compiled, slug
+    FROM entity_types WHERE id = ${row.entityTypeId}
   `;
-	const compiled = types[0]?.rules_compiled;
+	const type = types[0];
+	const compiled = type?.rules_compiled;
 	if (!compiled) return branded;
+	const flatPatch = flatten(
+		{
+			name: row.name,
+			slug: row.slug,
+			parentId: row.parentId ?? null,
+			content: row.content ?? null,
+		},
+		row.metadata,
+	);
 
 	const [verdict] = await runEntityRules({
 		compiled,
@@ -524,15 +582,7 @@ export async function validateEntityRowInsertGrantingApprovedFields(params: {
 				// a move from nothing — which a rule can either let fall through its
 				// transition table or handle explicitly via `op`.
 				committed: {},
-				patch: flatten(
-					{
-						name: row.name,
-						slug: row.slug,
-						parentId: row.parentId ?? null,
-						content: row.content ?? null,
-					},
-					row.metadata,
-				),
+				patch: flatPatch,
 			},
 		],
 	});
@@ -541,8 +591,11 @@ export async function validateEntityRowInsertGrantingApprovedFields(params: {
 		throw new EntityRowValidationError(`new ${row.slug}: ${verdict.reason}`, {
 			outcome: "deny",
 			reason: verdict.reason,
-			fields: [],
+			fields: changedFields({ committed: {}, patch: flatPatch }),
+			operation: "create",
 			entityId: null,
+			entityType: type?.slug ?? null,
+			entityOrganizationId: row.organizationId,
 		});
 	}
 	if (verdict?.outcome === "escalate") {
@@ -564,7 +617,10 @@ export async function validateEntityRowInsertGrantingApprovedFields(params: {
 				outcome: "escalate",
 				reason: verdict.reason,
 				fields: verdict.fields,
+				operation: "create",
 				entityId: null,
+				entityType: type?.slug ?? null,
+				entityOrganizationId: row.organizationId,
 			},
 		);
 	}

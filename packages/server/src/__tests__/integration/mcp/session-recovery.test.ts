@@ -151,13 +151,21 @@ describe('MCP session recovery', () => {
     expect(res.status).toBe(200);
 
     const rows = await getTestDb()`
-      SELECT user_id, is_authenticated
+      SELECT user_id, client_id, is_authenticated
       FROM mcp_sessions WHERE session_id = ${sessionId}
     `;
     expect(rows).toHaveLength(1);
-    const row = rows[0] as { user_id: string | null; is_authenticated: boolean };
+    const row = rows[0] as {
+      user_id: string | null;
+      client_id: string | null;
+      is_authenticated: boolean;
+    };
     expect(row.is_authenticated).toBe(true);
     expect(row.user_id).toBe(user.id);
+    expect(row.client_id).toBe(client.client_id);
+
+    const headerless = await toolsList(sessionId, { orgSlug: publicOrg.slug });
+    expect(headerless.status).toBe(401);
   });
 
   it('rejects a live local session whose persisted row was deleted by another replica', async () => {

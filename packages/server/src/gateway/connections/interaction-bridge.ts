@@ -1161,6 +1161,8 @@ export function registerActionHandlers(
 				tokenType: "session",
 				scopedToOrg: true,
 				allowCrossOrg: false,
+				grantedOrganizationIds: null,
+				directSearchFederation: false,
 				sourceContext: {
 					platform: connection.platform,
 					connectionId: connection.id,

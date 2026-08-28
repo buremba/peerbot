@@ -9,6 +9,11 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
+import {
+  type GrantedMemberWorkspace,
+  listLiveGrantedMemberWorkspaces,
+  resolveGrantedWorkspaceTarget,
+} from '../auth/oauth/workspace-grants';
 import { isInProcessSystemCall } from './access-control';
 import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-policy';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
@@ -25,6 +30,7 @@ import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channel
 import { filterChannelsForRequester } from '../authz/channel-visibility';
 import { redactConnectionRows } from '../utils/connection-config-redaction';
 import { toVectorLiteral } from '../utils/entity-management';
+import { generateEmbeddings } from '../utils/embeddings';
 import { ToolUserError } from '../utils/errors';
 import logger from '../utils/logger';
 import { expandSearchQueries } from '../utils/query-expansion';
@@ -145,6 +151,14 @@ export const SearchSchema = Type.Object({
       default: true,
     })
   ),
+  workspace: Type.Optional(
+    Type.String({
+      description:
+        'Narrow this read to one workspace granted to the connection. Omit it on a direct bare OAuth search to search every currently accessible granted workspace.',
+      minLength: 1,
+      maxLength: 200,
+    })
+  ),
 });
 
 /**
@@ -176,6 +190,11 @@ export const PublicSearchSchema = Type.Object(
 
 type SearchArgs = Static<typeof SearchSchema>;
 
+export function resolveEntityLimit(args: SearchArgs): number {
+  const defaultLimit = args.query_embedding?.length ? 20 : (args.fuzzy ?? true) ? 5 : 1;
+  return Math.min(args.limit ?? defaultLimit, 100);
+}
+
 // ============================================
 // Type Definitions
 // ============================================
@@ -192,6 +211,7 @@ export const EntitySchema = Type.Object({
   parent_slug: Type.Union([Type.String(), Type.Null()]),
   parent_entity_type: Type.Union([Type.String(), Type.Null()]),
   organization_slug: Type.Union([Type.String(), Type.Null()]),
+  workspace_slug: Type.Union([Type.String(), Type.Null()]),
   stats: Type.Object({
     content_count: Type.Integer(),
     connection_count: Type.Integer(),
@@ -214,6 +234,8 @@ const ConnectionInfoSchema = Type.Object({
   created_at: Type.String(),
   updated_at: Type.Union([Type.String(), Type.Null()]),
   content_count: Type.Integer(),
+  entity_id: Type.Integer(),
+  workspace_slug: Type.String(),
 });
 type ConnectionInfo = Static<typeof ConnectionInfoSchema>;
 
@@ -257,15 +279,19 @@ const ContentSnippetSchema = Type.Object({
   occurred_at: Type.Union([Type.String(), Type.Null()]),
   similarity: Type.Optional(Type.Number()),
   entity_ids: Type.Array(Type.Integer()),
+  workspace_slug: Type.String(),
+  /** Every granted workspace through which this stable event was visible. */
+  workspace_slugs: Type.Array(Type.String()),
 });
 type ContentSnippet = Static<typeof ContentSnippetSchema>;
 
 // A keyword/recency hit from the chat transcript (`channel_messages`). Distinct
-// from ContentSnippet on purpose: these are NOT `events`, so they carry no
-// event id (their `id` would mislead a get_content follow-up) and no embedding
-// similarity. They let search_memory surface past channel conversation without
-// a separate get_channel_history tool.
+// from ContentSnippet on purpose: these are NOT `events`, so their stable
+// `message_id` is labeled explicitly (never pass it to get_content) and they
+// carry no embedding similarity. They let search_memory surface past channel
+// conversation without a separate get_channel_history tool.
 const ConversationSnippetSchema = Type.Object({
+  message_id: Type.Integer(),
   platform: Type.String(),
   channel_id: Type.String(),
   thread_id: Type.Union([Type.String(), Type.Null()]),
@@ -275,6 +301,7 @@ const ConversationSnippetSchema = Type.Object({
   author_entity_id: Type.Union([Type.Integer(), Type.Null()]),
   text: Type.String(),
   occurred_at: Type.Union([Type.String(), Type.Null()]),
+  workspace_slug: Type.String(),
 });
 type ConversationSnippet = Static<typeof ConversationSnippetSchema>;
 
@@ -285,9 +312,16 @@ const SourceFeedCoverageSchema = Type.Object({
   connector_key: Type.String(),
   display_name: Type.Union([Type.String(), Type.Null()]),
   status: Type.Literal('not_queried'),
+  workspace_slug: Type.String(),
 });
 
-const SearchCoverageSchema = Type.Object({
+const WorkspaceCoverageSchema = Type.Object({
+  workspace_slug: Type.String(),
+  status: Type.Union([
+    Type.Literal('complete'),
+    Type.Literal('partial'),
+    Type.Literal('unavailable'),
+  ]),
   local_sources: Type.Array(
     Type.Union([Type.Literal('events'), Type.Literal('channel_messages')])
   ),
@@ -295,6 +329,25 @@ const SearchCoverageSchema = Type.Object({
   source_feed_discovery: Type.Union([Type.Literal('complete'), Type.Literal('unavailable')]),
   source_feeds: Type.Array(SourceFeedCoverageSchema),
   more_source_feeds: Type.Boolean(),
+});
+type WorkspaceCoverage = Static<typeof WorkspaceCoverageSchema>;
+
+const SearchCoverageSchema = Type.Object({
+  scope: Type.Union([
+    Type.Literal('current_workspace'),
+    Type.Literal('selected_workspace'),
+    Type.Literal('all_granted'),
+  ]),
+  status: Type.Union([Type.Literal('complete'), Type.Literal('partial')]),
+  workspace_slug: Type.Optional(Type.String()),
+  local_sources: Type.Array(
+    Type.Union([Type.Literal('events'), Type.Literal('channel_messages')])
+  ),
+  source_queried: Type.Literal(false),
+  source_feed_discovery: Type.Union([Type.Literal('complete'), Type.Literal('unavailable')]),
+  source_feeds: Type.Array(SourceFeedCoverageSchema),
+  more_source_feeds: Type.Boolean(),
+  workspaces: Type.Optional(Type.Array(WorkspaceCoverageSchema)),
 });
 type SearchCoverage = Static<typeof SearchCoverageSchema>;
 
@@ -324,6 +377,8 @@ export const UnifiedSearchResultSchema = Type.Object({
         type: Type.String(),
         market: Type.Union([Type.String(), Type.Null()]),
         content_count: Type.Integer(),
+        parent_entity_id: Type.Integer(),
+        workspace_slug: Type.String(),
       })
     )
   ),
@@ -340,14 +395,6 @@ export const UnifiedSearchResultSchema = Type.Object({
   ),
   suggestion: Type.Optional(Type.String()),
   view_url: Type.Optional(Type.String()),
-  existing_entities: Type.Optional(
-    Type.Array(
-      Type.Object({
-        entity_type: Type.String(),
-        entities: Type.Array(Type.Object({ id: Type.Integer(), name: Type.String() })),
-      })
-    )
-  ),
   metadata: Type.Object({
     total_matches: Type.Integer(),
     page_size: Type.Integer(),
@@ -379,20 +426,356 @@ function withRecall<T extends UnifiedSearchResult>(
   return Object.assign(result, recall);
 }
 
+type SearchToolContext = ToolContext & {
+  /** Immutable consent snapshot. Null/absent is legacy anchor-only. */
+  grantedOrganizationIds?: readonly string[] | null;
+  /** True only for a direct tool call on an unscoped OAuth MCP connection. */
+  directSearchFederation?: boolean;
+};
+
+interface WorkspaceSearchExecution {
+  workspaceSlug: string;
+  recallQueryEmbedding?: number[];
+  /** The federation layer already attempted embedding generation once. */
+  preventShardEmbeddingGeneration?: boolean;
+  /** Public-catalog entity resolved once and formatted on the first shard. */
+  preResolvedEntity?: EntityQueryRow;
+  /** Entity authorization shared with content-only shards. */
+  authorizedEntityId?: number;
+  coverageScope?: SearchCoverage['scope'];
+}
+
+function applyCoverageScope(
+  result: UnifiedSearchResult,
+  execution: WorkspaceSearchExecution
+): UnifiedSearchResult {
+  if (result.coverage) {
+    result.coverage.scope = execution.coverageScope ?? 'current_workspace';
+  }
+  return result;
+}
+
+const FEDERATED_SEARCH_CONCURRENCY = 4;
+const MAX_CHILDREN = 20;
+
+function workspaceUnavailable(): ToolUserError {
+  // Deliberately identical for unknown, ungranted, and no-longer-member
+  // targets. Do not turn the optional workspace selector into an org oracle.
+  return new ToolUserError('Workspace is not available for this connection.', 403);
+}
+
+async function currentWorkspaceSlug(organizationId: string): Promise<string | null> {
+  return getWorkspaceProvider().getOrgSlug(organizationId);
+}
+
+async function resolveSingleWorkspace(
+  args: SearchArgs,
+  ctx: SearchToolContext
+): Promise<{ workspaceSlug: string; scope: SearchCoverage['scope'] }> {
+  const workspaceSlug = await currentWorkspaceSlug(ctx.organizationId);
+  if (!workspaceSlug) throw workspaceUnavailable();
+  const requested = args.workspace?.trim();
+  if (requested && requested !== workspaceSlug && requested !== ctx.organizationId) {
+    throw workspaceUnavailable();
+  }
+  return {
+    workspaceSlug,
+    scope: requested ? 'selected_workspace' : 'current_workspace',
+  };
+}
+
+async function resolveFederatedTargets(
+  args: SearchArgs,
+  ctx: SearchToolContext
+): Promise<GrantedMemberWorkspace[]> {
+  if (!ctx.userId) return [];
+  const grantedOrganizationIds = ctx.grantedOrganizationIds ?? [];
+  if (args.workspace?.trim()) {
+    const target = await resolveGrantedWorkspaceTarget({
+      userId: ctx.userId,
+      grantedOrganizationIds,
+      slugOrId: args.workspace,
+    });
+    if (!target) throw workspaceUnavailable();
+    return [target];
+  }
+  return listLiveGrantedMemberWorkspaces({
+    userId: ctx.userId,
+    grantedOrganizationIds,
+  });
+}
+
+async function sharedRecallEmbedding(
+  args: SearchArgs,
+  env: Env
+): Promise<{ embedding?: number[]; attempted: boolean }> {
+  if (
+    args.query_embedding?.length ||
+    !(args.include_content ?? true) ||
+    !args.query?.trim() ||
+    parseExactContentId(args.query) !== null ||
+    !env.EMBEDDINGS_SERVICE_URL
+  ) {
+    return {
+      ...(args.query_embedding?.length ? { embedding: args.query_embedding } : {}),
+      attempted: false,
+    };
+  }
+  try {
+    const embeddings = await generateEmbeddings([args.query.trim()], env);
+    return { ...(embeddings[0] ? { embedding: embeddings[0] } : {}), attempted: true };
+  } catch (err) {
+    logger.warn(
+      { err: getErrorMessage(err) },
+      '[search] shared embedding failed; federated recall will use text only'
+    );
+    return { attempted: true };
+  }
+}
+
+async function settleWithConcurrency<T, R>(
+  values: readonly T[],
+  limit: number,
+  fn: (value: T, index: number) => Promise<R>
+): Promise<Array<PromiseSettledResult<R>>> {
+  const results = new Array<PromiseSettledResult<R>>(values.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = nextIndex++;
+      if (index >= values.length) return;
+      try {
+        results[index] = { status: 'fulfilled', value: await fn(values[index], index) };
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(Math.max(1, limit), values.length) }, () => worker())
+  );
+  return results;
+}
+
+function deduplicateBy<T>(values: readonly T[], key: (value: T) => string): T[] {
+  const seen = new Set<string>();
+  const unique: T[] = [];
+  for (const value of values) {
+    const stableKey = key(value);
+    if (seen.has(stableKey)) continue;
+    seen.add(stableKey);
+    unique.push(value);
+  }
+  return unique;
+}
+
+function mergeContentProvenance(values: readonly ContentSnippet[]): ContentSnippet[] {
+  const byId = new Map<number, ContentSnippet>();
+  for (const value of values) {
+    const existing = byId.get(value.id);
+    if (!existing) {
+      byId.set(value.id, {
+        ...value,
+        workspace_slugs: Array.from(
+          new Set([value.workspace_slug, ...(value.workspace_slugs ?? [])])
+        ).sort(),
+      });
+      continue;
+    }
+    existing.workspace_slugs = Array.from(
+      new Set([
+        ...existing.workspace_slugs,
+        existing.workspace_slug,
+        value.workspace_slug,
+        ...(value.workspace_slugs ?? []),
+      ])
+    ).sort();
+  }
+  return [...byId.values()];
+}
+
+function asWorkspaceCoverage(
+  workspace: GrantedMemberWorkspace,
+  result: UnifiedSearchResult
+): WorkspaceCoverage {
+  const coverage = result.coverage;
+  return {
+    workspace_slug: workspace.slug,
+    status: coverage?.status ?? 'complete',
+    local_sources: coverage?.local_sources ?? [],
+    source_queried: false,
+    source_feed_discovery: coverage?.source_feed_discovery ?? 'complete',
+    source_feeds: coverage?.source_feeds ?? [],
+    more_source_feeds: coverage?.more_source_feeds ?? false,
+  };
+}
+
+function unavailableWorkspaceCoverage(workspace: GrantedMemberWorkspace): WorkspaceCoverage {
+  return {
+    workspace_slug: workspace.slug,
+    status: 'unavailable',
+    local_sources: [],
+    source_queried: false,
+    source_feed_discovery: 'unavailable',
+    source_feeds: [],
+    more_source_feeds: false,
+  };
+}
+
+export function mergeFederatedSearchResults(
+  args: SearchArgs,
+  targets: readonly GrantedMemberWorkspace[],
+  settled: readonly PromiseSettledResult<UnifiedSearchResult>[]
+): UnifiedSearchResult {
+  const fulfilled = settled.flatMap((item) => (item.status === 'fulfilled' ? [item.value] : []));
+  if (fulfilled.length === 0) {
+    throw new ToolUserError('Search is temporarily unavailable for this connection.', 503);
+  }
+
+  const entityLimit = resolveEntityLimit(args);
+  const contentLimit = Math.min(args.content_limit ?? 5, 50);
+  const allMatches = deduplicateBy(
+    fulfilled.flatMap((result) => result.matches),
+    (entity) => String(entity.id)
+  ).sort((a, b) => b.match_score - a.match_score);
+  const top = allMatches[0] ?? null;
+  const topNameMatches = top
+    ? allMatches.filter(
+        (match) => match.name.trim().toLocaleLowerCase() === top.name.trim().toLocaleLowerCase()
+      )
+    : [];
+  const ambiguousTop =
+    top !== null &&
+    new Set(
+      topNameMatches
+        .map((match) => match.workspace_slug)
+        .filter((slug): slug is string => Boolean(slug))
+    ).size > 1;
+  // Treat cross-workspace exact-name ambiguity like LIMIT ... WITH TIES. The
+  // ordinary global limit still bounds unrelated results, but it must not hide
+  // the candidates the caller needs in order to choose a workspace safely.
+  const matches = ambiguousTop
+    ? deduplicateBy(
+        [...allMatches.slice(0, entityLimit), ...topNameMatches],
+        (match) => String(match.id)
+      ).slice(0, 50)
+    : allMatches.slice(0, entityLimit);
+  const content = mergeContentProvenance(fulfilled.flatMap((result) => result.content ?? []))
+    .sort((a, b) => {
+      const score = Number(b.similarity ?? 0) - Number(a.similarity ?? 0);
+      if (score !== 0) return score;
+      return String(b.occurred_at ?? '').localeCompare(String(a.occurred_at ?? ''));
+    })
+    .slice(0, contentLimit);
+  const conversationMessages = deduplicateBy(
+    fulfilled.flatMap((result) => result.conversation_messages ?? []),
+    (item) => `${item.workspace_slug}:${item.message_id}`
+  )
+    .sort((a, b) => {
+      const occurred = String(b.occurred_at ?? '').localeCompare(String(a.occurred_at ?? ''));
+      return occurred !== 0 ? occurred : b.message_id - a.message_id;
+    })
+    .slice(0, contentLimit);
+  const connections = deduplicateBy(
+    fulfilled.flatMap((result) => result.connections ?? []),
+    (item) => String(item.connection_id)
+  ).slice(0, 20);
+  const children = deduplicateBy(
+    fulfilled.flatMap((result) => result.children ?? []),
+    (item) => String(item.id)
+  ).slice(0, MAX_CHILDREN);
+
+  const entity = ambiguousTop ? null : top;
+  const selectedResult = entity
+    ? fulfilled.find((result) => result.entity?.id === entity.id)
+    : undefined;
+
+  const workspaceCoverage = settled.map((item, index) =>
+    item.status === 'fulfilled'
+      ? asWorkspaceCoverage(targets[index], item.value)
+      : unavailableWorkspaceCoverage(targets[index])
+  );
+  const status = workspaceCoverage.some((entry) => entry.status !== 'complete')
+    ? 'partial'
+    : 'complete';
+  const localSources = Array.from(
+    new Set(workspaceCoverage.flatMap((entry) => entry.local_sources))
+  ) as SearchCoverage['local_sources'];
+  const sourceFeeds = deduplicateBy(
+    workspaceCoverage.flatMap((entry) => entry.source_feeds),
+    (feed) => String(feed.feed_id)
+  ).slice(0, MAX_SOURCE_FEEDS_IN_COVERAGE);
+  const coverage: SearchCoverage = {
+    scope: args.workspace ? 'selected_workspace' : 'all_granted',
+    status,
+    local_sources: localSources,
+    source_queried: false,
+    source_feed_discovery: workspaceCoverage.every(
+      (entry) => entry.source_feed_discovery === 'complete'
+    )
+      ? 'complete'
+      : 'unavailable',
+    source_feeds: sourceFeeds,
+    more_source_feeds:
+      workspaceCoverage.some((entry) => entry.more_source_feeds) ||
+      workspaceCoverage.reduce((count, entry) => count + entry.source_feeds.length, 0) >
+        sourceFeeds.length,
+    workspaces: workspaceCoverage,
+  };
+
+  const hasAnyRecall = content.length > 0 || conversationMessages.length > 0;
+  const hasAnyResult = matches.length > 0 || hasAnyRecall;
+  const title = args.title?.trim() || undefined;
+  const result: UnifiedSearchResult = {
+    ...(title ? { title } : {}),
+    entity_type:
+      entity?.type ??
+      args.entity_type ??
+      (matches.length > 0 && matches.every((match) => match.type === matches[0].type)
+        ? matches[0].type
+        : null),
+    entity,
+    matches,
+    ...(connections.length > 0 ? { connections } : {}),
+    ...(children.length > 0 ? { children } : {}),
+    ...((args.include_content ?? true) ? { content } : {}),
+    ...(conversationMessages.length > 0 ? { conversation_messages: conversationMessages } : {}),
+    coverage,
+    // A failed shard means absence is not established. Keep the result
+    // non-final so callers cannot turn a partial read into create/write
+    // coaching for an entity that may exist in the unavailable workspace.
+    discovery_status: hasAnyResult ? 'complete' : status === 'partial' ? 'discovering' : 'not_found',
+    suggestion: ambiguousTop
+      ? `Found "${top?.name}" in more than one workspace. Pass workspace to narrow before acting.`
+      : status === 'partial'
+        ? 'Search returned partial results; one or more granted workspaces was temporarily unavailable.'
+        : matches.length === 0 && !hasAnyRecall
+          ? 'No matches found in the currently accessible workspaces granted to this connection.'
+          : selectedResult?.suggestion,
+    ...(entity && selectedResult?.view_url ? { view_url: selectedResult.view_url } : {}),
+    metadata: {
+      total_matches: allMatches.length,
+      page_size: matches.length,
+    },
+  };
+  return result;
+}
+
 function parseExactContentId(query: string | undefined): number | null {
   if (!query) return null;
   const trimmed = query.trim();
-  const match =
-    trimmed.match(/^#?(\d+)$/) ??
-    trimmed.match(
-      /\b(?:memory|content(?:\s+id)?|event(?:\s+id)?)\s*(?:#|:)?\s*(\d+)\b/i
-    );
+  // Exact-id mode must consume the WHOLE query. A phrase such as "compare
+  // event 123 with Acme" is semantic search, not permission to discard the
+  // rest of the user's words and open one record directly.
+  const match = trimmed.match(
+    /^(?:#?(\d+)|(?:memory|content(?:\s+id)?|event(?:\s+id)?)\s*(?:#|:)?\s*(\d+))$/i
+  );
   if (!match) return null;
-  const id = Number(match[1]);
+  const id = Number(match[1] ?? match[2]);
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
-function toExactContentSnippet(item: ContentItem): ContentSnippet | null {
+function toExactContentSnippet(item: ContentItem, workspaceSlug: string): ContentSnippet | null {
   const id = Number(item.id);
   if (!Number.isSafeInteger(id) || id <= 0) return null;
   return {
@@ -413,22 +796,22 @@ function toExactContentSnippet(item: ContentItem): ContentSnippet | null {
     entity_ids: Array.isArray(item.entity_ids)
       ? item.entity_ids.map(Number).filter((value) => Number.isSafeInteger(value) && value > 0)
       : [],
+    workspace_slug: workspaceSlug,
+    workspace_slugs: [workspaceSlug],
   };
 }
 
 async function recallExactContentId(
-  query: string | undefined,
+  contentId: number,
   env: Env,
-  ctx: ToolContext
+  ctx: ToolContext,
+  workspaceSlug: string
 ): Promise<UnifiedSearchResult | null> {
-  const contentId = parseExactContentId(query);
-  if (contentId === null) return null;
-
   const exact = await getContent({ content_ids: [contentId], limit: 50 }, env, ctx);
   const exactItems = (Array.isArray(exact.content) ? exact.content : []) as ContentItem[];
   const content = exactItems
     .filter((item) => Number(item.id) === contentId)
-    .map(toExactContentSnippet)
+    .map((item) => toExactContentSnippet(item, workspaceSlug))
     .filter((item): item is ContentSnippet => item !== null);
   if (content.length === 0) return null;
 
@@ -445,18 +828,24 @@ async function recallExactContentId(
 
 async function fetchContentSnippets(
   gate: AuthzScope,
+  workspaceSlug: string,
   query: string | null,
   contentLimit: number,
-  env: Env,
+  env?: Env,
   queryEmbedding?: number[],
   agentId?: string,
   minSimilarity?: number,
-  excludeWorkspaceAudit?: boolean
+  excludeWorkspaceAudit?: boolean,
+  entityId?: number
 ): Promise<ContentSnippet[]> {
   const result = await searchContentByText(
     query,
     {
       organization_id: gate.organizationId,
+      ...(entityId != null && {
+        entity_id: entityId,
+        strict_organization_scope: true,
+      }),
       ...(excludeWorkspaceAudit && { exclude_workspace_audit: true }),
       // Enforce the org/private-connection visibility boundary on the recall
       // path, exactly as get_content does. Without visibility_scope the
@@ -496,13 +885,15 @@ async function fetchContentSnippets(
     return {
       id: c.id,
       title: c.title,
-      text_content: text.length > 500 ? text.slice(0, 500) + '...' : text,
+      text_content: text.length > 500 ? `${text.slice(0, 500)}...` : text,
       author_name: c.author_name,
       source_url: c.source_url,
       platform: c.platform,
       occurred_at: c.occurred_at,
       similarity: c.similarity,
       entity_ids: Array.isArray(c.entity_ids) ? c.entity_ids.map(Number) : [],
+      workspace_slug: workspaceSlug,
+      workspace_slugs: [workspaceSlug],
     };
   });
 }
@@ -585,6 +976,7 @@ const RECALL_STOPWORDS = new Set([
  */
 async function fetchConversationSnippets(
   gate: AuthzScope,
+  workspaceSlug: string,
   query: string,
   limit: number
 ): Promise<ConversationSnippet[]> {
@@ -633,7 +1025,7 @@ async function fetchConversationSnippets(
   });
 
   const rows = (await sql`
-    SELECT cm.platform, cm.channel_id, cm.thread_id, cm.author_name,
+    SELECT cm.id, cm.platform, cm.channel_id, cm.thread_id, cm.author_name,
            cm.author_entity_id, cm.text, cm.occurred_at
     FROM channel_messages cm
     WHERE cm.organization_id = ${gate.organizationId}
@@ -642,6 +1034,7 @@ async function fetchConversationSnippets(
     ORDER BY cm.occurred_at DESC
     LIMIT ${limit}
   `) as Array<{
+    id: number | string;
     platform: string;
     channel_id: string;
     thread_id: string | null;
@@ -652,6 +1045,7 @@ async function fetchConversationSnippets(
   }>;
 
   return rows.map((r) => ({
+    message_id: Number(r.id),
     platform: r.platform,
     channel_id: r.channel_id,
     thread_id: r.thread_id,
@@ -659,6 +1053,7 @@ async function fetchConversationSnippets(
     author_entity_id: r.author_entity_id == null ? null : Number(r.author_entity_id),
     text: r.text.length > 500 ? `${r.text.slice(0, 500)}...` : r.text,
     occurred_at: r.occurred_at ? new Date(r.occurred_at).toISOString() : null,
+    workspace_slug: workspaceSlug,
   }));
 }
 
@@ -669,7 +1064,7 @@ export interface RecallContext {
    * tenant/principal/calling-agent identity travels on the {@link AuthzScope}. */
   contentAgentId: string | undefined;
   contentLimit: number;
-  env: Env;
+  env?: Env;
   queryEmbedding?: number[];
   /** Caller-supplied similarity floor for recalled content (schema 0.0-1.0,
    * default 0.3). Undefined means "use the documented default". */
@@ -677,11 +1072,15 @@ export interface RecallContext {
   /** Exclude workspace-identity audit events (metadata.category='workspace')
    * for non-member readers of public workspaces. */
   excludeWorkspaceAudit?: boolean;
+  /** Conjunctive entity scope for `{ entity_id, query }` recall. */
+  entityId?: number;
+  /** Workspace provenance attached to every returned local row. */
+  workspaceSlug: string;
 }
 
 const MAX_SOURCE_FEEDS_IN_COVERAGE = 10;
 
-async function discoverSourceFeeds(gate: AuthzScope) {
+async function discoverSourceFeeds(gate: AuthzScope, workspaceSlug: string) {
   const sql = getDb();
   const vis = compileConnectionRowVisibility(gate, 'c');
   const rows = (await sql.unsafe(
@@ -731,6 +1130,7 @@ async function discoverSourceFeeds(gate: AuthzScope) {
       ...row,
       feed_id: Number(row.feed_id),
       status: 'not_queried' as const,
+      workspace_slug: workspaceSlug,
     })),
     more: rows.length > MAX_SOURCE_FEEDS_IN_COVERAGE,
   };
@@ -743,14 +1143,20 @@ async function discoverSourceFeeds(gate: AuthzScope) {
  * not the answer.
  */
 function buildCoverage(
+  workspaceSlug: string,
   local_sources: SearchCoverage['local_sources'],
-  discovered: PromiseSettledResult<Awaited<ReturnType<typeof discoverSourceFeeds>>>
+  discovered: PromiseSettledResult<Awaited<ReturnType<typeof discoverSourceFeeds>>>,
+  localRecallFailed = false,
+  scope: SearchCoverage['scope'] = 'current_workspace'
 ): SearchCoverage {
   if (discovered.status === 'rejected') {
     logger.warn(
       `[search] source feed coverage lookup failed: ${getErrorMessage(discovered.reason)}`
     );
     return {
+      scope,
+      status: 'partial',
+      workspace_slug: workspaceSlug,
       local_sources,
       source_queried: false,
       source_feed_discovery: 'unavailable',
@@ -759,6 +1165,9 @@ function buildCoverage(
     };
   }
   return {
+    scope,
+    status: localRecallFailed ? 'partial' : 'complete',
+    workspace_slug: workspaceSlug,
     local_sources,
     source_queried: false,
     source_feed_discovery: 'complete',
@@ -769,10 +1178,11 @@ function buildCoverage(
 
 async function coverageForLocalSources(
   gate: AuthzScope,
+  workspaceSlug: string,
   local_sources: SearchCoverage['local_sources']
 ): Promise<SearchCoverage> {
-  const [discovered] = await Promise.allSettled([discoverSourceFeeds(gate)]);
-  return buildCoverage(local_sources, discovered);
+  const [discovered] = await Promise.allSettled([discoverSourceFeeds(gate, workspaceSlug)]);
+  return buildCoverage(workspaceSlug, local_sources, discovered);
 }
 
 /** Search local stores only. Source-backed feeds are enumerated in coverage but
@@ -781,21 +1191,25 @@ export async function gatherLocalRecall(
   gate: AuthzScope,
   ctx: RecallContext
 ): Promise<Partial<UnifiedSearchResult>> {
-  const shouldSearchConversation = Boolean(ctx.query && gate.agentId);
+  // Transcript rows have no entity_ids, so an entity-scoped query cannot
+  // truthfully include them. Treat `{ entity_id, query }` as conjunctive.
+  const shouldSearchConversation = Boolean(ctx.query && gate.agentId && ctx.entityId == null);
   const contentPromise = fetchContentSnippets(
     gate,
+    ctx.workspaceSlug,
     ctx.query,
     ctx.contentLimit,
     ctx.env,
     ctx.queryEmbedding,
     ctx.contentAgentId,
     ctx.minSimilarity,
-    ctx.excludeWorkspaceAudit
+    ctx.excludeWorkspaceAudit,
+    ctx.entityId
   );
   const conversationPromise = shouldSearchConversation
-    ? fetchConversationSnippets(gate, ctx.query as string, ctx.contentLimit)
+    ? fetchConversationSnippets(gate, ctx.workspaceSlug, ctx.query as string, ctx.contentLimit)
     : Promise.resolve(null);
-  const coveragePromise = discoverSourceFeeds(gate);
+  const coveragePromise = discoverSourceFeeds(gate, ctx.workspaceSlug);
   const [contentResult, conversationResult, sourceFeedsResult] = await Promise.allSettled([
     contentPromise,
     conversationPromise,
@@ -804,10 +1218,12 @@ export async function gatherLocalRecall(
 
   const result: Partial<UnifiedSearchResult> = {};
   const local_sources: SearchCoverage['local_sources'] = [];
+  let localRecallFailed = false;
   if (contentResult.status === 'fulfilled') {
     result.content = contentResult.value;
     local_sources.push('events');
   } else {
+    localRecallFailed = true;
     logger.warn(`[search] local events recall failed: ${getErrorMessage(contentResult.reason)}`);
   }
   if (shouldSearchConversation && conversationResult.status === 'fulfilled') {
@@ -816,16 +1232,144 @@ export async function gatherLocalRecall(
       result.conversation_messages = conversationResult.value;
     }
   } else if (conversationResult.status === 'rejected') {
+    localRecallFailed = true;
     logger.warn(
       `[search] local conversation recall failed: ${getErrorMessage(conversationResult.reason)}`
     );
   }
 
-  result.coverage = buildCoverage(local_sources, sourceFeedsResult);
+  result.coverage = buildCoverage(
+    ctx.workspaceSlug,
+    local_sources,
+    sourceFeedsResult,
+    localRecallFailed
+  );
   return result;
 }
 
 export const search = withValidatedArgs('search_memory', SearchSchema, searchImpl);
+
+async function searchImpl(
+  args: SearchArgs,
+  env: Env,
+  rawCtx: ToolContext
+): Promise<UnifiedSearchResult> {
+  const ctx = rawCtx as SearchToolContext;
+  if (!ctx.organizationId) {
+    return emptyResult({
+      ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      suggestion: 'No accessible entities found in this workspace scope',
+    });
+  }
+
+  // Federation is deliberately narrower than "OAuth can address another
+  // org". Only a DIRECT search call on bare `/mcp` receives this bit from the
+  // request boundary; scoped endpoints, PAT/session calls, agent/Automation
+  // runs, and nested SDK calls stay on their existing single-workspace path.
+  if (
+    !ctx.directSearchFederation ||
+    ctx.agentId ||
+    ctx.actingAutomationId ||
+    ctx.headlessResult
+  ) {
+    const target = await resolveSingleWorkspace(args, ctx);
+    return searchWorkspaceImpl(args, env, ctx, {
+      workspaceSlug: target.workspaceSlug,
+      coverageScope: target.scope,
+    });
+  }
+
+  const targets = await resolveFederatedTargets(args, ctx);
+  if (targets.length === 0) {
+    return emptyResult({
+      ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      suggestion: 'No accessible workspaces are granted to this connection.',
+    });
+  }
+  const sharedEmbedding = await sharedRecallEmbedding(args, env);
+
+  // A narrowed direct search is still routed through the grant resolver, but
+  // does not need aggregation. This preserves the mature single-workspace
+  // response while labeling its coverage as explicitly selected.
+  if (targets.length === 1 && args.workspace) {
+    const target = targets[0];
+    return searchWorkspaceImpl(
+      args,
+      env,
+      {
+        ...ctx,
+        organizationId: target.id,
+        memberRole: target.role,
+        allowCrossOrg: false,
+        directSearchFederation: false,
+      },
+      {
+        workspaceSlug: target.slug,
+        recallQueryEmbedding: sharedEmbedding.embedding,
+        preventShardEmbeddingGeneration: sharedEmbedding.attempted,
+        coverageScope: 'selected_workspace',
+      }
+    );
+  }
+
+  // An explicit public entity is global reference data, so resolve it once.
+  // Every granted workspace may then search only its own/bridged events for
+  // that already-authorized id without repeatedly querying the public catalog.
+  const publicEntity =
+    args.entity_id && (args.include_public_catalogs ?? true)
+      ? await fetchPublicEntityById(
+          args.entity_id,
+          authzScopeFromToolContext({
+            organizationId: targets[0].id,
+            userId: ctx.userId,
+          })
+        )
+      : null;
+
+  const settled = await settleWithConcurrency(
+    targets,
+    FEDERATED_SEARCH_CONCURRENCY,
+    async (target, index) =>
+      searchWorkspaceImpl(
+        {
+          ...args,
+          // Public catalogs are global reference data. Query them on exactly
+          // one shard, then stable-id dedupe with the workspace-local results.
+          include_public_catalogs: args.entity_id
+            ? false
+            : index === 0
+              ? (args.include_public_catalogs ?? true)
+              : false,
+        },
+        env,
+        {
+          ...ctx,
+          organizationId: target.id,
+          memberRole: target.role,
+          allowCrossOrg: false,
+          directSearchFederation: false,
+        },
+        {
+          workspaceSlug: target.slug,
+          recallQueryEmbedding: sharedEmbedding.embedding,
+          preventShardEmbeddingGeneration: sharedEmbedding.attempted,
+          ...(index === 0 && publicEntity ? { preResolvedEntity: publicEntity } : {}),
+          ...(publicEntity ? { authorizedEntityId: args.entity_id } : {}),
+          coverageScope: 'all_granted',
+        }
+      )
+  );
+
+  for (const item of settled) {
+    if (item.status === 'rejected') {
+      // The response exposes only a sanitized availability state. Full errors
+      // remain server-side, where they are actionable without becoming a
+      // cross-workspace data side channel.
+      logger.warn({ err: getErrorMessage(item.reason) }, '[search] workspace shard failed');
+    }
+  }
+  return mergeFederatedSearchResults(args, targets, settled);
+}
 
 /**
  * Drop entity hits the acting agent/automation is not allowed to read. Humans skip.
@@ -871,10 +1415,11 @@ async function filterEntitiesByReadPolicy<T extends { entity_type: string }>(
   return out;
 }
 
-async function searchImpl(
+async function searchWorkspaceImpl(
   args: SearchArgs,
   env: Env,
-  ctx: ToolContext
+  ctx: SearchToolContext,
+  execution: WorkspaceSearchExecution
 ): Promise<UnifiedSearchResult> {
   // SDK delegates (`client.knowledge.search`) skip `checkToolAccess`, so
   // re-enforce the mcp:read scope here — but only for MCP token callers
@@ -888,6 +1433,7 @@ async function searchImpl(
   }
 
   const title = args.title?.trim() || undefined;
+  const workspaceSlug = execution.workspaceSlug;
 
   const includeContent = args.include_content ?? true;
   const contentLimit = Math.min(args.content_limit ?? 5, 50);
@@ -926,14 +1472,38 @@ async function searchImpl(
   // so this server-side exact-read fast path fixes existing clients without a
   // metadata rescan. The canonical knowledge reader enforces tenant, connector,
   // entity-policy, and supersede-chain visibility before anything is returned.
-  const exactContent = includeContent
-    ? await recallExactContentId(args.query, env, ctx)
-    : null;
+  const exactContentId = includeContent && !args.entity_id ? parseExactContentId(args.query) : null;
+  const exactContent =
+    exactContentId === null
+      ? null
+      : await recallExactContentId(exactContentId, env, ctx, workspaceSlug);
   if (exactContent) {
     const result = title && !exactContent.title ? { ...exactContent, title } : exactContent;
-    return withRecall(result, {
-      coverage: await coverageForLocalSources(connectionScope, ['events']),
+    const withCoverage = withRecall(result, {
+      coverage: await coverageForLocalSources(connectionScope, workspaceSlug, ['events']),
     });
+    if (withCoverage.coverage) {
+      withCoverage.coverage.scope = execution.coverageScope ?? 'current_workspace';
+    }
+    return withCoverage;
+  }
+  if (exactContentId !== null) {
+    // Exact syntax is an exact read, even when the row is missing or outside
+    // this workspace's visibility boundary. Never reinterpret `event 123` as
+    // semantic text and accidentally return unrelated recall. The outward
+    // shape deliberately does not distinguish missing from inaccessible.
+    const result = emptyResult({
+      ...(title ? { title } : {}),
+      suggestion:
+        `No readable memory record matches id ${exactContentId} in this workspace. ` +
+        'To run a text search instead, add words around the number.',
+    });
+    return applyCoverageScope(
+      withRecall(result, {
+        coverage: await coverageForLocalSources(connectionScope, workspaceSlug, ['events']),
+      }),
+      execution
+    );
   }
 
   // Helper to run content search in parallel. Runs when we have either a text
@@ -950,60 +1520,84 @@ async function searchImpl(
   // Channel recall is fenced to the CALLING agent's own bindings (ctx.agentId),
   // never a caller-supplied filter — that's the tenant boundary for transcript
   // rows, which have no agent_id of their own. Local stores fail independently.
-  const recallPromise: Promise<Partial<UnifiedSearchResult>> =
+  const recallFor = (entityId?: number): Promise<Partial<UnifiedSearchResult>> =>
     includeContent && hasContentSignal
-      ? gatherLocalRecall(
-          connectionScope,
-          {
-            query: args.query ?? null,
-            contentAgentId: agentIdScope,
-            contentLimit,
-            env,
-            queryEmbedding: args.query_embedding,
-            minSimilarity: args.min_similarity,
-            // Workspace-identity audit events record member/invitation
-            // lifecycle; only owners/admins and in-process system contexts may
-            // recall them (ordinary members do not see another member's
-            // invitation lifecycle — the $member read policy reserves that for
-            // owner/admin).
-            excludeWorkspaceAudit:
-              ctx.memberRole !== 'owner' &&
-              ctx.memberRole !== 'admin' &&
-              !isInProcessSystemCall(ctx),
-          }
-        )
+      ? gatherLocalRecall(connectionScope, {
+          query: args.query ?? null,
+          contentAgentId: agentIdScope,
+          contentLimit,
+          // Federation owns the single embedding attempt. When it already ran
+          // (successfully or not), omit the service env so content-search does
+          // not retry independently on every shard after a shared failure.
+          env: execution.preventShardEmbeddingGeneration ? undefined : env,
+          // Explicit caller vectors retain their entity-ranking semantics;
+          // federation's shared vector is recall-only so enabling federation
+          // cannot silently change fuzzy entity ranking/default limits.
+          queryEmbedding: args.query_embedding ?? execution.recallQueryEmbedding,
+          minSimilarity: args.min_similarity,
+          entityId,
+          workspaceSlug,
+          // Workspace-identity audit events record member/invitation
+          // lifecycle; only owners/admins and in-process system contexts may
+          // recall them (ordinary members do not see another member's
+          // invitation lifecycle — the $member read policy reserves that for
+          // owner/admin).
+          excludeWorkspaceAudit:
+            ctx.memberRole !== 'owner' &&
+            ctx.memberRole !== 'admin' &&
+            !isInProcessSystemCall(ctx),
+        })
       : Promise.resolve({});
   // ========================================
   // ID-BASED LOOKUP (highest priority)
   // ========================================
 
   if (args.entity_id) {
-    const [entity, recall] = await Promise.all([
-      fetchEntityById(args.entity_id, env, connectionScope),
-      recallPromise,
-    ]);
+    // Resolve and authorize the entity BEFORE starting recall. Starting an
+    // org-wide recall in parallel here used to return unrelated content even
+    // when the requested entity was absent/inaccessible.
+    const entity =
+      (await fetchEntityById(
+        args.entity_id,
+        env,
+        connectionScope,
+        args.include_public_catalogs ?? true
+      )) ?? execution.preResolvedEntity ?? null;
     if (entity) {
       const readable = await filterEntitiesByReadPolicy(ctx, [entity]);
       if (readable.length === 0) {
-        return withRecall(
+        return emptyResult({
+          ...(title ? { title } : {}),
+          entity_type: entity.entity_type,
+          suggestion: `Entity with ID ${args.entity_id} is not readable under this agent's entity read policy`,
+        });
+      }
+      const recall = await recallFor(args.entity_id);
+      return applyCoverageScope(
+        withRecall(await formatEntityResult(readable, args, ctx, connectionScope), recall),
+        execution
+      );
+    }
+    if (execution.authorizedEntityId === args.entity_id) {
+      // The public entity was authorized once above. This shard contributes
+      // only strictly workspace-scoped recall; it does not re-query or format
+      // the public catalog entity.
+      return applyCoverageScope(
+        withRecall(
           emptyResult({
             ...(title ? { title } : {}),
-            entity_type: entity.entity_type,
-            suggestion: `Entity with ID ${args.entity_id} is not readable under this agent's entity read policy`,
+            entity_type: args.entity_type || null,
           }),
-          recall
-        );
-      }
-      return withRecall(await formatEntityResult(readable, args, ctx, connectionScope), recall);
+          await recallFor(args.entity_id)
+        ),
+        execution
+      );
     }
-    return withRecall(
-      emptyResult({
-        ...(title ? { title } : {}),
-        entity_type: args.entity_type || null,
-        suggestion: `Entity with ID ${args.entity_id} not found`,
-      }),
-      recall
-    );
+    return emptyResult({
+      ...(title ? { title } : {}),
+      entity_type: args.entity_type || null,
+      suggestion: `Entity with ID ${args.entity_id} not found`,
+    });
   }
 
   // ========================================
@@ -1022,7 +1616,7 @@ async function searchImpl(
 
   let [results, recall] = await Promise.all([
     queryEntities(query, args, env, connectionScope),
-    recallPromise,
+    recallFor(),
   ]);
 
   if (results.length === 0 && query && !args.query_embedding?.length) {
@@ -1048,12 +1642,15 @@ async function searchImpl(
   if (results.length > 0) {
     const readable = await filterEntitiesByReadPolicy(ctx, [...results]);
     if (readable.length > 0) {
-      return withRecall(await formatEntityResult(readable, args, ctx, connectionScope), recall);
+      return applyCoverageScope(
+        withRecall(await formatEntityResult(readable, args, ctx, connectionScope), recall),
+        execution
+      );
     }
   }
 
   // ========================================
-  // NOT FOUND: Return empty result with existing entities for context
+  // NOT FOUND
   // ========================================
   logger.info(`[search] No matches found for "${query}" in existing database`);
 
@@ -1065,67 +1662,14 @@ async function searchImpl(
     '3. Wait for ingestion to start automatically, then discover Automations with `client.automations.list(...)` and inspect results with `client.knowledge.read(...)` / `client.automations.get(...)`.\n\n' +
     '**Alternative:** If you know this entity should exist, verify the spelling or try a different search term.';
 
-  // Fetch top entities per type so the LLM knows what exists (still filtered by read policy).
-  let existing_entities = await fetchTopEntitiesByType(ctx.organizationId);
-  if (existing_entities.length > 0) {
-    const flat = existing_entities.flatMap((g) =>
-      g.entities.map((e) => ({ ...e, entity_type: g.entity_type }))
-    );
-    const allowed = await filterEntitiesByReadPolicy(ctx, flat);
-    const byType = new Map<string, Array<{ id: number; name: string }>>();
-    for (const e of allowed) {
-      const list = byType.get(e.entity_type) ?? [];
-      list.push({ id: e.id, name: e.name });
-      byType.set(e.entity_type, list);
-    }
-    existing_entities = [...byType.entries()].map(([entity_type, entities]) => ({
-      entity_type,
-      entities,
-    }));
-  }
-
-  return withRecall(
+  const result = withRecall(
     emptyResult({
       ...(title ? { title } : {}),
       suggestion: suggestionText,
-      existing_entities,
     }),
     recall
   );
-}
-
-// ============================================
-// Workspace Context Helpers
-// ============================================
-
-async function fetchTopEntitiesByType(
-  organizationId: string
-): Promise<Array<{ entity_type: string; entities: Array<{ id: number; name: string }> }>> {
-  const sql = getDb();
-  const rows = await sql`
-    SELECT e.id, e.name, et.slug AS entity_type
-    FROM entities e
-    JOIN entity_types et ON et.id = e.entity_type_id
-    WHERE e.organization_id = ${organizationId}
-      AND e.deleted_at IS NULL
-    ORDER BY (SELECT COUNT(*) FROM current_event_records ev WHERE ${sql.unsafe(entityLinkMatchSql('e.id::bigint', 'ev'))}) DESC
-    LIMIT 30
-  `;
-
-  const byType = new Map<string, Array<{ id: number; name: string }>>();
-  for (const row of rows) {
-    const type = row.entity_type as string;
-    if (!byType.has(type)) byType.set(type, []);
-    const list = byType.get(type)!;
-    if (list.length < 5) {
-      list.push({ id: Number(row.id), name: row.name as string });
-    }
-  }
-
-  return [...byType.entries()].map(([entity_type, entities]) => ({
-    entity_type,
-    entities,
-  }));
+  return applyCoverageScope(result, execution);
 }
 
 // ============================================
@@ -1209,9 +1753,9 @@ async function queryEntities(
 ) {
   const sql = getDb();
   const fuzzyEnabled = args.fuzzy ?? true;
-  const hasEmbedding = !!args.query_embedding?.length;
-  const defaultLimit = hasEmbedding ? 20 : fuzzyEnabled ? 5 : 1;
-  const limit = args.limit ?? defaultLimit;
+  const embedding = args.query_embedding;
+  const hasEmbedding = !!embedding?.length;
+  const limit = resolveEntityLimit(args);
 
   // Build dynamic WHERE conditions
   const conditions: string[] = ['e.deleted_at IS NULL'];
@@ -1227,7 +1771,7 @@ async function queryEntities(
   const queryParamIdx = query ? addParam(query) : null;
 
   // Embedding param — only push when we have an embedding (avoids null::vector type error)
-  const embeddingParamIdx = hasEmbedding ? addParam(toVectorLiteral(args.query_embedding!)) : null;
+  const embeddingParamIdx = embedding?.length ? addParam(toVectorLiteral(embedding)) : null;
 
   // Query match condition: text match OR vector match
   if (query) {
@@ -1356,7 +1900,12 @@ async function queryEntities(
   return rows;
 }
 
-async function fetchEntityById(entityId: number, _env: Env, scope: AuthzScope) {
+async function fetchEntityById(
+  entityId: number,
+  _env: Env,
+  scope: AuthzScope,
+  includePublic: boolean
+) {
   const sql = getDb();
 
   // Caller's org or any visibility=public catalog. Lets entity_id lookup find
@@ -1368,13 +1917,31 @@ async function fetchEntityById(entityId: number, _env: Env, scope: AuthzScope) {
     ${ENTITY_JOINS}
     LEFT JOIN organization eo ON eo.id = e.organization_id
     WHERE e.id = $1
-      AND (e.organization_id = $2 OR eo.visibility = 'public')
+      AND (e.organization_id = $2 OR ($3::boolean AND eo.visibility = 'public'))
       AND e.deleted_at IS NULL`,
-    [entityId, scope.organizationId]
+    [entityId, scope.organizationId, includePublic]
   );
 
   if (result.length === 0) return null;
 
+  await attachOrganizationSlugs(result);
+  return result[0];
+}
+
+async function fetchPublicEntityById(
+  entityId: number,
+  scope: AuthzScope
+): Promise<EntityQueryRow | null> {
+  const result = await getDb().unsafe<EntityQueryRow>(
+    `SELECT ${entitySelectColumns(1, scope)}
+    ${ENTITY_JOINS}
+    JOIN organization eo ON eo.id = e.organization_id
+    WHERE e.id = $2
+      AND eo.visibility = 'public'
+      AND e.deleted_at IS NULL`,
+    [scope.organizationId, entityId]
+  );
+  if (result.length === 0) return null;
   await attachOrganizationSlugs(result);
   return result[0];
 }
@@ -1402,6 +1969,7 @@ async function formatEntityResult(
     parent_slug: row.parent_slug ?? null,
     parent_entity_type: row.parent_entity_type ?? null,
     organization_slug: row.organization_slug ?? null,
+    workspace_slug: row.organization_slug ?? null,
     stats: {
       content_count: Number(row.content_count) || 0,
       connection_count: Number(row.connection_count) || 0,
@@ -1428,7 +1996,11 @@ async function formatEntityResult(
   let connections: ConnectionInfo[] | undefined;
   const primaryIsCallerOrg = String(primaryRow.organization_id) === ctx.organizationId;
   if ((args.include_connections ?? true) && primaryIsCallerOrg) {
-    connections = await fetchConnectionsForEntity(primaryEntity.id, connectionScope);
+    connections = await fetchConnectionsForEntity(
+      primaryEntity.id,
+      primaryEntity.workspace_slug ?? primaryEntity.organization_slug ?? '',
+      connectionScope
+    );
   }
 
   // Fetch children for root entities (no parent). Children are scoped to
@@ -1457,6 +2029,7 @@ async function formatEntityResult(
       WHERE e.parent_id = ${primaryEntity.id}
         AND e.organization_id = ${primaryRow.organization_id}
       ORDER BY e.created_at DESC
+      LIMIT ${MAX_CHILDREN}
     `;
     children = childRows.map((row) => ({
       id: Number(row.id),
@@ -1464,6 +2037,9 @@ async function formatEntityResult(
       type: row.entity_type,
       market: row.market,
       content_count: Number(row.content_count),
+      parent_entity_id: primaryEntity.id,
+      workspace_slug:
+        primaryEntity.workspace_slug ?? primaryEntity.organization_slug ?? '',
     }));
   }
 
@@ -1526,6 +2102,7 @@ async function formatEntityResult(
  */
 async function fetchConnectionsForEntity(
   entityId: number,
+  workspaceSlug: string,
   scope: AuthzScope
 ): Promise<ConnectionInfo[]> {
   const sql = getDb();
@@ -1562,10 +2139,18 @@ async function fetchConnectionsForEntity(
     LIMIT 20
   `;
 
-  return (await redactConnectionRows(
+  const redacted = (await redactConnectionRows(
     scope.organizationId,
     result as unknown as Array<Record<string, unknown>>
-  )) as unknown as ConnectionInfo[];
+  )) as unknown as Array<Omit<ConnectionInfo, 'entity_id' | 'workspace_slug'>>;
+  return redacted.map((row) => ({
+    ...row,
+    config: row.config ?? {},
+    created_at: new Date(row.created_at).toISOString(),
+    updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : null,
+    entity_id: entityId,
+    workspace_slug: workspaceSlug,
+  }));
 }
 
 async function attachOrganizationSlugs(rows: EntityQueryRow[]): Promise<void> {

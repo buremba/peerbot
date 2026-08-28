@@ -57,6 +57,10 @@ export interface AutomationHealthInput {
   status: string | null | undefined;
   /** `automations.next_run_at` — the scheduler cursor. */
   nextRunAt: string | Date | null | undefined;
+  /** Consecutive terminal failures from executed scheduled runs. */
+  consecutiveScheduledFailures?: number | null;
+  /** Durable circuit-breaker stamp; non-null means the schedule is hard-paused. */
+  scheduleAutoPausedAt?: string | Date | null;
   /** Latest run status (from buildLatestAutomationRunJoinSql). */
   latestRunStatus?: string | null;
   /** Latest run `created_at`, used to age a stuck pending run. */
@@ -131,6 +135,13 @@ export function computeAutomationHealth(
   }
 
   const runInFlight = IN_FLIGHT_RUN_STATUSES.has(input.latestRunStatus ?? '');
+
+  if (input.scheduleAutoPausedAt != null) {
+    const failures = Math.max(0, Number(input.consecutiveScheduledFailures ?? 0));
+    reasons.push(
+      `schedule auto-paused after ${failures} consecutive execution failures`
+    );
+  }
 
   const hasEventTrigger = (input.triggers ?? []).some(
     (trigger) => trigger.kind === 'event'

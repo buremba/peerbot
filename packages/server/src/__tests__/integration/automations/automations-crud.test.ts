@@ -187,6 +187,86 @@ describe('automation CRUD', () => {
     expect(versionReset.last_completed_window_start).toBeNull();
   });
 
+  it('resets an auto-pause only for a real cadence change', async () => {
+    const sql = getTestDb();
+    const created = (await owner.automations.create({
+      entity_id: entityId,
+      slug: 'schedule-auto-pause-reset-contract',
+      prompt: 'Track the scheduled period.',
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+      agent_id: agentId,
+    })) as { automation_id: string };
+    const pauseAt = new Date('2026-08-27T12:00:00.000Z');
+    await sql`
+      UPDATE automations
+      SET consecutive_scheduled_failures = 5,
+          schedule_auto_paused_at = ${pauseAt}::timestamptz
+      WHERE id = ${created.automation_id}
+    `;
+
+    // Resending byte-identical triggers may still re-anchor the legacy cursor,
+    // but it is not operator recovery and must not clear the circuit breaker.
+    await owner.automations.update({
+      automation_id: created.automation_id,
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+    });
+    let [state] = await sql`
+      SELECT next_run_at, consecutive_scheduled_failures, schedule_auto_paused_at
+      FROM automations WHERE id = ${created.automation_id}
+    `;
+    expect(state.next_run_at).toBeNull();
+    expect(Number(state.consecutive_scheduled_failures)).toBe(5);
+    expect(new Date(state.schedule_auto_paused_at as string).toISOString()).toBe(
+      pauseAt.toISOString(),
+    );
+
+    // A prompt-only version is definition history, not schedule recovery.
+    await owner.automations.createVersion({
+      automation_id: created.automation_id,
+      prompt: 'Track the scheduled period with clearer instructions.',
+    });
+    [state] = await sql`
+      SELECT next_run_at, consecutive_scheduled_failures, schedule_auto_paused_at
+      FROM automations WHERE id = ${created.automation_id}
+    `;
+    expect(state.next_run_at).toBeNull();
+    expect(Number(state.consecutive_scheduled_failures)).toBe(5);
+    expect(new Date(state.schedule_auto_paused_at as string).toISOString()).toBe(
+      pauseAt.toISOString(),
+    );
+
+    await owner.automations.update({
+      automation_id: created.automation_id,
+      triggers: [{ kind: 'schedule', cron: '0 10 * * *' }],
+    });
+    [state] = await sql`
+      SELECT next_run_at, consecutive_scheduled_failures, schedule_auto_paused_at
+      FROM automations WHERE id = ${created.automation_id}
+    `;
+    expect(state.next_run_at).not.toBeNull();
+    expect(Number(state.consecutive_scheduled_failures)).toBe(0);
+    expect(state.schedule_auto_paused_at).toBeNull();
+
+    await sql`
+      UPDATE automations
+      SET consecutive_scheduled_failures = 5,
+          schedule_auto_paused_at = ${pauseAt}::timestamptz
+      WHERE id = ${created.automation_id}
+    `;
+    await owner.automations.createVersion({
+      automation_id: created.automation_id,
+      prompt: 'Track the rescheduled period.',
+      triggers: [{ kind: 'schedule', cron: '0 11 * * *' }],
+    });
+    [state] = await sql`
+      SELECT next_run_at, consecutive_scheduled_failures, schedule_auto_paused_at
+      FROM automations WHERE id = ${created.automation_id}
+    `;
+    expect(state.next_run_at).not.toBeNull();
+    expect(Number(state.consecutive_scheduled_failures)).toBe(0);
+    expect(state.schedule_auto_paused_at).toBeNull();
+  });
+
   it('creates an automation and its reaction contract atomically', async () => {
     const sql = getTestDb();
     const reaction = `export const input = { type: "object", properties: { merge_proposals: { type: "array" } }, required: ["merge_proposals"] }; export default async function () {}`;

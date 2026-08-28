@@ -97,6 +97,8 @@ describe('tool invocation audit coverage', () => {
       baseUrl: 'http://localhost',
       scopedToOrg: false,
       allowCrossOrg: tokenType === 'oauth',
+      grantedOrganizationIds: tokenType === 'oauth' ? [orgId] : null,
+      directSearchFederation: false,
     };
   }
 

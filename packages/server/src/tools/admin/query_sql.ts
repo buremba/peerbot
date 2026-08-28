@@ -14,7 +14,6 @@ import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { raceAbort } from '../../utils/race-abort';
 import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
-import { getCachedMembershipRole, getCachedOrgBySlug } from '../../workspace/multi-tenant';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { SortOrderField } from './schemas/common-fields';
@@ -22,6 +21,7 @@ import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } from "@lobu/core";
 import { ToolUserError } from '../../utils/errors';
 import { finalizeDynamicQueryRows } from '../../utils/content-read-bounds';
+import { resolveGrantedWorkspaceTarget } from '../../auth/oauth/workspace-grants';
 
 export const QuerySqlSchema = Type.Object({
   title: Type.Optional(
@@ -280,9 +280,9 @@ export async function querySqlImpl(
   }
 
   // Resolve the target organization. By default, the caller's bound org. When
-  // `org_slug` is supplied: only OAuth on the unscoped /mcp endpoint may
-  // cross-org. The single source of truth is `ctx.allowCrossOrg`, which is
-  // computed from `tokenType === 'oauth' && !scopedToOrg`.
+  // `org_slug` is supplied: only a bare /mcp OAuth context with a live explicit
+  // grant may select a workspace. Agent/Automation-bound identities,
+  // scoped MCP, PAT, and session auth are pinned to one workspace.
   let targetOrgId = ctx.organizationId;
   // Members may query their own org's operational tables; the auth/identity
   // tables stay admin-only (enforced via restrictedTables below).
@@ -294,21 +294,20 @@ export async function querySqlImpl(
           '`org_slug` is not allowed on /mcp/{slug} connections. Reconnect to /mcp to query a different workspace, or omit `org_slug`.'
         );
       }
-      return fail(
-        '`org_slug` requires an OAuth session on /mcp. PAT and session auth pin to a single org.'
-      );
+      return fail('`org_slug` is not available for this authorization.');
     }
     if (!ctx.userId) {
       return fail('`org_slug` requires an authenticated user context.');
     }
-    const targetOrg = await getCachedOrgBySlug(args.org_slug);
+    const targetOrg = await resolveGrantedWorkspaceTarget({
+      userId: ctx.userId,
+      grantedOrganizationIds: ctx.grantedOrganizationIds ?? [],
+      slugOrId: args.org_slug,
+    });
     if (!targetOrg) {
-      return fail(`Organization '${args.org_slug}' not found.`);
+      return fail('Workspace is not available for this authorization.');
     }
-    const role = await getCachedMembershipRole(targetOrg.id, ctx.userId);
-    if (role === null) {
-      return fail(`Not a member of organization '${args.org_slug}'.`);
-    }
+    const role = targetOrg.role;
     targetOrgId = targetOrg.id;
     // Reaching into ANOTHER workspace stays owner/admin-only. Passing your OWN
     // org slug is just an explicit form of the default and stays read-tier —

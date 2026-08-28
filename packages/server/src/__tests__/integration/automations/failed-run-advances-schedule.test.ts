@@ -18,7 +18,7 @@ async function createDueAutomationWithDispatchedRun(opts: {
   slug: string;
   messageId: string;
   nudgeCount?: number;
-  dispatchSource?: "scheduled" | "event";
+  dispatchSource?: "scheduled" | "event" | "manual";
   skipIfUnchanged?: boolean;
 }) {
   const sql = getTestDb();
@@ -337,6 +337,74 @@ describe("provider quota reset parsing", () => {
 });
 
 describe("a terminally failed Automation run advances next_run_at", () => {
+  it("auto-pauses after five consecutive scheduled execution failures", async () => {
+    const { sql, automationId, organizationId } =
+      await createDueAutomationWithDispatchedRun({
+        slug: "auto-pause-repeated-failures",
+        messageId: "msg-repeated-failure-1",
+      });
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const messageId = `msg-repeated-failure-${attempt}`;
+      if (attempt > 1) {
+        await sql`
+          UPDATE automations
+          SET next_run_at = current_timestamp - interval '1 minute'
+          WHERE id = ${automationId}
+        `;
+        await sql`
+          INSERT INTO runs (
+            organization_id, run_type, automation_id, status,
+            dispatched_message_id, approved_input
+          ) VALUES (
+            ${organizationId}, 'automation', ${automationId}, 'running',
+            ${messageId},
+            ${sql.json({ finalize_nudge_count: 99, dispatch_source: "scheduled" })}
+          )
+        `;
+      }
+
+      await resolveAutomationRunsByMessageIds([messageId], {
+        ok: false,
+        error: `executor timed out on attempt ${attempt}`,
+      });
+    }
+
+    const [automation] = await sql`
+      SELECT status, next_run_at, consecutive_scheduled_failures,
+             schedule_auto_paused_at
+      FROM automations WHERE id = ${automationId}
+    `;
+    expect(automation.status).toBe("active");
+    expect(automation.next_run_at).toBeNull();
+    expect(Number(automation.consecutive_scheduled_failures)).toBe(5);
+    expect(automation.schedule_auto_paused_at).not.toBeNull();
+  });
+
+  it("does not double-count a duplicate terminal report", async () => {
+    const { sql, automationId } = await createDueAutomationWithDispatchedRun({
+      slug: "dedupe-failure-count",
+      messageId: "msg-dedupe-failure-count",
+    });
+
+    await Promise.all([
+      resolveAutomationRunsByMessageIds(["msg-dedupe-failure-count"], {
+        ok: false,
+        error: "executor timed out",
+      }),
+      resolveAutomationRunsByMessageIds(["msg-dedupe-failure-count"], {
+        ok: false,
+        error: "executor timed out",
+      }),
+    ]);
+
+    const [automation] = await sql`
+      SELECT consecutive_scheduled_failures
+      FROM automations WHERE id = ${automationId}
+    `;
+    expect(Number(automation.consecutive_scheduled_failures)).toBe(1);
+  });
+
   it("advances the cursor when the agent turn returns an error", async () => {
     const { automationId, runId, staleCursor } =
       await createDueAutomationWithDispatchedRun({
@@ -480,6 +548,53 @@ describe("a terminally failed Automation run advances next_run_at", () => {
 
     const after = await cursorOf(automationId);
     expect(after.getTime()).toBe(staleCursor.getTime());
+    const [automation] = await sql`
+      SELECT consecutive_scheduled_failures
+      FROM automations WHERE id = ${automationId}
+    `;
+    expect(Number(automation.consecutive_scheduled_failures)).toBe(0);
+  });
+
+  it("does not count a failed manual run", async () => {
+    const { sql, automationId } = await createDueAutomationWithDispatchedRun({
+      slug: "no-count-on-manual",
+      messageId: "msg-manual-dispatch",
+      dispatchSource: "manual",
+    });
+
+    await resolveAutomationRunsByMessageIds(["msg-manual-dispatch"], {
+      ok: false,
+      error: "manual executor failed",
+    });
+
+    const [automation] = await sql`
+      SELECT consecutive_scheduled_failures, schedule_auto_paused_at
+      FROM automations WHERE id = ${automationId}
+    `;
+    expect(Number(automation.consecutive_scheduled_failures)).toBe(0);
+    expect(automation.schedule_auto_paused_at).toBeNull();
+  });
+
+  it("does not count an eval replay failure", async () => {
+    const { sql, automationId, runId } =
+      await createDueAutomationWithDispatchedRun({
+        slug: "no-count-on-eval",
+        messageId: "msg-eval-failure",
+      });
+    await sql`
+      UPDATE runs SET run_type = 'automation_eval' WHERE id = ${runId}
+    `;
+
+    await resolveAutomationRunsByMessageIds(["msg-eval-failure"], {
+      ok: false,
+      error: "eval executor failed",
+    });
+
+    const [automation] = await sql`
+      SELECT consecutive_scheduled_failures
+      FROM automations WHERE id = ${automationId}
+    `;
+    expect(Number(automation.consecutive_scheduled_failures)).toBe(0);
   });
 
   it("parks a scheduled Automation after a quota-exhausted event dispatch", async () => {

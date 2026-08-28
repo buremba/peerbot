@@ -174,6 +174,23 @@ describe('search_memory > recall contract', () => {
     expect(result.suggestion ?? '').not.toContain('entities.create');
   });
 
+  it('suggests text-search wording when an exact content id is not readable', async () => {
+    const result = await search(
+      {
+        query: '2147483647',
+        include_content: true,
+      },
+      env,
+      ctx
+    );
+
+    expect(result.discovery_status).toBe('not_found');
+    expect(result.suggestion).toBe(
+      'No readable memory record matches id 2147483647 in this workspace. ' +
+        'To run a text search instead, add words around the number.'
+    );
+  });
+
   // ── ORDERING GUARD (never-broken semantics, pinned) ──────────────────────
   it('sorts content by similarity DESC so content_limit truncates the WORST, not the best', async () => {
     const result = await search(

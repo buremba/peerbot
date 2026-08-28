@@ -8,6 +8,7 @@ import { type DbClient, pgBigintArray, pgTextArray } from '../../db/client';
 import {
   buildConnectionVisibilityClause,
   buildEntityLinkUnion,
+  buildOrgScopeWhere,
   buildFutureOccurredAtClause,
   fetchEntityIdentityScopes,
 } from '../../utils/content-search';
@@ -275,8 +276,19 @@ export async function fetchByContentIds(opts: {
   const queryParams: Array<string | number | null> = [pgBigintArray(contentIdsArray)];
   const idFilter = 'f.id IN (SELECT id FROM resolved_ids)';
 
-  queryParams.push(organizationId);
-  const orgScope = `AND f.organization_id = $${queryParams.length}::text`;
+  // Exact-id reads use the same workspace boundary as ordinary memory
+  // search: direct ownership OR an entity/connection bridge into the selected
+  // workspace. The previous direct-only predicate contradicted the handler's
+  // authorization precheck (which already accepted those bridges), causing a
+  // permitted exact event to disappear after policy validation. An explicit
+  // organization id is always supplied, so this can never degrade to an
+  // unscoped read.
+  const orgScope = buildOrgScopeWhere({
+    organization_id: organizationId,
+    strict_organization_scope: true,
+    baseParamIndex: queryParams.length + 1,
+  });
+  queryParams.push(...orgScope.params);
 
   let entityFilter = '';
   if (args.entity_id) {
@@ -305,7 +317,7 @@ export async function fetchByContentIds(opts: {
   });
   queryParams.push(...visibility.params);
 
-  const where = `${idFilter} ${orgScope}${entityFilter} ${visibility.sql}${
+  const where = `${idFilter} ${orgScope.sql}${entityFilter} ${visibility.sql}${
     excludeWorkspaceAudit
       ? ` AND NOT (f.metadata ? '_lobu_workspace_audit')`
       : ''

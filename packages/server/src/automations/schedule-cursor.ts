@@ -6,6 +6,7 @@ import { AgentErrorCode, PROVIDER_BALANCE_EXHAUSTED } from "@lobu/core";
 import type { DbClient } from "../db/client";
 import { nextRunAt } from "../utils/cron";
 import logger from "../utils/logger";
+import { resetScheduledFailureState } from "./scheduled-failure-policy";
 
 const PROVIDER_RESET_GRACE_MS = 60_000;
 const PROVIDER_RETRY_GRACE_MS = 1_000;
@@ -329,13 +330,15 @@ export async function advanceAutomationSchedule(
 ): Promise<void> {
 	if (automationId == null) return;
 	const rows = await sql`
-    SELECT schedule, timezone
+    SELECT schedule, timezone, schedule_auto_paused_at
     FROM automations
     WHERE id = ${automationId}
     LIMIT 1
   `;
 	const schedule = (rows[0]?.schedule as string | null) ?? null;
 	const timezone = (rows[0]?.timezone as string | null) ?? null;
+	const autoPausedAt = rows[0]?.schedule_auto_paused_at ?? null;
+	if (autoPausedAt != null) return;
 	if (!schedule) return;
 
 	// `nextRunAt` returns an ISO string, not a Date.
@@ -353,6 +356,7 @@ export async function advanceAutomationSchedule(
       SET next_run_at = NULL,
           updated_at = NOW()
       WHERE id = ${automationId}
+        AND schedule_auto_paused_at IS NULL
     `;
 		return;
 	}
@@ -370,6 +374,7 @@ export async function advanceAutomationSchedule(
     SET next_run_at = GREATEST(next_run_at, ${target}::timestamptz),
         updated_at = NOW()
     WHERE id = ${automationId}
+      AND schedule_auto_paused_at IS NULL
   `;
 }
 
@@ -383,6 +388,7 @@ export async function advanceAutomationScheduleAfterSuccessfulWindow(
 	devicePinned: boolean,
 	granularity: AutomationTimeGranularity
 ): Promise<void> {
+	await resetScheduledFailureState(sql, automationId);
 	if (devicePinned) {
 		const boundary = alignToAutomationWindowStart(new Date(), granularity);
 		const result = await sql`
@@ -390,6 +396,7 @@ export async function advanceAutomationScheduleAfterSuccessfulWindow(
       SET next_run_at = LEAST(next_run_at, current_timestamp),
           updated_at = current_timestamp
       WHERE id = ${automationId}
+        AND schedule_auto_paused_at IS NULL
         AND next_window_start < ${boundary.toISOString()}::timestamptz
     `;
 		if (Number(result.count ?? 0) > 0) return;

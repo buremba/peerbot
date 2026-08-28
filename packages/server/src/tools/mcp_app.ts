@@ -22,12 +22,7 @@ import {
   type ApprovalImpact,
 } from '../utils/approval-context';
 import { buildResourcePermalink } from '../utils/url-builder';
-import {
-  AccessDeniedError,
-  CrossOrgAccessDenied,
-  OrgNotFoundError,
-  resolveCrossOrgToolContext,
-} from '../sandbox/client-sdk';
+import { CrossOrgAccessDenied, resolveCrossOrgToolContext } from '../sandbox/client-sdk';
 import { getContent } from './get_content';
 import { manageOperations } from './admin/manage_operations';
 import { attachMcpResultMeta } from './mcp-result-meta';
@@ -902,10 +897,11 @@ async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Pro
 
 /**
  * Resolve a target workspace for an MCP-App tool call. `resolveCrossOrgToolContext`
- * reports denial with the SDK's typed errors, which only the sandbox translates;
- * at a plain tool boundary they would surface as a generic failure. Re-raise them
- * as ToolUserErrors so REST and MCP agree on the status — 403 for denial, matching
- * the sibling stale-capability check, and 404 for an unknown workspace.
+ * reports denial with the SDK's typed error, which only the sandbox translates;
+ * at a plain tool boundary it would surface as a generic failure. Re-raise it as
+ * a ToolUserError so REST and MCP agree on the status — 403 for denial, matching
+ * the sibling stale-capability check. Unknown and ungranted workspaces are
+ * deliberately indistinguishable.
  */
 async function resolveApprovalWorkspace(
   slugOrId: string,
@@ -914,14 +910,8 @@ async function resolveApprovalWorkspace(
   try {
     return await resolveCrossOrgToolContext(slugOrId, ctx);
   } catch (error) {
-    if (
-      error instanceof CrossOrgAccessDenied ||
-      error instanceof AccessDeniedError
-    ) {
+    if (error instanceof CrossOrgAccessDenied) {
       throw new ToolUserError(error.message, 403);
-    }
-    if (error instanceof OrgNotFoundError) {
-      throw new ToolUserError(error.message, 404);
     }
     throw error;
   }

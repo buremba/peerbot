@@ -32,6 +32,12 @@ interface LoginOptions {
   /** Suppress spinner output; bail out non-interactively if the server rejects polling. */
   quiet?: boolean;
   /**
+   * Keep polling a browser device-code flow without a TTY when an external
+   * process owns cancellation and the user's approval UI. Native apps use
+   * this instead of pretending their piped subprocess is interactive.
+   */
+  waitForApproval?: boolean;
+  /**
    * Headless email "user_claimed" login (auth.md): the server emails this
    * address a one-click approval link instead of showing a code, and we keep
    * polling without a TTY. Lets an agent log in on a user's behalf without a
@@ -214,7 +220,8 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
   // make sense — a backgrounded shell or CI runner has neither stdin to
   // approve from nor stdout to spin on. Require both, plus the absence of
   // `--quiet`, before treating the call as interactive. Email-claim approval
-  // is out of band, so it polls even without a TTY.
+  // and an explicit supervised wait are out of band, so they poll even without
+  // a TTY. The supervisor is responsible for bounding/cancelling the child.
   const isInteractive =
     process.stdout.isTTY === true &&
     process.stdin.isTTY === true &&
@@ -282,17 +289,17 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
       );
 
       if (result.status === "pending") {
-        // Non-interactive callers (CI, backgrounded shells) can't approve a
-        // terminal device code, so a `pending` poll is the terminal answer —
-        // bail instead of looping until expiry. Email-claim is the exception:
-        // approval rides an emailed link, so we keep polling without a TTY.
-        if (!isInteractive && !emailClaim) {
+        // Ordinary non-interactive callers (CI, backgrounded shells) can't
+        // approve a terminal device code, so a `pending` poll is the terminal
+        // answer. Email claims and native apps with an explicit supervisor own
+        // an out-of-band approval path and therefore keep polling without TTYs.
+        if (!isInteractive && !emailClaim && !options.waitForApproval) {
           console.log(
             chalk.red("  Device-code login requires an interactive terminal.")
           );
           console.log(
             chalk.dim(
-              "  Use `--token <pat>`, or `--email <addr>` for headless approval.\n"
+              "  Use `--token <pat>`, `--email <addr>`, or `--wait-for-approval` with an external supervisor.\n"
             )
           );
           process.exitCode = 1;

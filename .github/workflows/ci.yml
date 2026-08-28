@@ -1783,6 +1783,15 @@ jobs:
         if: steps.submodule.outputs.stubbed != 'true'
         run: scripts/test-mac-device-daemon-package.sh
 
+      - name: Build and smoke bundled Mac auth helper
+        if: steps.submodule.outputs.stubbed != 'true'
+        run: |
+          AUTH_CLI="$RUNNER_TEMP/lobu-mac-auth"
+          scripts/build-mac-auth-cli.sh "$AUTH_CLI"
+          test "$("$AUTH_CLI" --version)" = "$(bun -p 'require("./packages/cli/package.json").version')"
+          "$AUTH_CLI" login --help | grep -q -- '--wait-for-approval'
+          "$AUTH_CLI" whoami --help | grep -q -- '--json'
+
       # The Mac app has no XCTest target, so xcodebuild does not discover the
       # standalone @main tests under apps/mac/Tests — before this step they ran
       # only when someone pasted a swiftc line out of a file header, which is

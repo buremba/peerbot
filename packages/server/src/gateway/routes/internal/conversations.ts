@@ -15,6 +15,7 @@ import {
 import { stripPlatformPrefix } from "../../channels/bound-channels.js";
 import { getChatInstanceManager } from "../../../lobu/gateway.js";
 import { presentStoredEventToConversation } from "../../../notifications/service.js";
+import { isDeliverableChatPlatform } from "../../../scheduled/scheduled-jobs-service.js";
 import { manageSchedules } from "../../../tools/admin/manage_schedules.js";
 import type { ToolContext } from "../../../tools/registry.js";
 import {
@@ -327,6 +328,7 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
           worker.platform,
           worker.channelId
         )}`,
+        conversationId: worker.conversationId,
         threadId:
           worker.responseThreadId ??
           parseConversationRef(worker.conversationId)?.threadId,
@@ -390,6 +392,13 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
           c,
           "This turn is not attached to an active chat conversation",
           403
+        );
+      }
+      if (!isDeliverableChatPlatform(worker.platform)) {
+        return errorResponse(
+          c,
+          "Scheduled follow-ups are not supported on this chat platform",
+          422
         );
       }
       const body = (await c.req.json().catch(() => null)) as {

@@ -90,6 +90,7 @@ describe("active-conversation event tools", () => {
       platform: "gchat",
       channelId: "gchat:spaces/AAAA",
       channelKey: "gchat:spaces/AAAA",
+      conversationId: "gchat:spaces/AAAA:dm",
       threadId: "dm",
     });
   });
@@ -174,6 +175,21 @@ describe("active-conversation event tools", () => {
       }
     );
     expect(response.status).toBe(400);
+    expect(manageSchedules).not.toHaveBeenCalled();
+  });
+
+  test("rejects a follow-up on a platform without scheduled chat delivery", async () => {
+    const response = await post(
+      router,
+      "/conversations/schedule-followup",
+      token({ platform: "discord", channelId: "channel-1" }, "discord:channel-1"),
+      {
+        runAt: new Date(Date.now() + 60_000).toISOString(),
+        prompt: "follow up here",
+        idempotencyKey: "unsupported-platform",
+      }
+    );
+    expect(response.status).toBe(422);
     expect(manageSchedules).not.toHaveBeenCalled();
   });
 });

@@ -451,6 +451,7 @@ describe("Google Chat declared event action adapter", () => {
 				platform: "gchat",
 				channelId: SPACE_NAME,
 				channelKey: `gchat:${SPACE_NAME}`,
+				conversationId: `gchat:${SPACE_NAME}:${threadId}`,
 				threadId,
 			}),
 			presentStoredEventToConversation({
@@ -460,6 +461,7 @@ describe("Google Chat declared event action adapter", () => {
 				platform: "gchat",
 				channelId: SPACE_NAME,
 				channelKey: `gchat:${SPACE_NAME}`,
+				conversationId: `gchat:${SPACE_NAME}:${threadId}`,
 				threadId,
 			}),
 		]);
@@ -475,8 +477,21 @@ describe("Google Chat declared event action adapter", () => {
 				eventId: source.id,
 				connectionId: CONNECTION_ID,
 				platform: "gchat",
+				channelId: SPACE_NAME,
+				channelKey: `gchat:${SPACE_NAME}`,
+				conversationId: `gchat:${SPACE_NAME}:thread-two`,
+				threadId: "thread-two",
+			}),
+		).toMatchObject({ ok: true, messageId: MESSAGE_NAME });
+		expect(
+			await presentStoredEventToConversation({
+				organizationId: workspace.org.id,
+				eventId: source.id,
+				connectionId: CONNECTION_ID,
+				platform: "gchat",
 				channelId: `${SPACE_NAME}/secondary`,
 				channelKey: `gchat:${SPACE_NAME}/secondary`,
+				conversationId: `gchat:${SPACE_NAME}/secondary:${threadId}`,
 				threadId,
 			}),
 		).toMatchObject({ ok: true, messageId: MESSAGE_NAME });
@@ -488,15 +503,16 @@ describe("Google Chat declared event action adapter", () => {
 				platform: "gchat",
 				channelId: SPACE_NAME,
 				channelKey: `gchat:${SPACE_NAME}`,
+				conversationId: `gchat:${SPACE_NAME}:${threadId}`,
 				threadId,
 			}),
 		).toMatchObject({ ok: true, messageId: MESSAGE_NAME });
-		expect(postToConversation).toHaveBeenCalledTimes(2);
+		expect(postToConversation).toHaveBeenCalledTimes(3);
 		expect(
 			(await sql<{ metadata: { delivery: unknown[] } }>`
 				SELECT metadata FROM events WHERE id = ${source.id}
 			`)[0]?.metadata.delivery,
-		).toHaveLength(2);
+		).toHaveLength(3);
 		const reduceVote = async (voteEventId: number) => {
 			const [vote] = await sql<{
 				metadata: {
@@ -681,7 +697,7 @@ describe("Google Chat declared event action adapter", () => {
 			close_reason: "quorum",
 		});
 
-		await vi.waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(3));
 		const responses = await sql<{
 			metadata: { actor_id: string; choice: string };
 		}>`
@@ -735,7 +751,7 @@ describe("Google Chat declared event action adapter", () => {
 				  AND semantic_type = 'poll_vote_cast'
 			`,
 		).toHaveLength(3);
-		expect(editMessageContent).toHaveBeenCalledTimes(2);
+		expect(editMessageContent).toHaveBeenCalledTimes(3);
 		expect(JSON.stringify(postMessage.mock.calls)).toContain(
 			"This interaction is closed or has been replaced.",
 		);
@@ -919,7 +935,7 @@ describe("Google Chat declared event action adapter", () => {
 				{ pollId: deadlinePoll.poll_id, closed: true },
 			].sort((a, b) => a.pollId.localeCompare(b.pollId)),
 		);
-		await vi.waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(2));
+		await vi.waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(3));
 		const [deadlineClosed] = await sql<{ metadata: typeof deadlinePoll }>`
 			SELECT metadata FROM entities
 			WHERE organization_id = ${workspace.org.id}

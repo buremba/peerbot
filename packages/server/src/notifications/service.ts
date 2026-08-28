@@ -416,6 +416,8 @@ interface NotificationDeliveryRecord {
 	connectionId: string;
 	/** Platform-prefixed channel id, or `dm` for the owner-routed tier. */
 	channelKey: string;
+	/** Trusted flat conversation id; present for conversation-scoped delivery. */
+	conversationId?: string;
 	messageId: string;
 	threadId: string;
 }
@@ -503,6 +505,7 @@ interface StoredEventPresentationParams {
 	platform: string;
 	channelId: string;
 	channelKey: string;
+	conversationId: string;
 	threadId?: string;
 }
 
@@ -564,7 +567,8 @@ async function presentStoredEventToConversationLocked(
 	const existingDelivery = deliveryRecords(metadata).find(
 		(delivery) =>
 			delivery.connectionId === params.connectionId &&
-			delivery.channelKey === params.channelKey,
+			delivery.channelKey === params.channelKey &&
+			delivery.conversationId === params.conversationId,
 	);
 	if (existingDelivery) {
 		return {
@@ -623,6 +627,7 @@ async function presentStoredEventToConversationLocked(
 			{
 				connectionId: params.connectionId,
 				channelKey: params.channelKey,
+				conversationId: params.conversationId,
 				messageId: sent.messageId,
 				threadId: sent.threadId,
 			},
@@ -676,6 +681,7 @@ function deliveryRecords(
 			const row = jsonRecord(entry);
 			const connectionId = row.connectionId;
 			const channelKey = row.channelKey;
+			const conversationId = row.conversationId;
 			const messageId = row.messageId;
 			const threadId = row.threadId;
 			return typeof connectionId === "string" &&
@@ -685,6 +691,7 @@ function deliveryRecords(
 				? [{
 						connectionId,
 						...(typeof channelKey === "string" ? { channelKey } : {}),
+						...(typeof conversationId === "string" ? { conversationId } : {}),
 						messageId,
 						threadId,
 					}]

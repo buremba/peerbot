@@ -43,6 +43,7 @@ import {
 } from "./entity-field-merge";
 import { type EntityHookContext, getEntityHooks } from "./entity-hooks";
 import { ToolUserError } from "./errors";
+import { EntityPolicyDenialError } from "./entity-write-denial-audit";
 import logger from "./logger";
 import { requireWriteAccess } from "./organization-access";
 import { RESERVED_ENTITY_TYPE_SLUGS } from "./reserved";
@@ -1189,7 +1190,14 @@ export async function updateEntity(
 					fields: fieldOwners,
 				});
 				if (decision.outcome === "deny") {
-					throw new ToolUserError(decision.reason, 403);
+					throw new EntityPolicyDenialError({
+						operation: "update",
+						reason: decision.reason,
+						deniedFields: Object.keys(fieldOwners),
+						entityId,
+						entityType: String(current[0].entity_type),
+						entityOrganizationId: String(current[0].organization_id),
+					});
 				}
 				for (const field of decision.requireApproval) {
 					if (attributeProposals[field]) {
@@ -1705,6 +1713,7 @@ export async function deleteEntity(
           tx: sql,
           ids: entityTreeIds,
           patch: { softDelete: true },
+          operation: "delete",
           approvedFields: opts?.approvedFields ?? [],
         });
       } catch (err) {
@@ -1761,6 +1770,7 @@ export async function deleteEntity(
         tx,
         ids: entityTreeIds,
         patch: { softDelete: true },
+        operation: "delete",
         approvedFields: opts?.approvedFields ?? [],
       });
       if (runBeforeDeleteHook) await runBeforeDeleteHook(tx);
@@ -1957,6 +1967,7 @@ export async function deleteEntity(
         tx: sql,
         ids: [entityId],
         patch: { softDelete: true },
+        operation: "delete",
         approvedFields: opts?.approvedFields ?? [],
       });
     } catch (err) {
@@ -2012,6 +2023,7 @@ export async function deleteEntity(
       tx,
       ids: [entityId],
       patch: { softDelete: true },
+      operation: "delete",
       approvedFields: opts?.approvedFields ?? [],
     });
     if (runBeforeDeleteHook) await runBeforeDeleteHook(tx);

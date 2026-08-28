@@ -47,6 +47,7 @@ import {
 import type { DbClient } from '../db/client';
 import type { EntityOutput } from '../types/automations';
 import type { AppliedChange, BlockedChange } from './entity-field-merge';
+import { recordEntityWriteDenial } from './entity-write-denial-audit';
 import {
   fullProposalVerdict,
   hardDeleteEntityRows,
@@ -319,7 +320,7 @@ async function upsertKeyedEntity(params: {
    * row was skipped: containment means the window survives, so nothing else
    * marks it.
    */
-  denied?: { source: 'policy' | 'rule'; reason: string };
+  denied?: { source: 'policy' | 'rule'; reason: string; auditFields: string[] };
   /**
    * Set when a write RULE escalates the write the card will replay. The card
    * must carry that verdict's field list verbatim: the replay checks
@@ -380,7 +381,11 @@ async function upsertKeyedEntity(params: {
         blocked: {},
         applied: {},
         blockedCreate: false,
-        denied: { source: 'policy', reason: decision.reason },
+        denied: {
+          source: 'policy',
+          reason: decision.reason,
+          auditFields: Object.keys(params.fieldValues),
+        },
       };
     }
     const requireApproval = [...decision.requireApproval];
@@ -416,7 +421,11 @@ async function upsertKeyedEntity(params: {
           blocked: {},
           applied: {},
           blockedCreate: false,
-          denied: { source: 'rule', reason: err.verdict.reason },
+          denied: {
+            source: 'rule',
+            reason: err.verdict.reason,
+            auditFields: err.verdict.fields,
+          },
         };
       }
       // Hold the row WHOLE, and ask the rule about that same whole write.
@@ -457,7 +466,11 @@ async function upsertKeyedEntity(params: {
           blocked: {},
           applied: {},
           blockedCreate: false,
-          denied: { source: 'rule', reason: whole.verdict.reason },
+          denied: {
+            source: 'rule',
+            reason: whole.verdict.reason,
+            auditFields: whole.verdict.fields,
+          },
         };
       }
       // A whole write the rule finds legal still needs the card — those fields
@@ -494,7 +507,13 @@ async function upsertKeyedEntity(params: {
       applied: {},
       blockedCreate: true,
       ...(params.createGate.outcome === 'deny'
-        ? { denied: { source: 'policy' as const, reason: params.createGate.reason } }
+        ? {
+            denied: {
+              source: 'policy' as const,
+              reason: params.createGate.reason,
+              auditFields: Object.keys(params.fieldValues),
+            },
+          }
         : {}),
     };
   }
@@ -531,7 +550,11 @@ async function upsertKeyedEntity(params: {
         blocked: {},
         applied: {},
         blockedCreate: true,
-        denied: { source: 'rule', reason: err.verdict.reason },
+        denied: {
+          source: 'rule',
+          reason: err.verdict.reason,
+          auditFields: err.verdict.fields,
+        },
       };
     }
     // Unlike the update path, this verdict needs no second ask. A create has no
@@ -783,6 +806,7 @@ export async function promoteAutomationEntityOutput(
       // A refusal, on either op and from either decider — rule or policy. Every
       // one of them arrives as `denied`; there is nothing left to re-derive here.
       if (denied) {
+        const { auditFields, ...changeSetDenial } = denied;
         logger.warn(
           {
             automationId,
@@ -796,11 +820,37 @@ export async function promoteAutomationEntityOutput(
           },
           '[promote-keyed-entities] write denied — row skipped'
         );
+        await recordEntityWriteDenial({
+          organizationId,
+          attemptId: `automation:${automationId}:run:${runId}:${outputName}:${stableKey}`,
+          denialSource: denied.source,
+          operation: blockedCreate ? 'create' : 'update',
+          reason: denied.reason,
+          deniedFields: auditFields,
+          entityId: entityId > 0 ? entityId : null,
+          entityType: entityTypeSlug,
+          entityOrganizationId: entityId > 0 ? organizationId : null,
+          actor: {
+            kind: 'automation',
+            id: mutationPrincipalId({ automationId }),
+          },
+          automationId,
+          runId,
+          createdBy,
+          clientId: null,
+          sql: tx,
+        });
         // A log line is not an audit record. Put the refusal in the run's change
         // set so it is queryable next to the writes that DID land. A refused
         // CREATE has no id, so it is recorded under the name the automation
         // proposed — the only handle a reader has on a row never written.
-        result.changes.push({ entityId, name, kind: 'denied', applied: {}, denied });
+        result.changes.push({
+          entityId,
+          name,
+          kind: 'denied',
+          applied: {},
+          denied: changeSetDenial,
+        });
         continue;
       }
       if (blockedCreate) {

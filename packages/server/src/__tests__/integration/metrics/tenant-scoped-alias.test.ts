@@ -12,6 +12,7 @@ import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
 	createTestConnectorDefinition,
+	createTestEntity,
 	createTestEvent,
 	createTestOrganization,
 	createTestUser,
@@ -121,11 +122,35 @@ describe("metric compiler tenant-scoped aliases", () => {
 			});
 		}
 
+		// Same identifier + scope, but a DIFFERENT namespace. The old
+		// identifier-only projection attributed tenant-a's event to this entity too.
+		const distractor = await createTestEntity({
+			organization_id: org.id,
+			entity_type: "customer",
+			name: "Different namespace customer",
+			created_by: user.id,
+		});
+		const sql = getTestDb();
+		await sql`
+			UPDATE entities
+			SET metadata = ${sql.json({
+				aliases: [],
+				[SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
+					{
+						namespace: "other_customer",
+						identifier: "SHARED-001",
+						scopeKey: "tenant-a",
+					},
+				],
+			})}
+			WHERE id = ${distractor.id}
+		`;
+
 		expect(items[0]?.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]).toEqual({
-			"SHARED-001": "tenant-a",
+			[namespace]: { "SHARED-001": "tenant-a" },
 		});
 		expect(items[1]?.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]).toEqual({
-			"SHARED-001": "tenant-b",
+			[namespace]: { "SHARED-001": "tenant-b" },
 		});
 		const rows = await runMetric({
 			organizationId: org.id,
@@ -146,7 +171,7 @@ describe("metric compiler tenant-scoped aliases", () => {
         AND e.deleted_at IS NULL
       ORDER BY e.id
     `;
-		expect(entities).toHaveLength(2);
+		expect(entities).toHaveLength(3);
 		expect(
 			entities.every(
 				(entity) =>
@@ -156,6 +181,13 @@ describe("metric compiler tenant-scoped aliases", () => {
 		expect(entities.map((entity) => entity.scoped_aliases)).toEqual([
 			[{ namespace, identifier: "SHARED-001", scopeKey: "tenant-a" }],
 			[{ namespace, identifier: "SHARED-001", scopeKey: "tenant-b" }],
+			[
+				{
+					namespace: "other_customer",
+					identifier: "SHARED-001",
+					scopeKey: "tenant-a",
+				},
+			],
 		]);
 	});
 });

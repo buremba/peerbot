@@ -44,6 +44,48 @@ interface IdentityRow {
 type Sql = ReturnType<typeof getDb>;
 
 /**
+ * Claim one identity in the permanently organization-scoped auth namespace.
+ *
+ * Re-key retains old scope keys so append-only events keep resolving. A plain
+ * INSERT would recreate a key retained by another live row after a re-key and
+ * make that historical tuple ambiguous. This mirrors the connector claim path:
+ * the INSERT's table lock serializes with re-key, and the history predicate
+ * refuses to reuse the organization-scope sentinel.
+ */
+async function insertOrganizationScopedIdentity(
+	sql: Sql,
+	params: {
+		organizationId: string;
+		memberEntityId: number;
+		namespace: string;
+		identifier: string;
+		source: string;
+	},
+): Promise<boolean> {
+	const inserted = await sql<{ id: number }>`
+    INSERT INTO entity_identities (
+      organization_id, entity_id, namespace, identifier, source_connector, scope_key
+    )
+    SELECT
+      ${params.organizationId}, ${params.memberEntityId}, ${params.namespace},
+      ${params.identifier}, ${params.source}, NULL
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM entity_identities retained
+      WHERE retained.organization_id = ${params.organizationId}
+        AND retained.namespace = ${params.namespace}
+        AND retained.identifier = ${params.identifier}
+        AND retained.deleted_at IS NULL
+        AND '' = ANY(retained.scope_key_history)
+    )
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
+    DO NOTHING
+    RETURNING id
+  `;
+	return inserted.length > 0;
+}
+
+/**
  * Insert (or no-op on conflict) entity_identities rows pointing at the given
  * member entity. The unique index on (organization_id, namespace, identifier,
  * COALESCE(scope_key, ''))
@@ -57,15 +99,13 @@ async function writeIdentities(
 	rows: IdentityRow[],
 ): Promise<void> {
 	for (const row of rows) {
-		await sql`
-      INSERT INTO entity_identities (
-        organization_id, entity_id, namespace, identifier, source_connector
-      ) VALUES (
-        ${organizationId}, ${memberEntityId}, ${row.namespace}, ${row.identifier}, ${source}
-      )
-      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
-      DO NOTHING
-    `;
+		await insertOrganizationScopedIdentity(sql, {
+			organizationId,
+			memberEntityId,
+			namespace: row.namespace,
+			identifier: row.identifier,
+			source,
+		});
 	}
 }
 
@@ -106,17 +146,14 @@ async function adoptSlackIdentityOntoMember(
 	memberEntityId: number,
 	identifier: string,
 ): Promise<"created" | "adopted" | "already-owned" | "conflict"> {
-	const inserted = await sql<{ id: number }>`
-    INSERT INTO entity_identities (
-      organization_id, entity_id, namespace, identifier, source_connector
-    ) VALUES (
-      ${organizationId}, ${memberEntityId}, ${SLACK_IDENTITY.USER_ID}, ${identifier}, 'auth:signup'
-    )
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
-    DO NOTHING
-    RETURNING id
-  `;
-	if (inserted.length > 0) return "created";
+	const inserted = await insertOrganizationScopedIdentity(sql, {
+		organizationId,
+		memberEntityId,
+		namespace: SLACK_IDENTITY.USER_ID,
+		identifier,
+		source: "auth:signup",
+	});
+	if (inserted) return "created";
 
 	// Take over only from a `person`; a `$member` holder means two humans claim
 	// one workspace id, which must not be silently reassigned.
@@ -136,6 +173,7 @@ async function adoptSlackIdentityOntoMember(
     WHERE ei.organization_id = ${organizationId}
       AND ei.namespace = ${SLACK_IDENTITY.USER_ID}
       AND ei.identifier = ${identifier}
+      AND ei.scope_key IS NULL
       AND ei.deleted_at IS NULL
       AND e.id = ei.entity_id
       AND e.organization_id = ei.organization_id
@@ -149,6 +187,7 @@ async function adoptSlackIdentityOntoMember(
     WHERE organization_id = ${organizationId}
       AND namespace = ${SLACK_IDENTITY.USER_ID}
       AND identifier = ${identifier}
+      AND scope_key IS NULL
       AND entity_id = ${memberEntityId}
       AND deleted_at IS NULL
     LIMIT 1

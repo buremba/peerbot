@@ -415,6 +415,7 @@ async function saveContentImpl(
         WHERE ei.organization_id = ${ctx.organizationId}
           AND ei.namespace = 'auth_user_id'
           AND ei.identifier = ${authId}
+          AND ei.scope_key IS NULL
           AND ei.deleted_at IS NULL
           AND et.slug = ${MEMBER_ENTITY_TYPE_SLUG}
           AND e.deleted_at IS NULL
@@ -435,6 +436,7 @@ async function saveContentImpl(
           WHERE ei.organization_id = ${ctx.organizationId}
             AND ei.namespace = 'email'
             AND ei.identifier = ${userEmail}
+            AND ei.scope_key IS NULL
             AND ei.deleted_at IS NULL
             AND et.slug = ${MEMBER_ENTITY_TYPE_SLUG}
             AND e.deleted_at IS NULL
@@ -458,9 +460,17 @@ async function saveContentImpl(
       const memberId = Number(memberRows[0].id);
       await sql`
         INSERT INTO entity_identities (
-          organization_id, entity_id, namespace, identifier, source_connector
-        ) VALUES (
-          ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'auth:signup'
+          organization_id, entity_id, namespace, identifier, source_connector, scope_key
+        )
+        SELECT ${ctx.organizationId}, ${memberId}, 'auth_user_id', ${authId}, 'auth:signup', NULL
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM entity_identities retained
+          WHERE retained.organization_id = ${ctx.organizationId}
+            AND retained.namespace = 'auth_user_id'
+            AND retained.identifier = ${authId}
+            AND retained.deleted_at IS NULL
+            AND '' = ANY(retained.scope_key_history)
         )
         ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
         DO UPDATE SET

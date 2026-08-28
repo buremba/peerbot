@@ -209,6 +209,48 @@ describe('applyEventAttributions', () => {
     ]);
   });
 
+  it('uses the canonical trimmed scopeKeyPath accepted by manifest validation', async () => {
+    const { org } = await setupOrg('trimmed tenant scope path org');
+    await installRule(org.id, 'trimmed-tenant-path', 'customer', {
+      entityType: '$member',
+      autoCreate: true,
+      identities: [
+        {
+          namespace: 'erp_customer',
+          eventPath: 'metadata.customer_id',
+          scope: 'tenant',
+          scopeKeyPath: '  metadata.tenant_id  ',
+        },
+      ],
+    });
+    const item = {
+      origin_type: 'customer',
+      metadata: { customer_id: 'C-1', tenant_id: 'tenant-a' },
+    };
+
+    await applyEventAttributions({
+      connectorKey: 'trimmed-tenant-path',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [item],
+    });
+
+    const rows = await getTestDb()<{ scope_key: string | null }[]>`
+      SELECT scope_key
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = 'erp_customer'
+        AND identifier = 'C-1'
+        AND deleted_at IS NULL
+    `;
+    expect(rows).toEqual([{ scope_key: 'tenant-a' }]);
+    expect(
+      (item.metadata as Record<string, unknown>)[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]
+    ).toEqual({
+      erp_customer: { 'C-1': 'tenant-a' },
+    });
+  });
+
   it('consumes event attributions directly', async () => {
     const { org } = await setupOrg('attribution org');
 

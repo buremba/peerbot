@@ -46,6 +46,16 @@ export function stripIdentityScopeProjectionMetadata(
 /** Mirrors `COALESCE(entity_identities.scope_key, '')` in read-time SQL. */
 export const ORGANIZATION_SCOPE_PROJECTION = "";
 
+/**
+ * Event-side metric projection keyed by the complete alias identity, not the
+ * identifier alone. The outer namespace key prevents equal identifiers from
+ * different identity namespaces choosing one another's tenant scope.
+ */
+export type IdentityScopeByAliasProjection = Record<
+	string,
+	Record<string, string>
+>;
+
 export type ScopedIdentityAliasProjection = {
 	namespace: string;
 	identifier: string;

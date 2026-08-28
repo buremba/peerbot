@@ -50,6 +50,21 @@ interface CompileMetricInput {
 
 const SANE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
+/**
+ * Tenant-aware alias metrics can only bind a structured identity namespace
+ * when the event-set field names one metadata slot directly. Other valid SQL
+ * expressions keep the legacy flat-alias semantics and cannot accidentally
+ * match a tenant-scoped identity.
+ */
+function metadataKeyFromAliasField(field: string): string | null {
+  const match = field.trim().match(/^metadata\s*->>\s*'((?:[^']|'')+)'$/);
+  return match ? match[1].replaceAll("''", "'") : null;
+}
+
+function sqlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
 /** Output column alias for a dimension / measure — guarded so names can't inject. */
 function outName(kind: string, name: string): string {
   if (!SANE_IDENT.test(name)) {
@@ -123,7 +138,8 @@ export function compileMetricSql(input: CompileMetricInput): string {
   //    identity aliases carry their declared tenant key. ─────────────────────
   const entWhere = [`ent.entity_type_id = ${Number(entityTypeId)}`, `ent.deleted_at IS NULL`];
   if (input.entityId !== undefined) entWhere.push(`ent.id = ${Number(input.entityId)}`);
-  const entAlias = `SELECT ent.id AS entity_id, a.alias, NULL::text AS scope_key
+  const entAlias = `SELECT ent.id AS entity_id, a.alias,
+              NULL::text AS namespace, NULL::text AS scope_key
        FROM entities ent, jsonb_array_elements_text(ent.metadata->'aliases') AS a(alias)
        WHERE ${entWhere.join(" AND ")}
          AND NOT EXISTS (
@@ -134,6 +150,7 @@ export function compileMetricSql(input: CompileMetricInput): string {
        UNION
        SELECT ent.id AS entity_id,
               scoped.value->>'identifier' AS alias,
+              scoped.value->>'namespace' AS namespace,
               scoped.value->>'scopeKey' AS scope_key
        FROM entities ent,
             jsonb_array_elements(COALESCE(ent.metadata->'${SCOPED_IDENTITY_ALIASES_METADATA_KEY}', '[]'::jsonb)) scoped(value)
@@ -153,11 +170,21 @@ export function compileMetricSql(input: CompileMetricInput): string {
     ...dedupeCols,
   ].join(", ");
   const fieldExpr = `evt.${eventSet.field}`;
+  const identityNamespace = metadataKeyFromAliasField(eventSet.field);
+  const scopeMatch = identityNamespace
+    ? `(ea.namespace IS NULL OR (
+        ea.namespace = ${sqlString(identityNamespace)}
+        AND COALESCE(ea.scope_key, '${ORGANIZATION_SCOPE_PROJECTION}') = COALESCE(
+          ((evt.metadata->'${IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY}'->${sqlString(identityNamespace)})->>(${fieldExpr})),
+          '${ORGANIZATION_SCOPE_PROJECTION}'
+        )
+      ))`
+    : 'ea.namespace IS NULL';
   const resolved = `SELECT ${distinct}${relationCols}
      FROM (${evt}) evt
      JOIN (${entAlias}) ea
        ON ea.alias = ${fieldExpr}
-      AND COALESCE(ea.scope_key, '${ORGANIZATION_SCOPE_PROJECTION}') = COALESCE((evt.metadata->'${IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY}')->>(${fieldExpr}), '${ORGANIZATION_SCOPE_PROJECTION}')`;
+      AND ${scopeMatch}`;
 
   // ── Aggregate (the shared, Malloy-swappable seam) ─────────────────────────
   const measureName = outName("measure", input.measure);

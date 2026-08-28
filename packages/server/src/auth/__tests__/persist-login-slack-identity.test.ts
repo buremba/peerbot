@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTestDatabase, getTestDb } from "../../__tests__/setup/test-db";
 import {
 	addUserToOrganization,
+	createTestEntity,
 	createTestOrganization,
 	createTestUser,
 } from "../../__tests__/setup/test-fixtures";
@@ -313,6 +314,54 @@ describe("persistLoginSlackIdentity", () => {
 		await persistLoginSlackIdentity(account, deps);
 
 		expect(await slackIdentityCount(orgId, `${TEAM}:${USER}`)).toBe(1);
+	});
+
+	it("does not recreate or reparent an organization scope retained in history", async () => {
+		const { orgId, userId, memberEntityId } = await seedMember();
+		const historicalOwner = await createTestEntity({
+			organization_id: orgId,
+			entity_type: "person",
+			name: "Historical Slack owner",
+		});
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO entity_identities (
+				organization_id, entity_id, namespace, identifier, source_connector,
+				scope_key, scope_key_history
+			) VALUES (
+				${orgId}, ${historicalOwner.id}, 'slack_user_id', ${`${TEAM}:${USER}`},
+				'connector:slack', 'tenant-current', ARRAY['']::text[]
+			)
+		`;
+
+		await persistLoginSlackIdentity(
+			{
+				providerId: "slack",
+				userId,
+				accessToken: "xoxp-token",
+				accountId: USER,
+				idToken: makeJwt({
+					"https://slack.com/team_id": TEAM,
+					"https://slack.com/user_id": USER,
+				}),
+			},
+			depsWith(null),
+		);
+
+		const claims = await sql<
+			{ entity_id: number | string; scope_key: string | null }[]
+		>`
+			SELECT entity_id, scope_key
+			FROM entity_identities
+			WHERE organization_id = ${orgId}
+			  AND namespace = 'slack_user_id'
+			  AND identifier = ${`${TEAM}:${USER}`}
+			  AND deleted_at IS NULL
+		`;
+		expect(claims).toEqual([
+			{ entity_id: historicalOwner.id, scope_key: "tenant-current" },
+		]);
+		expect(claims[0]?.entity_id).not.toBe(memberEntityId);
 	});
 
 	it("never writes a bare id when team_id is missing", async () => {

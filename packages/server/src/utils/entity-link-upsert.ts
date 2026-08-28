@@ -34,6 +34,7 @@ import { ensureResourceEntityType } from '../authz/acl-resource-type';
 import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client';
 import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
 import {
+  type IdentityScopeByAliasProjection,
   IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
   IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
   ORGANIZATION_SCOPE_PROJECTION,
@@ -101,7 +102,13 @@ function resolveEventAttributions(
         autoCreate: rule.autoCreate,
         createWhen: rule.target.createWhen,
         titlePath: rule.target.titlePath,
-        identities,
+        identities: identities.map((identity) => ({
+          ...identity,
+          namespace: identity.namespace.trim(),
+          ...(identity.scopeKeyPath === undefined
+            ? {}
+            : { scopeKeyPath: identity.scopeKeyPath.trim() }),
+        })),
         traits: rule.traits,
       },
     ];
@@ -450,16 +457,17 @@ function extractLink(
     if (!normalized) continue;
     let scopeKey: string | null = null;
     if (spec.scope === 'tenant') {
-      if (!spec.scopeKeyPath?.trim()) {
+      const scopeKeyPath = spec.scopeKeyPath?.trim();
+      if (!scopeKeyPath) {
         throw new Error(
           `Identity namespace '${spec.namespace}' has tenant scope and requires a non-empty scopeKeyPath.`
         );
       }
-      const rawScopeKey = getValueAtPath(item, spec.scopeKeyPath);
+      const rawScopeKey = getValueAtPath(item, scopeKeyPath);
       scopeKey = rawScopeKey === null || rawScopeKey === undefined ? '' : String(rawScopeKey).trim();
       if (!scopeKey || scopeKey.includes('\u0000')) {
         throw new Error(
-          `Identity namespace '${spec.namespace}' at '${spec.scopeKeyPath}' requires a non-empty tenant scope key.`
+          `Identity namespace '${spec.namespace}' at '${scopeKeyPath}' requires a non-empty tenant scope key.`
         );
       }
     } else if (spec.scopeKeyPath !== undefined) {
@@ -1241,8 +1249,8 @@ async function resolveLinksByKind(
 
       // Stamp metadata slots and their scope projections for attached
       // identifiers only. Read-time recall compares the full
-      // (namespace, identifier, scope key) tuple; metrics compare
-      // (alias, scope key). A stale identifier or tenant key would
+      // (namespace, identifier, scope key) tuple; metrics compare the same
+      // complete tuple. A stale identifier or tenant key would
       // mis-attribute an append-only event.
       //
       // A namespace slot holds ONE value, but an event can carry multiple
@@ -1265,7 +1273,7 @@ async function resolveLinksByKind(
         md[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY] = byNamespace;
       }
       let byAlias = md[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY] as
-        | Record<string, string>
+        | IdentityScopeByAliasProjection
         | undefined;
       if (!byAlias) {
         byAlias = {};
@@ -1298,20 +1306,26 @@ async function resolveLinksByKind(
         md[id.namespace] = id.identifier;
         byNamespace[id.namespace] = projectedScope;
 
-        const aliasScope = byAlias[id.identifier];
+        let aliasScopes = byAlias[id.namespace];
+        if (!aliasScopes) {
+          aliasScopes = {};
+          byAlias[id.namespace] = aliasScopes;
+        }
+        const aliasScope = aliasScopes[id.identifier];
         if (aliasScope === undefined) {
-          byAlias[id.identifier] = projectedScope;
+          aliasScopes[id.identifier] = projectedScope;
         } else if (aliasScope !== projectedScope) {
           logger.warn(
             {
               orgId: params.orgId,
               connectorKey: params.connectorKey,
+              namespace: id.namespace,
               identifier: id.identifier,
               keptScope: aliasScope,
               droppedScope: projectedScope,
               role: rule.role,
             },
-            'metric alias scope collision — keeping the first-stamped tenant scope for this event alias'
+            'metric alias scope collision — keeping the first-stamped tenant scope for this event identity'
           );
         }
       }

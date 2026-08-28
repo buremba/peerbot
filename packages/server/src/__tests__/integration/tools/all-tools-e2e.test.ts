@@ -282,6 +282,8 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			baseUrl: "",
 			scopedToOrg: true,
 			allowCrossOrg: false,
+			grantedOrganizationIds: [org.id],
+			directSearchFederation: false,
 		};
 
 		// Create the entity types this org needs via the real tool path. This also

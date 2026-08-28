@@ -1820,6 +1820,7 @@ describe("LinkedInConnector home_feed", () => {
           parts: Record<string, unknown>;
         };
         author_control_label: { selector: string; attr: string };
+        post_identity: { selector: string; take: string; attr: string };
         post_url: {
           take: string;
           triggerSelector: string;

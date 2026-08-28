@@ -84,12 +84,14 @@ describe("Mac device connector registry", () => {
 
     // The Mac bridge reads PhotoKit's public API only; people, captions,
     // keywords and OCR text live in the Photos.sqlite bundle and are not
-    // read today, so no catalog string may promise them.
-    const unsupported = /people|caption|keyword|ocr/i;
+    // read today. The feed is metadata-only (`operations: ["sync"]`, no
+    // action schema), so image bytes are not fetchable either. No catalog
+    // string may promise any of it. The one advertised key the bridge does
+    // not fill is place_name, which geo enrichment fills server-side.
+    const unsupported = /people|caption|keyword|ocr|image bytes/i;
     expect(photos?.description).toContain("PhotoKit");
     expect(photos?.description).not.toMatch(unsupported);
     expect(library?.description).not.toMatch(unsupported);
-    expect(library?.description).not.toMatch(/image bytes on demand/i);
     expect(photoKind?.description).not.toMatch(unsupported);
 
     const metadataKeys = Object.keys(

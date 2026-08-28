@@ -7,7 +7,7 @@
  * the edge is tombstoned only after its final claim disappears.
  */
 
-import { type DbClient, pgTextArray } from '../db/client';
+import { type DbClient, pgBigintArray, pgTextArray } from '../db/client';
 import { ToolUserError } from './errors';
 import { insertEdgeChangeEventInTransaction } from './insert-event';
 import {
@@ -457,6 +457,45 @@ async function retractRelationshipClaimExcept(
       row,
     });
   }
+}
+
+/** Retract one owner's claims for members absent from a complete destination sync. */
+export async function retractRelationshipClaimFromDepartures(
+  tx: DbClient,
+  params: {
+    organizationId: string;
+    relationshipTypeId: number;
+    toEntityId: number;
+    claimKey: string;
+    keepFromEntityIds: readonly number[];
+  }
+): Promise<number> {
+  const rows = await tx<ClaimedRelationshipWithSlugRow>`
+    SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
+           rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
+    FROM entity_relationships r
+    JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+    WHERE r.organization_id = ${params.organizationId}
+      AND r.relationship_type_id = ${params.relationshipTypeId}
+      AND r.to_entity_id = ${params.toEntityId}
+      AND r.deleted_at IS NULL
+      AND r.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
+      AND (r.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) ? ${params.claimKey}
+      AND r.from_entity_id <> ALL(${pgBigintArray([...params.keepFromEntityIds])}::bigint[])
+    ORDER BY r.id
+    FOR UPDATE OF r
+  `;
+
+  let removedRelationships = 0;
+  for (const row of rows) {
+    const { relationshipRemoved } = await retractLockedRelationshipClaims(tx, {
+      organizationId: params.organizationId,
+      claimKeys: [params.claimKey],
+      row,
+    });
+    if (relationshipRemoved) removedRelationships++;
+  }
+  return removedRelationships;
 }
 
 /** Reconcile one connector event's complete declared relationship set. */

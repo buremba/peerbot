@@ -47,7 +47,10 @@ import {
   withEntityWriteTransaction,
 } from '../utils/entity-management.js';
 import { ensureRelationshipType, upsertEdges } from '../utils/edge-writes.js';
-import { connectionRelationshipClaimKey } from '../utils/relationship-claims.js';
+import {
+  connectionRelationshipClaimKey,
+  retractRelationshipClaimFromDepartures,
+} from '../utils/relationship-claims.js';
 import {
   PURPOSE_AUTHORIZATION,
   withAclEdgeWrite,
@@ -583,6 +586,7 @@ export async function buildAccessGraph(params: {
   const { createdEdges, removedEdges } = await withAclEdgeWrite(
     sql,
     async (tx) => {
+      const claimKey = connectionRelationshipClaimKey(connectionId, 'config:access-graph');
       const created = await upsertEdges({
         db: tx,
         organizationId,
@@ -591,7 +595,7 @@ export async function buildAccessGraph(params: {
         source: 'feed',
         confidence: 1.0,
         createdBy: creatorUserId,
-        claimKey: connectionRelationshipClaimKey(connectionId, 'config:access-graph'),
+        claimKey,
         onConflict: 'ignore',
       });
 
@@ -604,18 +608,13 @@ export async function buildAccessGraph(params: {
       // not pass empty-on-fetch-error.
       let removedEdges = 0;
       for (const [resourceEntityId, resourceMembers] of currentMembersByResource) {
-        const keep = [...resourceMembers];
-        const removed = await tx<{ id: number }[]>`
-			UPDATE entity_relationships
-			SET deleted_at = current_timestamp, updated_at = current_timestamp
-			WHERE organization_id = ${organizationId}
-			  AND relationship_type_id = ${typeId}
-			  AND to_entity_id = ${resourceEntityId}
-			  AND deleted_at IS NULL
-			  AND from_entity_id <> ALL(${pgBigintArray(keep)}::bigint[])
-			RETURNING id
-		`;
-        removedEdges += removed.length;
+        removedEdges += await retractRelationshipClaimFromDepartures(tx, {
+          organizationId,
+          relationshipTypeId: typeId,
+          toEntityId: resourceEntityId,
+          claimKey,
+          keepFromEntityIds: [...resourceMembers],
+        });
       }
       return { createdEdges: created.length, removedEdges };
     },

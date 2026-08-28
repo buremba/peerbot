@@ -287,6 +287,46 @@ describe('slack channel graph', () => {
     expect(await memberOfEdges(org.id)).toHaveLength(1); // only Bob remains
   });
 
+  it('keeps a departed member edge while another connection still claims it', async () => {
+    const { org } = await seedOrg('Shared grant org');
+    const channel = {
+      channelId: 'C01ENG',
+      name: 'eng',
+      memberSlackUserIds: ['U01ALICE'],
+    };
+
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-a',
+      teamId: TEAM,
+      channels: [channel],
+    });
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-b',
+      teamId: TEAM,
+      channels: [channel],
+    });
+
+    const firstDeparture = await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-a',
+      teamId: TEAM,
+      channels: [{ ...channel, memberSlackUserIds: [] }],
+    });
+    expect(firstDeparture.removedEdges).toBe(0);
+    expect(await memberOfEdges(org.id)).toHaveLength(1);
+
+    const finalDeparture = await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-b',
+      teamId: TEAM,
+      channels: [{ ...channel, memberSlackUserIds: [] }],
+    });
+    expect(finalDeparture.removedEdges).toBe(1);
+    expect(await memberOfEdges(org.id)).toHaveLength(0);
+  });
+
   it('tenant-scopes channels by team — the same channel id in two orgs is two entities', async () => {
     const a = await seedOrg('Tenant A');
     const b = await seedOrg('Tenant B');

@@ -443,6 +443,94 @@ describe('connector identity scope lifecycle', () => {
     ]);
   });
 
+  it('keeps a retained tenant key exclusive and resolves it to the original entity', async () => {
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Retained tenant claim org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${org.id}, 'person', 'Person', current_timestamp, current_timestamp)
+    `;
+    const firstShape = { scope: 'tenant' as const, scopeKeyPath: 'metadata.tenant_id' };
+    await install(org.id, metadata('1.0.0', firstShape));
+    clearEntityLinkRulesCache();
+    await applyEventAttributions({
+      connectorKey,
+      feedKey: 'customers',
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'customer',
+          metadata: {
+            customer_id: '1001',
+            customer_name: 'Original tenant customer',
+            tenant_id: 'tenant-a',
+          },
+        },
+      ],
+    });
+    const [original] = await sql<{ id: string; entity_id: number | string }[]>`
+      SELECT id::text AS id, entity_id
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+        AND identifier = '1001'
+        AND deleted_at IS NULL
+    `;
+    if (!original) throw new Error('Initial tenant identity was not created');
+
+    const next = metadata('2.0.0', {
+      scope: 'tenant',
+      scopeKeyPath: 'metadata.account_id',
+    });
+    await expect(install(org.id, next)).rejects.toThrow(/1 live identity row/i);
+    await rekeyEntityIdentities({
+      organizationId: org.id,
+      namespace,
+      mapping: { [original.id]: 'tenant-b' },
+      apply: true,
+    });
+    await install(org.id, next);
+
+    clearEntityLinkRulesCache();
+    await applyEventAttributions({
+      connectorKey,
+      feedKey: 'customers',
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'customer',
+          metadata: {
+            customer_id: '1001',
+            customer_name: 'Same customer through retained key',
+            account_id: 'tenant-a',
+          },
+        },
+      ],
+    });
+    const rows = await sql<
+      { id: string; entity_id: number | string; scope_key: string | null; history: string[] }[]
+    >`
+      SELECT id::text AS id, entity_id, scope_key,
+             to_json(scope_key_history) AS history
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+        AND identifier = '1001'
+        AND deleted_at IS NULL
+      ORDER BY id
+    `;
+    expect(rows).toEqual([
+      {
+        id: original.id,
+        entity_id: original.entity_id,
+        scope_key: 'tenant-b',
+        history: ['tenant-a'],
+      },
+    ]);
+  });
+
   it('backfills pre-registry peer connectors and rejects a conflicting new connector', async () => {
     const org = await createTestOrganization({ name: 'Shared namespace registry org' });
     const firstConnector = 'scope-shared-first';

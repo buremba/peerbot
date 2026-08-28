@@ -1,5 +1,12 @@
 -- migrate:up transaction:false
 
+-- Intentionally no `lobu:no-quiesce`: this migration is the contract half of
+-- the unadopted #2846 storage shape and removes a column/index referenced by
+-- the pre-#2849 server. Per docs/MIGRATIONS.md, the unmarked pre-upgrade hook
+-- scales every application replica to zero before dbmate runs, so no old
+-- replica can issue scope_connection_id SQL against the post-migration schema.
+-- Adding the no-quiesce marker here would make the rollout unsafe.
+
 -- Identity scope belongs to the upstream tenant/account/database, not to a
 -- Lobu `connections` row. Reconnecting may mint a new connection id, while two
 -- connections can legitimately address the same upstream tenant. The connector

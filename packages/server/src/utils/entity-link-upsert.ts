@@ -484,12 +484,13 @@ function extractLink(
 /**
  * Resolve identity keys to their owning entity — TYPE-AGNOSTIC.
  *
- * An identity value belongs to at most ONE entity within its scope (the
- * `idx_entity_identities_live_unique_tenant_scoped` index on
- * `(org, namespace, identifier, COALESCE(scope_key, ''))`), so a key
- * resolves to a single entity of ANY type. Org-scoped identities carry a NULL
- * scope and therefore still resolve org-wide, which is every identity a
- * connector has not declared `scope: 'tenant'`. We deliberately do NOT
+ * An identity value belongs to at most ONE entity within its current or
+ * retained scope. The live-key index enforces current claims; explicit re-key
+ * validates retained claims under an identity-writer table lock, and the
+ * insertion path below refuses any retained-key collision. Org-scoped
+ * identities carry a NULL scope and therefore still resolve org-wide, which
+ * is every identity a connector has not declared `scope: 'tenant'`. We
+ * deliberately do NOT
  * filter by the rule's target `entityType`: a `slack_user_id` owned by a
  * signed-in `$member` must resolve to that `$member` even when a `person`-typed
  * rule looks it up, so attribution and ACL converge on one entity instead of
@@ -528,14 +529,19 @@ async function lookupMatches(
     identifier: string;
     scope_key: string;
   }>`
-    SELECT ei.entity_id, ei.namespace, ei.identifier,
-           COALESCE(ei.scope_key, '') AS scope_key
+    SELECT DISTINCT ei.entity_id, ei.namespace, ei.identifier,
+           claim.scope_key
     FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id
+    CROSS JOIN LATERAL (
+      SELECT DISTINCT unnest(
+        array_prepend(COALESCE(ei.scope_key, ''), ei.scope_key_history)
+      ) AS scope_key
+    ) claim
     WHERE ei.organization_id = ${params.orgId}
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
-      AND (ei.namespace, ei.identifier, COALESCE(ei.scope_key, '')) IN (
+      AND (ei.namespace, ei.identifier, claim.scope_key) IN (
         SELECT ns, ident, scope
         FROM unnest(
           ${pgTextArray(namespaces)}::text[],
@@ -775,6 +781,20 @@ async function insertIdentities(
       ${pgTextArray(identifiers)}::text[],
       ${pgTextArray(scopes)}::text[]
     ) AS v(ns, ident, scope)
+    -- A retained scope is still an authoritative claim because append-only
+    -- events stamped with it must keep resolving to their original entity.
+    -- Rekey takes SHARE ROW EXCLUSIVE on entity_identities, which conflicts
+    -- with this INSERT's ROW EXCLUSIVE lock, so this check cannot race a
+    -- history rewrite. Current-key races remain enforced by the unique index.
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM entity_identities retained
+      WHERE retained.organization_id = ${params.orgId}
+        AND retained.namespace = v.ns
+        AND retained.identifier = v.ident
+        AND retained.deleted_at IS NULL
+        AND v.scope = ANY(retained.scope_key_history)
+    )
     ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, ''))
       WHERE deleted_at IS NULL
     DO UPDATE SET connection_id = EXCLUDED.connection_id

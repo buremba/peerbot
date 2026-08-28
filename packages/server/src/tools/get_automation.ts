@@ -601,11 +601,16 @@ async function getAutomationImpl(
         -- Identity scopes for the primary entity (entity_ids[1]) — drives
         -- the entity-link UNION in the unprocessedCount query.
         (SELECT jsonb_agg(jsonb_build_object(
-           'namespace', namespace,
-           'identifier', identifier,
-           'scopeKey', scope_key
+           'namespace', ei.namespace,
+           'identifier', ei.identifier,
+           'scopeKey', NULLIF(identity_scope.scope_key, '')
          ))
          FROM entity_identities ei
+         CROSS JOIN LATERAL (
+           SELECT DISTINCT unnest(
+             array_prepend(COALESCE(ei.scope_key, ''), ei.scope_key_history)
+           ) AS scope_key
+         ) identity_scope
          WHERE ei.entity_id = (i.entity_ids)[1]
            AND ei.deleted_at IS NULL
            AND ei.namespace IN (${namespacesLiteral})

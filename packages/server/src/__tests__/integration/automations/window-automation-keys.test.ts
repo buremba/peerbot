@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
+import { IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY } from "../../../identity/scope-projection";
 import { getAutomation } from "../../../tools/get_automation";
 import { manageAutomations } from "../../../tools/admin/manage_automations";
 import { nextAutomationWindowStart } from "../../../utils/window-utils";
@@ -112,5 +113,59 @@ describe("Automation window vocabulary", () => {
 		expect(window.automation_name).toBe("Window vocab");
 		expect(detail.automation?.slug).toBe("window-vocab");
 		expect(detail.pending_analysis?.next_window?.start).toBe(expectedNextWindow.toISOString());
+	});
+
+	it("counts events stamped with a retained identity scope", async () => {
+		const { org, user, ctx } = await seedOwnerContext();
+		const entity = await createTestEntity({
+			name: "Re-keyed customer",
+			organization_id: org.id,
+		});
+		const agent = await createTestAgent({
+			organizationId: org.id,
+			ownerUserId: user.id,
+		});
+		const created = await manageAutomations(
+			{
+				action: "create",
+				entity_id: entity.id,
+				slug: "retained-identity-scope",
+				name: "Retained identity scope",
+				prompt: "Summarize retained-scope events.",
+				agent_id: agent.agentId,
+				triggers: [{ kind: "schedule", cron: "0 0 * * *" }],
+			},
+			{} as Env,
+			ctx,
+		);
+		if (created.action !== "create" || !("automation_id" in created)) {
+			throw new Error("Automation creation did not complete");
+		}
+
+		const sql = getTestDb();
+		await sql`
+			INSERT INTO entity_identities (
+				organization_id, entity_id, namespace, identifier, source_connector,
+				scope_key, scope_key_history
+			) VALUES (
+				${org.id}, ${entity.id}, 'x_user_id', '1001', 'connector:test',
+				'tenant-b', ARRAY['tenant-a']::text[]
+			)
+		`;
+		await createTestEvent({
+			organization_id: org.id,
+			content: "Observed before the identity was re-keyed",
+			metadata: {
+				x_user_id: "1001",
+				[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: "tenant-a" },
+			},
+		});
+
+		const detail = await getAutomation(
+			{ automation_id: String(created.automation_id) },
+			{} as Env,
+			ctx,
+		);
+		expect(detail.pending_analysis?.unprocessed_content_count).toBe(1);
 	});
 });

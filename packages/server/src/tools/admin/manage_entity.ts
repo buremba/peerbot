@@ -156,9 +156,8 @@ function attributionFor(actor: ActingPrincipal): ApprovalAttributionType {
 		: ApprovalAttribution.Agent;
 }
 
-function ruleDenialFrom(
-	error: unknown,
-): EntityWriteDenialDescription | null {
+/** A write-rule refusal, in the shape the denial audit records. */
+function ruleDenialFrom(error: unknown): EntityWriteDenialDescription | null {
 	if (
 		!(error instanceof EntityRowValidationError) ||
 		error.verdict.outcome !== "deny"

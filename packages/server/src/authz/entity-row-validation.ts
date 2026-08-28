@@ -41,13 +41,16 @@ export type ValidatedEntityRowPatch = EntityRowPatch & {
 	readonly [validatedBrand]: true;
 };
 
+/** The entity write a verdict judged, in the vocabulary the audit records. */
+export type EntityWriteOperation = "create" | "update" | "delete" | "merge";
+
 /** What a rule decided, carried on the error so a caller can route it. */
 export interface EntityRowValidationVerdict {
 	outcome: "deny" | "escalate";
 	reason: string;
 	/** Changed fields for a deny; fields named by the rule for an escalation. */
 	fields: string[];
-	operation: string;
+	operation: EntityWriteOperation;
 	/** The row judged, or null for a create — there is no row yet. */
 	entityId: number | null;
 	entityType: string | null;
@@ -151,14 +154,16 @@ function flatten(
 	return flat;
 }
 
+/**
+ * The fields a denied write would actually have changed — names only, never the
+ * attempted values, so the audit row stays privacy-safe.
+ */
 function changedFields(row: EntityRuleRow | undefined): string[] {
 	if (!row) return [];
-	const next = { ...row.committed, ...row.patch };
-	const normalize = (value: unknown) => (value === undefined ? null : value);
+	const stable = (value: unknown) =>
+		JSON.stringify(value === undefined ? null : value);
 	return Object.keys(row.patch).filter(
-		(field) =>
-			JSON.stringify(normalize(row.committed[field])) !==
-			JSON.stringify(normalize(next[field])),
+		(field) => stable(row.committed[field]) !== stable(row.patch[field]),
 	);
 }
 
@@ -221,7 +226,7 @@ export async function validateEntityRowPatch(params: {
 	tx: DbClient;
 	ids: number[];
 	patch: EntityRowPatch;
-	operation?: string;
+	operation?: EntityWriteOperation;
 }): Promise<ValidatedEntityRowPatch> {
 	return validateEntityRowPatchGrantingApprovedFields({
 		...params,
@@ -279,7 +284,7 @@ export async function validateEntityRowPatchGrantingApprovedFields(params: {
 	tx: DbClient;
 	ids: number[];
 	patch: EntityRowPatch;
-	operation?: string;
+	operation?: EntityWriteOperation;
 	/** REQUIRED. Fields a human already approved; anything an escalate names
 	 * outside this list throws with the gap spelled out. */
 	approvedFields: readonly string[];
@@ -314,7 +319,7 @@ async function enforceCompiledRules(params: {
 	ids: number[];
 	flatPatch: Record<string, unknown>;
 	approvedFields: readonly string[];
-	operation: string;
+	operation: EntityWriteOperation;
 }): Promise<void> {
 	const { tx, ids, flatPatch, approvedFields, operation } = params;
 

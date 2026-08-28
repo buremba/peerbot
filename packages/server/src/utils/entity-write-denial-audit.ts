@@ -1,5 +1,6 @@
 import { retryWithBackoff } from "@lobu/core";
 import type { ActingPrincipal } from "../authz/entity-policy";
+import type { EntityWriteOperation } from "../authz/entity-row-validation";
 import type { DbClient } from "../db/client";
 import { currentMcpActivityEventMetadata } from "../lobu/stores/mcp-client-conversations";
 import type { ToolContext } from "../tools/registry";
@@ -7,10 +8,11 @@ import { ToolUserError } from "./errors";
 import { insertConnectionlessAuditEvent } from "./insert-event";
 import logger from "./logger";
 import { isUniqueViolation } from "./pg-errors";
+import { stripNul } from "./strip-nul";
 
 export interface EntityWriteDenialDescription {
 	denialSource: "policy" | "rule";
-	operation: string;
+	operation: EntityWriteOperation;
 	reason: string;
 	deniedFields: string[];
 	entityId: number | null;
@@ -22,7 +24,7 @@ export interface EntityWriteDenialAudit extends EntityWriteDenialDescription {
 	organizationId: string;
 	ctx?: ToolContext;
 	attemptId: string;
-	actor: Pick<ActingPrincipal, "kind" | "id"> | null;
+	actor: Pick<ActingPrincipal, "kind" | "id">;
 	automationId: number | null;
 	runId?: number | null;
 	createdBy?: string | null;
@@ -84,7 +86,10 @@ export async function recordEntityWriteDenial(
 			? [entityId]
 			: [];
 	const originId = `entity_write_denial:v1:${attemptId}:${operation}`;
-	const idempotencyKey = `audit:${originId}`;
+	// insertEvent strips NUL from originId before deriving the persisted key, so
+	// strip here too or the reconciliation SELECT below looks up a key that was
+	// never stored.
+	const idempotencyKey = `audit:${stripNul(originId)}`;
 	const event = {
 		entityIds: sameOrgEntityIds,
 		organizationId,
@@ -101,8 +106,8 @@ export async function recordEntityWriteDenial(
 			denied_fields: deniedFields,
 			entity_id: entityId,
 			entity_type: entityType,
-			principal_kind: actor?.kind ?? null,
-			principal_id: actor?.id ?? null,
+			principal_kind: actor.kind,
+			principal_id: actor.id,
 			automation_id: automationId,
 			run_id: runId,
 			tool_call_id_or_equivalent: attemptId,
@@ -120,9 +125,15 @@ export async function recordEntityWriteDenial(
 			{ subject: "entity", op: "denied" },
 			{ lockAndPruneEntityRefs: true },
 		);
+	// `metadata ? '_lobu_idempotency_key'` restates the partial index's own
+	// predicate. Postgres cannot derive it from the `->>` equality, so without it
+	// the planner falls back to `idx_events_organization_id` and filters — a scan
+	// of the org's whole event history on every denial. With it, the lookup is a
+	// single probe of `idx_events_org_idempotency_key`.
 	const findExisting = (db: DbClient) => db<{ id: number }>`
 		SELECT id FROM events
 		WHERE organization_id = ${organizationId}
+		  AND metadata ? '_lobu_idempotency_key'
 		  AND metadata->>'_lobu_idempotency_key' = ${idempotencyKey}
 		LIMIT 1
 	`;
@@ -163,8 +174,8 @@ export async function recordEntityWriteDenial(
 				reason,
 				entityId,
 				entityType,
-				principalKind: actor?.kind ?? null,
-				principalId: actor?.id ?? null,
+				principalKind: actor.kind,
+				principalId: actor.id,
 				automationId,
 				runId,
 			},

@@ -1,7 +1,11 @@
 /**
- * Durable audit coverage for policy refusals at manage_entity's two
- * pre-transaction seams. A clean 403 is only truthful when the append-only
- * denial row committed first; the attempted entity mutation must never run.
+ * Durable audit coverage for every manage_entity refusal — policy and write
+ * rule, across create/update/delete/merge. A clean refusal is only truthful
+ * when the append-only denial row survives; a pre-transaction policy deny
+ * commits its row first, and a rule deny raised inside the write transaction
+ * is recorded after that transaction rolls back. Either way the attempted
+ * mutation must never land, and the row must name fields only — never the
+ * values the caller tried to write.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -126,7 +130,7 @@ async function denialEvents(organizationId: string) {
 	`;
 }
 
-describe("manage_entity policy-denial audit", () => {
+describe("manage_entity write-denial audit", () => {
 	beforeAll(async () => {
 		denyAttemptsCompiled = await compileEntityRule(DENY_ATTEMPTS_RULE);
 	}, 60_000);

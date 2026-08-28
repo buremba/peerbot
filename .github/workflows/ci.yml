@@ -1791,6 +1791,9 @@ jobs:
           test "$("$AUTH_CLI" --version)" = "$(bun -p 'require("./packages/cli/package.json").version')"
           "$AUTH_CLI" login --help | grep -q -- '--wait-for-approval'
           "$AUTH_CLI" whoami --help | grep -q -- '--json'
+          codesign --force --options runtime --sign - \
+            --entitlements config/macos/lobu-auth.entitlements "$AUTH_CLI"
+          test "$("$AUTH_CLI" --version)" = "$(bun -p 'require("./packages/cli/package.json").version')"
 
       # The Mac app has no XCTest target, so xcodebuild does not discover the
       # standalone @main tests under apps/mac/Tests — before this step they ran

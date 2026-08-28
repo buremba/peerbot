@@ -138,6 +138,7 @@ jobs:
             packages/owletto/apps/mac/Owletto/Info.plist \
             packages/owletto/apps/mac/Owletto/lobu-device-daemon \
             packages/cli/src/mac-auth.ts \
+            config/macos/lobu-auth.entitlements \
             scripts/build-mac-auth-cli.sh \
             scripts/sparkle/update-appcast.py
           do
@@ -400,7 +401,9 @@ jobs:
 
           scripts/verify-mac-device-daemon.sh "$DAEMON"
           test -x "$AUTH_CLI" || { echo "::error::Bundled Lobu auth helper is missing"; exit 1; }
-          codesign "${OPTS[@]}" "$AUTH_CLI"
+          codesign "${OPTS[@]}" \
+            --entitlements config/macos/lobu-auth.entitlements \
+            "$AUTH_CLI"
           codesign "${OPTS[@]}" "$DAEMON"
 
           # XPC services (each has an inner Mach-O + an outer bundle).

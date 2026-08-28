@@ -20,6 +20,7 @@ import type InstagramTakeoutConnector from "./instagram-takeout.connector.ts";
 import type LinkedInConnector from "./linkedin.connector.ts";
 import type MidasConnector from "./midas.connector.ts";
 import type NetWorthReaction from "./net-worth.reaction.ts";
+import type PollVoteReaction from "./poll-vote.reaction.ts";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
 import type SpotifyConnector from "./spotify.connector.ts";
 import { takeoutConfig } from "./takeout-dirs.ts";
@@ -38,11 +39,33 @@ const duplicateEntityResolutionRealV3FinalSkill = defineSkill({
     "Review every row in sources.people. Explain likely duplicate groups in analysis_summary and put name-only, alias-only, handle-only, oversized, or otherwise uncertain groups in uncertain_groups with why. Do not call entity tools or emit backlog tasks. After analysis, the deterministic reaction submits only candidate IDs to the server. The person entity type's x-lobu-resolution policy decides which normalized identities auto-merge and which require human review. Without that extension, normalized email and phone matches remain review-only and never auto-merge.\n",
 });
 
+const eventBackedPollsSkill = defineSkill({
+  name: "event-backed-polls",
+  content: `Use this workflow whenever the user asks for a poll, vote, or ballot.
+
+Create no ad-hoc platform card and never use ask_user for a multi-user poll. The durable poll event is the source of truth and its declared json_template supplies the native buttons on every supported surface.
+
+Opening a poll:
+1. Require a non-empty question, 2-5 distinct non-empty options, a positive integer quorum, and a future closes_at. If the user gives a duration, calculate closes_at as an ISO-8601 timestamp.
+2. In one run_sdk call, create a poll entity and then call client.knowledge.save with entity_ids containing only that entity id, semantic_type "poll_opened", payload_type "empty", title equal to the question, a stable idempotency_key "poll-opened:<entity id>", and metadata containing question, options, status "open", quorum, closes_at, results (one { option, count: 0 } row per option), and response_count 0. Return the entity id and saved event id. If retrying after an uncertain result, search for the stable poll slug first instead of creating a duplicate.
+3. Before presenting the event, call schedule_followup with run_at equal to closes_at, idempotency_key "poll-deadline:<entity id>", and prompt: "Close event-backed poll entity <entity id> at its deadline. Follow the event-backed-polls deadline procedure exactly; do nothing if it is already closed."
+4. Call present_event exactly once with the saved event id. That ends the turn because the native card is already the answer.
+
+Votes need no follow-up tool call from the agent. A server-stamped interaction event activates the deterministic poll-vote-reducer Automation; it materializes the latest poll-response per platform actor, supports vote changes, recomputes the tally, closes at quorum, and requests an in-place refresh of the original card.
+
+Deadline procedure:
+- Use run_sdk. Read the poll entity and query the single current poll_opened or poll_closed event linked to it (superseded_by IS NULL).
+- If the current event is poll_opened, copy only the poll schema fields (question, options, quorum, closes_at, results, and response_count) from that event metadata. Never copy delivery, card, _lobu, or any other internal metadata. Set status "closed", close_reason "deadline", and closed_at now. Save poll_closed linked to the poll with supersedes_event_id equal to that current open event and idempotency_key "poll-close:<entity id>"; then update the poll entity to the same state.
+- If the current event is already poll_closed, only reconcile the entity metadata to that event if needed, then stop. Never append a second close event.
+- Do not infer, copy, or accept voter identity from text. Only the chat adapter's trusted interaction envelope may identify a voter.`,
+});
+
 const personalAgent = defineAgent({
   id: "personal-agent",
   skills: [
     hourlyTaskCollaboratorSkill,
     duplicateEntityResolutionRealV3FinalSkill,
+    eventBackedPollsSkill,
   ],
   dir: ".",
   name: "personal-agent",
@@ -418,6 +441,148 @@ const task = defineEntityType({
         "Stable machine key for one distinct action within the source event",
     },
   },
+});
+
+const pollStateProperties = {
+  question: Type.String({ minLength: 1, maxLength: 500 }),
+  options: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), {
+    minItems: 2,
+    maxItems: 5,
+    uniqueItems: true,
+  }),
+  status: Type.Unsafe({ type: "string", enum: ["open", "closed"] }),
+  quorum: Type.Integer({ minimum: 1, maximum: 10_000 }),
+  closes_at: Type.String({ format: "date-time" }),
+  results: Type.Array(
+    Type.Object(
+      {
+        option: Type.String({ minLength: 1, maxLength: 100 }),
+        count: Type.Integer({ minimum: 0 }),
+      },
+      { additionalProperties: false }
+    ),
+    { minItems: 2, maxItems: 5 }
+  ),
+  response_count: Type.Integer({ minimum: 0 }),
+  close_reason: Type.Optional(
+    Type.Unsafe({ type: "string", enum: ["quorum", "deadline"] })
+  ),
+  closed_at: Type.Optional(Type.String({ format: "date-time" })),
+};
+
+const pollStateSchema = {
+  type: "object",
+  properties: pollStateProperties,
+  required: [
+    "question",
+    "options",
+    "status",
+    "quorum",
+    "closes_at",
+    "results",
+    "response_count",
+  ],
+  additionalProperties: false,
+};
+
+const poll = defineEntityType({
+  key: "poll",
+  name: "Poll",
+  description:
+    "A durable multi-user ballot whose native controls append trusted interaction events.",
+  metadata: { icon: "list-checks", color: "#6366F1" },
+  properties: pollStateProperties,
+  required: pollStateSchema.required,
+  eventKinds: {
+    poll_opened: {
+      description: "An open event-backed poll",
+      metadataSchema: pollStateSchema,
+      jsonTemplate: {
+        type: "card",
+        children: [
+          {
+            type: "text",
+            content: "Open until {{closes_at}} · quorum {{quorum}}",
+          },
+          {
+            type: "each",
+            items: "results",
+            as: "result",
+            render: {
+              type: "text",
+              content: "{{result.option}} — {{result.count}} vote(s)",
+            },
+          },
+          {
+            type: "each",
+            items: "options",
+            as: "option",
+            render: {
+              type: "button",
+              props: {
+                label: "{{option}}",
+                value: "{{option}}",
+                onClick: "@vote",
+              },
+            },
+          },
+        ],
+      },
+      interactions: { vote: { emits: "poll_vote_cast" } },
+    },
+    poll_vote_cast: {
+      description:
+        "A trusted vote or vote change appended by an interactive surface",
+    },
+    poll_closed: {
+      description: "A terminal poll result",
+      metadataSchema: pollStateSchema,
+      jsonTemplate: {
+        type: "card",
+        children: [
+          { type: "text", content: "Closed · {{close_reason}}" },
+          {
+            type: "each",
+            items: "results",
+            as: "result",
+            render: {
+              type: "text",
+              content: "{{result.option}} — {{result.count}} vote(s)",
+            },
+          },
+          {
+            type: "text",
+            content: "{{response_count}} participant(s)",
+          },
+        ],
+      },
+    },
+  },
+});
+
+const pollResponse = defineEntityType({
+  key: "poll-response",
+  name: "Poll response",
+  description:
+    "The latest materialized choice for one trusted platform actor in one poll.",
+  properties: {
+    poll_entity_id: Type.Integer({ minimum: 1 }),
+    platform: Type.String({ minLength: 1, maxLength: 50 }),
+    actor_id: Type.String({ minLength: 1, maxLength: 500 }),
+    actor_name: Type.String({ minLength: 1, maxLength: 500 }),
+    choice: Type.String({ minLength: 1, maxLength: 100 }),
+    vote_event_id: Type.Integer({ minimum: 1 }),
+    updated_at: Type.String({ format: "date-time" }),
+  },
+  required: [
+    "poll_entity_id",
+    "platform",
+    "actor_id",
+    "actor_name",
+    "choice",
+    "vote_event_id",
+    "updated_at",
+  ],
 });
 
 // GBP-equivalent of a transaction amount, using ONLY exact, Revolut-booked
@@ -1304,6 +1469,31 @@ const duplicateEntityResolution = defineAutomation({
   skills: ["duplicate-entity-resolution-real-v3-final"],
 });
 
+const pollVoteReducer = defineAutomation({
+  agent: personalAgent,
+  slug: "poll-vote-reducer",
+  name: "Poll vote reducer",
+  description:
+    "Materializes trusted interactive votes, vote changes, tallies, quorum closure, and card refreshes.",
+  triggers: [
+    {
+      kind: "event",
+      source: "workspace",
+      entity_type: "poll",
+      event_types: ["poll_vote_cast"],
+      execution: "window",
+      active_run: "queue",
+    },
+  ],
+  prompt:
+    'Return only {"summary":"Process the trusted poll interaction."}. Do not copy actor identity or mutate poll state; the deterministic reaction owns all writes.',
+  reactionsGuidance:
+    "The reaction reads the exact run-bound event and accepts only template_interaction provenance with a server-stamped actor.",
+  reaction: reactionFromFile<typeof PollVoteReaction>(
+    "./poll-vote.reaction.ts"
+  ),
+});
+
 export default defineConfig({
   // Source of truth for buremba definitions. Deletes org-owned entity /
   // relationship types and automations absent from this config (including
@@ -1340,6 +1530,8 @@ export default defineConfig({
     person,
     company,
     task,
+    poll,
+    pollResponse,
     channel,
     account,
     netWorthSnapshot,
@@ -1362,6 +1554,7 @@ export default defineConfig({
     hourlyTaskCollaborator,
     duplicateEntityResolution,
     midasNetWorth,
+    pollVoteReducer,
   ],
   authProfiles: [gmailAccountAuth, gmailAppAuth],
   connections: [

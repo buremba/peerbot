@@ -2090,9 +2090,9 @@ describe("LinkedInConnector home_feed", () => {
           });
       },
       undefined,
-      // Production enforces at least one pass. Its final harvest expands the
-      // replacement from scratch without carrying evidence across DOM rows.
-      { max: 1, stall: 1, waitMs: 0 }
+      // No iterative harvest follows this terminal pass. The unique replacement
+      // must receive its own fresh expansion attempt immediately.
+      { max: 0, stall: 0, waitMs: 0 }
     );
 
     expect(res.events.map((event: any) => event.origin_id)).toEqual([

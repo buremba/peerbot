@@ -156,6 +156,42 @@ describe('applyEventAttributions', () => {
     expect(webhookItem.metadata).toEqual({ visible: 'also-kept' });
   });
 
+  it.each([
+    IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+    IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
+    SCOPED_IDENTITY_ALIASES_METADATA_KEY,
+  ])('rejects a connector trait targeting reserved projection %s', async (reservedKey) => {
+    const { org } = await setupOrg(`reserved projection trait ${reservedKey}`);
+    const item = {
+      origin_type: 'message',
+      metadata: { user_id: 'actor-1', forged: [{ scopeKey: 'tenant-forged' }] },
+    };
+
+    await expect(
+      resolveEventAttributionsForItems({
+        connectorKey: 'webhook:reserved-projection-trait',
+        orgId: org.id,
+        items: [item],
+        rules: {
+          message: [
+            {
+              role: 'authored_by',
+              entityType: '$member',
+              autoCreate: true,
+              identities: [{ namespace: 'x_user_id', eventPath: 'metadata.user_id' }],
+              traits: {
+                [reservedKey]: {
+                  eventPath: 'metadata.forged',
+                  mergeStrategy: 'overwrite',
+                },
+              },
+            },
+          ],
+        },
+      })
+    ).rejects.toThrow(/reserved for server-authored identity scope projections/i);
+  });
+
   it('creates an entity and writes identities when autoCreate is true and no match exists', async () => {
     const { org } = await setupOrg('autoCreate org');
 

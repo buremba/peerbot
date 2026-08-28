@@ -199,6 +199,10 @@ describe("conversations dual-write", () => {
 	});
 
 	it("resolves channel and direct-message location labels", async () => {
+		const tenantScopedDistractor = await createTestEntity({
+			organization_id: org,
+			name: "tenant-forged-label",
+		});
 		const channel = await createTestEntity({
 			organization_id: org,
 			name: "launch-room",
@@ -206,8 +210,10 @@ describe("conversations dual-write", () => {
 		const sql = getTestDb();
 		await sql`
 			INSERT INTO entity_identities
-				(organization_id, entity_id, namespace, identifier, source_connector)
-			VALUES (${org}, ${channel.id}, 'slack_channel_id', 'TLOC:CLOC', 'connector:slack')
+				(organization_id, entity_id, namespace, identifier, source_connector, scope_key)
+			VALUES
+				(${org}, ${tenantScopedDistractor.id}, 'slack_channel_id', 'TLOC:CLOC', 'connector:test', 'tenant-forged'),
+				(${org}, ${channel.id}, 'slack_channel_id', 'TLOC:CLOC', 'connector:slack', NULL)
 		`;
 
 		expect(

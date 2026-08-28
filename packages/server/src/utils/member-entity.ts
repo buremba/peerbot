@@ -8,6 +8,7 @@
 
 import { unvalidatedEntityRowPatch, validateEntityRowPatch } from "../authz/entity-row-validation";
 import { type DbClient, getDb } from '../db/client';
+import { insertOrganizationScopedIdentity } from '../identity/claims';
 import {
   createEntity,
   type EntityData,
@@ -140,15 +141,13 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
   // 'auth:signup' source is the gate's anti-hijack guard — only written here from
   // trusted server-side provisioning with a verified user id.
   if (params.userId && memberEntityId !== null) {
-    await sql`
-      INSERT INTO entity_identities (
-        organization_id, entity_id, namespace, identifier, source_connector
-      ) VALUES (
-        ${params.organizationId}, ${memberEntityId}, 'auth_user_id', ${params.userId}, 'auth:signup'
-      )
-      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
-      DO NOTHING
-    `;
+    await insertOrganizationScopedIdentity(sql, {
+      organizationId: params.organizationId,
+      entityId: memberEntityId,
+      namespace: 'auth_user_id',
+      identifier: params.userId,
+      sourceConnector: 'auth:signup',
+    });
   }
 }
 

@@ -20,6 +20,12 @@ const IDENTITY_SCOPE_PROJECTION_METADATA_KEYS = [
 	SCOPED_IDENTITY_ALIASES_METADATA_KEY,
 ] as const;
 
+export function isIdentityScopeProjectionMetadataKey(key: string): boolean {
+	return IDENTITY_SCOPE_PROJECTION_METADATA_KEYS.some(
+		(projectionKey) => projectionKey === key,
+	);
+}
+
 /**
  * Remove server-authored tenant-scope projections from an untrusted metadata
  * object. The exact-key allowlist is intentional: connectors and entity types

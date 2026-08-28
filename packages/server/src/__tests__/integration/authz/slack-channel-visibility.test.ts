@@ -149,13 +149,13 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
     });
 
     // Alice signed in + linked Slack.
-    await seedSignedInMember({
+    const aliceMemberId = await seedSignedInMember({
       orgId: org.id,
       userId: alice.id,
 			name: "Alice",
 			slackUserId: "U01ALICE",
     });
-    return { org, alice, agent };
+    return { org, alice, agent, aliceMemberId };
   }
 
 	it("surfaces only the channel the user belongs to once the graph is enforced", async () => {
@@ -185,6 +185,44 @@ describe("slack channel visibility gate (e2e via search_memory)", () => {
 		);
 		expect(channels).toContain("C01ENG");
 		expect(channels).not.toContain("C01SEC");
+  });
+
+	it("does not authorize a channel through a tenant-scoped resource identity", async () => {
+    const { org, alice, agent, aliceMemberId } = await setupWorkspace();
+    await buildAccessGraph({
+      organizationId: org.id,
+      connectionId: CONN,
+      connectorKey: slackAclSource.key,
+      resourceNamespace: slackAclSource.resourceNamespace,
+      memberIdentities: slackAclSource.memberIdentities,
+      resources: slackChannelsToResources(TEAM, [
+        { channelId: "C01ENG", name: "eng", memberSlackUserIds: ["U01ALICE"] },
+      ]),
+    });
+
+    const sql = getTestDb();
+    await sql`
+      UPDATE entity_identities
+      SET identifier = ${`${TEAM}:C01SEC`}, scope_key = 'forged-tenant'
+      WHERE organization_id = ${org.id}
+        AND entity_id IN (
+          SELECT to_entity_id
+          FROM entity_relationships relationship
+          JOIN entity_relationship_types type ON type.id = relationship.relationship_type_id
+          WHERE relationship.organization_id = ${org.id}
+            AND relationship.from_entity_id = ${aliceMemberId}
+            AND relationship.deleted_at IS NULL
+            AND type.slug = 'member_of'
+        )
+        AND namespace = 'slack_channel_id'
+        AND scope_key IS NULL
+        AND deleted_at IS NULL
+    `;
+
+    const result = await searchAs(org.id, alice.id, agent.agentId);
+    expect((result.conversation_messages ?? []).map((message) => message.channel_id)).not.toContain(
+      "C01SEC"
+    );
   });
 
 	it("fails closed: an unresolved requester sees NONE of an enforced connection", async () => {

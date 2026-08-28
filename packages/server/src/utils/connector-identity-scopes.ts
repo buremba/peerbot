@@ -1,4 +1,5 @@
 import { type DbClient, pgTextArray } from '../db/client';
+import { isIdentityScopeProjectionMetadataKey } from '../identity/scope-projection';
 
 type ConnectorIdentityScopeShape = {
   scope: 'organization' | 'tenant';
@@ -62,7 +63,17 @@ export function connectorIdentityScopeDeclarations(
       const attributions = asRecord(rawEventKind)?.attributions;
       if (!Array.isArray(attributions)) continue;
       attributions.forEach((rawAttribution, attributionIndex) => {
-        const identities = asRecord(asRecord(rawAttribution)?.target)?.identities;
+        const attribution = asRecord(rawAttribution);
+        const traits = asRecord(attribution?.traits);
+        for (const traitKey of Object.keys(traits ?? {})) {
+          if (isIdentityScopeProjectionMetadataKey(traitKey)) {
+            throw new Error(
+              `Entity trait '${traitKey}' in feed '${feedKey}', event kind '${eventKind}', ` +
+                `attribution #${attributionIndex + 1} is reserved for server-authored identity scope projections.`
+            );
+          }
+        }
+        const identities = asRecord(attribution?.target)?.identities;
         if (!Array.isArray(identities)) return;
         identities.forEach((rawIdentity, identityIndex) => {
           const identity = asRecord(rawIdentity);

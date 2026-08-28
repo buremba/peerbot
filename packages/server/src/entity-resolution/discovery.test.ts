@@ -366,6 +366,49 @@ describe("entity resolution module", () => {
 		});
 	});
 
+	it("keeps multi-field tenant tuples distinct when values contain separators", () => {
+		const assessment = assessEntityResolution({
+			metadataSchema: {
+				"x-lobu-resolution": {
+					rules: [
+						{
+							fields: ["account", "region"],
+							normalizer: "exact",
+							onMatch: "auto_merge",
+						},
+					],
+				},
+			},
+			winner: {
+				id: 1,
+				metadata: { region: "x" },
+				identities: [
+					{
+						namespace: "account",
+						identifier: "same",
+						scopeKey: "tenant-a\u001fsegment",
+					},
+				],
+			},
+			losers: [
+				{
+					id: 2,
+					metadata: { region: "segment\u001fx" },
+					identities: [
+						{
+							namespace: "account",
+							identifier: "same",
+							scopeKey: "tenant-a",
+						},
+					],
+				},
+			],
+		});
+
+		expect(assessment.decision).toBe("review");
+		expect(assessment.evidence).toEqual([]);
+	});
+
 	it("reads a JID-shell's phone identity but does not match a corrupted metadata phone", () => {
 		// The run-702088 prod shape (numbers sanitized): the WhatsApp shell has
 		// its phone only in entity_identities; the named contact's metadata phone
@@ -387,7 +430,7 @@ describe("entity resolution module", () => {
 			],
 		};
 		expect(normalizedResolutionRuleKeys(jidShell, phoneRule)).toEqual([
-			"447700900123",
+			'[["447700900123",null]]',
 		]);
 
 		const assessment = assessEntityResolution({

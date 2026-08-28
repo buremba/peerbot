@@ -709,6 +709,59 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     );
   });
 
+  it('does not recreate an organization scope retained by a re-keyed automation claim', async () => {
+    const ctx = await setupKeyedAutomation();
+    const { sql, workspace, automationId, parentEntityId } = ctx;
+    const runs = await sql<{ id: number }[]>`
+      INSERT INTO runs (organization_id, automation_id, run_type, status)
+      VALUES
+        (${workspace.org.id}, ${automationId}, 'automation', 'completed'),
+        (${workspace.org.id}, ${automationId}, 'automation', 'completed')
+      RETURNING id
+    `;
+    const promote = (tx: DbClient, runId: number) =>
+      promoteAutomationEntityOutput({
+        tx,
+        extractedData: {
+          problems: [{ category: 'Stability', name: 'App Crashes' }],
+        },
+        outputName: 'problems',
+        output: OUTPUTS.problems,
+        automationId,
+        organizationId: workspace.org.id,
+        runId,
+        parentEntityId,
+        createdBy: workspace.users.owner.id,
+        validContentIds: new Set<number>(),
+      });
+
+    await sql.begin((tx) => promote(tx as unknown as DbClient, runs[0].id));
+    const identifier = topicIdentity(automationId, APP_CRASHES_KEY);
+    await sql`
+      UPDATE entity_identities
+      SET scope_key = 'tenant-current', scope_key_history = ARRAY['']::text[]
+      WHERE organization_id = ${workspace.org.id}
+        AND namespace = 'automation_key'
+        AND identifier = ${identifier}
+        AND scope_key IS NULL
+        AND deleted_at IS NULL
+    `;
+
+    await expect(
+      sql.begin((tx) => promote(tx as unknown as DbClient, runs[1].id))
+    ).rejects.toThrow(/cannot reuse an organization scope retained by another live claim/i);
+
+    const claims = await sql<{ scope_key: string | null }>`
+      SELECT scope_key
+      FROM entity_identities
+      WHERE organization_id = ${workspace.org.id}
+        AND namespace = 'automation_key'
+        AND identifier = ${identifier}
+        AND deleted_at IS NULL
+    `;
+    expect(claims).toEqual([{ scope_key: 'tenant-current' }]);
+  });
+
   it('hard-deletes the provisional entity after losing a concurrent identity race', async () => {
     const ctx = await setupKeyedAutomation();
     const { sql, workspace, automationId, parentEntityId } = ctx;

@@ -360,6 +360,7 @@ async function findCaseForRun(
     WHERE ei.organization_id = ${organizationId}
       AND ei.namespace = ${EVAL_CASE_NAMESPACE}
       AND ei.identifier = ${identifier}
+      AND ei.scope_key IS NULL
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
     LIMIT 1

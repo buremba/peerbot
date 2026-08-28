@@ -9,6 +9,7 @@
 import { normalizeSlackUserId, SLACK_IDENTITY } from "@lobu/connectors/slack-identity";
 import { fetchUserInfoWithRaw } from "../connect/oauth-providers";
 import { getDb } from "../db/client";
+import { insertOrganizationScopedIdentity } from "../identity/claims";
 import {
 	type ResolvedTenantMember,
 	resolveMemberOrgsForUser,
@@ -44,48 +45,6 @@ interface IdentityRow {
 type Sql = ReturnType<typeof getDb>;
 
 /**
- * Claim one identity in the permanently organization-scoped auth namespace.
- *
- * Re-key retains old scope keys so append-only events keep resolving. A plain
- * INSERT would recreate a key retained by another live row after a re-key and
- * make that historical tuple ambiguous. This mirrors the connector claim path:
- * the INSERT's table lock serializes with re-key, and the history predicate
- * refuses to reuse the organization-scope sentinel.
- */
-async function insertOrganizationScopedIdentity(
-	sql: Sql,
-	params: {
-		organizationId: string;
-		memberEntityId: number;
-		namespace: string;
-		identifier: string;
-		source: string;
-	},
-): Promise<boolean> {
-	const inserted = await sql<{ id: number }>`
-    INSERT INTO entity_identities (
-      organization_id, entity_id, namespace, identifier, source_connector, scope_key
-    )
-    SELECT
-      ${params.organizationId}, ${params.memberEntityId}, ${params.namespace},
-      ${params.identifier}, ${params.source}, NULL
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM entity_identities retained
-      WHERE retained.organization_id = ${params.organizationId}
-        AND retained.namespace = ${params.namespace}
-        AND retained.identifier = ${params.identifier}
-        AND retained.deleted_at IS NULL
-        AND '' = ANY(retained.scope_key_history)
-    )
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
-    DO NOTHING
-    RETURNING id
-  `;
-	return inserted.length > 0;
-}
-
-/**
  * Insert (or no-op on conflict) entity_identities rows pointing at the given
  * member entity. The unique index on (organization_id, namespace, identifier,
  * COALESCE(scope_key, ''))
@@ -101,10 +60,10 @@ async function writeIdentities(
 	for (const row of rows) {
 		await insertOrganizationScopedIdentity(sql, {
 			organizationId,
-			memberEntityId,
+			entityId: memberEntityId,
 			namespace: row.namespace,
 			identifier: row.identifier,
-			source,
+			sourceConnector: source,
 		});
 	}
 }
@@ -148,10 +107,10 @@ async function adoptSlackIdentityOntoMember(
 ): Promise<"created" | "adopted" | "already-owned" | "conflict"> {
 	const inserted = await insertOrganizationScopedIdentity(sql, {
 		organizationId,
-		memberEntityId,
+		entityId: memberEntityId,
 		namespace: SLACK_IDENTITY.USER_ID,
 		identifier,
-		source: "auth:signup",
+		sourceConnector: "auth:signup",
 	});
 	if (inserted) return "created";
 

@@ -45,6 +45,7 @@ import {
   resolveAutomationOwner,
 } from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
+import { insertOrganizationScopedIdentity } from '../identity/claims';
 import type { EntityOutput } from '../types/automations';
 import type { AppliedChange, BlockedChange } from './entity-field-merge';
 import { recordEntityWriteDenial } from './entity-write-denial-audit';
@@ -344,6 +345,7 @@ async function upsertKeyedEntity(params: {
     WHERE ei.organization_id = ${organizationId}
       AND ei.namespace = ${AUTOMATION_KEY_NAMESPACE}
       AND ei.identifier = ${identifier}
+      AND ei.scope_key IS NULL
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
     LIMIT 1
@@ -571,32 +573,30 @@ async function upsertKeyedEntity(params: {
     };
   }
 
-  // 3. Claim the stable key. ON CONFLICT DO NOTHING against the live-unique
-  //    index: if a concurrent completion already claimed it, our insert is a
-  //    no-op and we resolve the winner instead.
-  const claimed = await tx<{ entity_id: number | string }>`
-    INSERT INTO entity_identities (
-      organization_id, entity_id, namespace, identifier, source_connector
-    ) VALUES (
-      ${organizationId}, ${entityId}, ${AUTOMATION_KEY_NAMESPACE}, ${identifier}, 'automation'
-    )
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
-    DO NOTHING
-    RETURNING entity_id
-  `;
-  if (claimed.length > 0) {
+  // 3. Claim the stable key. The shared primitive checks both the live unique
+  //    key and retained scope history. A current-key race is resolved to its
+  //    winner below; retained historical ownership fails closed.
+  const claimed = await insertOrganizationScopedIdentity(tx, {
+    organizationId,
+    entityId,
+    namespace: AUTOMATION_KEY_NAMESPACE,
+    identifier,
+    sourceConnector: 'automation',
+  });
+  if (claimed) {
     return { entityId, created: true, blocked: {}, applied: {}, blockedCreate: false };
   }
 
-  // Lost the race: another live transaction already claimed this key. Resolve
-  // the winner, then drop the entity we just created so it doesn't linger as an
-  // orphaned (identity-less) duplicate child under the parent.
+  // A null insert is either a current-key race or retained history. Resolve an
+  // exact organization-scoped winner first, then drop the provisional entity so
+  // it doesn't linger as an identity-less duplicate child under the parent.
   const winner = await tx<{ entity_id: number | string }>`
     SELECT entity_id
     FROM entity_identities
     WHERE organization_id = ${organizationId}
       AND namespace = ${AUTOMATION_KEY_NAMESPACE}
       AND identifier = ${identifier}
+      AND scope_key IS NULL
       AND deleted_at IS NULL
     LIMIT 1
   `;
@@ -616,9 +616,12 @@ async function upsertKeyedEntity(params: {
       blockedCreate: false,
     };
   }
-  // Extremely unlikely: the conflicting claim was tombstoned between our INSERT
-  // and this re-read. Keep our entity as the canonical one.
-  return { entityId, created: true, blocked: {}, applied: {}, blockedCreate: false };
+  // No exact current claim means the organization scope is retained by a
+  // differently-scoped live row. Keeping the new entity would silently bypass
+  // that historical ownership without attaching its stable-key identity.
+  throw new Error(
+    `Automation identity '${identifier}' cannot reuse an organization scope retained by another live claim.`
+  );
 }
 
 /**

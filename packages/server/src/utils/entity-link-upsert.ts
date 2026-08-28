@@ -37,6 +37,7 @@ import {
   type IdentityScopeByAliasProjection,
   IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
   IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  isIdentityScopeProjectionMetadataKey,
   ORGANIZATION_SCOPE_PROJECTION,
   parseScopedIdentityAliasProjections,
   SCOPED_IDENTITY_ALIASES_METADATA_KEY,
@@ -71,6 +72,24 @@ type ResolvedEventAttributionRule = {
 
 interface RuleMap {
   [kind: string]: ResolvedEventAttributionRule[];
+}
+
+function assertNoReservedProjectionTraitKeys(keys: Iterable<string>): void {
+  for (const key of keys) {
+    if (isIdentityScopeProjectionMetadataKey(key)) {
+      throw new Error(
+        `Entity trait '${key}' is reserved for server-authored identity scope projections.`
+      );
+    }
+  }
+}
+
+function assertNoReservedProjectionTraits(rulesByKind: RuleMap): void {
+  for (const rules of Object.values(rulesByKind)) {
+    for (const rule of rules) {
+      assertNoReservedProjectionTraitKeys(Object.keys(rule.traits ?? {}));
+    }
+  }
 }
 
 /** Connector payloads may not author the server's tenant-scope projections. */
@@ -654,6 +673,7 @@ async function createEntityWithIdentities(
 
   const name = params.title || persisted[0].identifier;
   const metadata: Record<string, unknown> = {};
+  assertNoReservedProjectionTraitKeys(params.traits.keys());
   for (const [key, value] of params.traits) metadata[key] = value;
 
   // Resolve entity_type slug → entity_types(id). Same schema search path as
@@ -839,6 +859,7 @@ async function applyTraits(
   }
 ): Promise<void> {
   if (!params.rule.traits || params.traits.size === 0) return;
+  assertNoReservedProjectionTraitKeys(params.traits.keys());
 
   // init_only traits were written to metadata at create time; nothing to do now.
   const overwrite: Record<string, unknown> = {};
@@ -1010,6 +1031,12 @@ async function resolveLinksByKind(
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
     return resolvedByItem;
   }
+
+  // Connector payloads may supply trait values, so a declaration targeting a
+  // server-owned projection key would let the payload overwrite the canonical
+  // identity tuples after ensureAliases. Validate direct webhook rules here as
+  // well as connector-definition rules, before any entity write is attempted.
+  assertNoReservedProjectionTraits(params.rulesByKind);
 
   await assertConnectorIdentityScopesActive({
     sql,

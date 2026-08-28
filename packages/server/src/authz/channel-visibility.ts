@@ -194,6 +194,7 @@ export async function getVisibleChannelKeysForMember(
 		  ON ei.entity_id = r.to_entity_id
 		 AND ei.organization_id = r.organization_id
 		 AND ei.namespace = ANY(${pgTextArray(CHANNEL_KEY_NAMESPACES)}::text[])
+		 AND ei.scope_key IS NULL
 		 AND ei.deleted_at IS NULL
 		WHERE r.organization_id = ${organizationId}
 		  AND r.from_entity_id = ${memberEntityId}

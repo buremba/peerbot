@@ -1,65 +1,68 @@
-import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { isAbsolute, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { COMPILE_CONFIG_HASH, flattenConnectorSourceFromFile } from '@lobu/connector-worker/compile';
-import type { getDb } from '../db/client';
-import { computeCodeHash } from './compiler-core';
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { isAbsolute, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
-  compileConnectorFromFile,
-  getDefaultConnectorCatalogDir,
-  normalizeFileSourceUri,
-  resolveFileSourcePath,
-} from './connector-catalog';
+	COMPILE_CONFIG_HASH,
+	flattenConnectorSourceFromFile,
+} from "@lobu/connector-worker/compile";
+import type { getDb } from "../db/client";
+import { isInternalUrl } from "../gateway/proxy/ssrf-guard";
+import type { McpOAuthMetadata } from "../mcp-proxy/types";
+import { computeCodeHash } from "./compiler-core";
 import {
-  type ConnectorMetadata,
-  compileConnectorSource,
-  extractConnectorMetadata,
-  validateConnectorMetadata,
-} from './connector-compiler';
-import { isInternalUrl } from '../gateway/proxy/ssrf-guard';
-import type { McpOAuthMetadata } from '../mcp-proxy/types';
-import { preflightConnectorRelationshipTypes } from './connector-relationship-declarations';
-import { reconcileConnectorIdentityScopeRegistry } from './connector-identity-scopes';
+	compileConnectorFromFile,
+	getDefaultConnectorCatalogDir,
+	normalizeFileSourceUri,
+	resolveFileSourcePath,
+} from "./connector-catalog";
+import {
+	type ConnectorMetadata,
+	compileConnectorSource,
+	extractConnectorMetadata,
+	validateConnectorMetadata,
+} from "./connector-compiler";
+import { reconcileConnectorIdentityScopeRegistry } from "./connector-identity-scopes";
+import { preflightConnectorRelationshipTypes } from "./connector-relationship-declarations";
 
 type SqlClient = ReturnType<typeof getDb>;
 
 export type ConnectorInstallResult = {
-  connectorKey: string;
-  name: string;
-  version: string;
-  codeHash: string;
-  updated: boolean;
-  authSchema: Record<string, unknown> | null;
-  mcpConfig?: Record<string, unknown> | null;
-  mcpOAuth?: McpOAuthMetadata;
-  openapiConfig?: Record<string, unknown> | null;
+	connectorKey: string;
+	name: string;
+	version: string;
+	codeHash: string;
+	updated: boolean;
+	authSchema: Record<string, unknown> | null;
+	mcpConfig?: Record<string, unknown> | null;
+	mcpOAuth?: McpOAuthMetadata;
+	openapiConfig?: Record<string, unknown> | null;
 };
 
 type ConnectorVersionPersistence = {
-  compiledCode: string | null;
-  compiledCodeHash: string | null;
-  /**
-   * Fingerprint of the compile configuration that produced `compiledCode` —
-   * only set when THIS server's pipeline compiled it. Pre-compiled uploads
-   * (`compiled: true` / detected JS) stay NULL: their provenance is unknown
-   * (an older CLI may have compiled under a different externals list), so
-   * `resolveConnectorCode` normalizes them through the current pipeline on
-   * first resolution instead of trusting them.
-   */
-  compileConfigHash: string | null;
-  sourceCode: string | null;
-  sourcePath: string | null;
+	compiledCode: string | null;
+	compiledCodeHash: string | null;
+	/**
+	 * Fingerprint of the compile configuration that produced `compiledCode` —
+	 * only set when THIS server's pipeline compiled it. Pre-compiled uploads
+	 * (`compiled: true` / detected JS) stay NULL: their provenance is unknown
+	 * (an older CLI may have compiled under a different externals list), so
+	 * `resolveConnectorCode` normalizes them through the current pipeline on
+	 * first resolution instead of trusting them.
+	 */
+	compileConfigHash: string | null;
+	sourceCode: string | null;
+	sourcePath: string | null;
 };
 
 type ResolvedConnectorInstallSource = Omit<
-  ConnectorVersionPersistence,
-  'compiledCode' | 'compiledCodeHash' | 'sourceCode'
+	ConnectorVersionPersistence,
+	"compiledCode" | "compiledCodeHash" | "sourceCode"
 > & {
-  compiledCode: string;
-  compiledCodeHash: string;
-  sourceCode: string;
-  metadata: ConnectorMetadata;
+	compiledCode: string;
+	compiledCodeHash: string;
+	sourceCode: string;
+	metadata: ConnectorMetadata;
 };
 
 /**
@@ -67,52 +70,57 @@ type ResolvedConnectorInstallSource = Omit<
  * Checks for common esbuild/CJS output markers and absence of TypeScript syntax.
  */
 function isPreCompiledJs(code: string): boolean {
-  const trimmed = code.trimStart();
+	const trimmed = code.trimStart();
 
-  if (
-    trimmed.startsWith('"use strict"') ||
-    trimmed.startsWith("'use strict'") ||
-    trimmed.startsWith('var __defProp') ||
-    trimmed.startsWith('var __getOwnPropNames') ||
-    trimmed.startsWith('// src/')
-  ) {
-    return true;
-  }
+	if (
+		trimmed.startsWith('"use strict"') ||
+		trimmed.startsWith("'use strict'") ||
+		trimmed.startsWith("var __defProp") ||
+		trimmed.startsWith("var __getOwnPropNames") ||
+		trimmed.startsWith("// src/")
+	) {
+		return true;
+	}
 
-  if (trimmed.startsWith('import { createRequire')) {
-    return true;
-  }
+	if (trimmed.startsWith("import { createRequire")) {
+		return true;
+	}
 
-  return false;
+	return false;
 }
 
-export function connectorSourcePathToUri(sourcePath?: string | null): string | null {
-  if (!sourcePath) return null;
+export function connectorSourcePathToUri(
+	sourcePath?: string | null,
+): string | null {
+	if (!sourcePath) return null;
 
-  if (sourcePath.includes('://')) {
-    return normalizeFileSourceUri(sourcePath);
-  }
+	if (sourcePath.includes("://")) {
+		return normalizeFileSourceUri(sourcePath);
+	}
 
-  if (isAbsolute(sourcePath) && existsSync(sourcePath)) {
-    return pathToFileURL(sourcePath).toString();
-  }
+	if (isAbsolute(sourcePath) && existsSync(sourcePath)) {
+		return pathToFileURL(sourcePath).toString();
+	}
 
-  const bundledSourcePath = resolve(getDefaultConnectorCatalogDir(), sourcePath);
-  if (existsSync(bundledSourcePath)) {
-    return pathToFileURL(bundledSourcePath).toString();
-  }
+	const bundledSourcePath = resolve(
+		getDefaultConnectorCatalogDir(),
+		sourcePath,
+	);
+	if (existsSync(bundledSourcePath)) {
+		return pathToFileURL(bundledSourcePath).toString();
+	}
 
-  return null;
+	return null;
 }
 
 // Hosts a connector's `source_url` may be fetched from out of the box. Installing
 // from a URL fetches + compiles + runs remote code, so it must be locked down to
 // known-good sources. Extend per-deployment via CONNECTOR_SOURCE_ALLOWLIST.
 const DEFAULT_CONNECTOR_SOURCE_HOSTS = [
-  'raw.githubusercontent.com',
-  'gist.githubusercontent.com',
-  'objects.githubusercontent.com',
-  'github.com',
+	"raw.githubusercontent.com",
+	"gist.githubusercontent.com",
+	"objects.githubusercontent.com",
+	"github.com",
 ];
 
 const MAX_CONNECTOR_SOURCE_BYTES = 5 * 1024 * 1024;
@@ -120,11 +128,11 @@ const CONNECTOR_SOURCE_FETCH_TIMEOUT_MS = 30_000;
 const MAX_CONNECTOR_SOURCE_REDIRECTS = 5;
 
 function allowedConnectorSourceHosts(): string[] {
-  const extra = (process.env.CONNECTOR_SOURCE_ALLOWLIST ?? '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  return [...DEFAULT_CONNECTOR_SOURCE_HOSTS, ...extra];
+	const extra = (process.env.CONNECTOR_SOURCE_ALLOWLIST ?? "")
+		.split(",")
+		.map((s) => s.trim().toLowerCase())
+		.filter(Boolean);
+	return [...DEFAULT_CONNECTOR_SOURCE_HOSTS, ...extra];
 }
 
 /**
@@ -135,56 +143,63 @@ function allowedConnectorSourceHosts(): string[] {
  * the SSRF guard resolves DNS. Re-run on every redirect hop by the fetcher.
  */
 async function assertAllowedConnectorSourceUrl(rawUrl: string): Promise<URL> {
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new Error(`Invalid source_url: ${rawUrl}`);
-  }
-  if (url.protocol !== 'https:') {
-    throw new Error(`source_url must use https (got '${url.protocol || rawUrl}').`);
-  }
-  const allow = allowedConnectorSourceHosts();
-  if (!allow.includes('*')) {
-    const host = url.hostname.toLowerCase();
-    const ok = allow.some((entry) =>
-      entry.startsWith('.') ? host === entry.slice(1) || host.endsWith(entry) : host === entry
-    );
-    if (!ok) {
-      throw new Error(
-        `source_url host '${host}' is not in the connector source allowlist (${allow.join(', ')}). ` +
-          `Set CONNECTOR_SOURCE_ALLOWLIST to add hosts, or '*' to allow any public host.`
-      );
-    }
-  }
-  // DNS-resolving check: catches IP literals (incl. IPv4-mapped IPv6) AND
-  // hostnames that resolve to reserved/private ranges (DNS-rebinding).
-  if (await isInternalUrl(url.toString())) {
-    throw new Error(
-      `source_url host '${url.hostname}' is blocked (resolves to a private/loopback/reserved address).`
-    );
-  }
-  return url;
+	let url: URL;
+	try {
+		url = new URL(rawUrl);
+	} catch {
+		throw new Error(`Invalid source_url: ${rawUrl}`);
+	}
+	if (url.protocol !== "https:") {
+		throw new Error(
+			`source_url must use https (got '${url.protocol || rawUrl}').`,
+		);
+	}
+	const allow = allowedConnectorSourceHosts();
+	if (!allow.includes("*")) {
+		const host = url.hostname.toLowerCase();
+		const ok = allow.some((entry) =>
+			entry.startsWith(".")
+				? host === entry.slice(1) || host.endsWith(entry)
+				: host === entry,
+		);
+		if (!ok) {
+			throw new Error(
+				`source_url host '${host}' is not in the connector source allowlist (${allow.join(", ")}). ` +
+					`Set CONNECTOR_SOURCE_ALLOWLIST to add hosts, or '*' to allow any public host.`,
+			);
+		}
+	}
+	// DNS-resolving check: catches IP literals (incl. IPv4-mapped IPv6) AND
+	// hostnames that resolve to reserved/private ranges (DNS-rebinding).
+	if (await isInternalUrl(url.toString())) {
+		throw new Error(
+			`source_url host '${url.hostname}' is blocked (resolves to a private/loopback/reserved address).`,
+		);
+	}
+	return url;
 }
 
 /** Read a response body, aborting as soon as it exceeds the byte cap (content-length can lie / be absent). */
-async function readBodyWithCap(res: Response, maxBytes: number): Promise<string> {
-  const reader = res.body?.getReader();
-  if (!reader) return '';
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new Error(`Connector source too large (max ${maxBytes} bytes).`);
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString('utf-8');
+async function readBodyWithCap(
+	res: Response,
+	maxBytes: number,
+): Promise<string> {
+	const reader = res.body?.getReader();
+	if (!reader) return "";
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		if (!value) continue;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel();
+			throw new Error(`Connector source too large (max ${maxBytes} bytes).`);
+		}
+		chunks.push(value);
+	}
+	return Buffer.concat(chunks).toString("utf-8");
 }
 
 /**
@@ -193,165 +208,232 @@ async function readBodyWithCap(res: Response, maxBytes: number): Promise<string>
  * the same scheme/allowlist/SSRF checks, and a streaming byte cap.
  */
 async function fetchConnectorSource(initialUrl: URL): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CONNECTOR_SOURCE_FETCH_TIMEOUT_MS);
-  try {
-    let url = initialUrl;
-    for (let hop = 0; hop <= MAX_CONNECTOR_SOURCE_REDIRECTS; hop++) {
-      const res = await fetch(url, { signal: controller.signal, redirect: 'manual' });
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get('location');
-        if (!location) throw new Error(`Redirect from ${url.toString()} had no Location header.`);
-        url = await assertAllowedConnectorSourceUrl(new URL(location, url).toString());
-        continue;
-      }
-      if (!res.ok) {
-        throw new Error(`Failed to fetch source from ${url.toString()}: ${res.status}`);
-      }
-      const declaredLength = Number(res.headers.get('content-length') ?? '0');
-      if (Number.isFinite(declaredLength) && declaredLength > MAX_CONNECTOR_SOURCE_BYTES) {
-        throw new Error(
-          `Connector source too large: ${declaredLength} bytes (max ${MAX_CONNECTOR_SOURCE_BYTES}).`
-        );
-      }
-      return await readBodyWithCap(res, MAX_CONNECTOR_SOURCE_BYTES);
-    }
-    throw new Error(
-      `Too many redirects fetching connector source (max ${MAX_CONNECTOR_SOURCE_REDIRECTS}).`
-    );
-  } finally {
-    clearTimeout(timeout);
-  }
+	const controller = new AbortController();
+	const timeout = setTimeout(
+		() => controller.abort(),
+		CONNECTOR_SOURCE_FETCH_TIMEOUT_MS,
+	);
+	try {
+		let url = initialUrl;
+		for (let hop = 0; hop <= MAX_CONNECTOR_SOURCE_REDIRECTS; hop++) {
+			const res = await fetch(url, {
+				signal: controller.signal,
+				redirect: "manual",
+			});
+			if (res.status >= 300 && res.status < 400) {
+				const location = res.headers.get("location");
+				if (!location)
+					throw new Error(
+						`Redirect from ${url.toString()} had no Location header.`,
+					);
+				url = await assertAllowedConnectorSourceUrl(
+					new URL(location, url).toString(),
+				);
+				continue;
+			}
+			if (!res.ok) {
+				throw new Error(
+					`Failed to fetch source from ${url.toString()}: ${res.status}`,
+				);
+			}
+			const declaredLength = Number(res.headers.get("content-length") ?? "0");
+			if (
+				Number.isFinite(declaredLength) &&
+				declaredLength > MAX_CONNECTOR_SOURCE_BYTES
+			) {
+				throw new Error(
+					`Connector source too large: ${declaredLength} bytes (max ${MAX_CONNECTOR_SOURCE_BYTES}).`,
+				);
+			}
+			return await readBodyWithCap(res, MAX_CONNECTOR_SOURCE_BYTES);
+		}
+		throw new Error(
+			`Too many redirects fetching connector source (max ${MAX_CONNECTOR_SOURCE_REDIRECTS}).`,
+		);
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 export async function resolveConnectorInstallSource(params: {
-  sourceUrl?: string;
-  sourceUri?: string;
-  sourceCode?: string;
-  compiled?: boolean;
+	sourceUrl?: string;
+	sourceUri?: string;
+	sourceCode?: string;
+	compiled?: boolean;
 }): Promise<ResolvedConnectorInstallSource> {
-  let sourceCode: string;
-  let sourcePath: string | null = null;
+	let sourceCode: string;
+	let sourcePath: string | null = null;
 
-  if (params.sourceUri) {
-    const filePath = resolveFileSourcePath(params.sourceUri);
-    if (!filePath) {
-      throw new Error(
-        `Unsupported source_uri '${params.sourceUri}'. Only local file URIs are supported.`
-      );
-    }
+	if (params.sourceUri) {
+		const filePath = resolveFileSourcePath(params.sourceUri);
+		if (!filePath) {
+			throw new Error(
+				`Unsupported source_uri '${params.sourceUri}'. Only local file URIs are supported.`,
+			);
+		}
 
-    sourcePath = filePath;
-    // Persist a self-contained snapshot, NOT the raw file text: a file-backed
-    // connector may import sibling modules, and the stored source must
-    // recompile under the strict single-file source-text compiler when the
-    // compile configuration later drifts (#2042). An explicitly pre-compiled
-    // file is stored verbatim — it is already an artifact, not source.
-    sourceCode = params.compiled
-      ? await readFile(filePath, 'utf-8')
-      : await flattenConnectorSourceFromFile(filePath);
-  } else if (params.sourceUrl) {
-    const url = await assertAllowedConnectorSourceUrl(params.sourceUrl);
-    sourcePath = url.pathname.replace(/^\//, '') || null;
-    sourceCode = await fetchConnectorSource(url);
-  } else if (params.sourceCode) {
-    sourceCode = params.sourceCode;
-  } else {
-    throw new Error('Provide source_url or source_code to install a connector.');
-  }
+		sourcePath = filePath;
+		// Persist a self-contained snapshot, NOT the raw file text: a file-backed
+		// connector may import sibling modules, and the stored source must
+		// recompile under the strict single-file source-text compiler when the
+		// compile configuration later drifts (#2042). An explicitly pre-compiled
+		// file is stored verbatim — it is already an artifact, not source.
+		sourceCode = params.compiled
+			? await readFile(filePath, "utf-8")
+			: await flattenConnectorSourceFromFile(filePath);
+	} else if (params.sourceUrl) {
+		const url = await assertAllowedConnectorSourceUrl(params.sourceUrl);
+		sourcePath = url.pathname.replace(/^\//, "") || null;
+		sourceCode = await fetchConnectorSource(url);
+	} else if (params.sourceCode) {
+		sourceCode = params.sourceCode;
+	} else {
+		throw new Error(
+			"Provide source_url or source_code to install a connector.",
+		);
+	}
 
-  // The pre-compiled sniff only applies to text uploads: a file-backed install
-  // stores a flattened source snapshot whose esbuild output shape would
-  // false-positive the sniff, and its compile path is explicit anyway.
-  const alreadyCompiled = params.compiled || (!params.sourceUri && isPreCompiledJs(sourceCode));
+	// The pre-compiled sniff only applies to text uploads: a file-backed install
+	// stores a flattened source snapshot whose esbuild output shape would
+	// false-positive the sniff, and its compile path is explicit anyway.
+	const alreadyCompiled =
+		params.compiled || (!params.sourceUri && isPreCompiledJs(sourceCode));
 
-  let compiledCode: string;
-  let compiledCodeHash: string;
+	let compiledCode: string;
+	let compiledCodeHash: string;
 
-  if (alreadyCompiled) {
-    compiledCode = sourceCode;
-    compiledCodeHash = computeCodeHash(sourceCode);
-  } else if (params.sourceUri && sourcePath) {
-    compiledCode = await compileConnectorFromFile(sourcePath);
-    compiledCodeHash = computeCodeHash(compiledCode);
-  } else {
-    const compiled = await compileConnectorSource(sourceCode);
-    compiledCode = compiled.compiledCode;
-    compiledCodeHash = compiled.compiledCodeHash;
-  }
+	if (alreadyCompiled) {
+		compiledCode = sourceCode;
+		compiledCodeHash = computeCodeHash(sourceCode);
+	} else if (params.sourceUri && sourcePath) {
+		compiledCode = await compileConnectorFromFile(sourcePath);
+		compiledCodeHash = computeCodeHash(compiledCode);
+	} else {
+		const compiled = await compileConnectorSource(sourceCode);
+		compiledCode = compiled.compiledCode;
+		compiledCodeHash = compiled.compiledCodeHash;
+	}
 
-  const metadata = await extractConnectorMetadata(compiledCode);
-  validateConnectorMetadata(metadata);
+	const metadata = await extractConnectorMetadata(compiledCode);
+	validateConnectorMetadata(metadata);
 
-  return {
-    metadata,
-    sourceCode,
-    sourcePath,
-    compiledCode,
-    compiledCodeHash,
-    // Pre-compiled uploads were NOT produced by this server's pipeline — an
-    // older client may have compiled under a different externals list — so
-    // they carry no fingerprint and get normalized on first resolution.
-    compileConfigHash: alreadyCompiled ? null : COMPILE_CONFIG_HASH,
-  };
+	return {
+		metadata,
+		sourceCode,
+		sourcePath,
+		compiledCode,
+		compiledCodeHash,
+		// Pre-compiled uploads were NOT produced by this server's pipeline — an
+		// older client may have compiled under a different externals list — so
+		// they carry no fingerprint and get normalized on first resolution.
+		compileConfigHash: alreadyCompiled ? null : COMPILE_CONFIG_HASH,
+	};
 }
 
-export async function upsertConnectorDefinitionRecords(params: {
-  sql: SqlClient;
-  organizationId: string;
-  metadata: ConnectorMetadata;
-  versionRecord: ConnectorVersionPersistence;
-  /**
-   * Which connector_versions namespace the version row belongs to.
-   *
-   * - 'shared': a pointer at bundled on-disk source (source_path, no code) —
-   *   identical for every org, deduped on one organization_id-IS-NULL row.
-   * - 'organization': org-supplied bytes (install_connector / source_url /
-   *   source_code / mcp_url) land ONLY on the caller org's own
-   *   (organization_id, connector_key, version) row — never the shared
-   *   namespace (#2045: a shared row of custom code is a cross-org
-   *   read/activate surface). Content-empty rollback records preserve the
-   *   retained artifact and create a marker only when no visible row exists.
-   *   A caller explicitly replacing the artifact (mcp_url) instead writes an
-   *   org marker atomically, shadowing but never mutating a shared artifact.
-   */
-  versionScope: 'shared' | 'organization';
-  /** Replace every version artifact/provenance field, including with NULL. */
-  replaceVersionArtifact?: boolean;
-}): Promise<{ updated: boolean }> {
-  const { sql } = params;
-  const { metadata } = params;
+type UpsertConnectorDefinitionRecordsParams = {
+	sql: SqlClient;
+	organizationId: string;
+	metadata: ConnectorMetadata;
+	versionRecord: ConnectorVersionPersistence;
+	/**
+	 * Which connector_versions namespace the version row belongs to.
+	 *
+	 * - 'shared': a pointer at bundled on-disk source (source_path, no code) —
+	 *   identical for every org, deduped on one organization_id-IS-NULL row.
+	 * - 'organization': org-supplied bytes (install_connector / source_url /
+	 *   source_code / mcp_url) land ONLY on the caller org's own
+	 *   (organization_id, connector_key, version) row — never the shared
+	 *   namespace (#2045: a shared row of custom code is a cross-org
+	 *   read/activate surface). Content-empty rollback records preserve the
+	 *   retained artifact and create a marker only when no visible row exists.
+	 *   A caller explicitly replacing the artifact (mcp_url) instead writes an
+	 *   org marker atomically, shadowing but never mutating a shared artifact.
+	 */
+	versionScope: "shared" | "organization";
+	/** Replace every version artifact/provenance field, including with NULL. */
+	replaceVersionArtifact?: boolean;
+};
 
-  // This is the shared definition writer for bundled, custom, rollback, and
-  // device-manifest connectors, so the relationship gate sits here rather than
-  // on the compile path some of them skip. The preflight validates the local
-  // declaration graph and resolves it against the org's own relationship
-  // vocabulary before any definition or version row can become active.
-  await preflightConnectorRelationshipTypes({
-    sql,
-    organizationId: params.organizationId,
-    metadata,
-  });
-  await reconcileConnectorIdentityScopeRegistry({
-    organizationId: params.organizationId,
-    metadata,
-  });
+type UpsertConnectorDefinitionTransactionResult = {
+	updated: boolean;
+	blockedMessage?: string;
+};
 
-  const authSchemaJson = metadata.authSchema ? sql.json(metadata.authSchema) : null;
-  const feedsSchemaJson = metadata.feeds ? sql.json(metadata.feeds) : null;
-  const actionsSchemaJson = metadata.actions ? sql.json(metadata.actions) : null;
-  const automationEventsJson = metadata.automationEvents ? sql.json(metadata.automationEvents) : null;
-  const optionsSchemaJson = metadata.optionsSchema ? sql.json(metadata.optionsSchema) : null;
-  const mcpConfigJson = metadata.mcpConfig ? sql.json(metadata.mcpConfig) : null;
-  const openapiConfigJson = metadata.openapiConfig ? sql.json(metadata.openapiConfig) : null;
-  const runtimeJson = metadata.runtime ? sql.json(metadata.runtime) : null;
-  const agentToolingJson = metadata.agentTooling ? sql.json(metadata.agentTooling) : null;
-  // Capability flag (#2033 item 2): readiness reads this instead of assuming a
-  // declared action is executable. Older metadata (no field) stays NULL =
-  // "assume supported" so nothing regresses.
-  const supportsExecute = metadata.supportsExecute ?? null;
+/**
+ * Reconcile identity-scope registry state and activate the matching connector
+ * definition under one transaction. The namespace advisory locks therefore
+ * remain held until the active definition and version rows agree with the
+ * registry; a later write failure rolls the registry change back too.
+ *
+ * A blocked live-row transition is the intentional exception: the transaction
+ * commits its pending target, then this wrapper throws so the operator can run
+ * the explicit re-key command without losing the requested shape.
+ */
+export async function upsertConnectorDefinitionRecords(
+	params: UpsertConnectorDefinitionRecordsParams,
+): Promise<{ updated: boolean }> {
+	const run = (sql: SqlClient) =>
+		upsertConnectorDefinitionRecordsInTransaction({ ...params, sql });
+	const result =
+		typeof params.sql.savepoint === "function"
+			? await params.sql.savepoint(run)
+			: await params.sql.begin(run);
+	if (result.blockedMessage) throw new Error(result.blockedMessage);
+	return { updated: result.updated };
+}
 
-  const existing = await sql`
+async function upsertConnectorDefinitionRecordsInTransaction(
+	params: UpsertConnectorDefinitionRecordsParams,
+): Promise<UpsertConnectorDefinitionTransactionResult> {
+	const { sql } = params;
+	const { metadata } = params;
+
+	// This is the shared definition writer for bundled, custom, rollback, and
+	// device-manifest connectors, so the relationship gate sits here rather than
+	// on the compile path some of them skip. The preflight validates the local
+	// declaration graph and resolves it against the org's own relationship
+	// vocabulary before any definition or version row can become active.
+	await preflightConnectorRelationshipTypes({
+		sql,
+		organizationId: params.organizationId,
+		metadata,
+	});
+	const blockedMessage = await reconcileConnectorIdentityScopeRegistry({
+		sql,
+		organizationId: params.organizationId,
+		metadata,
+	});
+	if (blockedMessage) return { updated: false, blockedMessage };
+
+	const authSchemaJson = metadata.authSchema
+		? sql.json(metadata.authSchema)
+		: null;
+	const feedsSchemaJson = metadata.feeds ? sql.json(metadata.feeds) : null;
+	const actionsSchemaJson = metadata.actions
+		? sql.json(metadata.actions)
+		: null;
+	const automationEventsJson = metadata.automationEvents
+		? sql.json(metadata.automationEvents)
+		: null;
+	const optionsSchemaJson = metadata.optionsSchema
+		? sql.json(metadata.optionsSchema)
+		: null;
+	const mcpConfigJson = metadata.mcpConfig
+		? sql.json(metadata.mcpConfig)
+		: null;
+	const openapiConfigJson = metadata.openapiConfig
+		? sql.json(metadata.openapiConfig)
+		: null;
+	const runtimeJson = metadata.runtime ? sql.json(metadata.runtime) : null;
+	const agentToolingJson = metadata.agentTooling
+		? sql.json(metadata.agentTooling)
+		: null;
+	// Capability flag (#2033 item 2): readiness reads this instead of assuming a
+	// declared action is executable. Older metadata (no field) stays NULL =
+	// "assume supported" so nothing regresses.
+	const supportsExecute = metadata.supportsExecute ?? null;
+
+	const existing = await sql`
     SELECT id, status, login_enabled
     FROM connector_definitions
     WHERE key = ${metadata.key}
@@ -363,15 +445,15 @@ export async function upsertConnectorDefinitionRecords(params: {
     LIMIT 1
   `;
 
-  const existingRow = existing[0] as
-    | { id: number; status: string; login_enabled: boolean }
-    | undefined;
-  const preservedLoginEnabled = existingRow?.login_enabled ?? false;
+	const existingRow = existing[0] as
+		| { id: number; status: string; login_enabled: boolean }
+		| undefined;
+	const preservedLoginEnabled = existingRow?.login_enabled ?? false;
 
-  let wasActive = existingRow?.status === 'active';
+	let wasActive = existingRow?.status === "active";
 
-  if (existingRow?.status === 'active') {
-    await sql`
+	if (existingRow?.status === "active") {
+		await sql`
       UPDATE connector_definitions
       SET name = ${metadata.name},
           description = ${metadata.description ?? null},
@@ -392,15 +474,15 @@ export async function upsertConnectorDefinitionRecords(params: {
           updated_at = NOW()
       WHERE id = ${existingRow.id}
     `;
-    // Fall through to the shared connector_versions upsert below.
-  } else {
-    // No active row seen — but the SELECT is not a lock, so a concurrent
-    // installer may INSERT the active row between our SELECT and INSERT. ON
-    // CONFLICT DO NOTHING makes the loser a no-op (returns no row) WITHOUT
-    // aborting an enclosing transaction — critical because a caller
-    // (device-reconcile) passes a `tx`, where a raw 23505 would poison the whole
-    // transaction (25P02).
-    const inserted = await sql`
+		// Fall through to the shared connector_versions upsert below.
+	} else {
+		// No active row seen — but the SELECT is not a lock, so a concurrent
+		// installer may INSERT the active row between our SELECT and INSERT. ON
+		// CONFLICT DO NOTHING makes the loser a no-op (returns no row) WITHOUT
+		// aborting an enclosing transaction — critical because a caller
+		// (device-reconcile) passes a `tx`, where a raw 23505 would poison the whole
+		// transaction (25P02).
+		const inserted = await sql`
       INSERT INTO connector_definitions (
         organization_id, key, name, description, version,
         auth_schema, feeds_schema, actions_schema, automation_events, options_schema,
@@ -421,12 +503,12 @@ export async function upsertConnectorDefinitionRecords(params: {
       RETURNING id
     `;
 
-    if (inserted.length === 0) {
-      // The race loser: the winner already created the active row. Update it so
-      // both callers converge on this install's metadata (last-write-wins,
-      // matching the sequential UPDATE branch above).
-      wasActive = true;
-      await sql`
+		if (inserted.length === 0) {
+			// The race loser: the winner already created the active row. Update it so
+			// both callers converge on this install's metadata (last-write-wins,
+			// matching the sequential UPDATE branch above).
+			wasActive = true;
+			await sql`
         UPDATE connector_definitions
         SET name = ${metadata.name},
             description = ${metadata.description ?? null},
@@ -448,28 +530,30 @@ export async function upsertConnectorDefinitionRecords(params: {
           AND organization_id = ${params.organizationId}
           AND status = 'active'
       `;
-    }
-  }
+		}
+	}
 
-  // Persist the version's executable source for BOTH the create and the
-  // active-update paths — a definition must never point at a version with no
-  // compiled/source record. Pipeline-compiled artifacts arrive stamped with
-  // the fingerprint of the compile configuration that produced them
-  // (versionRecord.compileConfigHash), so a later change to
-  // EXTERNAL_RUNTIME_DEPS / the compile pipeline invalidates them
-  // (resolveConnectorCode recompiles instead of executing a stale bundle).
-  const record = params.versionRecord;
-  // A version row represents exactly one artifact family. Same-family writes
-  // retain the existing patch semantics, but crossing the manifest boundary
-  // replaces every source/provenance field atomically so a manifest hash can
-  // never attest stale compiled bytes (or a compiled artifact retain a stale
-  // device-manifest:// identity).
-  const incomingIsDeviceManifest = record.sourcePath?.startsWith('device-manifest://') === true;
-  const replaceVersionArtifact = incomingIsDeviceManifest || params.replaceVersionArtifact === true;
-  if (params.versionScope === 'shared') {
-    // Bundled catalog pointer: identical for every org, deduped on the one
-    // shared organization_id-IS-NULL row.
-    await sql`
+	// Persist the version's executable source for BOTH the create and the
+	// active-update paths — a definition must never point at a version with no
+	// compiled/source record. Pipeline-compiled artifacts arrive stamped with
+	// the fingerprint of the compile configuration that produced them
+	// (versionRecord.compileConfigHash), so a later change to
+	// EXTERNAL_RUNTIME_DEPS / the compile pipeline invalidates them
+	// (resolveConnectorCode recompiles instead of executing a stale bundle).
+	const record = params.versionRecord;
+	// A version row represents exactly one artifact family. Same-family writes
+	// retain the existing patch semantics, but crossing the manifest boundary
+	// replaces every source/provenance field atomically so a manifest hash can
+	// never attest stale compiled bytes (or a compiled artifact retain a stale
+	// device-manifest:// identity).
+	const incomingIsDeviceManifest =
+		record.sourcePath?.startsWith("device-manifest://") === true;
+	const replaceVersionArtifact =
+		incomingIsDeviceManifest || params.replaceVersionArtifact === true;
+	if (params.versionScope === "shared") {
+		// Bundled catalog pointer: identical for every org, deduped on the one
+		// shared organization_id-IS-NULL row.
+		await sql`
       INSERT INTO connector_versions (
         connector_key, version, organization_id, compiled_code, compiled_code_hash,
         compile_config_hash, source_code, source_path
@@ -515,18 +599,18 @@ export async function upsertConnectorDefinitionRecords(params: {
             ELSE COALESCE(EXCLUDED.source_path, connector_versions.source_path)
           END
     `;
-    return { updated: wasActive };
-  }
+		return { updated: wasActive };
+	}
 
-  // Org-supplied bytes land ONLY on the caller org's own row (#2045: a shared
-  // row of custom code is a cross-org read/activate surface).
-  const hasContent =
-    replaceVersionArtifact ||
-    record.compiledCode !== null ||
-    record.sourceCode !== null ||
-    record.sourcePath !== null;
-  if (hasContent) {
-    await sql`
+	// Org-supplied bytes land ONLY on the caller org's own row (#2045: a shared
+	// row of custom code is a cross-org read/activate surface).
+	const hasContent =
+		replaceVersionArtifact ||
+		record.compiledCode !== null ||
+		record.sourceCode !== null ||
+		record.sourcePath !== null;
+	if (hasContent) {
+		await sql`
       INSERT INTO connector_versions (
         connector_key, version, organization_id, compiled_code, compiled_code_hash,
         compile_config_hash, source_code, source_path
@@ -569,13 +653,13 @@ export async function upsertConnectorDefinitionRecords(params: {
             ELSE COALESCE(EXCLUDED.source_path, connector_versions.source_path)
           END
     `;
-  } else {
-    // Content-empty preserve record (rollback shape). A rollback target always
-    // exists (validated by the caller), so this only creates the marker row a
-    // first metadata-only install needs — and never when ANY visible row
-    // (this org's or shared) already holds the pair, so an empty org row
-    // can never shadow a code-bearing row.
-    await sql`
+	} else {
+		// Content-empty preserve record (rollback shape). A rollback target always
+		// exists (validated by the caller), so this only creates the marker row a
+		// first metadata-only install needs — and never when ANY visible row
+		// (this org's or shared) already holds the pair, so an empty org row
+		// can never shadow a code-bearing row.
+		await sql`
       INSERT INTO connector_versions (connector_key, version, organization_id)
       SELECT ${metadata.key}, ${metadata.version}, ${params.organizationId}
       WHERE NOT EXISTS (
@@ -585,7 +669,7 @@ export async function upsertConnectorDefinitionRecords(params: {
       )
       ON CONFLICT DO NOTHING
     `;
-  }
+	}
 
-  return { updated: wasActive };
+	return { updated: wasActive };
 }

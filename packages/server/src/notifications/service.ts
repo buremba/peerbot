@@ -4,7 +4,13 @@ import {
 	type CardElement,
 } from "chat";
 import { loadConfiguredAutomationDeliveryTarget } from "../automations/delivery-target";
-import { getDb, parsePgNumberArray, pgBigintArray, pgTextArray } from "../db/client";
+import {
+	type DbClient,
+	getDb,
+	parsePgNumberArray,
+	pgBigintArray,
+	pgTextArray,
+} from "../db/client";
 import { resolveBoundChannelRows } from "../gateway/channels/bound-channels";
 import { getChatInstanceManager, isLobuGatewayRunning } from "../lobu/gateway";
 import type { McpActivityAttribution } from "../lobu/stores/mcp-client-conversations";
@@ -410,6 +416,8 @@ interface NotificationDeliveryRecord {
 	connectionId: string;
 	/** Platform-prefixed channel id, or `dm` for the owner-routed tier. */
 	channelKey: string;
+	/** Trusted flat conversation id; present for conversation-scoped delivery. */
+	conversationId?: string;
 	messageId: string;
 	threadId: string;
 }
@@ -436,38 +444,208 @@ type PersistedNotificationDeliveryRecord = Omit<
  * returns, and the durable notification write must not block on a best-effort
  * chat post.
  *
- * Best-effort: losing the record costs a later in-place edit, not the
- * notification itself.
+ * Best-effort by default: losing the record costs a later in-place edit, not
+ * the notification itself. `present_event` opts into required persistence
+ * because the pointer drives in-place refresh and deduplicates later calls.
  */
 async function persistDeliveryMetadata(
 	eventId: number,
 	deliveries: PersistedNotificationDeliveryRecord[],
 	card?: CardElement,
+	options?: { db?: DbClient; required?: boolean },
 ): Promise<void> {
 	// A record exists to be addressed later, and `editMessage(threadId, messageId)`
 	// cannot address an empty id — an adapter that returned no message id has
 	// given us nothing to point at. Dropping it here rather than at each caller
 	// keeps the one rule in the one place that writes the record.
 	const addressable = deliveries.filter((entry) => entry.messageId !== "");
-	if (addressable.length === 0) return;
+	if (addressable.length === 0) {
+		if (options?.required) {
+			throw new Error("Delivery did not return an addressable message id");
+		}
+		return;
+	}
+	const db = options?.db ?? getDb();
 	try {
-		const sql = getDb();
 		const deliveryMetadata = {
 			delivery: addressable,
 			...(card ? { card } : {}),
 		};
-		await sql`
+		const updated = await db<{ id: number }>`
       UPDATE events
       SET metadata = coalesce(metadata, '{}'::jsonb)
-        || ${sql.json(deliveryMetadata)}::jsonb
+        || ${db.json(deliveryMetadata)}::jsonb
       WHERE id = ${eventId}
+      RETURNING id
     `;
+		if (options?.required && updated.length === 0) {
+			throw new Error(
+				`Event ${eventId} vanished before delivery metadata persisted`,
+			);
+		}
 	} catch (err) {
+		if (options?.required) throw err;
 		logger.warn(
 			{ err, eventId },
 			"[Notifications] Failed to record delivery targets",
 		);
 	}
+}
+
+type StoredEventPresentationResult =
+	| {
+			ok: true;
+			messageId: string;
+			threadId: string;
+			fallbackText: string;
+	  }
+	| {
+			ok: false;
+			reason: "not_found" | "not_renderable" | "gateway_unavailable";
+	  };
+
+interface StoredEventPresentationParams {
+	organizationId: string;
+	eventId: number;
+	connectionId: string;
+	platform: string;
+	channelId: string;
+	channelKey: string;
+	conversationId: string;
+	threadId?: string;
+}
+
+/**
+ * Render one already-persisted event into the conversation that invoked the
+ * current agent turn.
+ *
+ * The event is the authority: the worker supplies only its id, while the
+ * server re-reads the tenant-scoped row, resolves the linked entity kind, and
+ * derives the native card from that kind's json_template. The worker never
+ * supplies a template, executable handler, action id, actor id, or platform
+ * destination. The destination coordinates are signed worker-token claims.
+ *
+ * Persisting the platform message pointer on the SAME event gives the durable
+ * interactive-card refresh task the routing data used for in-place updates.
+ */
+export async function presentStoredEventToConversation(
+	params: StoredEventPresentationParams,
+): Promise<StoredEventPresentationResult> {
+	return getDb().begin((sql) =>
+		presentStoredEventToConversationLocked(params, sql),
+	);
+}
+
+async function presentStoredEventToConversationLocked(
+	params: StoredEventPresentationParams,
+	sql: DbClient,
+): Promise<StoredEventPresentationResult> {
+	const [row] = await sql<{
+		title: string | null;
+		entity_ids: unknown;
+		semantic_type: string;
+		payload_text: string | null;
+		payload_data: unknown;
+		metadata: unknown;
+		source_url: string | null;
+		superseded_by: number | null;
+	}>`
+    SELECT title, entity_ids, semantic_type, payload_text, payload_data,
+           metadata, source_url, superseded_by
+    FROM events
+    WHERE id = ${params.eventId}
+      AND organization_id = ${params.organizationId}
+    LIMIT 1
+    FOR UPDATE
+  `;
+	if (!row || row.superseded_by !== null) {
+		return { ok: false, reason: "not_found" };
+	}
+
+	const metadata = jsonRecord(row.metadata);
+	const fallbackText = row.payload_text
+		? `${row.title ?? row.semantic_type}\n\n${row.payload_text}`
+		: row.title ?? row.semantic_type;
+	// The row lock serializes concurrent retries across replicas. A completed
+	// presentation already has everything a retry needs, so replay it before
+	// resolving a template that may have changed since the original post.
+	const existingDelivery = deliveryRecords(metadata).find(
+		(delivery) =>
+			delivery.connectionId === params.connectionId &&
+			delivery.channelKey === params.channelKey &&
+			delivery.conversationId === params.conversationId,
+	);
+	if (existingDelivery) {
+		return {
+			ok: true,
+			messageId: existingDelivery.messageId,
+			threadId: existingDelivery.threadId,
+			fallbackText,
+		};
+	}
+
+	const kind = await resolveEventKindDefinition(
+		row.semantic_type,
+		params.organizationId,
+		parsePgNumberArray(row.entity_ids),
+	);
+	// `present_event` is deliberately narrower than the ordinary Activity view:
+	// only an explicitly authored portable template may become an unsolicited
+	// native chat card. A schema-derived fallback is useful in the web UI, but it
+	// is not an authored chat presentation contract.
+	if (!kind?.jsonTemplate) return { ok: false, reason: "not_renderable" };
+
+	const data =
+		typeof metadata.notification_type === "string"
+			? jsonRecord(row.payload_data)
+			: metadata;
+	const card = buildKindCard({
+		metadataSchema: kind.metadataSchema,
+		jsonTemplate: kind.jsonTemplate,
+		data,
+		title: row.title ?? row.semantic_type,
+		body: row.payload_text ?? undefined,
+		url: toAbsolutePermalink(
+			typeof metadata.resource_url === "string"
+				? metadata.resource_url
+				: row.source_url ?? undefined,
+		),
+		sourceEventId: params.eventId,
+		interactions: kind.interactions,
+	});
+	if (!card) return { ok: false, reason: "not_renderable" };
+
+	const manager = getChatInstanceManager();
+	if (!manager) return { ok: false, reason: "gateway_unavailable" };
+	const sent = await manager.postToConversation(params.connectionId, {
+		platform: params.platform,
+		channelKey: params.channelKey,
+		channelId: params.channelId,
+		threadId: params.threadId,
+		content: { card, fallbackText },
+		subscribe: true,
+	});
+	await persistDeliveryMetadata(
+		params.eventId,
+		[
+			...deliveryRecords(metadata),
+			{
+				connectionId: params.connectionId,
+				channelKey: params.channelKey,
+				conversationId: params.conversationId,
+				messageId: sent.messageId,
+				threadId: sent.threadId,
+			},
+		],
+		card,
+		{ db: sql, required: true },
+	);
+	return {
+		ok: true,
+		messageId: sent.messageId,
+		threadId: sent.threadId,
+		fallbackText,
+	};
 }
 
 async function recordDeliveryError(
@@ -508,6 +686,7 @@ function deliveryRecords(
 			const row = jsonRecord(entry);
 			const connectionId = row.connectionId;
 			const channelKey = row.channelKey;
+			const conversationId = row.conversationId;
 			const messageId = row.messageId;
 			const threadId = row.threadId;
 			return typeof connectionId === "string" &&
@@ -517,6 +696,7 @@ function deliveryRecords(
 				? [{
 						connectionId,
 						...(typeof channelKey === "string" ? { channelKey } : {}),
+						...(typeof conversationId === "string" ? { conversationId } : {}),
 						messageId,
 						threadId,
 					}]
@@ -652,139 +832,172 @@ export function queueApprovalNotificationCardRefresh(
 	);
 }
 
-/** Replace persisted chat copies only when the superseded event was interactive. */
-async function refreshInteractiveEventCard(
-	organizationId: string,
-	replacementEventId: number,
-	supersededEventId: number,
-): Promise<void> {
-	const manager = getChatInstanceManager();
-	if (!manager) return;
-	const [row] = await getDb()<{
-		title: string | null;
-		entity_ids: unknown;
-		semantic_type: string;
-		payload_text: string | null;
-		payload_data: unknown;
-		metadata: unknown;
-		source_entity_ids: unknown;
-		source_semantic_type: string;
-		source_metadata: unknown;
-	}>`
-    SELECT replacement.title, replacement.entity_ids,
-           replacement.semantic_type, replacement.payload_text,
-           replacement.payload_data, replacement.metadata,
-           source.entity_ids AS source_entity_ids,
-           source.semantic_type AS source_semantic_type,
-           source.metadata AS source_metadata
-    FROM events replacement
-    JOIN events source
-      ON source.id = ${supersededEventId}
-     AND source.organization_id = replacement.organization_id
-    WHERE replacement.id = ${replacementEventId}
-      AND replacement.organization_id = ${organizationId}
-    LIMIT 1
-  `;
-	if (!row) return;
-	const sourceMetadata = jsonRecord(row.source_metadata);
-	const deliveries = deliveryRecords(sourceMetadata);
-	if (deliveries.length === 0) return;
-	const sourceKind = await resolveEventKindDefinition(
-		row.source_semantic_type,
-		organizationId,
-		parsePgNumberArray(row.source_entity_ids),
-	);
-	if (!sourceKind?.interactions || Object.keys(sourceKind.interactions).length === 0) {
-		return;
-	}
-
-	const entityIds = parsePgNumberArray(row.entity_ids);
-	const kind = await resolveEventKindDefinition(
-		row.semantic_type,
-		organizationId,
-		entityIds,
-	);
-	if (!kind) return;
-	const metadata = jsonRecord(row.metadata);
-	const data =
-		typeof metadata.notification_type === "string"
-			? jsonRecord(row.payload_data)
-			: metadata;
-	const card = buildKindCard({
-		metadataSchema: kind.metadataSchema,
-		jsonTemplate: kind.jsonTemplate,
-		data,
-		title: row.title ?? row.semantic_type,
-		body: row.payload_text ?? undefined,
-		url: toAbsolutePermalink(
-			typeof metadata.resource_url === "string"
-				? metadata.resource_url
-				: typeof sourceMetadata.resource_url === "string"
-					? sourceMetadata.resource_url
-					: undefined,
-		),
-		sourceEventId: replacementEventId,
-		interactions: kind.interactions,
-	});
-	if (!card) return;
-	const content: AdapterPostableMessage = {
-		card,
-		fallbackText: row.payload_text
-			? `${row.title ?? row.semantic_type}\n\n${row.payload_text}`
-			: row.title ?? row.semantic_type,
-	};
-	const successfulDeliveries = (
-		await Promise.all(
-			deliveries.map(async (delivery) => {
-				try {
-					await manager.editMessageContent(delivery.connectionId, {
-						threadId: delivery.threadId,
-						messageId: delivery.messageId,
-						content,
-					});
-					return delivery;
-				} catch (err) {
-					logger.warn(
-						{ err, replacementEventId, connectionId: delivery.connectionId },
-						"[Notifications] Failed to refresh interactive event card",
-					);
-					return null;
-				}
-			}),
-		)
-	).filter(
-		(delivery): delivery is PersistedNotificationDeliveryRecord =>
-			delivery !== null,
-	);
-	// Carry the delivery pointer to the replacement only while it is still
-	// interactive: that record exists to let the NEXT supersede find these chat
-	// copies. Once a kind stops declaring interactions the chain has nothing
-	// left to refresh, so stamping it would be dead metadata.
-	if (kind.interactions && Object.keys(kind.interactions).length > 0) {
-		await persistDeliveryMetadata(
-			replacementEventId,
-			successfulDeliveries,
-			card,
-		);
-	}
+export interface InteractiveEventCardRefreshTaskPayload {
+	organizationId: string;
+	replacementEventId: number;
 }
 
-/** Best-effort post-commit refresh, mirroring approval-card settlement. */
-export function queueInteractiveEventCardRefresh(
-	organizationId: string,
-	replacementEventId: number,
-	supersededEventId: number,
-): void {
-	void refreshInteractiveEventCard(
-		organizationId,
-		replacementEventId,
-		supersededEventId,
-	).catch((err) =>
-		logger.warn(
-			{ err, organizationId, replacementEventId, supersededEventId },
-			"[Notifications] Failed to refresh interactive event card",
-		),
-	);
+/**
+ * Refresh every persisted copy of an interactive event at the newest live
+ * successor in its chain.
+ *
+ * Tasks commit atomically with successor events. The advisory lock serializes
+ * old/new tasks across pods, and each task resolves the live head only after it
+ * acquires that lock. An older delayed task can therefore repeat the newest
+ * edit, but cannot move a card back to stale controls. Gateway, edit, and
+ * metadata failures throw so the shared runs queue retries them.
+ */
+export async function refreshInteractiveEventCardTask(
+	payload: InteractiveEventCardRefreshTaskPayload,
+): Promise<void> {
+	if (
+		typeof payload.organizationId !== "string" ||
+		payload.organizationId === "" ||
+		!Number.isSafeInteger(payload.replacementEventId) ||
+		payload.replacementEventId <= 0
+	) {
+		throw new Error("Invalid interactive event card refresh task payload");
+	}
+	const manager = getChatInstanceManager();
+	if (!manager) throw new Error("Chat gateway is unavailable");
+	await getDb().begin(async (sql) => {
+		const [root] = await sql<{ id: number }>`
+      WITH RECURSIVE ancestry AS (
+        SELECT id, supersedes_event_id
+        FROM events
+        WHERE id = ${payload.replacementEventId}
+          AND organization_id = ${payload.organizationId}
+        UNION ALL
+        SELECT parent.id, parent.supersedes_event_id
+        FROM events parent
+        JOIN ancestry child ON child.supersedes_event_id = parent.id
+        WHERE parent.organization_id = ${payload.organizationId}
+      )
+      SELECT id FROM ancestry
+      WHERE supersedes_event_id IS NULL
+      LIMIT 1
+    `;
+		if (!root) return;
+		await sql`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${`interactive-event-card:${payload.organizationId}:${root.id}`}, 0)
+      )
+    `;
+		const chain = await sql<{
+			id: number;
+			title: string | null;
+			entity_ids: unknown;
+			semantic_type: string;
+			payload_text: string | null;
+			payload_data: unknown;
+			metadata: unknown;
+			supersedes_event_id: number | null;
+		}>`
+      WITH RECURSIVE event_chain AS (
+        SELECT id, supersedes_event_id, title, entity_ids,
+               semantic_type, payload_text, payload_data, metadata, 0 AS depth
+        FROM events
+        WHERE id = ${root.id}
+          AND organization_id = ${payload.organizationId}
+        UNION ALL
+        SELECT successor.id, successor.supersedes_event_id, successor.title,
+               successor.entity_ids, successor.semantic_type,
+               successor.payload_text, successor.payload_data,
+               successor.metadata, event_chain.depth + 1
+        FROM events successor
+        JOIN event_chain ON successor.supersedes_event_id = event_chain.id
+        WHERE successor.organization_id = ${payload.organizationId}
+      )
+      SELECT id, supersedes_event_id, title, entity_ids,
+             semantic_type, payload_text, payload_data, metadata
+      FROM event_chain
+      ORDER BY depth
+  `;
+		const row = chain.at(-1);
+		if (!row) return;
+		const deliveredSource = chain.find(
+			(event) => deliveryRecords(jsonRecord(event.metadata)).length > 0,
+		);
+		if (!deliveredSource) return;
+		const sourceMetadata = jsonRecord(deliveredSource.metadata);
+		const deliveries = [
+			...new Map(
+				chain.flatMap((event) =>
+					deliveryRecords(jsonRecord(event.metadata)).map((delivery) => [
+						`${delivery.connectionId}\u0000${delivery.threadId}\u0000${delivery.messageId}`,
+						delivery,
+					] as const),
+				),
+			).values(),
+		];
+		if (deliveries.length === 0) return;
+		const sourceKind = await resolveEventKindDefinition(
+			deliveredSource.semantic_type,
+			payload.organizationId,
+			parsePgNumberArray(deliveredSource.entity_ids),
+		);
+		if (
+			!sourceKind?.interactions ||
+			Object.keys(sourceKind.interactions).length === 0
+		) {
+			return;
+		}
+
+		const entityIds = parsePgNumberArray(row.entity_ids);
+		const kind = await resolveEventKindDefinition(
+			row.semantic_type,
+			payload.organizationId,
+			entityIds,
+		);
+		if (!kind) {
+			throw new Error(`Event kind ${row.semantic_type} is unavailable`);
+		}
+		const metadata = jsonRecord(row.metadata);
+		const data =
+			typeof metadata.notification_type === "string"
+				? jsonRecord(row.payload_data)
+				: metadata;
+		const card = buildKindCard({
+			metadataSchema: kind.metadataSchema,
+			jsonTemplate: kind.jsonTemplate,
+			data,
+			title: row.title ?? row.semantic_type,
+			body: row.payload_text ?? undefined,
+			url: toAbsolutePermalink(
+				typeof metadata.resource_url === "string"
+					? metadata.resource_url
+					: typeof sourceMetadata.resource_url === "string"
+						? sourceMetadata.resource_url
+						: undefined,
+			),
+			sourceEventId: row.id,
+			interactions: kind.interactions,
+		});
+		if (!card) throw new Error(`Event ${row.id} is not renderable`);
+		const content: AdapterPostableMessage = {
+			card,
+			fallbackText: row.payload_text
+				? `${row.title ?? row.semantic_type}\n\n${row.payload_text}`
+				: row.title ?? row.semantic_type,
+		};
+		await Promise.all(
+			deliveries.map((delivery) =>
+				manager.editMessageContent(delivery.connectionId, {
+					threadId: delivery.threadId,
+					messageId: delivery.messageId,
+					content,
+				}),
+			),
+		);
+		// Carry the delivery pointer to an interactive successor for observability
+		// and presentation retries. A terminal successor has no future refresh hop.
+		if (kind.interactions && Object.keys(kind.interactions).length > 0) {
+			await persistDeliveryMetadata(row.id, deliveries, card, {
+				db: sql,
+				required: true,
+			});
+		}
+	});
 }
 
 /**

@@ -7,13 +7,18 @@ import {
 	it,
 	vi,
 } from "vitest";
-import { invokeTemplateEventAction } from "../../../interactions/template-event-actions";
+import {
+	invokeTemplateEventAction,
+	templateEventActionId,
+} from "../../../interactions/template-event-actions";
 import {
 	assertTemplateActionCapability,
 	MAX_TEMPLATE_ACTION_SOURCE_EVENTS,
 	TEMPLATE_ACTION_CAPABILITY_META_KEY,
 } from "../../../interactions/template-action-capability";
 import { __setChatInstanceManagerForTests } from "../../../lobu/gateway";
+import { refreshInteractiveEventCardTask } from "../../../notifications/service";
+import { INTERACTIVE_EVENT_CARD_REFRESH_TASK } from "../../../scheduled/task-definitions";
 import { getContent } from "../../../tools/get_content";
 import { getMcpResultMeta } from "../../../tools/mcp-result-meta";
 import type { ToolContext } from "../../../tools/registry";
@@ -344,9 +349,26 @@ describe("template event actions", () => {
 			supersedes_event_id: source.id,
 			idempotency_key: "poll-close:poll-1",
 		});
-		await vi.waitFor(() =>
-			expect(editMessageContent).toHaveBeenCalledTimes(1),
-		);
+		const [closedReplacement] = await sql<{ id: number }>`
+      SELECT id FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND supersedes_event_id = ${source.id}
+      LIMIT 1
+		`;
+		if (!closedReplacement) throw new Error("Expected poll replacement");
+		expect(
+			await sql`
+        SELECT id FROM runs
+        WHERE organization_id = ${workspace.org.id}
+          AND action_key = ${INTERACTIVE_EVENT_CARD_REFRESH_TASK}
+          AND (action_input->'payload'->>'replacementEventId')::bigint = ${closedReplacement.id}
+      `,
+		).toHaveLength(1);
+		await refreshInteractiveEventCardTask({
+			organizationId: workspace.org.id,
+			replacementEventId: Number(closedReplacement.id),
+		});
+		expect(editMessageContent).toHaveBeenCalledTimes(1);
 		expect(editMessageContent).toHaveBeenCalledWith("91", {
 			threadId: "gchat:spaces/AAA:threads/thread-1",
 			messageId: "spaces/AAA/messages/poll-1",
@@ -416,7 +438,108 @@ describe("template event actions", () => {
         SELECT id FROM events
         WHERE organization_id = ${workspace.org.id}
           AND semantic_type = 'poll_vote_cast'
-      `,
+			`,
 		).toHaveLength(1);
+
+		// A slow old refresh and a newly queued successor must converge on the
+		// newest controls. The task lock spans the physical edit, while each waiter
+		// resolves the head only after acquiring it.
+		const raceSource = await insertEvent({
+			entityIds: [poll.id],
+			organizationId: workspace.org.id,
+			originId: "poll-opened-refresh-race",
+			title: "Race-safe poll",
+			payloadType: "empty",
+			semanticType: "poll_opened",
+			metadata: {
+				poll_id: "poll-refresh-race",
+				delivery: [
+					{
+						connectionId: "93",
+						messageId: "spaces/AAA/messages/poll-race",
+						threadId: "gchat:spaces/AAA:threads/thread-race",
+					},
+				],
+			},
+		});
+		const firstSuccessor = await api.knowledge.save({
+			entity_ids: [poll.id],
+			semantic_type: "poll_opened",
+			title: "Race-safe poll · one vote",
+			payload_type: "empty",
+			metadata: { poll_id: "poll-refresh-race", response_count: 1 },
+			supersedes_event_id: raceSource.id,
+			idempotency_key: "poll-refresh-race:one",
+		});
+		let releaseFirstEdit = () => {};
+		const firstEditRelease = new Promise<void>((resolve) => {
+			releaseFirstEdit = resolve;
+		});
+		let markFirstEditStarted = () => {};
+		const firstEditStarted = new Promise<void>((resolve) => {
+			markFirstEditStarted = resolve;
+		});
+		const racingEdit = vi.fn(async () => {
+			if (racingEdit.mock.calls.length === 1) {
+				markFirstEditStarted();
+				await firstEditRelease;
+			}
+		});
+		__setChatInstanceManagerForTests({ editMessageContent: racingEdit });
+		const slowOldRefresh = refreshInteractiveEventCardTask({
+			organizationId: workspace.org.id,
+			replacementEventId: Number(firstSuccessor.id),
+		});
+		await firstEditStarted;
+		const newestSuccessor = await api.knowledge.save({
+			entity_ids: [poll.id],
+			semantic_type: "poll_opened",
+			title: "Race-safe poll · two votes",
+			payload_type: "empty",
+			metadata: { poll_id: "poll-refresh-race", response_count: 2 },
+			supersedes_event_id: Number(firstSuccessor.id),
+			idempotency_key: "poll-refresh-race:two",
+		});
+		const newestRefresh = refreshInteractiveEventCardTask({
+			organizationId: workspace.org.id,
+			replacementEventId: Number(newestSuccessor.id),
+		});
+		releaseFirstEdit();
+		await Promise.all([slowOldRefresh, newestRefresh]);
+		expect(racingEdit).toHaveBeenCalledTimes(2);
+		expect(JSON.stringify(racingEdit.mock.calls.at(-1))).toContain(
+			templateEventActionId(Number(newestSuccessor.id), "vote"),
+		);
+		await expect(
+			invokeTemplateEventAction({
+				organizationId: workspace.org.id,
+				sourceEventId: Number(newestSuccessor.id),
+				action: "vote",
+				value: "A",
+				interactionId: "google-refresh-race-vote",
+				surface: "gchat",
+				actor: {
+					platform: "gchat",
+					platformUserId: "users/grace",
+					name: "Grace",
+				},
+				source: {
+					connectionId: "93",
+					messageId: "spaces/AAA/messages/poll-race",
+					threadId: "gchat:spaces/AAA:threads/thread-race",
+				},
+			}),
+		).resolves.toMatchObject({ created: true, eventType: "poll_vote_cast" });
+		__setChatInstanceManagerForTests({
+			editMessageContent: vi.fn(async () => {
+				throw new Error("transient edit failure");
+			}),
+		});
+		await expect(
+			refreshInteractiveEventCardTask({
+				organizationId: workspace.org.id,
+				replacementEventId: Number(newestSuccessor.id),
+			}),
+		).rejects.toThrow("transient edit failure");
 	});
 });

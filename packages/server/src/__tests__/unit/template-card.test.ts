@@ -572,6 +572,34 @@ describe("template-declared controls", () => {
 		]);
 	});
 
+	it("binds one declared event button per dynamic option", () => {
+		const card = buildKindCard({
+			jsonTemplate: {
+				type: "card",
+				children: [
+					{
+						type: "each",
+						items: "options",
+						as: "option",
+						render: bound({
+							label: "{{option}}",
+							value: "{{option}}",
+							onClick: "@vote",
+						}),
+					},
+				],
+			},
+			data: { options: ["Alpha", "Beta", "Gamma"] },
+			interactions: { vote: { emits: "poll_vote_cast" } },
+			sourceEventId: 42,
+		});
+		expect(buttons(card)).toMatchObject([
+			{ id: "event-action:42:vote", label: "Alpha", value: "Alpha" },
+			{ id: "event-action:42:vote", label: "Beta", value: "Beta" },
+			{ id: "event-action:42:vote", label: "Gamma", value: "Gamma" },
+		]);
+	});
+
 	it("keeps a valueless declared button valueless on chat", () => {
 		const card = buildKindCard({
 			jsonTemplate: bound({ label: "Refresh", onClick: "@refresh" }),

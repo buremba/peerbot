@@ -31,7 +31,10 @@ import {
   validateDeliveryAuthorization,
 } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
-import { WORKSPACE_EVENT_ACTIVATION_TASK } from './task-definitions';
+import {
+  INTERACTIVE_EVENT_CARD_REFRESH_TASK,
+  WORKSPACE_EVENT_ACTIVATION_TASK,
+} from './task-definitions';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
 import { runMemberClaimDriftCheck } from './member-claim-drift';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
@@ -39,7 +42,11 @@ import { runReapExpiredPendingSlackInstalls } from './reap-expired-pending-insta
 import { runExpirePendingApprovals } from './expire-pending-approvals';
 import { runScoreEvalRuns } from './score-eval-runs';
 import { getDb, pgTextArray } from '../db/client';
-import { createNotificationForUsers } from '../notifications/service';
+import {
+  createNotificationForUsers,
+  refreshInteractiveEventCardTask,
+  type InteractiveEventCardRefreshTaskPayload,
+} from '../notifications/service';
 import {
   createThreadForAgent,
   enqueueAgentMessage,
@@ -455,6 +462,12 @@ function registerMaintenanceTasks(
     ) {
       logger.info(result, '[task] activate-workspace-event completed');
     }
+  });
+
+  scheduler.register(INTERACTIVE_EVENT_CARD_REFRESH_TASK, async (ctx) => {
+    await refreshInteractiveEventCardTask(
+      ctx.payload as InteractiveEventCardRefreshTaskPayload,
+    );
   });
 
   // scheduled_jobs ticker: scans the table every minute, spawns due rows

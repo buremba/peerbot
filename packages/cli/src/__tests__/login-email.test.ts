@@ -13,16 +13,21 @@ const credentials = await import("../internal/credentials");
  * earlier version checked the void result of the claim call as falsy and
  * returned immediately, so the email sent but no token was ever collected.
  */
-describe("login --email (user_claimed)", () => {
+describe("login device-code approval", () => {
   afterEach(() => {
     mock.restore();
     openMock.mockClear();
   });
 
   function mockOAuthServer(
-    options: { expiresIn?: number; tokenResult?: "success" | "pending" } = {}
+    options: {
+      expiresIn?: number;
+      interval?: number;
+      tokenResults?: Array<"success" | "pending">;
+    } = {}
   ): { calls: string[] } {
     const calls: string[] = [];
+    const tokenResults = [...(options.tokenResults ?? ["success"])];
     const fetchMock = mock(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : (input as Request).url;
       calls.push(url);
@@ -52,14 +57,14 @@ describe("login --email (user_claimed)", () => {
           verification_uri_complete:
             "https://lobu.test/oauth/device?user_code=ABCD-1234",
           expires_in: options.expiresIn ?? 600,
-          interval: 1,
+          interval: options.interval ?? 1,
         });
       }
       if (url.endsWith("/oauth/device/email")) {
         return jsonResponse({ status: "pending" }, 202);
       }
       if (url.endsWith("/oauth/token")) {
-        if (options.tokenResult === "pending") {
+        if (tokenResults.shift() === "pending") {
           return jsonResponse({ error: "authorization_pending" }, 400);
         }
         return jsonResponse({
@@ -137,6 +142,66 @@ describe("login --email (user_claimed)", () => {
     );
     expect(calls.some((u) => u.endsWith("/oauth/device/email"))).toBe(false);
     expect(calls.some((u) => u.endsWith("/oauth/token"))).toBe(false);
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  test("keeps polling without a TTY when a supervisor explicitly owns the wait", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "prod",
+      url: "https://lobu.test/lobu/api/v1",
+      source: "config",
+    });
+    spyOn(credentials, "loadCredentials").mockResolvedValue(null);
+    const saveSpy = spyOn(credentials, "saveCredentials").mockResolvedValue();
+    spyOn(process.stdout, "isTTY", "get").mockReturnValue(false);
+    spyOn(process.stdin, "isTTY", "get").mockReturnValue(false);
+    spyOn(console, "log").mockImplementation(() => undefined);
+
+    const originalFetch = globalThis.fetch;
+    const { calls } = mockOAuthServer({
+      interval: 0,
+      tokenResults: ["pending", "success"],
+    });
+    try {
+      await loginCommand({
+        context: "prod",
+        waitForApproval: true,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(calls.filter((url) => url.endsWith("/oauth/token"))).toHaveLength(2);
+    expect(saveSpy).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  test("still fails fast for an unsupervised non-interactive login", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "prod",
+      url: "https://lobu.test/lobu/api/v1",
+      source: "config",
+    });
+    spyOn(credentials, "loadCredentials").mockResolvedValue(null);
+    const saveSpy = spyOn(credentials, "saveCredentials").mockResolvedValue();
+    spyOn(process.stdout, "isTTY", "get").mockReturnValue(false);
+    spyOn(process.stdin, "isTTY", "get").mockReturnValue(false);
+    spyOn(console, "log").mockImplementation(() => undefined);
+
+    const originalFetch = globalThis.fetch;
+    const { calls } = mockOAuthServer({
+      interval: 0,
+      tokenResults: ["pending", "success"],
+    });
+    try {
+      await loginCommand({ context: "prod" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(calls.filter((url) => url.endsWith("/oauth/token"))).toHaveLength(1);
     expect(saveSpy).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;

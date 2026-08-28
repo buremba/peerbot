@@ -435,6 +435,10 @@ Memory:
       "--email <address>",
       "Headless login on a user's behalf: the server emails them an approval link (auth.md user_claimed flow)"
     )
+    .option(
+      "--wait-for-approval",
+      "Keep polling for browser approval when supervised without a TTY"
+    )
     .action(
       async (options: {
         token?: string;
@@ -442,6 +446,7 @@ Memory:
         force?: boolean;
         quiet?: boolean;
         email?: string;
+        waitForApproval?: boolean;
       }) => {
         const { loginCommand } = await import("./commands/login.js");
         await loginCommand({ ...options, cliVersion: version });

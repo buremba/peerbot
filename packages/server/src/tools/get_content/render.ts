@@ -357,7 +357,7 @@ export async function buildContentItems(opts: {
         f.content_length == null ? undefined : Number(f.content_length),
       payload_data: parseJsonObject(f.payload_data),
       payload_template: f.payload_template ? parseJsonObject(f.payload_template) : null,
-      attachments: f.attachments_truncated === true ? [] : parseRecordArray(f.attachments),
+      attachments: parseRecordArray(f.attachments),
       attachments_truncated: f.attachments_truncated === true ? true : undefined,
       attachments_bytes:
         f.attachments_bytes == null ? undefined : Number(f.attachments_bytes),

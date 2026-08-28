@@ -53,6 +53,19 @@ describe('finalizeDynamicQueryRows', () => {
     expect(result.rows[0].content_length).toBe(7);
   });
 
+  it('reports generated sidecars that disagree across two truncated text columns', () => {
+    const result = finalizeDynamicQueryRows([
+      {
+        payload_text: 'x'.repeat(CONTENT_TEXT_HEAD_CHARS + 1),
+        text_content: 'y'.repeat(CONTENT_TEXT_HEAD_CHARS + 2),
+      },
+    ]);
+
+    expect(result.sidecarCollisions).toEqual(['content_length']);
+    expect(result.rows[0].content_length).toBe(CONTENT_TEXT_HEAD_CHARS + 1);
+    expect(result.rows[0].payload_truncated).toBe(true);
+  });
+
   it('enforces a hard serialized row-list cap after per-cell bounding', () => {
     const rows = Array.from({ length: 500 }, (_, id) => ({
       id,

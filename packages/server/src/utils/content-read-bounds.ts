@@ -100,7 +100,10 @@ function assignGeneratedSidecar(
   value: unknown,
   collisions: Set<string>
 ): void {
-  if (Object.prototype.hasOwnProperty.call(input, key) && input[key] !== value) {
+  if (
+    (Object.prototype.hasOwnProperty.call(input, key) && input[key] !== value) ||
+    (Object.prototype.hasOwnProperty.call(row, key) && row[key] !== value)
+  ) {
     collisions.add(key);
     return;
   }

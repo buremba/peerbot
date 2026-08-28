@@ -374,8 +374,7 @@ async function queryContentData(
             rec.content_length == null ? undefined : Number(rec.content_length),
           payload_data: rec.payload_data ?? {},
           payload_template: rec.payload_template ?? null,
-          attachments:
-            rec.attachments_truncated === true ? [] : parseRecordArray(rec.attachments),
+          attachments: parseRecordArray(rec.attachments),
           attachments_truncated:
             rec.attachments_truncated === true ? true : undefined,
           attachments_bytes:

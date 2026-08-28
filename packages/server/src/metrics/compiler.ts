@@ -24,6 +24,10 @@
  */
 
 import type { EntityMetrics } from "@lobu/connector-sdk";
+import {
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  ORGANIZATION_SCOPE_PROJECTION,
+} from "../identity/scope-projection";
 import { inferColumns } from "../utils/infer-measures";
 import { MetricCompileError, MetricNotImplementedError } from "./errors";
 import { compileReadModePredicate } from "./read-mode";
@@ -44,6 +48,16 @@ interface CompileMetricInput {
 }
 
 const SANE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/** Return the identity namespace only for a direct metadata-slot alias field. */
+function metadataKeyFromAliasField(field: string): string | null {
+  const match = field.trim().match(/^metadata\s*->>\s*'((?:[^']|'')+)'$/);
+  return match ? match[1].replaceAll("''", "'") : null;
+}
+
+function sqlString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
 
 /** Output column alias for a dimension / measure — guarded so names can't inject. */
 function outName(kind: string, name: string): string {
@@ -112,13 +126,27 @@ export function compileMetricSql(input: CompileMetricInput): string {
     innerWhere.length ? ` WHERE ${innerWhere.join(" AND ")}` : ""
   }`;
 
-  // ── Alias resolution: flatten (entity_id, alias) so `entities.metadata`
-  //    never enters the expr scope (keeps `metadata` = the event's). ─────────
+  // ── Alias resolution. Arbitrary fields retain legacy flat-alias matching.
+  //    A direct metadata namespace additionally resolves the durable identity
+  //    tuple, including the event-side tenant projection. ───────────────────
   const entWhere = [`ent.entity_type_id = ${Number(entityTypeId)}`, `ent.deleted_at IS NULL`];
   if (input.entityId !== undefined) entWhere.push(`ent.id = ${Number(input.entityId)}`);
-  const entAlias = `SELECT ent.id AS entity_id, a.alias
+  const identityNamespace = metadataKeyFromAliasField(eventSet.field);
+  const identityNamespaceSql = identityNamespace ? sqlString(identityNamespace) : null;
+  const flatAliases = `SELECT ent.id AS entity_id, a.alias,
+              NULL::text AS namespace, NULL::text AS scope_key
        FROM entities ent, jsonb_array_elements_text(ent.metadata->'aliases') AS a(alias)
        WHERE ${entWhere.join(" AND ")}`;
+  const entAlias = identityNamespaceSql
+    ? `${flatAliases}
+       UNION ALL
+       SELECT ent.id AS entity_id, ei.identifier AS alias,
+              ei.namespace, ei.scope_key
+       FROM entities ent
+       JOIN entity_identities ei ON ei.entity_id = ent.id AND ei.deleted_at IS NULL
+       WHERE ${entWhere.join(" AND ")}
+         AND ei.namespace = ${identityNamespaceSql}`
+    : flatAliases;
 
   // ── Resolved + deduped relation. DISTINCT over the dedupe tuple ∪ entity ∪
   //    dims ∪ measure expr so summing over distinct rows is correct (a missing
@@ -134,9 +162,34 @@ export function compileMetricSql(input: CompileMetricInput): string {
     ...dedupeCols,
   ].join(", ");
   const fieldExpr = `evt.${eventSet.field}`;
+  const aliasMatch = identityNamespaceSql
+    ? `ea.alias = ${fieldExpr}
+      AND (
+        (
+          ea.namespace IS NULL
+          AND NOT (
+            COALESCE(
+              evt.metadata->'${IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY}',
+              '{}'::jsonb
+            ) ? ${identityNamespaceSql}
+          )
+        )
+        OR (
+          ea.namespace = ${identityNamespaceSql}
+          AND COALESCE(
+            evt.metadata->'${IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY}',
+            '{}'::jsonb
+          ) ? ${identityNamespaceSql}
+          AND COALESCE(ea.scope_key, '${ORGANIZATION_SCOPE_PROJECTION}') = COALESCE(
+            (evt.metadata->'${IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY}')->>${identityNamespaceSql},
+            '${ORGANIZATION_SCOPE_PROJECTION}'
+          )
+        )
+      )`
+    : `ea.alias = ${fieldExpr} AND ea.namespace IS NULL`;
   const resolved = `SELECT ${distinct}${relationCols}
      FROM (${evt}) evt
-     JOIN (${entAlias}) ea ON ea.alias = ${fieldExpr}`;
+     JOIN (${entAlias}) ea ON ${aliasMatch}`;
 
   // ── Aggregate (the shared, Malloy-swappable seam) ─────────────────────────
   const measureName = outName("measure", input.measure);

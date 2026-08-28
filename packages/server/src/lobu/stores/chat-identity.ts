@@ -65,10 +65,12 @@ export async function resolveChatUserIdentity(
       ON auth_ei.organization_id = slack_ei.organization_id
      AND auth_ei.entity_id = slack_ei.entity_id
      AND auth_ei.namespace = 'auth_user_id'
+     AND auth_ei.scope_key IS NULL
      AND auth_ei.source_connector = 'auth:signup'
      AND auth_ei.deleted_at IS NULL
     WHERE slack_ei.namespace = ${SLACK_IDENTITY.USER_ID}
       AND slack_ei.identifier = ${combined}
+      AND slack_ei.scope_key IS NULL
       AND slack_ei.deleted_at IS NULL
     LIMIT 2
   `;
@@ -107,9 +109,11 @@ export async function resolveSlackUserIdForUser(
       ON slack_ei.organization_id = auth_ei.organization_id
      AND slack_ei.entity_id = auth_ei.entity_id
      AND slack_ei.namespace = ${SLACK_IDENTITY.USER_ID}
+     AND slack_ei.scope_key IS NULL
      AND slack_ei.deleted_at IS NULL
     WHERE auth_ei.namespace = 'auth_user_id'
       AND auth_ei.identifier = ${userId}
+      AND auth_ei.scope_key IS NULL
       AND auth_ei.source_connector = 'auth:signup'
       AND auth_ei.deleted_at IS NULL
       AND slack_ei.identifier LIKE ${`${likePrefix}%`}

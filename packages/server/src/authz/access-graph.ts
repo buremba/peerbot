@@ -281,6 +281,7 @@ async function resolveMembers(
 			WHERE ei.organization_id = ${orgId}
 			  AND ei.namespace = ${namespace}
 			  AND ei.identifier = ANY(${pgTextArray(list)}::text[])
+			  AND ei.scope_key IS NULL
 			  AND ei.deleted_at IS NULL
 			  AND e.deleted_at IS NULL
 		`;

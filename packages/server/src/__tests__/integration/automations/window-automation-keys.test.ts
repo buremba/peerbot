@@ -113,4 +113,5 @@ describe("Automation window vocabulary", () => {
 		expect(detail.automation?.slug).toBe("window-vocab");
 		expect(detail.pending_analysis?.next_window?.start).toBe(expectedNextWindow.toISOString());
 	});
+
 });

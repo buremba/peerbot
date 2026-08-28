@@ -1,13 +1,14 @@
 /**
- * Identity scope: does an identifier mean the same thing across connections?
+ * Identity scope: does an identifier mean the same thing across upstream tenants?
  *
- * `idx_entity_identities_live_unique_scoped` keys on
- * `(organization_id, namespace, identifier, COALESCE(scope_connection_id, 0))`.
+ * `idx_entity_identities_live_unique_tenant_scoped` keys on
+ * `(organization_id, namespace, identifier, COALESCE(scope_key, ''))`.
  * A connector declares `scope` per identity namespace, because only it knows
  * whether its namespace is globally meaningful:
  *
- *   - `scope: 'connection'` — `erp_customer` `CARI-001` is a DIFFERENT customer
- *     in two different ERP tenants, so two connections must stay separate.
+ *   - `scope: 'tenant'` — `erp_customer` `CARI-001` is a DIFFERENT customer
+ *     in two different ERP tenants, while reconnecting to the same tenant must
+ *     converge on the existing customer.
  *   - default (`organization`) — a Slack user id names the same person no
  *     matter which connection observed it, so two connections must collapse.
  *
@@ -33,7 +34,7 @@ const feedKey = 'customers';
 
 /**
  * One connector, two namespaces on the same rule: `erp_customer` is
- * connection-scoped, `email` is not. A mixed rule is the interesting case — it
+ * tenant-scoped, `email` is not. A mixed rule is the interesting case — it
  * proves scope is resolved per identity rather than per rule or per call.
  */
 async function seed() {
@@ -64,7 +65,8 @@ async function seed() {
                     {
                       namespace: 'erp_customer',
                       eventPath: 'metadata.customer_code',
-                      scope: 'connection',
+                      scope: 'tenant',
+                      scopeKeyPath: 'metadata.tenant_id',
                     },
                     { namespace: 'email', eventPath: 'metadata.email' },
                   ],
@@ -94,10 +96,15 @@ async function seed() {
   return { org, tenantA, tenantB };
 }
 
-function customerEvent(code: string, name: string, email?: string) {
+function customerEvent(code: string, name: string, tenantId?: unknown, email?: string) {
   return {
     origin_type: 'customer',
-    metadata: { customer_code: code, name, ...(email ? { email } : {}) },
+    metadata: {
+      customer_code: code,
+      name,
+      ...(tenantId !== undefined ? { tenant_id: tenantId } : {}),
+      ...(email ? { email } : {}),
+    },
   };
 }
 
@@ -112,12 +119,12 @@ async function memberCount(orgId: string): Promise<number> {
   return Number(rows[0].n);
 }
 
-describe('connector identity scope', () => {
+describe('connector tenant identity scope', () => {
   beforeEach(() => {
     clearEntityLinkRulesCache();
   });
 
-  it('keeps a connection-scoped identifier separate across two connections', async () => {
+  it('keeps the same identifier separate across different tenant keys', async () => {
     const { org, tenantA, tenantB } = await seed();
     const sql = getTestDb();
 
@@ -127,28 +134,47 @@ describe('connector identity scope', () => {
       feedKey,
       orgId: org.id,
       connectionId: tenantA.id,
-      items: [customerEvent('CARI-001', 'Acme A')],
+      items: [customerEvent('CARI-001', 'Acme A', 'tenant-a')],
     });
     await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
       connectionId: tenantB.id,
-      items: [customerEvent('CARI-001', 'Beta B')],
+      items: [customerEvent('CARI-001', 'Beta B', 'tenant-b')],
     });
 
     expect(await memberCount(org.id)).toBe(2);
 
-    const rows = await sql<{ identifier: string; scope_connection_id: string | null }[]>`
-      SELECT identifier, scope_connection_id
+    const rows = await sql<{ identifier: string; scope_key: string | null }[]>`
+      SELECT identifier, scope_key
       FROM entity_identities
       WHERE organization_id = ${org.id} AND namespace = 'erp_customer' AND deleted_at IS NULL
-      ORDER BY scope_connection_id
+      ORDER BY scope_key
     `;
     expect(rows).toHaveLength(2);
-    expect(rows.map((r) => Number(r.scope_connection_id)).sort((a, b) => a - b)).toEqual(
-      [tenantA.id, tenantB.id].sort((a, b) => a - b)
-    );
+    expect(rows.map((r) => r.scope_key)).toEqual(['tenant-a', 'tenant-b']);
+  });
+
+  it('converges across two Lobu connections to the same upstream tenant', async () => {
+    const { org, tenantA, tenantB } = await seed();
+
+    await applyEventAttributions({
+      connectorKey,
+      feedKey,
+      orgId: org.id,
+      connectionId: tenantA.id,
+      items: [customerEvent('CARI-001', 'Acme A', 'shared-tenant')],
+    });
+    await applyEventAttributions({
+      connectorKey,
+      feedKey,
+      orgId: org.id,
+      connectionId: tenantB.id,
+      items: [customerEvent('CARI-001', 'Acme after reconnect', 'shared-tenant')],
+    });
+
+    expect(await memberCount(org.id)).toBe(1);
   });
 
   it('still collapses an org-scoped identifier across the same two connections', async () => {
@@ -162,34 +188,34 @@ describe('connector identity scope', () => {
       feedKey,
       orgId: org.id,
       connectionId: tenantA.id,
-      items: [customerEvent('CARI-001', 'Dana', 'dana@example.com')],
+      items: [customerEvent('CARI-001', 'Dana', 'tenant-a', 'dana@example.com')],
     });
     await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
       connectionId: tenantB.id,
-      items: [customerEvent('CARI-999', 'Dana', 'dana@example.com')],
+      items: [customerEvent('CARI-999', 'Dana', 'tenant-b', 'dana@example.com')],
     });
 
     // One person, seen through two connections. This is the case a blanket
     // `connection_id` in the unique index would have broken.
     expect(await memberCount(org.id)).toBe(1);
 
-    const emails = await sql<{ scope_connection_id: string | null }[]>`
-      SELECT scope_connection_id
+    const emails = await sql<{ scope_key: string | null }[]>`
+      SELECT scope_key
       FROM entity_identities
       WHERE organization_id = ${org.id} AND namespace = 'email' AND deleted_at IS NULL
     `;
     expect(emails).toHaveLength(1);
-    expect(emails[0].scope_connection_id).toBeNull();
+    expect(emails[0].scope_key).toBeNull();
   });
 
   it('is idempotent when the same connection re-syncs a scoped identifier', async () => {
     const { org, tenantA } = await seed();
     const sql = getTestDb();
 
-    // The ON CONFLICT DO UPDATE path with a NON-NULL scope_connection_id — the
+    // The ON CONFLICT DO UPDATE path with a NON-NULL scope_key — the
     // conflict target is an expression index, so a re-sync is where a
     // mismatched inference would surface as a duplicate row rather than an
     // error.
@@ -199,13 +225,13 @@ describe('connector identity scope', () => {
         feedKey,
         orgId: org.id,
         connectionId: tenantA.id,
-        items: [customerEvent('CARI-042', 'Repeat Customer')],
+        items: [customerEvent('CARI-042', 'Repeat Customer', 'tenant-a')],
       });
     }
 
     expect(await memberCount(org.id)).toBe(1);
-    const rows = await sql<{ scope_connection_id: string | null }[]>`
-      SELECT scope_connection_id
+    const rows = await sql<{ scope_key: string | null }[]>`
+      SELECT scope_key
       FROM entity_identities
       WHERE organization_id = ${org.id}
         AND namespace = 'erp_customer'
@@ -213,28 +239,52 @@ describe('connector identity scope', () => {
         AND deleted_at IS NULL
     `;
     expect(rows).toHaveLength(1);
-    expect(Number(rows[0].scope_connection_id)).toBe(tenantA.id);
+    expect(rows[0].scope_key).toBe('tenant-a');
   });
 
-  it('falls back to org scope when there is no ingesting connection', async () => {
-    const { org } = await seed();
+  it('stringifies and trims a non-string tenant key', async () => {
+    const { org, tenantA } = await seed();
     const sql = getTestDb();
 
-    // The webhook and manual paths pass no connectionId. Inventing a scope
-    // there would strand the identity in a bucket nothing can ever match.
     await applyEventAttributions({
       connectorKey,
       feedKey,
       orgId: org.id,
-      items: [customerEvent('CARI-777', 'Orphan')],
+      connectionId: tenantA.id,
+      items: [customerEvent('CARI-043', 'Boolean Tenant', false)],
     });
 
-    const rows = await sql<{ scope_connection_id: string | null }[]>`
-      SELECT scope_connection_id
+    const rows = await sql<{ scope_key: string | null }[]>`
+      SELECT scope_key
       FROM entity_identities
-      WHERE organization_id = ${org.id} AND namespace = 'erp_customer' AND deleted_at IS NULL
+      WHERE organization_id = ${org.id}
+        AND namespace = 'erp_customer'
+        AND identifier = 'CARI-043'
+        AND deleted_at IS NULL
     `;
     expect(rows).toHaveLength(1);
-    expect(rows[0].scope_connection_id).toBeNull();
+    expect(rows[0].scope_key).toBe('false');
+  });
+
+  it('fails ingestion when a tenant-scoped identity has a missing or empty tenant key', async () => {
+    const { org } = await seed();
+
+    await expect(
+      applyEventAttributions({
+        connectorKey,
+        feedKey,
+        orgId: org.id,
+        items: [customerEvent('CARI-777', 'Missing tenant')],
+      })
+    ).rejects.toThrow(/erp_customer.*metadata\.tenant_id.*non-empty tenant scope key/i);
+
+    await expect(
+      applyEventAttributions({
+        connectorKey,
+        feedKey,
+        orgId: org.id,
+        items: [customerEvent('CARI-778', 'Empty tenant', '   ')],
+      })
+    ).rejects.toThrow(/erp_customer.*metadata\.tenant_id.*non-empty tenant scope key/i);
   });
 });

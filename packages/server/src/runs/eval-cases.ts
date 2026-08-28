@@ -20,8 +20,8 @@
  *
  * Identity is the (source run, case key) pair, claimed in `entity_identities`
  * under the `eval_case` namespace. The partial unique index
- * `idx_entity_identities_live_unique_scoped (organization_id, namespace, identifier,
- * COALESCE(scope_connection_id, 0))
+ * `idx_entity_identities_live_unique_tenant_scoped (organization_id, namespace, identifier,
+ * COALESCE(scope_key, ''))
  * WHERE deleted_at IS NULL` is the multi-replica lock, so two operators
  * promoting the same run concurrently resolve to one case rather than two.
  */
@@ -534,6 +534,7 @@ async function findEvalCaseByIdentifier(
     WHERE ei.organization_id = ${organizationId}
       AND ei.namespace = ${EVAL_CASE_NAMESPACE}
       AND ei.identifier = ${identifier}
+      AND ei.scope_key IS NULL
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
     LIMIT 1
@@ -576,12 +577,12 @@ async function claimEvalCaseIdentity(
 ): Promise<void> {
 	await sql`
     INSERT INTO entity_identities (
-      organization_id, entity_id, namespace, identifier, created_at
+      organization_id, entity_id, namespace, identifier, scope_key, created_at
     ) VALUES (
-      ${organizationId}, ${entityId}, ${EVAL_CASE_NAMESPACE}, ${identifier},
+      ${organizationId}, ${entityId}, ${EVAL_CASE_NAMESPACE}, ${identifier}, NULL,
       current_timestamp
     )
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
     DO UPDATE SET entity_id = EXCLUDED.entity_id, updated_at = current_timestamp
     WHERE EXISTS (
       SELECT 1 FROM entities de

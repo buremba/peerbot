@@ -23,6 +23,7 @@ describe('content-search identity namespace registry bridge', () => {
     const sql = entityLinkMatchSql('$1', 'f');
     expect(sql).toContain("ei.namespace = 'x_user_id'");
     expect(sql).toContain("e2.metadata ? 'x_user_id'");
+    expect(sql).toContain("COALESCE(ei.scope_key, '')");
   });
 
   it('emits indexed LinkedIn identity branches for entity-link matching', () => {
@@ -39,14 +40,15 @@ describe('content-search identity namespace registry bridge', () => {
       alias: 'f',
       baseParamIndex: 3,
       scopes: [
-        { namespace: X_IDENTITY.USER_ID, identifier: '123' },
-        { namespace: X_IDENTITY.HANDLE, identifier: 'alice' },
+        { namespace: X_IDENTITY.USER_ID, identifier: '123', scopeKey: 'tenant-a' },
+        { namespace: X_IDENTITY.HANDLE, identifier: 'alice', scopeKey: null },
       ],
     });
 
     expect(result.sql).toContain("metadata ? 'x_user_id'");
     expect(result.sql).toContain("metadata->>'x_user_id' = $3");
     expect(result.sql).not.toContain('x_handle');
-    expect(result.params).toEqual(['123']);
+    expect(result.sql).toContain("__lobu_identity_scope_keys");
+    expect(result.params).toEqual(['123', 'tenant-a']);
   });
 });

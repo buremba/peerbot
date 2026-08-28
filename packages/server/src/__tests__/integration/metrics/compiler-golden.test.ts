@@ -18,6 +18,7 @@ import {
 import { getTestDb } from '../../setup/test-db';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import { TestApiClient } from '../../setup/test-mcp-client';
+import { IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY } from '../../../identity/scope-projection';
 import { runMetric } from '../../../metrics/run-metric';
 
 const METRICS = {
@@ -58,6 +59,24 @@ const METRICS = {
   },
 };
 
+const TENANT_IDENTITY_METRICS = {
+  eventSets: {
+    customers: {
+      by: 'alias',
+      field: "metadata->>'erp_customer'",
+      against: 'aliases',
+      where: "semantic_type='customer_activity' AND connector_key='erp'",
+    },
+  },
+  measures: {
+    activities: {
+      eventSet: 'customers',
+      agg: 'count',
+      description: 'Count customer activity events within one tenant identity scope.',
+    },
+  },
+};
+
 describe('metric compiler — alias resolver golden', () => {
   let orgId: string;
 
@@ -78,6 +97,11 @@ describe('metric compiler — alias resolver golden', () => {
       slug: 'company',
       name: 'Company',
       metrics_config: METRICS,
+    });
+    await owner.entity_schema.createType({
+      slug: 'tenant-company',
+      name: 'Tenant company',
+      metrics_config: TENANT_IDENTITY_METRICS,
     });
 
     // The Anthropic company with its aliases (what the resolver matches on).
@@ -135,5 +159,78 @@ describe('metric compiler — alias resolver golden', () => {
     const byCur = Object.fromEntries(rows.map((r) => [r.currency as string, Number(r.charges)]));
     expect(byCur.GBP).toBe(2); // Claude.ai 78.35 + Anthropic 20.00 (dup collapsed)
     expect(byCur.USD).toBe(1);
+  });
+
+  it('matches equal identifiers only within the event tenant scope', async () => {
+    const tenantA = await createTestEntity({
+      name: 'Tenant A customer',
+      entity_type: 'tenant-company',
+      organization_id: orgId,
+    });
+    const tenantB = await createTestEntity({
+      name: 'Tenant B customer',
+      entity_type: 'tenant-company',
+      organization_id: orgId,
+    });
+    const legacyOrganization = await createTestEntity({
+      name: 'Legacy organization customer',
+      entity_type: 'tenant-company',
+      organization_id: orgId,
+    });
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector, scope_key
+      ) VALUES
+        (${orgId}, ${tenantA.id}, 'erp_customer', 'C-1', 'connector:erp', 'tenant-a'),
+        (${orgId}, ${tenantB.id}, 'erp_customer', 'C-1', 'connector:erp', 'tenant-b'),
+        (${orgId}, ${legacyOrganization.id}, 'erp_customer', 'C-legacy', 'connector:erp', NULL)
+    `;
+    await sql`
+      UPDATE entities
+      SET metadata = ${sql.json({ aliases: ['C-legacy'] })}
+      WHERE id = ${legacyOrganization.id}
+    `;
+    await createTestEvent({
+      organization_id: orgId,
+      content: 'tenant A activity',
+      semantic_type: 'customer_activity',
+      connector_key: 'erp',
+      metadata: {
+        erp_customer: 'C-1',
+        [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { erp_customer: 'tenant-a' },
+      },
+    });
+    await createTestEvent({
+      organization_id: orgId,
+      content: 'tenant B activity',
+      semantic_type: 'customer_activity',
+      connector_key: 'erp',
+      metadata: {
+        erp_customer: 'C-1',
+        [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { erp_customer: 'tenant-b' },
+      },
+    });
+    await createTestEvent({
+      organization_id: orgId,
+      content: 'legacy organization activity',
+      semantic_type: 'customer_activity',
+      connector_key: 'erp',
+      metadata: { erp_customer: 'C-legacy' },
+    });
+
+    const rows = await runMetric({
+      organizationId: orgId,
+      entityType: 'tenant-company',
+      measure: 'activities',
+    });
+    const byEntity = Object.fromEntries(
+      rows.map((row) => [Number(row.entity_id), Number(row.activities)])
+    );
+    expect(byEntity).toEqual({
+      [tenantA.id]: 1,
+      [tenantB.id]: 1,
+      [legacyOrganization.id]: 1,
+    });
   });
 });

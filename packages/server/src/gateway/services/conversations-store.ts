@@ -172,7 +172,8 @@ export async function resolveConversationLocationLabel(args: {
     SELECT e.name FROM entity_identities ei
     JOIN entities e ON e.id = ei.entity_id AND e.organization_id = ei.organization_id
     WHERE ei.organization_id = ${args.organizationId} AND ei.namespace = ${namespace}
-      AND ei.identifier = ${key} AND ei.deleted_at IS NULL AND e.deleted_at IS NULL LIMIT 1
+      AND ei.identifier = ${key} AND ei.scope_key IS NULL
+      AND ei.deleted_at IS NULL AND e.deleted_at IS NULL LIMIT 1
   `;
 	const name = rows[0]?.name?.trim();
 	if (!name) return null;

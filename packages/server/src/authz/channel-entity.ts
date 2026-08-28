@@ -57,6 +57,7 @@ export async function resolveChannelEntityId(
     WHERE ei.organization_id = ${organizationId}
       AND ei.namespace = ${identity.channelNamespace}
       AND ei.identifier = ${key}
+      AND ei.scope_key IS NULL
       AND ei.deleted_at IS NULL
     LIMIT 1
   `;

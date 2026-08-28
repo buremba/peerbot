@@ -541,12 +541,12 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 							const relationshipDeclarations = itemOriginType
 								? (appliedAttributions.relationshipsByKind[itemOriginType] ?? [])
 								: [];
-							if (relationshipDeclarations.length > 0) {
-								if (run.connection_id == null) {
-									throw new Error(
-										"Connector-declared relationships require a source connection",
-									);
-								}
+							if (relationshipDeclarations.length > 0 && run.connection_id == null) {
+								throw new Error(
+									"Connector-declared relationships require a source connection",
+								);
+							}
+							if (run.connection_id != null) {
 								const named =
 									appliedAttributions.namedEntityIdsByItem.get(itemIndex) ??
 									new Map<string, number>();

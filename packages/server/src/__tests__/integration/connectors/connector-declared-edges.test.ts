@@ -247,6 +247,50 @@ describe('connector-declared relationships', () => {
       })
     ).rejects.toThrow(/source-managed/i);
 
+    // Removing the declaration is also a complete desired-set change. A later
+    // resync of the same durable source item must retract its old claim instead
+    // of leaving the relationship live forever merely because the new plan has
+    // zero declarations to iterate.
+    await sql`
+      UPDATE connector_definitions
+      SET feeds_schema = jsonb_set(
+            feeds_schema,
+            ARRAY[${FEED_KEY}, 'eventKinds', 'invoice', 'relationships']::text[],
+            '[]'::jsonb,
+            false
+          ),
+          updated_at = NOW()
+      WHERE organization_id = ${workspace.org.id}
+        AND key = ${CONNECTOR_KEY}
+        AND status = 'active'
+    `;
+    clearEntityLinkRulesCache();
+    const withoutDeclaration = await post('/api/workers/stream', {
+      body: {
+        type: 'batch',
+        run_id: Number(run.id),
+        items: [
+          {
+            id: originId,
+            origin_type: 'invoice',
+            title: 'Invoice INV-1001',
+            payload_text: 'Invoice INV-1001 now belongs to Beta GmbH',
+            metadata: {
+              invoice_id: 'inv-1001',
+              invoice_number: 'INV-1001',
+              customer_id: 'cust-84',
+              customer_name: 'Beta GmbH',
+            },
+          },
+        ],
+      },
+    });
+    expect(withoutDeclaration.status).toBe(200);
+    const [sourceAfterDeclarationRemoval] = await sql`
+      SELECT deleted_at FROM entity_relationships WHERE id = ${newSource?.id}
+    `;
+    expect(sourceAfterDeclarationRemoval.deleted_at).not.toBeNull();
+
     await workspace.owner.entities.manage({
       action: 'unlink',
       relationship_id: Number(oldManual?.id),

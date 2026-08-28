@@ -508,6 +508,20 @@ export async function reconcileConnectorRelationshipClaims(
     desired: DesiredConnectorRelationship[];
   }
 ): Promise<void> {
+  const claimKey = connectorRelationshipClaimKey(params.connectionId, params.originId);
+  if (params.desired.length === 0) {
+    const existing = await tx`
+      SELECT 1
+      FROM entity_relationships
+      WHERE organization_id = ${params.organizationId}
+        AND deleted_at IS NULL
+        AND metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
+        AND (metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) ? ${claimKey}
+      LIMIT 1
+    `;
+    if (existing.length === 0) return;
+  }
+
   await lockOrganization(tx, params.organizationId);
   await lockLiveConnection(tx, params.organizationId, params.connectionId);
 
@@ -564,7 +578,6 @@ export async function reconcileConnectorRelationshipClaims(
     }
   }
 
-  const claimKey = connectorRelationshipClaimKey(params.connectionId, params.originId);
   const keepRelationshipIds = new Set<number>();
   const orderedEdges = [...aggregated.values()].sort(
     (left, right) =>

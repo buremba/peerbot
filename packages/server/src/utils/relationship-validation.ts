@@ -2,8 +2,8 @@
  * Relationship Validation Helpers
  *
  * Validates entity relationship constraints: self-reference, confidence bounds,
- * source enums, symmetric canonicalization, scope enforcement, type-pair rules, and
- * duplicate edge detection.
+ * source enums, symmetric canonicalization, scope enforcement, and type-pair
+ * rules.
  */
 
 import { type DbClient, getDb } from '../db/client';

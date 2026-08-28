@@ -114,6 +114,9 @@ export async function autoLinkEvent(params: AutoLinkParams): Promise<void> {
     })),
     source: 'feed',
     confidence: 0.4,
+    // Inferred from event text, not asserted by a durable source item, so there
+    // is nothing to reconcile against on a resync. The manual claim is what
+    // keeps a wrong guess user-correctable through `manage_entity` unlink.
     claimKey: MANUAL_RELATIONSHIP_CLAIM_KEY,
     onConflict: 'ignore',
   });

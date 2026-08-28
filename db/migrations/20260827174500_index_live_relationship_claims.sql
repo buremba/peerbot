@@ -20,16 +20,23 @@ BEGIN
     AND rt.purpose = 'authorization'
     AND r.deleted_at IS NULL;
 
-  UPDATE public.entity_relationships
+  -- Tombstoned ordinary rows are stamped too: `applyUnmerge` restores a
+  -- relationship the merge soft-deleted, and an un-tombstoned row without
+  -- claims would be a live edge no caller can unlink and no connector can
+  -- re-assert. Authorization rows stay unstamped so nothing can restore one
+  -- as a manual grant.
+  UPDATE public.entity_relationships r
   SET metadata = jsonb_set(
-        COALESCE(metadata, '{}'::jsonb),
+        COALESCE(r.metadata, '{}'::jsonb),
         ARRAY['_lobu_claims']::text[],
         '{"manual": {}}'::jsonb,
         true
       ),
       updated_at = current_timestamp
-  WHERE deleted_at IS NULL
-    AND NOT (COALESCE(metadata, '{}'::jsonb) ? '_lobu_claims');
+  FROM public.entity_relationship_types rt
+  WHERE rt.id = r.relationship_type_id
+    AND rt.purpose IS DISTINCT FROM 'authorization'
+    AND NOT (COALESCE(r.metadata, '{}'::jsonb) ? '_lobu_claims');
 END
 $claim_backfill$;
 

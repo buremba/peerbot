@@ -70,6 +70,15 @@ describe('relationship claims cutover migration', () => {
               current_timestamp, current_timestamp)
       RETURNING id
     `;
+    // `applyUnmerge` can restore this row, so it must carry a claim too.
+    const [tombstonedOrdinary] = await sql<{ id: number }[]>`
+      INSERT INTO entity_relationships
+        (organization_id, from_entity_id, to_entity_id, relationship_type_id,
+         source, deleted_at, created_at, updated_at)
+      VALUES (${org.id}, ${to.id}, ${from.id}, ${ordinaryTypeId}, 'api',
+              current_timestamp, current_timestamp, current_timestamp)
+      RETURNING id
+    `;
     const [authorization] = await withAclEdgeWrite(sql, (tx) =>
       tx<{ id: number }[]>`
         INSERT INTO entity_relationships
@@ -89,6 +98,11 @@ describe('relationship claims cutover migration', () => {
     `;
     expect(ordinaryAfter.deleted_at).toBeNull();
     expect(ordinaryAfter.metadata).toEqual({ _lobu_claims: { manual: {} } });
+
+    const [tombstonedOrdinaryAfter] = await sql`
+      SELECT metadata FROM entity_relationships WHERE id = ${tombstonedOrdinary.id}
+    `;
+    expect(tombstonedOrdinaryAfter.metadata).toEqual({ _lobu_claims: { manual: {} } });
 
     const [authorizationAfter] = await sql`
       SELECT deleted_at, metadata FROM entity_relationships WHERE id = ${authorization.id}

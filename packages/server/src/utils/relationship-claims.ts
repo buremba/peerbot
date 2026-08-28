@@ -310,7 +310,7 @@ export async function assertManualRelationshipClaim(
     clientId?: string | null;
     metadata?: Record<string, unknown> | null;
   }
-): Promise<{ id: number; inserted: boolean; claimAdded: boolean }> {
+): Promise<RelationshipClaimResult> {
   await lockOrganization(tx, params.organizationId);
   return insertOnlyRelationshipClaim(tx, {
     ...params,

@@ -95,6 +95,25 @@ interface RepoRef {
   repo: string;
 }
 
+/**
+ * Percent-encode one REST path segment. `encodeURIComponent` passes `.` and
+ * `..` through unchanged and URL parsing then resolves them away, so an
+ * unchecked `..` still walks the request onto an unrelated endpoint
+ * (`/repos/../../user` -> `/user`) — reject those two outright.
+ */
+function encodeGitHubPathSegment(value: string, label: string): string {
+  if (value === '.' || value === '..') {
+    throw new Error(`GitHub ${label} is not a valid path segment: "${value}"`);
+  }
+  return encodeURIComponent(value);
+}
+
+function githubRepoApiUrl(repo: RepoRef, suffix = ''): string {
+  const owner = encodeGitHubPathSegment(repo.owner, 'repository owner');
+  const name = encodeGitHubPathSegment(repo.repo, 'repository name');
+  return `https://api.github.com/repos/${owner}/${name}${suffix}`;
+}
+
 interface GitHubMutationResponse {
   id: number;
   number: number;
@@ -964,9 +983,12 @@ export default class GitHubConnector extends ConnectorRuntime {
    * admin:repo_hook). Null when neither target is configured.
    */
   private hooksApiUrl(config: GitHubConfig): string | null {
-    if (config.org) return `https://api.github.com/orgs/${config.org}/hooks`;
+    if (config.org) {
+      const org = encodeGitHubPathSegment(config.org, 'organization');
+      return `https://api.github.com/orgs/${org}/hooks`;
+    }
     if (config.repo_owner && config.repo_name) {
-      return `https://api.github.com/repos/${config.repo_owner}/${config.repo_name}/hooks`;
+      return githubRepoApiUrl({ owner: config.repo_owner, repo: config.repo_name }, '/hooks');
     }
     return null;
   }
@@ -1055,7 +1077,7 @@ export default class GitHubConnector extends ConnectorRuntime {
 
     const base = this.hooksApiUrl(ctx.config);
     if (!base) return;
-    const hookUrl = `${base}/${externalId}`;
+    const hookUrl = `${base}/${encodeGitHubPathSegment(externalId, 'webhook id')}`;
 
     // DELETE returns 204 No Content — use request() (no JSON parse) so an empty
     // body doesn't throw.
@@ -1176,7 +1198,7 @@ export default class GitHubConnector extends ConnectorRuntime {
           page: String(offset / pageSize + 1),
           since: sinceIso,
         });
-        const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/commits?${query.toString()}`;
+        const url = `${githubRepoApiUrl(repo, '/commits')}?${query.toString()}`;
         const commits = asArray(
           await this.requestJson<GitHubCommitLike[]>({ url, token })
         );
@@ -1242,7 +1264,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       query.set('labels', labelsFilter.join(','));
     }
 
-    const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues?${query.toString()}`;
+    const url = `${githubRepoApiUrl(repo, '/issues')}?${query.toString()}`;
     const items = asArray(await this.requestJson<GitHubIssueLike[]>({ url, token }));
     const events: EventEnvelope[] = [];
 
@@ -1294,7 +1316,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       direction: 'desc',
       since: sinceIso,
     });
-    const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/comments?${query.toString()}`;
+    const url = `${githubRepoApiUrl(repo, '/issues/comments')}?${query.toString()}`;
     const comments = asArray(
       await this.requestJson<GitHubCommentLike[]>({ url, token })
     );
@@ -1338,7 +1360,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       direction: 'desc',
       since: sinceIso,
     });
-    const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/comments?${query.toString()}`;
+    const url = `${githubRepoApiUrl(repo, '/pulls/comments')}?${query.toString()}`;
     const comments = asArray(
       await this.requestJson<GitHubCommentLike[]>({ url, token })
     );
@@ -1543,7 +1565,7 @@ export default class GitHubConnector extends ConnectorRuntime {
           per_page: String(pageSize),
           page: String(offset / pageSize + 1),
         });
-        const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/stargazers?${query.toString()}`;
+        const url = `${githubRepoApiUrl(repo, '/stargazers')}?${query.toString()}`;
         const stargazers = asArray(
           await this.requestJson<GitHubStargazerLike[]>({
             url,
@@ -1715,7 +1737,7 @@ export default class GitHubConnector extends ConnectorRuntime {
   ): Promise<GitHubUserProfile> {
     try {
       return await this.requestJson<GitHubUserProfile>({
-        url: `https://api.github.com/users/${encodeURIComponent(login)}`,
+        url: `https://api.github.com/users/${encodeGitHubPathSegment(login, 'user login')}`,
         token,
       });
     } catch {
@@ -1736,7 +1758,7 @@ export default class GitHubConnector extends ConnectorRuntime {
   ): Promise<GitHubRepositoryLike> {
     try {
       return await this.requestJson<GitHubRepositoryLike>({
-        url: `https://api.github.com/repos/${repo.owner}/${repo.repo}`,
+        url: githubRepoApiUrl(repo),
         token,
       });
     } catch {
@@ -1892,7 +1914,7 @@ export default class GitHubConnector extends ConnectorRuntime {
 
     const issue = await this.requestJson<GitHubMutationResponse>({
       method: 'POST',
-      url: `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues`,
+      url: githubRepoApiUrl(repo, '/issues'),
       token,
       body: {
         title,
@@ -1928,7 +1950,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       html_url: string;
     }>({
       method: 'POST',
-      url: `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`,
+      url: githubRepoApiUrl(repo, `/issues/${issueNumber}/comments`),
       token,
       body: { body },
     });
@@ -1954,7 +1976,7 @@ export default class GitHubConnector extends ConnectorRuntime {
 
     const issue = await this.requestJson<GitHubMutationResponse>({
       method: 'PATCH',
-      url: `https://api.github.com/repos/${repo.owner}/${repo.repo}/issues/${issueNumber}`,
+      url: githubRepoApiUrl(repo, `/issues/${issueNumber}`),
       token,
       body: { state },
     });
@@ -1987,7 +2009,7 @@ export default class GitHubConnector extends ConnectorRuntime {
 
     const pr = await this.requestJson<GitHubMutationResponse>({
       method: 'POST',
-      url: `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls`,
+      url: githubRepoApiUrl(repo, '/pulls'),
       token,
       body: {
         title,
@@ -2032,7 +2054,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       message: string;
     }>({
       method: 'PUT',
-      url: `https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls/${pullNumber}/merge`,
+      url: githubRepoApiUrl(repo, `/pulls/${pullNumber}/merge`),
       token,
       body: {
         merge_method:

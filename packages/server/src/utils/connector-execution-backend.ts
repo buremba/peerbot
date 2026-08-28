@@ -137,6 +137,33 @@ export function classifySelectedConnectorExecution(params: {
   return { manifestBacked, backend: 'native_bridge', manifestHash: params.artifact.manifestHash };
 }
 
+/**
+ * Whether the claiming device implements this connector itself, so the gateway
+ * may omit `compiled_code` from the poll response.
+ *
+ * A native-bridge run always qualifies. Legacy device manifests and
+ * capability-only clients also remain device-executed when the gateway has no
+ * code it could deliver. When bundled or stored code exists, manifest backing
+ * and capability advertisement are authorization signals only; they do not
+ * establish that the device implements the connector.
+ */
+export function deviceExecutesConnectorNatively(params: {
+  isUserScopedWorker: boolean;
+  hasStoredCompiledCode: boolean;
+  gatewayHasLocalSource: boolean;
+  isNativeBridgeRun: boolean;
+  manifestBacked: boolean;
+  deviceAdvertisesRequiredCapability: boolean;
+}): boolean {
+  return (
+    params.isUserScopedWorker &&
+    !params.hasStoredCompiledCode &&
+    (params.isNativeBridgeRun ||
+      (!params.gatewayHasLocalSource &&
+        (params.manifestBacked || params.deviceAdvertisesRequiredCapability)))
+  );
+}
+
 export function parseManifestSourcePath(
   sourcePath: string | null | undefined,
 ): { platform: string; key: string; version: string } | null {

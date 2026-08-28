@@ -134,12 +134,11 @@ ALTER TABLE public.entity_identities
 
 -- migrate:down transaction:false
 
-ALTER TABLE public.entity_identities
-  ADD COLUMN IF NOT EXISTS scope_connection_id bigint;
-
 DO $scope_guard_down$
 DECLARE
   has_scoped_rows boolean;
+  has_tenant_registry boolean := false;
+  has_tenant_declarations boolean := false;
 BEGIN
   IF EXISTS (
     SELECT 1
@@ -160,8 +159,48 @@ BEGIN
         HINT = 'Re-key those identities to organization scope before retrying the rollback.';
     END IF;
   END IF;
+
+  IF to_regclass('public.connector_identity_scope_registry') IS NOT NULL THEN
+    EXECUTE 'SELECT EXISTS (
+      SELECT 1
+      FROM public.connector_identity_scope_registry
+      WHERE scope = ''tenant'' OR pending_scope = ''tenant''
+    )' INTO has_tenant_registry;
+  END IF;
+  IF has_tenant_registry THEN
+    RAISE EXCEPTION USING
+      MESSAGE = 'entity identity tenant-scope rollback refused: tenant declaration registry rows still exist',
+      HINT = 'Remove or re-key every tenant identity declaration before retrying the rollback.';
+  END IF;
+
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.connector_definitions definition
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(definition.feeds_schema, '{}'::jsonb)
+    ) AS feed(feed_key, feed_value)
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(feed.feed_value -> 'eventKinds', '{}'::jsonb)
+    ) AS event_kind(event_kind_key, event_kind_value)
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(event_kind.event_kind_value -> 'attributions', '[]'::jsonb)
+    ) AS attribution(value)
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(attribution.value -> 'target' -> 'identities', '[]'::jsonb)
+    ) AS identity(value)
+    WHERE definition.status = 'active'
+      AND identity.value ->> 'scope' = 'tenant'
+  ) INTO has_tenant_declarations;
+  IF has_tenant_declarations THEN
+    RAISE EXCEPTION USING
+      MESSAGE = 'entity identity tenant-scope rollback refused: active connector declarations still use tenant scope',
+      HINT = 'Apply organization-scoped connector declarations before retrying the rollback.';
+  END IF;
 END
 $scope_guard_down$;
+
+ALTER TABLE public.entity_identities
+  ADD COLUMN IF NOT EXISTS scope_connection_id bigint;
 
 DO $heal_down$
 BEGIN

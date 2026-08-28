@@ -72,6 +72,15 @@ interface RuleMap {
   [kind: string]: ResolvedEventAttributionRule[];
 }
 
+/** Connector payloads may not author the server's tenant-scope projections. */
+function scrubIdentityScopeProjections(items: BatchItem[]): void {
+  for (const item of items) {
+    if (!item.metadata) continue;
+    delete item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY];
+    delete item.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY];
+  }
+}
+
 type EventKindAttributionDefinition = {
   attributions?: EventAttributionRule[];
 };
@@ -895,6 +904,7 @@ export async function applyEventAttributions(
   // back tx so auto-created entities disappear with their events.
   sql?: DbClient
 ): Promise<void> {
+  scrubIdentityScopeProjections(params.items);
   if (!params.feedKey || params.items.length === 0) return;
 
   // Resolved BEFORE the rule load: the sync dry-run path supplies its
@@ -949,7 +959,9 @@ export async function resolveEventAttributionsForItems(
   // handle opens a transaction here.
   sql?: DbClient
 ): Promise<Map<number, number[]>> {
+  scrubIdentityScopeProjections(params.items);
   if (params.items.length === 0) return new Map();
+  if (Object.keys(params.rules).length === 0) return new Map();
   const db = sql ?? getDb();
   return withEntityWriteTransaction(db, (tx) =>
     resolveLinksByKind(
@@ -985,6 +997,7 @@ async function resolveLinksByKind(
   sql: DbClient
 ): Promise<Map<number, number[]>> {
   const resolvedByItem = new Map<number, number[]>();
+  scrubIdentityScopeProjections(params.items);
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
     return resolvedByItem;
   }
@@ -1029,15 +1042,8 @@ async function resolveLinksByKind(
     }
   });
 
-  // Connector metadata is not trusted to author server protocol projections.
-  // Extraction above has already read every declared eventPath/scopeKeyPath;
-  // now discard any incoming values and rebuild them only from identities that
-  // actually attach to an entity below.
-  for (const item of params.items) {
-    if (!item.metadata) continue;
-    delete item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY];
-    delete item.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY];
-  }
+  // The reserved projections were scrubbed before extraction and are rebuilt
+  // below only from identities that actually attach to an entity.
   if (byRule.size === 0) return resolvedByItem;
 
   // Resolve first, then lock every existing entity in one ascending-id pass.

@@ -549,6 +549,59 @@ describe('connector identity scope lifecycle', () => {
     ]);
   });
 
+  it('requires re-key when archived pre-registry identities get a tenant owner', async () => {
+    const { org, ids } = await seedRows();
+    const sql = getTestDb();
+    const takeoverConnectorKey = 'scope-lifecycle-pre-registry-takeover';
+    await sql`
+      UPDATE connector_definitions
+      SET status = 'archived', updated_at = now()
+      WHERE organization_id = ${org.id}
+        AND key = ${connectorKey}
+        AND status = 'active'
+    `;
+    await sql`
+      DELETE FROM connector_identity_scope_registry
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+    `;
+
+    const next = metadata(
+      '2.0.0',
+      { scope: 'tenant', scopeKeyPath: 'metadata.tenant_id' },
+      takeoverConnectorKey
+    );
+    await expect(install(org.id, next)).rejects.toThrow(
+      /2 live identity rows.*Old shape.*organization.*New shape.*tenant.*lobu identities rekey/i
+    );
+    const staged = await sql<
+      { connector_key: string; scope: string; pending_scope: string | null }[]
+    >`
+      SELECT connector_key, scope, pending_scope
+      FROM connector_identity_scope_registry
+      WHERE organization_id = ${org.id}
+        AND namespace = ${namespace}
+    `;
+    expect(staged).toEqual([
+      {
+        connector_key: takeoverConnectorKey,
+        scope: 'organization',
+        pending_scope: 'tenant',
+      },
+    ]);
+
+    const mapping = { [ids[0]!]: 'tenant-a', [ids[1]!]: 'tenant-b' };
+    await expect(
+      rekeyEntityIdentities({
+        organizationId: org.id,
+        namespace,
+        mapping,
+        apply: true,
+      })
+    ).resolves.toMatchObject({ applied: true });
+    await expect(install(org.id, next)).resolves.toBeDefined();
+  });
+
   it('keeps a retained tenant key exclusive and resolves it to the original entity', async () => {
     const sql = getTestDb();
     const org = await createTestOrganization({ name: 'Retained tenant claim org' });

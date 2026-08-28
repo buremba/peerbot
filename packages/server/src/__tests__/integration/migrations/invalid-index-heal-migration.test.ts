@@ -9,6 +9,10 @@ import {
 } from "../../../db/migration-loader";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase } from "../../setup/test-db";
+import {
+	createTestConnectorDefinition,
+	createTestOrganization,
+} from "../../setup/test-fixtures";
 
 /**
  * Concurrent CREATE INDEX IF NOT EXISTS silently no-ops when an INVALID
@@ -269,6 +273,76 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 			index_exists: true,
 			foreign_key_exists: true,
 		});
+	});
+
+	it("refuses tenant-scope rollback while zero-row declarations remain", async () => {
+		const migrationsDir = resolveMigrationsDir();
+		const file = "20260827160000_entity_identity_tenant_scope.sql";
+		const sql = getDb();
+		const execute = (statement: string) => sql.unsafe(statement);
+		const org = await createTestOrganization({ name: "Tenant rollback guard org" });
+
+		await sql`
+			INSERT INTO connector_identity_scope_registry (
+				organization_id, connector_key, namespace, scope, scope_key_path
+			) VALUES (
+				${org.id}, 'rollback-registry-probe', 'erp_customer',
+				'tenant', 'metadata.tenant_id'
+			)
+		`;
+		await expect(
+			executeMigrationSection(
+				execute,
+				loadMigrationDown(migrationsDir, file),
+			),
+		).rejects.toThrow(/tenant declaration registry rows still exist/i);
+		await sql`
+			DELETE FROM connector_identity_scope_registry
+			WHERE organization_id = ${org.id}
+		`;
+		await sql`ALTER TABLE entity_identities DROP COLUMN IF EXISTS scope_connection_id`;
+
+		await createTestConnectorDefinition({
+			key: "rollback-active-probe",
+			name: "Rollback active probe",
+			organization_id: org.id,
+			feeds_schema: {
+				customers: {
+					eventKinds: {
+						customer: {
+							attributions: [
+								{
+									role: "about",
+									target: {
+										entityType: "person",
+										identities: [
+											{
+												namespace: "erp_customer",
+												eventPath: "metadata.customer_id",
+												scope: "tenant",
+												scopeKeyPath: "metadata.tenant_id",
+											},
+										],
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		});
+		await expect(
+			executeMigrationSection(
+				execute,
+				loadMigrationDown(migrationsDir, file),
+			),
+		).rejects.toThrow(/active connector declarations still use tenant scope/i);
+		await sql`
+			DELETE FROM connector_definitions
+			WHERE organization_id = ${org.id}
+			  AND key = 'rollback-active-probe'
+		`;
+		await sql`ALTER TABLE entity_identities DROP COLUMN IF EXISTS scope_connection_id`;
 	});
 
 	it("round-trips and replays the entity identity tenant-scope schema", async () => {

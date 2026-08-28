@@ -22,8 +22,18 @@ const report = {
   connectorKeys: ["erp"],
   liveIdentityCount: 2,
   changes: [
-    { id: "10", fromScopeKey: null, toScopeKey: "tenant-a" },
-    { id: "11", fromScopeKey: null, toScopeKey: "tenant-b" },
+    {
+      id: "10",
+      identifier: "customer-001",
+      fromScopeKey: null,
+      toScopeKey: "tenant-a",
+    },
+    {
+      id: "11",
+      identifier: "customer-002",
+      fromScopeKey: null,
+      toScopeKey: "tenant-b",
+    },
   ],
   applied: false,
 };
@@ -82,6 +92,21 @@ describe("identities rekey", () => {
         },
       },
     ]);
+  });
+
+  test("shows the real identifier in the human dry-run report", async () => {
+    responses = [report];
+
+    await identitiesRekeyCommand("erp_customer", {
+      mapping: mappingPath,
+    });
+
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("#10 (customer-001)")
+    );
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("#11 (customer-002)")
+    );
   });
 
   test("validates with a dry run before applying the same complete mapping", async () => {

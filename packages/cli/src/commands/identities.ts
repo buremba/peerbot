@@ -22,6 +22,7 @@ interface IdentityRekeyReport {
   liveIdentityCount: number;
   changes: Array<{
     id: string;
+    identifier: string;
     fromScopeKey: string | null;
     toScopeKey: string | null;
   }>;
@@ -57,7 +58,7 @@ function printReport(report: IdentityRekeyReport): void {
   for (const change of report.changes) {
     console.log(
       chalk.dim(
-        `  #${change.id}: ${change.fromScopeKey ?? "<organization>"} → ${change.toScopeKey ?? "<organization>"}`
+        `  #${change.id} (${change.identifier}): ${change.fromScopeKey ?? "<organization>"} → ${change.toScopeKey ?? "<organization>"}`
       )
     );
   }

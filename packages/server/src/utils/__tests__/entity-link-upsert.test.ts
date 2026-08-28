@@ -10,6 +10,10 @@ import {
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
 import {
+  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+} from '../../identity/scope-projection';
+import {
   applyEventAttributions,
   clearEntityLinkRulesCache,
   loadAttributionRuleByType,
@@ -98,6 +102,51 @@ describe('applyEventAttributions', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
     clearEntityLinkRulesCache();
+  });
+
+  it('scrubs connector-authored scope projections when no attribution rule runs', async () => {
+    const { org } = await setupOrg('scope projection scrub org');
+    await createTestConnectorDefinition({
+      key: 'scope-projection-scrub',
+      name: 'Scope projection scrub',
+      organization_id: org.id,
+      feeds_schema: { [FEED_KEY]: { eventKinds: {} } },
+    });
+    clearEntityLinkRulesCache();
+    const pollItem = {
+      origin_type: 'message',
+      metadata: {
+        visible: 'kept',
+        [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: 'forged-tenant' },
+        [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { author: 'forged-tenant' },
+      },
+    };
+
+    await applyEventAttributions({
+      connectorKey: 'scope-projection-scrub',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [pollItem],
+    });
+    expect(pollItem.metadata).toEqual({ visible: 'kept' });
+
+    const webhookItem = {
+      origin_type: 'message',
+      metadata: {
+        visible: 'also-kept',
+        [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { x_user_id: 'forged-tenant' },
+        [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { author: 'forged-tenant' },
+      },
+    };
+    await expect(
+      resolveEventAttributionsForItems({
+        connectorKey: 'webhook:scope-projection-scrub',
+        orgId: org.id,
+        items: [webhookItem],
+        rules: {},
+      })
+    ).resolves.toEqual(new Map());
+    expect(webhookItem.metadata).toEqual({ visible: 'also-kept' });
   });
 
   it('creates an entity and writes identities when autoCreate is true and no match exists', async () => {

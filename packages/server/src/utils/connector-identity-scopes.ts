@@ -311,6 +311,68 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
           break;
         }
 
+        const needsLiveRowInspection =
+          registryByConnector.size === 0 ||
+          [...registryByConnector.values()].some(
+            (row) =>
+              !activeNamespaceDeclarations.has(row.connector_key) &&
+              !sameShape(declaration, {
+                scope: row.scope,
+                scopeKeyPath: row.scope_key_path,
+              })
+          );
+        const liveCounts = needsLiveRowInspection
+          ? await tx<{ count: number | string; scoped_count: number | string }>`
+              SELECT count(*)::bigint AS count,
+                     count(*) FILTER (
+                       WHERE scope_key IS NOT NULL OR cardinality(scope_key_history) > 0
+                     )::bigint AS scoped_count
+              FROM entity_identities
+              WHERE organization_id = ${params.organizationId}
+                AND namespace = ${declaration.namespace}
+                AND deleted_at IS NULL
+            `
+          : [];
+        const liveCount = Number(liveCounts[0]?.count ?? 0);
+        const scopedLiveCount = Number(liveCounts[0]?.scoped_count ?? 0);
+
+        // A connector may have been archived before this registry existed. Its
+        // carried-forward live rows are organization-scoped, but with no active
+        // or dormant registry owner a new tenant declaration would otherwise
+        // register directly and fork every future write. Seed the missing old
+        // shape plus the pending target so the ordinary explicit re-key flow is
+        // still mandatory. Never guess an old declaration when scoped rows
+        // already exist; that indicates registry corruption after adoption.
+        if (
+          registryByConnector.size === 0 &&
+          liveCount > 0 &&
+          declaration.scope === 'tenant'
+        ) {
+          if (scopedLiveCount > 0) {
+            blockedMessage =
+              `Identity namespace '${declaration.namespace}' has ${scopedLiveCount} tenant-scoped live ` +
+              `identity row${scopedLiveCount === 1 ? '' : 's'} but no declaration registry. ` +
+              'Restore the missing registry before changing or adopting this namespace scope.';
+            break;
+          }
+          await tx`
+            INSERT INTO connector_identity_scope_registry (
+              organization_id, connector_key, namespace, scope, scope_key_path,
+              pending_scope, pending_scope_key_path
+            ) VALUES (
+              ${params.organizationId}, ${params.metadata.key}, ${declaration.namespace},
+              'organization', NULL, ${declaration.scope}, ${declaration.scopeKeyPath}
+            )
+          `;
+          blockedMessage =
+            `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +
+            `'${params.metadata.key}' while ${liveCount} live identity row${liveCount === 1 ? '' : 's'} exist. ` +
+            `Old shape: ${renderShape({ scope: 'organization', scopeKeyPath: null })}. ` +
+            `New shape: ${renderShape(declaration)}. ` +
+            `Run \`lobu identities rekey ${declaration.namespace} --mapping <file.json>\` to re-key explicitly first.`;
+          break;
+        }
+
         // Registry rows outlive connector definitions on purpose: identities
         // and append-only events still need their declared scope after a
         // connector is archived or stops declaring the namespace. A new
@@ -325,14 +387,6 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
             })
         );
         if (incompatibleDormant.length > 0) {
-          const counts = await tx<{ count: number | string }>`
-            SELECT count(*)::bigint AS count
-            FROM entity_identities
-            WHERE organization_id = ${params.organizationId}
-              AND namespace = ${declaration.namespace}
-              AND deleted_at IS NULL
-          `;
-          const liveCount = Number(counts[0]?.count ?? 0);
           const dormantKeys = incompatibleDormant.map((row) => row.connector_key);
           if (liveCount === 0) {
             await tx`

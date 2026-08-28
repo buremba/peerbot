@@ -33,6 +33,12 @@ docker run -d --name lobu-pg -p 5432:5432 \
 - `lobu doctor` — Postgres connectivity, pgvector extension, port availability, provider API keys, workspace dir.
 - `lobu link` / `lobu unlink` — bind this directory to a (context, org) at `.lobu/project.json`. `lobu apply` refuses to push mismatched targets unless `--force` is set.
 - `lobu apply` (alias: `lobu deploy`) — idempotent sync of `lobu.config.ts` to Lobu Cloud.
+- `lobu identities rekey <namespace> --mapping <file.json>` — preview an explicit,
+  complete identity-to-tenant mapping; add `--apply` to revalidate and commit it
+  atomically. The command is intentionally published before the tenant-identity
+  server rollout so every server error that directs an operator to it has a
+  usable CLI. Servers predating that rollout reject the unknown action before
+  dispatch and make no changes.
 - `lobu daemon` — map this machine as a device worker for connector syncs,
   actions, and device Automations.
 - `lobu agent scaffold <id>` — add a second/third agent to an existing project.

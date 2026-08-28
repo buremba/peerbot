@@ -11,8 +11,6 @@ import {
 
 interface IdentityRekeyResponse {
   error?: string;
-  action?: "rekey_identities";
-  namespace?: string;
   applied?: boolean;
   live_identity_count?: number;
   changed_identity_count?: number;
@@ -112,6 +110,10 @@ export async function identitiesRekeyCommand(
   const mapping = await readIdentityMapping(options.mapping);
   const { client, orgSlug } = await resolveApiClient(options);
   const call = async (apply: boolean): Promise<IdentityRekeyResponse> => {
+    // This command is intentionally released before the server action. #2849's
+    // rollout contract requires the CLI to exist before a newer server can
+    // direct an operator here; an older server rejects this unknown action at
+    // schema validation, before dispatch, so the compatibility window is safe.
     const response = await client.post<IdentityRekeyResponse>(
       `/api/${orgSlug}/manage_connections`,
       {

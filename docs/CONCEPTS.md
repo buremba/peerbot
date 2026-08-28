@@ -44,8 +44,12 @@ flowchart LR
   G --> H["Downstream workspace-triggered Automations (chaining)"]
 ```
 
-1. **Ingest.** A connector feed sync lands rows in `events`. Generic webhook
-   deliveries also land there; chat messages instead persist in
+1. **Ingest.** A connector feed sync lands rows in `events`. Named event
+   attributions may also materialize connector-declared entity relationships in
+   the same event transaction; each relationship claim is owned by the event's
+   `(connection_id, origin_id)`, so resync and connection deletion retract only
+   the source facts they own. Generic webhook deliveries also land there; chat
+   messages instead persist in
    `channel_messages` and are normalized into connector turn signals. Connector
    event ingestion dedupes by `(connection_id, origin_id)`; a row whose current
    head is unchanged is not a new source item.

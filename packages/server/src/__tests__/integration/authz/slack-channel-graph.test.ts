@@ -19,6 +19,7 @@ import {
 import { beforeEach, describe, expect, it } from 'vitest';
 import { buildAccessGraph } from '../../../authz/access-graph';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
+import { retractConnectionRelationshipClaims } from '../../../utils/relationship-claims';
 
 /**
  * Test helper: materialize a Slack channel graph via the connector normalizer +
@@ -187,6 +188,35 @@ describe('slack channel graph', () => {
     expect(identitySources.every((row) => Number(row.connection_id) === connection.id)).toBe(true);
   });
 
+  it('retracts runtime ACL claims when the stored chat connection is deleted', async () => {
+    const { org, user } = await seedOrg('Slack Graph Cleanup Org');
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'slack',
+      slug: 'agentconn-conn-cleanup',
+      created_by: user.id,
+      createDefaultFeed: false,
+    });
+
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-cleanup',
+      teamId: TEAM,
+      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] }],
+    });
+    expect(await memberOfEdges(org.id)).toHaveLength(1);
+
+    const sql = getTestDb();
+    await sql.begin((tx) =>
+      retractConnectionRelationshipClaims(tx, {
+        organizationId: org.id,
+        connectionId: connection.id,
+      })
+    );
+
+    expect(await memberOfEdges(org.id)).toHaveLength(0);
+  });
+
   it('collapses a member onto an already-signed-in $member (no second person)', async () => {
     const { org, user } = await seedOrg('Collapse Org');
     const memberEntityId = await seedSignedInMember({
@@ -285,6 +315,46 @@ describe('slack channel graph', () => {
     expect(rerun.removedEdges).toBe(1);
     expect(rerun.createdEdges).toBe(0);
     expect(await memberOfEdges(org.id)).toHaveLength(1); // only Bob remains
+  });
+
+  it('keeps a departed member edge while another connection still claims it', async () => {
+    const { org } = await seedOrg('Shared grant org');
+    const channel = {
+      channelId: 'C01ENG',
+      name: 'eng',
+      memberSlackUserIds: ['U01ALICE'],
+    };
+
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-a',
+      teamId: TEAM,
+      channels: [channel],
+    });
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-b',
+      teamId: TEAM,
+      channels: [channel],
+    });
+
+    const firstDeparture = await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-a',
+      teamId: TEAM,
+      channels: [{ ...channel, memberSlackUserIds: [] }],
+    });
+    expect(firstDeparture.removedEdges).toBe(0);
+    expect(await memberOfEdges(org.id)).toHaveLength(1);
+
+    const finalDeparture = await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: 'conn-b',
+      teamId: TEAM,
+      channels: [{ ...channel, memberSlackUserIds: [] }],
+    });
+    expect(finalDeparture.removedEdges).toBe(1);
+    expect(await memberOfEdges(org.id)).toHaveLength(0);
   });
 
   it('tenant-scopes channels by team — the same channel id in two orgs is two entities', async () => {

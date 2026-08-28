@@ -16,6 +16,10 @@ import type { StoredConnection } from "@lobu/core";
 import { createLogger } from "@lobu/core";
 import { type DbClient, tsTime } from "../../db/client";
 import { deleteConnectionAclRow } from "../../authz/acl-observability";
+import {
+  lockOrganizationForRelationshipClaims,
+  retractConnectionRelationshipClaims,
+} from "../../utils/relationship-claims";
 
 const logger = createLogger("connections-projection");
 
@@ -280,6 +284,9 @@ export async function upsertChatConnectionProjection(
       enterpriseId &&
       enterpriseId !== externalTenantId
     ) {
+      // Match organization deletion's parent -> child lock order before any
+      // connection retirement below.
+      await lockOrganizationForRelationshipClaims(sql, orgId);
       const supersededEnterprise = await sql`
         UPDATE connections SET deleted_at = now(), status = 'paused', updated_at = now()
         WHERE organization_id = ${orgId}
@@ -314,6 +321,10 @@ export async function upsertChatConnectionProjection(
         for (const retired of supersededEnterprise as Array<{
           id: string;
         }>) {
+          await retractConnectionRelationshipClaims(sql, {
+            organizationId: orgId,
+            connectionId: retired.id,
+          });
           await deleteConnectionAclRow(sql, {
             organizationId: orgId,
             connectionId: retired.id,
@@ -472,24 +483,43 @@ export async function softDeleteChatConnectionProjection(
 ): Promise<void> {
   const slug = runtimeConnectionIdToSlug(connectionId);
   if (orgId) {
+    await lockOrganizationForRelationshipClaims(sql, orgId);
     const tombstoned = (await sql`
       UPDATE connections SET deleted_at = now(), updated_at = now()
       WHERE organization_id = ${orgId} AND slug = ${slug} AND deleted_at IS NULL
       RETURNING id::text AS id
     `) as Array<{ id: string }>;
     for (const row of tombstoned) {
+      await retractConnectionRelationshipClaims(sql, {
+        organizationId: orgId,
+        connectionId: row.id,
+      });
       await deleteConnectionAclRow(sql, {
         organizationId: orgId,
         connectionId: row.id,
       });
     }
   } else {
+    // Live chat slugs are globally unique. Discover the parent without locking
+    // the child row, then preserve parent -> child lock order for the update.
+    const owners = (await sql`
+      SELECT organization_id
+      FROM connections
+      WHERE slug = ${slug} AND deleted_at IS NULL
+    `) as Array<{ organization_id: string }>;
+    for (const owner of owners) {
+      await lockOrganizationForRelationshipClaims(sql, owner.organization_id);
+    }
     const tombstoned = (await sql`
       UPDATE connections SET deleted_at = now(), updated_at = now()
       WHERE slug = ${slug} AND deleted_at IS NULL
       RETURNING id::text AS id, organization_id
     `) as Array<{ id: string; organization_id: string }>;
     for (const row of tombstoned) {
+      await retractConnectionRelationshipClaims(sql, {
+        organizationId: row.organization_id,
+        connectionId: row.id,
+      });
       await deleteConnectionAclRow(sql, {
         organizationId: row.organization_id,
         connectionId: row.id,

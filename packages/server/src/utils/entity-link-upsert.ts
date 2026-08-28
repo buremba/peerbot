@@ -17,89 +17,85 @@
  * recovers the relationship via entity_identities.
  */
 
-import { randomBytes } from "node:crypto";
 import {
-	ACL_RESOURCE_TYPE_SLUG,
-	type EntityIdentitySpec,
-	type EntityLinkPredicate,
-	type EntityTraitSpec,
-	type EventAttributionRule,
-} from "@lobu/connector-sdk";
-import { normalizeIdentifier } from "@lobu/connector-sdk/identity-normalize";
-import { ensureResourceEntityType } from "../authz/acl-resource-type";
+  validateEntityRowInsert,
+  validateEntityRowPatch,
+} from '../authz/entity-row-validation';
+import { randomBytes } from 'node:crypto';
 import {
-	validateEntityRowInsert,
-	validateEntityRowPatch,
-} from "../authz/entity-row-validation";
-import { type DbClient, getDb, pgBigintArray, pgTextArray } from "../db/client";
-import { normalizeConnectorIdentityValue } from "../identity/connector-identity-modules";
+  ACL_RESOURCE_TYPE_SLUG,
+  type EntityIdentitySpec,
+  type EntityLinkPredicate,
+  type EntityTraitSpec,
+  type EventAttributionRule,
+} from '@lobu/connector-sdk';
+import { normalizeIdentifier } from '@lobu/connector-sdk/identity-normalize';
+import { ensureResourceEntityType } from '../authz/acl-resource-type';
+import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client';
+import { normalizeConnectorIdentityValue } from '../identity/connector-identity-modules';
 import {
-	IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
-	IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
-	ORGANIZATION_SCOPE_PROJECTION,
-	parseScopedIdentityAliasProjections,
-	SCOPED_IDENTITY_ALIASES_METADATA_KEY,
-	scopedIdentityAliasProjectionKey,
-} from "../identity/scope-projection";
-import { assertConnectorIdentityScopesActive } from "./connector-identity-scopes";
+  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  ORGANIZATION_SCOPE_PROJECTION,
+  parseScopedIdentityAliasProjections,
+  SCOPED_IDENTITY_ALIASES_METADATA_KEY,
+  scopedIdentityAliasProjectionKey,
+} from '../identity/scope-projection';
+import { assertConnectorIdentityScopesActive } from './connector-identity-scopes';
 import {
-	hardDeleteEntityRows,
-	patchEntityRows,
-	tryInsertEntityRow,
-	withEntityWriteTransaction,
-} from "./entity-management";
-import logger from "./logger";
-import { getValueAtPath } from "./object-path";
-import { TtlCache } from "./ttl-cache";
+  hardDeleteEntityRows,
+  patchEntityRows,
+  tryInsertEntityRow,
+  withEntityWriteTransaction,
+} from './entity-management';
+import logger from './logger';
+import { getValueAtPath } from './object-path';
+import { TtlCache } from './ttl-cache';
 
 interface BatchItem {
-	origin_type?: string;
-	metadata?: Record<string, unknown>;
-	title?: string | null;
+  origin_type?: string;
+  metadata?: Record<string, unknown>;
+  title?: string | null;
 }
 
 type ResolvedEventAttributionRule = {
-	role: EventAttributionRule["role"];
-	entityType: string;
-	autoCreate?: boolean;
-	createWhen?: EntityLinkPredicate;
-	titlePath?: string;
-	identities: EntityIdentitySpec[];
-	traits?: Record<string, EntityTraitSpec>;
+  role: EventAttributionRule['role'];
+  entityType: string;
+  autoCreate?: boolean;
+  createWhen?: EntityLinkPredicate;
+  titlePath?: string;
+  identities: EntityIdentitySpec[];
+  traits?: Record<string, EntityTraitSpec>;
 };
 
 interface RuleMap {
-	[kind: string]: ResolvedEventAttributionRule[];
+  [kind: string]: ResolvedEventAttributionRule[];
 }
 
 type EventKindAttributionDefinition = {
-	attributions?: EventAttributionRule[];
+  attributions?: EventAttributionRule[];
 };
 
 function resolveEventAttributions(
-	def: EventKindAttributionDefinition | undefined,
+  def: EventKindAttributionDefinition | undefined
 ): ResolvedEventAttributionRule[] {
-	return (def?.attributions ?? []).flatMap((rule) => {
-		const identities = rule.target.identities;
-		if (
-			!rule.target.entityType ||
-			!Array.isArray(identities) ||
-			identities.length === 0
-		) {
-			return [];
-		}
-		return [
-			{
-				role: rule.role,
-				entityType: rule.target.entityType,
-				autoCreate: rule.autoCreate,
-				createWhen: rule.target.createWhen,
-				titlePath: rule.target.titlePath,
-				identities,
-				traits: rule.traits,
-			},
-		];
-	});
+  return (def?.attributions ?? []).flatMap((rule) => {
+    const identities = rule.target.identities;
+    if (!rule.target.entityType || !Array.isArray(identities) || identities.length === 0) {
+      return [];
+    }
+    return [
+      {
+        role: rule.role,
+        entityType: rule.target.entityType,
+        autoCreate: rule.autoCreate,
+        createWhen: rule.target.createWhen,
+        titlePath: rule.target.titlePath,
+        identities,
+        traits: rule.traits,
+      },
+    ];
+  });
 }
 
 const RULES_CACHE_TTL_MS = 60_000;
@@ -116,12 +112,9 @@ const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
  * A cache hit performs no query at all; racing misses each query through their
  * own caller-owned handle.
  */
-async function resolveOrgCreator(
-	sql: DbClient,
-	orgId: string,
-): Promise<string | null> {
-	return creatorCache.getOrSet(orgId, async () => {
-		const rows = await sql<{ userId: string }>`
+async function resolveOrgCreator(sql: DbClient, orgId: string): Promise<string | null> {
+  return creatorCache.getOrSet(orgId, async () => {
+    const rows = await sql<{ userId: string }>`
       SELECT "userId"
       FROM "member"
       WHERE "organizationId" = ${orgId}
@@ -129,30 +122,30 @@ async function resolveOrgCreator(
                "createdAt" ASC
       LIMIT 1
     `;
-		return rows.length > 0 ? rows[0].userId : null;
-	});
+    return rows.length > 0 ? rows[0].userId : null;
+  });
 }
 
 function randomSlug(entityType: string): string {
-	const prefix =
-		entityType
-			.replace(/^\$/, "")
-			.replace(/[^a-z0-9]+/gi, "-")
-			.toLowerCase() || "entity";
-	return `${prefix}-${randomBytes(5).toString("hex")}`;
+  const prefix =
+    entityType
+      .replace(/^\$/, '')
+      .replace(/[^a-z0-9]+/gi, '-')
+      .toLowerCase() || 'entity';
+  return `${prefix}-${randomBytes(5).toString('hex')}`;
 }
 
 async function loadEventAttributionRules(
-	sql: DbClient,
-	params: {
-		connectorKey: string;
-		feedKey: string;
-		orgId: string;
-	},
+  sql: DbClient,
+  params: {
+    connectorKey: string;
+    feedKey: string;
+    orgId: string;
+  }
 ): Promise<RuleMap> {
-	const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
-	return rulesCache.getOrSet(cacheKey, async () => {
-		const rows = await sql`
+  const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
+  return rulesCache.getOrSet(cacheKey, async () => {
+    const rows = await sql`
       SELECT feeds_schema
       FROM connector_definitions
       WHERE key = ${params.connectorKey}
@@ -161,23 +154,18 @@ async function loadEventAttributionRules(
       LIMIT 1
     `;
 
-		const result: RuleMap = {};
-		const feedsSchema = rows[0]?.feeds_schema as
-			| Record<string, any>
-			| null
-			| undefined;
-		const feedDef = feedsSchema?.[params.feedKey];
-		const eventKinds = feedDef?.eventKinds as
-			| Record<string, EventKindAttributionDefinition>
-			| undefined;
-		if (eventKinds) {
-			for (const [kind, def] of Object.entries(eventKinds)) {
-				const resolved = resolveEventAttributions(def);
-				if (resolved.length > 0) result[kind] = resolved;
-			}
-		}
-		return result;
-	});
+    const result: RuleMap = {};
+    const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
+    const feedDef = feedsSchema?.[params.feedKey];
+    const eventKinds = feedDef?.eventKinds as Record<string, EventKindAttributionDefinition> | undefined;
+    if (eventKinds) {
+      for (const [kind, def] of Object.entries(eventKinds)) {
+        const resolved = resolveEventAttributions(def);
+        if (resolved.length > 0) result[kind] = resolved;
+      }
+    }
+    return result;
+  });
 }
 
 /**
@@ -193,18 +181,18 @@ async function loadEventAttributionRules(
  * rather than relying on declaration order.
  */
 export async function loadAttributionRuleByType(
-	sql: DbClient,
-	params: {
-		connectorKey: string;
-		orgId: string;
-		entityType: string;
-		role?: EventAttributionRule["role"];
-	},
+  sql: DbClient,
+  params: {
+    connectorKey: string;
+    orgId: string;
+    entityType: string;
+    role?: EventAttributionRule['role'];
+  }
 ): Promise<ResolvedEventAttributionRule | null> {
-	const roleKey = params.role ?? "__any__";
-	const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}:${roleKey}`;
-	const map = await rulesCache.getOrSet(cacheKey, async () => {
-		const rows = await sql`
+  const roleKey = params.role ?? '__any__';
+  const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}:${roleKey}`;
+  const map = await rulesCache.getOrSet(cacheKey, async () => {
+    const rows = await sql`
       SELECT feeds_schema
       FROM connector_definitions
       WHERE key = ${params.connectorKey}
@@ -212,40 +200,34 @@ export async function loadAttributionRuleByType(
         AND status = 'active'
       LIMIT 1
     `;
-		const result: RuleMap = {};
-		const feedsSchema = rows[0]?.feeds_schema as
-			| Record<string, any>
-			| null
-			| undefined;
-		if (feedsSchema) {
-			for (const feed of Object.values(feedsSchema)) {
-				const eventKinds = (
-					feed as {
-						eventKinds?: Record<string, EventKindAttributionDefinition>;
-					}
-				)?.eventKinds;
-				if (!eventKinds) continue;
-				for (const def of Object.values(eventKinds)) {
-					const match = resolveEventAttributions(def).find(
-						(r) =>
-							r.entityType === params.entityType &&
-							(params.role === undefined || r.role === params.role),
-					);
-					if (match) {
-						result[params.entityType] = [match];
-						return result;
-					}
-				}
-			}
-		}
-		return result;
-	});
-	return map[params.entityType]?.[0] ?? null;
+    const result: RuleMap = {};
+    const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
+    if (feedsSchema) {
+      for (const feed of Object.values(feedsSchema)) {
+        const eventKinds = (feed as { eventKinds?: Record<string, EventKindAttributionDefinition> })
+          ?.eventKinds;
+        if (!eventKinds) continue;
+        for (const def of Object.values(eventKinds)) {
+          const match = resolveEventAttributions(def).find(
+            (r) =>
+              r.entityType === params.entityType &&
+              (params.role === undefined || r.role === params.role),
+          );
+          if (match) {
+            result[params.entityType] = [match];
+            return result;
+          }
+        }
+      }
+    }
+    return result;
+  });
+  return map[params.entityType]?.[0] ?? null;
 }
 
 export function clearEntityLinkRulesCache(): void {
-	rulesCache.clear();
-	creatorCache.clear();
+  rulesCache.clear();
+  creatorCache.clear();
 }
 
 /**
@@ -255,27 +237,27 @@ export function clearEntityLinkRulesCache(): void {
  * in directly, having normalized upstream.
  */
 export type ResolvedIdentity = {
-	namespace: string;
-	identifier: string;
-	matchOnly: boolean;
-	primary: boolean;
-	/**
-	 * Uniqueness scope, resolved once at extraction from the spec's `scope` and
-	 * the connector-declared tenant key path. `null` = org-wide.
-	 *
-	 * Carried on the identity rather than read from params at each use site so
-	 * matching and insertion cannot disagree: `lookupMatches` and
-	 * `insertIdentities` both key on this value, and a rule that scopes one of
-	 * its namespaces but not another produces a mixed array here.
-	 *
-	 * OPTIONAL, and `undefined` is treated exactly as `null`. Callers outside the
-	 * attribution path (`resolveSenderIdentity`, tests) hand-build identities and
-	 * legitimately mean org scope; requiring the field would break them without
-	 * the compiler noticing, because the server tsconfig excludes `__tests__`.
-	 * Omission is safe in the only direction that matters: it can never
-	 * accidentally CLAIM a tenant scope, only decline one.
-	 */
-	scopeKey?: string | null;
+  namespace: string;
+  identifier: string;
+  matchOnly: boolean;
+  primary: boolean;
+  /**
+   * Uniqueness scope, resolved once at extraction from the spec's `scope` and
+   * the connector-declared tenant key path. `null` = org-wide.
+   *
+   * Carried on the identity rather than read from params at each use site so
+   * matching and insertion cannot disagree: `lookupMatches` and
+   * `insertIdentities` both key on this value, and a rule that scopes one of
+   * its namespaces but not another produces a mixed array here.
+   *
+   * OPTIONAL, and `undefined` is treated exactly as `null`. Callers outside the
+   * attribution path (`resolveSenderIdentity`, tests) hand-build identities and
+   * legitimately mean org scope; requiring the field would break them without
+   * the compiler noticing, because the server tsconfig excludes `__tests__`.
+   * Omission is safe in the only direction that matters: it can never
+   * accidentally CLAIM a tenant scope, only decline one.
+   */
+  scopeKey?: string | null;
 };
 
 /**
@@ -289,11 +271,11 @@ export type ResolvedIdentity = {
  * unique or exclusion constraint matching the ON CONFLICT specification". If
  * this value ever changes, the SQL literals must be updated by hand.
  */
-const ORG_SCOPE_SENTINEL = "";
+const ORG_SCOPE_SENTINEL = '';
 
 /** Index-shaped scope value: mirrors `COALESCE(scope_key, '')`. */
 function scopeKeyOf(identity: { scopeKey?: string | null }): string {
-	return identity.scopeKey ?? ORG_SCOPE_SENTINEL;
+  return identity.scopeKey ?? ORG_SCOPE_SENTINEL;
 }
 
 /**
@@ -302,14 +284,14 @@ function scopeKeyOf(identity: { scopeKey?: string | null }): string {
  * whole point of the scope column.
  */
 function identityKey(identity: {
-	namespace: string;
-	identifier: string;
-	scopeKey?: string | null;
+  namespace: string;
+  identifier: string;
+  scopeKey?: string | null;
 }): string {
-	// NUL separator, as the pre-scope key used: a namespace or identifier may
-	// contain any printable character, so only a byte that cannot appear in
-	// either is a safe delimiter.
-	return `${identity.namespace}\u0000${identity.identifier}\u0000${scopeKeyOf(identity)}`;
+  // NUL separator, as the pre-scope key used: a namespace or identifier may
+  // contain any printable character, so only a byte that cannot appear in
+  // either is a safe delimiter.
+  return `${identity.namespace}\u0000${identity.identifier}\u0000${scopeKeyOf(identity)}`;
 }
 
 /**
@@ -318,15 +300,15 @@ function identityKey(identity: {
  * scope so `identityKey` can be rebuilt from it.
  */
 type AttachedIdentity = {
-	namespace: string;
-	identifier: string;
-	scopeKey: string | null;
+  namespace: string;
+  identifier: string;
+  scopeKey: string | null;
 };
 
 type ExtractedLink = {
-	identities: ResolvedIdentity[];
-	traits: Map<string, unknown>;
-	title: string;
+  identities: ResolvedIdentity[];
+  traits: Map<string, unknown>;
+  title: string;
 };
 
 /**
@@ -335,27 +317,22 @@ type ExtractedLink = {
  * conditions AND together. Only gates the CREATE-on-miss branch — matching an
  * existing entity is never affected.
  */
-function passesCreateWhen(
-	predicate: EntityLinkPredicate | undefined,
-	item: BatchItem,
-): boolean {
-	if (!predicate) return true;
-	const value = getValueAtPath(item, predicate.path);
-	if (predicate.equals !== undefined && value !== predicate.equals)
-		return false;
-	if (predicate.notEquals !== undefined && value === predicate.notEquals)
-		return false;
-	if (predicate.exists !== undefined) {
-		const present = value !== undefined && value !== null && value !== "";
-		if (present !== predicate.exists) return false;
-	}
-	return true;
+function passesCreateWhen(predicate: EntityLinkPredicate | undefined, item: BatchItem): boolean {
+  if (!predicate) return true;
+  const value = getValueAtPath(item, predicate.path);
+  if (predicate.equals !== undefined && value !== predicate.equals) return false;
+  if (predicate.notEquals !== undefined && value === predicate.notEquals) return false;
+  if (predicate.exists !== undefined) {
+    const present = value !== undefined && value !== null && value !== '';
+    if (present !== predicate.exists) return false;
+  }
+  return true;
 }
 
 /**
  * Ensure each attached identity is present on the entity's metric-resolution
  * surface. Organization-scoped identifiers use the legacy flat `aliases`
- * array. Tenant-scoped identifiers use a reserved structured projection so the
+ * array. Every durable identity also gets a structured scope projection so the
  * metric compiler can compare both identifier and scope key.
  *
  * Lock before merging so concurrent connector transactions cannot clobber one
@@ -364,11 +341,11 @@ function passesCreateWhen(
  * `entity_identities` predate aliases-on-create.
  */
 async function ensureAliases(
-	sql: DbClient,
-	params: { orgId: string; entityId: number; identities: AttachedIdentity[] },
+  sql: DbClient,
+  params: { orgId: string; entityId: number; identities: AttachedIdentity[] }
 ): Promise<void> {
-	if (params.identities.length === 0) return;
-	const rows = await sql<{ metadata: Record<string, unknown> | null }>`
+  if (params.identities.length === 0) return;
+  const rows = await sql<{ metadata: Record<string, unknown> | null }>`
     SELECT metadata
     FROM entities
     WHERE id = ${params.entityId}
@@ -376,66 +353,58 @@ async function ensureAliases(
       AND deleted_at IS NULL
     FOR UPDATE
   `;
-	if (rows.length === 0) return;
+  if (rows.length === 0) return;
 
-	const current = rows[0].metadata ?? {};
-	const aliases = Array.isArray(current.aliases)
-		? current.aliases.filter(
-				(value): value is string => typeof value === "string",
-			)
-		: [];
-	const organizationIdentifiers = params.identities
-		.filter((identity) => identity.scopeKey === null)
-		.map((identity) => identity.identifier);
-	const scopedAliases = parseScopedIdentityAliasProjections(
-		current[SCOPED_IDENTITY_ALIASES_METADATA_KEY],
-	);
-	const scopedByKey = new Map(
-		scopedAliases.map((projection) => [
-			scopedIdentityAliasProjectionKey(projection),
-			projection,
-		]),
-	);
-	for (const identity of params.identities) {
-		const projection = {
-			namespace: identity.namespace,
-			identifier: identity.identifier,
-			scopeKey: identity.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION,
-		};
-		scopedByKey.set(scopedIdentityAliasProjectionKey(projection), projection);
-	}
-	const nextAliases = [
-		...new Set([...aliases, ...organizationIdentifiers]),
-	].sort();
-	const nextScopedAliases = [...scopedByKey.values()].sort((left, right) =>
-		scopedIdentityAliasProjectionKey(left).localeCompare(
-			scopedIdentityAliasProjectionKey(right),
-		),
-	);
-	if (
-		organizationIdentifiers.every((identifier) =>
-			aliases.includes(identifier),
-		) &&
-		nextScopedAliases.length === scopedAliases.length
-	) {
-		return;
-	}
+  const current = rows[0].metadata ?? {};
+  const aliases = Array.isArray(current.aliases)
+    ? current.aliases.filter((value): value is string => typeof value === 'string')
+    : [];
+  const organizationIdentifiers = params.identities
+    .filter((identity) => identity.scopeKey === null)
+    .map((identity) => identity.identifier);
+  const scopedAliases = parseScopedIdentityAliasProjections(
+    current[SCOPED_IDENTITY_ALIASES_METADATA_KEY]
+  );
+  const scopedByKey = new Map(
+    scopedAliases.map((projection) => [
+      scopedIdentityAliasProjectionKey(projection),
+      projection,
+    ])
+  );
+  for (const identity of params.identities) {
+    const projection = {
+      namespace: identity.namespace,
+      identifier: identity.identifier,
+      scopeKey: identity.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION,
+    };
+    scopedByKey.set(scopedIdentityAliasProjectionKey(projection), projection);
+  }
+  const nextAliases = [...new Set([...aliases, ...organizationIdentifiers])].sort();
+  const nextScopedAliases = [...scopedByKey.values()].sort((left, right) =>
+    scopedIdentityAliasProjectionKey(left).localeCompare(scopedIdentityAliasProjectionKey(right))
+  );
+  if (
+    organizationIdentifiers.every((identifier) => aliases.includes(identifier)) &&
+    nextScopedAliases.length === scopedAliases.length
+  ) {
+    return;
+  }
 
-	await patchEntityRows({
-		tx: sql,
-		ids: [params.entityId],
-		patch: await validateEntityRowPatch({
-			tx: sql,
-			ids: [params.entityId],
-			patch: {
-				metadata: {
-					...current,
-					aliases: nextAliases,
-					[SCOPED_IDENTITY_ALIASES_METADATA_KEY]: nextScopedAliases,
-				},
-			},
-		}),
-	});
+  await patchEntityRows({
+    tx: sql,
+    ids: [params.entityId],
+    patch: await validateEntityRowPatch({
+      tx: sql,
+      ids: [params.entityId],
+      patch: {
+        metadata: {
+          ...current,
+          aliases: nextAliases,
+          [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: nextScopedAliases,
+        },
+      },
+    }),
+  });
 }
 
 /**
@@ -444,9 +413,9 @@ async function ensureAliases(
  * fall back to the SDK's normalizer.
  */
 function normalizeIdentityValue(namespace: string, raw: string): string | null {
-	const connector = normalizeConnectorIdentityValue(namespace, raw);
-	if (connector !== undefined) return connector;
-	return normalizeIdentifier(namespace, raw);
+  const connector = normalizeConnectorIdentityValue(namespace, raw);
+  if (connector !== undefined) return connector;
+  return normalizeIdentifier(namespace, raw);
 }
 
 /**
@@ -460,62 +429,56 @@ function normalizeIdentityValue(namespace: string, raw: string): string | null {
  * scope.
  */
 function extractLink(
-	item: BatchItem,
-	rule: ResolvedEventAttributionRule,
+  item: BatchItem,
+  rule: ResolvedEventAttributionRule
 ): ExtractedLink | null {
-	const identities: ExtractedLink["identities"] = [];
-	for (const spec of rule.identities) {
-		const raw = getValueAtPath(item, spec.eventPath);
-		if (typeof raw !== "string" || raw.length === 0) continue;
-		const normalized = normalizeIdentityValue(spec.namespace, raw);
-		if (!normalized) continue;
-		let scopeKey: string | null = null;
-		if (spec.scope === "tenant") {
-			if (!spec.scopeKeyPath?.trim()) {
-				throw new Error(
-					`Identity namespace '${spec.namespace}' has tenant scope and requires a non-empty scopeKeyPath.`,
-				);
-			}
-			const rawScopeKey = getValueAtPath(item, spec.scopeKeyPath);
-			scopeKey =
-				rawScopeKey === null || rawScopeKey === undefined
-					? ""
-					: String(rawScopeKey).trim();
-			if (!scopeKey || scopeKey.includes("\u0000")) {
-				throw new Error(
-					`Identity namespace '${spec.namespace}' at '${spec.scopeKeyPath}' requires a non-empty tenant scope key.`,
-				);
-			}
-		} else if (spec.scopeKeyPath !== undefined) {
-			throw new Error(
-				`Identity namespace '${spec.namespace}' is organization-scoped, so scopeKeyPath must be omitted.`,
-			);
-		}
-		identities.push({
-			namespace: spec.namespace,
-			identifier: normalized,
-			matchOnly: spec.matchOnly === true,
-			primary: spec.primary === true,
-			scopeKey,
-		});
-	}
-	if (identities.length === 0) return null;
+  const identities: ExtractedLink['identities'] = [];
+  for (const spec of rule.identities) {
+    const raw = getValueAtPath(item, spec.eventPath);
+    if (typeof raw !== 'string' || raw.length === 0) continue;
+    const normalized = normalizeIdentityValue(spec.namespace, raw);
+    if (!normalized) continue;
+    let scopeKey: string | null = null;
+    if (spec.scope === 'tenant') {
+      if (!spec.scopeKeyPath?.trim()) {
+        throw new Error(
+          `Identity namespace '${spec.namespace}' has tenant scope and requires a non-empty scopeKeyPath.`
+        );
+      }
+      const rawScopeKey = getValueAtPath(item, spec.scopeKeyPath);
+      scopeKey = rawScopeKey === null || rawScopeKey === undefined ? '' : String(rawScopeKey).trim();
+      if (!scopeKey || scopeKey.includes('\u0000')) {
+        throw new Error(
+          `Identity namespace '${spec.namespace}' at '${spec.scopeKeyPath}' requires a non-empty tenant scope key.`
+        );
+      }
+    } else if (spec.scopeKeyPath !== undefined) {
+      throw new Error(
+        `Identity namespace '${spec.namespace}' is organization-scoped, so scopeKeyPath must be omitted.`
+      );
+    }
+    identities.push({
+      namespace: spec.namespace,
+      identifier: normalized,
+      matchOnly: spec.matchOnly === true,
+      primary: spec.primary === true,
+      scopeKey,
+    });
+  }
+  if (identities.length === 0) return null;
 
-	const traits = new Map<string, unknown>();
-	if (rule.traits) {
-		for (const [key, spec] of Object.entries(rule.traits)) {
-			const value = getValueAtPath(item, spec.eventPath);
-			if (value !== undefined) traits.set(key, value);
-		}
-	}
+  const traits = new Map<string, unknown>();
+  if (rule.traits) {
+    for (const [key, spec] of Object.entries(rule.traits)) {
+      const value = getValueAtPath(item, spec.eventPath);
+      if (value !== undefined) traits.set(key, value);
+    }
+  }
 
-	const rawTitle = rule.titlePath
-		? getValueAtPath(item, rule.titlePath)
-		: undefined;
-	const title =
-		typeof rawTitle === "string" && rawTitle.trim() ? rawTitle.trim() : "";
+  const rawTitle = rule.titlePath ? getValueAtPath(item, rule.titlePath) : undefined;
+  const title = typeof rawTitle === 'string' && rawTitle.trim() ? rawTitle.trim() : '';
 
-	return { identities, traits, title };
+  return { identities, traits, title };
 }
 
 /**
@@ -535,36 +498,36 @@ function extractLink(
  * type-agnostic. The target `entityType` still governs CREATE-on-miss.
  */
 async function lookupMatches(
-	sql: DbClient,
-	params: {
-		orgId: string;
-		identities: ExtractedLink["identities"][];
-	},
+  sql: DbClient,
+  params: {
+    orgId: string;
+    identities: ExtractedLink['identities'][];
+  }
 ): Promise<Map<string, number>> {
-	// Deduplicated by the SCOPED key, so the same (namespace, identifier) under
-	// two different scopes stays two lookups instead of collapsing back into the
-	// collision this exists to prevent.
-	const wanted = new Map<string, ResolvedIdentity>();
-	for (const arr of params.identities) {
-		for (const id of arr) wanted.set(identityKey(id), id);
-	}
-	if (wanted.size === 0) return new Map();
+  // Deduplicated by the SCOPED key, so the same (namespace, identifier) under
+  // two different scopes stays two lookups instead of collapsing back into the
+  // collision this exists to prevent.
+  const wanted = new Map<string, ResolvedIdentity>();
+  for (const arr of params.identities) {
+    for (const id of arr) wanted.set(identityKey(id), id);
+  }
+  if (wanted.size === 0) return new Map();
 
-	const namespaces: string[] = [];
-	const identifiers: string[] = [];
-	const scopes: string[] = [];
-	for (const id of wanted.values()) {
-		namespaces.push(id.namespace);
-		identifiers.push(id.identifier);
-		scopes.push(scopeKeyOf(id));
-	}
+  const namespaces: string[] = [];
+  const identifiers: string[] = [];
+  const scopes: string[] = [];
+  for (const id of wanted.values()) {
+    namespaces.push(id.namespace);
+    identifiers.push(id.identifier);
+    scopes.push(scopeKeyOf(id));
+  }
 
-	const rows = await sql<{
-		entity_id: number | string;
-		namespace: string;
-		identifier: string;
-		scope_key: string;
-	}>`
+  const rows = await sql<{
+    entity_id: number | string;
+    namespace: string;
+    identifier: string;
+    scope_key: string;
+  }>`
     SELECT ei.entity_id, ei.namespace, ei.identifier,
            COALESCE(ei.scope_key, '') AS scope_key
     FROM entity_identities ei
@@ -582,21 +545,21 @@ async function lookupMatches(
       )
   `;
 
-	const out = new Map<string, number>();
-	for (const row of rows) {
-		out.set(
-			identityKey({
-				namespace: row.namespace,
-				identifier: row.identifier,
-				// COALESCE already collapsed NULL to the sentinel; map it back so the
-				// key built from a DB row matches the key built from an extracted
-				// identity, whose org scope is null.
-				scopeKey: row.scope_key || null,
-			}),
-			Number(row.entity_id),
-		);
-	}
-	return out;
+  const out = new Map<string, number>();
+  for (const row of rows) {
+    out.set(
+      identityKey({
+        namespace: row.namespace,
+        identifier: row.identifier,
+        // COALESCE already collapsed NULL to the sentinel; map it back so the
+        // key built from a DB row matches the key built from an extracted
+        // identity, whose org scope is null.
+        scopeKey: row.scope_key || null,
+      }),
+      Number(row.entity_id)
+    );
+  }
+  return out;
 }
 
 /**
@@ -622,57 +585,57 @@ async function lookupMatches(
  * pick one.
  */
 function resolveIdentityTier(
-	identities: ResolvedIdentity[],
-	matches: Map<string, number>,
-): number | null | "ambiguous" {
-	const primaries = identities.filter((i) => i.primary);
-	// A present primary governs alone; otherwise every identity votes equally.
-	const governing = primaries.length > 0 ? primaries : identities;
-	const hits = new Set<number>();
-	for (const id of governing) {
-		const h = matches.get(identityKey(id));
-		if (h !== undefined) hits.add(h);
-	}
-	if (hits.size > 1) return "ambiguous";
-	if (hits.size === 1) return [...hits][0];
-	return null;
+  identities: ResolvedIdentity[],
+  matches: Map<string, number>
+): number | null | 'ambiguous' {
+  const primaries = identities.filter((i) => i.primary);
+  // A present primary governs alone; otherwise every identity votes equally.
+  const governing = primaries.length > 0 ? primaries : identities;
+  const hits = new Set<number>();
+  for (const id of governing) {
+    const h = matches.get(identityKey(id));
+    if (h !== undefined) hits.add(h);
+  }
+  if (hits.size > 1) return 'ambiguous';
+  if (hits.size === 1) return [...hits][0];
+  return null;
 }
 
 function firstIdentityHit(
-	identities: ResolvedIdentity[],
-	matches: Map<string, number>,
+  identities: ResolvedIdentity[],
+  matches: Map<string, number>
 ): number | null {
-	for (const id of identities) {
-		const hit = matches.get(identityKey(id));
-		if (hit !== undefined) return hit;
-	}
-	return null;
+  for (const id of identities) {
+    const hit = matches.get(identityKey(id));
+    if (hit !== undefined) return hit;
+  }
+  return null;
 }
 
 async function createEntityWithIdentities(
-	sql: DbClient,
-	params: {
-		orgId: string;
-		connectorKey: string;
-		connectionId?: number | null;
-		entityType: string;
-		title: string;
-		identities: ExtractedLink["identities"];
-		traits: Map<string, unknown>;
-		creatorUserId: string;
-	},
+  sql: DbClient,
+  params: {
+    orgId: string;
+    connectorKey: string;
+    connectionId?: number | null;
+    entityType: string;
+    title: string;
+    identities: ExtractedLink['identities'];
+    traits: Map<string, unknown>;
+    creatorUserId: string;
+  }
 ): Promise<{ entityId: number; attached: AttachedIdentity[] } | null> {
-	const persisted = params.identities.filter((i) => !i.matchOnly);
-	if (persisted.length === 0) return null;
+  const persisted = params.identities.filter((i) => !i.matchOnly);
+  if (persisted.length === 0) return null;
 
-	const name = params.title || persisted[0].identifier;
-	const metadata: Record<string, unknown> = {};
-	for (const [key, value] of params.traits) metadata[key] = value;
+  const name = params.title || persisted[0].identifier;
+  const metadata: Record<string, unknown> = {};
+  for (const [key, value] of params.traits) metadata[key] = value;
 
-	// Resolve entity_type slug → entity_types(id). Same schema search path as
-	// createEntity: try the entity's own org first, then any visibility='public'
-	// catalog. First match wins. See createEntity for the slug-poisoning caveat.
-	let typeRow = await sql<{ id: number; backing_sql: string | null }>`
+  // Resolve entity_type slug → entity_types(id). Same schema search path as
+  // createEntity: try the entity's own org first, then any visibility='public'
+  // catalog. First match wins. See createEntity for the slug-poisoning caveat.
+  let typeRow = await sql<{ id: number; backing_sql: string | null }>`
     SELECT et.id, et.backing_sql
     FROM entity_types et
     LEFT JOIN organization o ON o.id = et.organization_id
@@ -685,12 +648,12 @@ async function createEntityWithIdentities(
     ORDER BY (et.organization_id = ${params.orgId}) DESC, et.id ASC
     LIMIT 1
   `;
-	if (typeRow.length === 0) {
-		// Platform ACL type is ensured on the fly so event attribution can race
-		// ahead of the first ACL sync without failing closed on a missing type.
-		if (params.entityType === ACL_RESOURCE_TYPE_SLUG) {
-			await ensureResourceEntityType(sql, params.orgId);
-			typeRow = await sql<{ id: number; backing_sql: string | null }>`
+  if (typeRow.length === 0) {
+    // Platform ACL type is ensured on the fly so event attribution can race
+    // ahead of the first ACL sync without failing closed on a missing type.
+    if (params.entityType === ACL_RESOURCE_TYPE_SLUG) {
+      await ensureResourceEntityType(sql, params.orgId);
+      typeRow = await sql<{ id: number; backing_sql: string | null }>`
         SELECT et.id, et.backing_sql
         FROM entity_types et
         WHERE et.slug = ${params.entityType}
@@ -698,76 +661,74 @@ async function createEntityWithIdentities(
           AND et.organization_id = ${params.orgId}
         LIMIT 1
       `;
-			if (typeRow.length === 0) {
-				logger.warn(
-					{ entityType: params.entityType, orgId: params.orgId },
-					"entity create failed: $resource type ensure did not materialize",
-				);
-				return null;
-			}
-		} else {
-			logger.warn(
-				{ entityType: params.entityType, orgId: params.orgId },
-				"entity create failed: unknown entity type",
-			);
-			return null;
-		}
-	}
-	// Derived (view-backed) types have no stored rows — skip auto-create (the
-	// view ignores any row this would insert). Mirrors createEntity's guard for
-	// this separate connector/link insert path.
-	if (typeRow[0].backing_sql) {
-		logger.warn(
-			{ entityType: params.entityType, orgId: params.orgId },
-			"entity auto-create skipped: entity type is derived (a SQL view)",
-		);
-		return null;
-	}
-	const entityTypeId = typeRow[0].id;
+      if (typeRow.length === 0) {
+        logger.warn(
+          { entityType: params.entityType, orgId: params.orgId },
+          'entity create failed: $resource type ensure did not materialize'
+        );
+        return null;
+      }
+    } else {
+      logger.warn(
+        { entityType: params.entityType, orgId: params.orgId },
+        'entity create failed: unknown entity type'
+      );
+      return null;
+    }
+  }
+  // Derived (view-backed) types have no stored rows — skip auto-create (the
+  // view ignores any row this would insert). Mirrors createEntity's guard for
+  // this separate connector/link insert path.
+  if (typeRow[0].backing_sql) {
+    logger.warn(
+      { entityType: params.entityType, orgId: params.orgId },
+      'entity auto-create skipped: entity type is derived (a SQL view)'
+    );
+    return null;
+  }
+  const entityTypeId = typeRow[0].id;
 
-	// Try a few slug variants to defuse improbable random collisions.
-	let entityId: number | null = null;
-	for (let attempt = 0; attempt < 3 && entityId === null; attempt++) {
-		const slug = randomSlug(params.entityType);
-		// Auto-created from a connector link, but a tenant row on a tenant type all
-		// the same — so it is subject to the type's rules. Validating inside the
-		// retry loop costs one extra evaluation per slug collision, which the
-		// comment above already calls improbable.
-		const inserted = await tryInsertEntityRow({
-			tx: sql,
-			row: await validateEntityRowInsert({
-				tx: sql,
-				row: {
-					organizationId: params.orgId,
-					entityTypeId,
-					name,
-					slug,
-					metadata,
-					createdBy: params.creatorUserId,
-				},
-			}),
-		});
-		if (inserted) entityId = Number(inserted.id);
-	}
-	if (entityId === null) return null;
+  // Try a few slug variants to defuse improbable random collisions.
+  let entityId: number | null = null;
+  for (let attempt = 0; attempt < 3 && entityId === null; attempt++) {
+    const slug = randomSlug(params.entityType);
+    // Auto-created from a connector link, but a tenant row on a tenant type all
+    // the same — so it is subject to the type's rules. Validating inside the
+    // retry loop costs one extra evaluation per slug collision, which the
+    // comment above already calls improbable.
+    const inserted = await tryInsertEntityRow({
+      tx: sql,
+      row: await validateEntityRowInsert({
+        tx: sql,
+        row: {
+          organizationId: params.orgId,
+          entityTypeId,
+          name,
+          slug,
+          metadata,
+          createdBy: params.creatorUserId,
+        },
+      }),
+    });
+    if (inserted) entityId = Number(inserted.id);
+  }
+  if (entityId === null) return null;
 
-	const attached = await insertIdentities(sql, {
-		orgId: params.orgId,
-		entityId,
-		connectorKey: params.connectorKey,
-		connectionId: params.connectionId,
-		identities: persisted,
-	});
-	// Organization-scoped identities remain ordinary aliases. Tenant-scoped
-	// identities are resolved directly from entity_identities + the event's
-	// reserved scope projection; putting them in the flat alias list would widen
-	// them back to organization scope.
-	await ensureAliases(sql, {
-		orgId: params.orgId,
-		entityId,
-		identities: attached,
-	});
-	return { entityId, attached };
+  const attached = await insertIdentities(sql, {
+    orgId: params.orgId,
+    entityId,
+    connectorKey: params.connectorKey,
+    connectionId: params.connectionId,
+    identities: persisted,
+  });
+  // Organization-scoped identities remain ordinary aliases. Every attached
+  // identity also carries its exact scope on the structured metric surface.
+  await ensureAliases(sql, {
+    orgId: params.orgId,
+    entityId,
+    identities: attached,
+  });
+  return { entityId, attached };
 }
 
 /**
@@ -781,27 +742,27 @@ async function createEntityWithIdentities(
  * rest of the batch would then resolve it to the wrong entity.
  */
 async function insertIdentities(
-	sql: DbClient,
-	params: {
-		orgId: string;
-		entityId: number;
-		connectorKey: string;
-		connectionId?: number | null;
-		identities: ExtractedLink["identities"];
-	},
+  sql: DbClient,
+  params: {
+    orgId: string;
+    entityId: number;
+    connectorKey: string;
+    connectionId?: number | null;
+    identities: ExtractedLink['identities'];
+  }
 ): Promise<AttachedIdentity[]> {
-	if (params.identities.length === 0) return [];
-	const namespaces = params.identities.map((i) => i.namespace);
-	const identifiers = params.identities.map((i) => i.identifier);
-	// NULL, not the sentinel: the sentinel exists only inside the index
-	// expression. `?? null` collapses hand-built identity omissions to org scope
-	// before serialization.
-	const scopes = params.identities.map((i) => i.scopeKey ?? null);
-	const attached = await sql<{
-		namespace: string;
-		identifier: string;
-		scope_key: string | null;
-	}>`
+  if (params.identities.length === 0) return [];
+  const namespaces = params.identities.map((i) => i.namespace);
+  const identifiers = params.identities.map((i) => i.identifier);
+  // NULL, not the sentinel: the sentinel exists only inside the index
+  // expression. `?? null` collapses hand-built identity omissions to org scope
+  // before serialization.
+  const scopes = params.identities.map((i) => i.scopeKey ?? null);
+  const attached = await sql<{
+    namespace: string;
+    identifier: string;
+    scope_key: string | null;
+  }>`
     INSERT INTO entity_identities (
       organization_id, entity_id, namespace, identifier, source_connector, connection_id,
       scope_key
@@ -822,48 +783,44 @@ async function insertIdentities(
       AND EXCLUDED.connection_id IS NOT NULL
     RETURNING namespace, identifier, scope_key
   `;
-	return attached.map((r) => ({
-		namespace: r.namespace,
-		identifier: r.identifier,
-		scopeKey: r.scope_key,
-	}));
+  return attached.map((r) => ({
+    namespace: r.namespace,
+    identifier: r.identifier,
+    scopeKey: r.scope_key,
+  }));
 }
 
 async function applyTraits(
-	sql: DbClient,
-	params: {
-		orgId: string;
-		entityId: number;
-		rule: ResolvedEventAttributionRule;
-		traits: Map<string, unknown>;
-		isCreate: boolean;
-	},
+  sql: DbClient,
+  params: {
+    orgId: string;
+    entityId: number;
+    rule: ResolvedEventAttributionRule;
+    traits: Map<string, unknown>;
+    isCreate: boolean;
+  }
 ): Promise<void> {
-	if (!params.rule.traits || params.traits.size === 0) return;
+  if (!params.rule.traits || params.traits.size === 0) return;
 
-	// init_only traits were written to metadata at create time; nothing to do now.
-	const overwrite: Record<string, unknown> = {};
-	const preferNonEmpty: Record<string, unknown> = {};
-	for (const [key, value] of params.traits) {
-		const spec = params.rule.traits[key];
-		if (!spec || spec.mergeStrategy === "init_only") continue;
-		if (value === undefined) continue;
-		if (spec.mergeStrategy === "overwrite") {
-			overwrite[key] = value;
-		} else if (spec.mergeStrategy === "prefer_non_empty") {
-			const empty = value === null || value === "";
-			if (!empty) preferNonEmpty[key] = value;
-		}
-	}
-	if (
-		Object.keys(overwrite).length === 0 &&
-		Object.keys(preferNonEmpty).length === 0
-	)
-		return;
+  // init_only traits were written to metadata at create time; nothing to do now.
+  const overwrite: Record<string, unknown> = {};
+  const preferNonEmpty: Record<string, unknown> = {};
+  for (const [key, value] of params.traits) {
+    const spec = params.rule.traits[key];
+    if (!spec || spec.mergeStrategy === 'init_only') continue;
+    if (value === undefined) continue;
+    if (spec.mergeStrategy === 'overwrite') {
+      overwrite[key] = value;
+    } else if (spec.mergeStrategy === 'prefer_non_empty') {
+      const empty = value === null || value === '';
+      if (!empty) preferNonEmpty[key] = value;
+    }
+  }
+  if (Object.keys(overwrite).length === 0 && Object.keys(preferNonEmpty).length === 0) return;
 
-	// Serialize the metadata read-modify-write with alias and trait projections
-	// from concurrent connector transactions.
-	const rows = await sql<{ metadata: Record<string, unknown> | null }>`
+  // Serialize the metadata read-modify-write with alias and trait projections
+  // from concurrent connector transactions.
+  const rows = await sql<{ metadata: Record<string, unknown> | null }>`
     SELECT metadata
     FROM entities
     WHERE id = ${params.entityId}
@@ -871,26 +828,26 @@ async function applyTraits(
       AND deleted_at IS NULL
     FOR UPDATE
   `;
-	if (rows.length === 0) return;
-	const current = rows[0].metadata ?? {};
+  if (rows.length === 0) return;
+  const current = rows[0].metadata ?? {};
 
-	const next: Record<string, unknown> = { ...current, ...overwrite };
-	for (const [key, value] of Object.entries(preferNonEmpty)) {
-		const existing = current[key];
-		if (existing === undefined || existing === null || existing === "") {
-			next[key] = value;
-		}
-	}
+  const next: Record<string, unknown> = { ...current, ...overwrite };
+  for (const [key, value] of Object.entries(preferNonEmpty)) {
+    const existing = current[key];
+    if (existing === undefined || existing === null || existing === '') {
+      next[key] = value;
+    }
+  }
 
-	await patchEntityRows({
-		tx: sql,
-		ids: [params.entityId],
-		patch: await validateEntityRowPatch({
-			tx: sql,
-			ids: [params.entityId],
-			patch: { metadata: next },
-		}),
-	});
+  await patchEntityRows({
+    tx: sql,
+    ids: [params.entityId],
+    patch: await validateEntityRowPatch({
+      tx: sql,
+      ids: [params.entityId],
+      patch: { metadata: next },
+    }),
+  });
 }
 
 /**
@@ -905,44 +862,44 @@ async function applyTraits(
  * sync aborts instead of persisting events whose attribution half-landed.
  */
 export async function applyEventAttributions(
-	params: {
-		connectorKey: string;
-		connectionId?: number | null;
-		feedKey: string | null;
-		orgId: string;
-		items: BatchItem[];
-	},
-	// Optional transaction handle, same contract the webhook path already uses via
-	// resolveEventAttributionsForItems. A supplied tx is joined; a pool or omitted
-	// handle opens a transaction here. The sync dry-run path threads its rolled-
-	// back tx so auto-created entities disappear with their events.
-	sql?: DbClient,
+  params: {
+    connectorKey: string;
+    connectionId?: number | null;
+    feedKey: string | null;
+    orgId: string;
+    items: BatchItem[];
+  },
+  // Optional transaction handle, same contract the webhook path already uses via
+  // resolveEventAttributionsForItems. A supplied tx is joined; a pool or omitted
+  // handle opens a transaction here. The sync dry-run path threads its rolled-
+  // back tx so auto-created entities disappear with their events.
+  sql?: DbClient
 ): Promise<void> {
-	if (!params.feedKey || params.items.length === 0) return;
+  if (!params.feedKey || params.items.length === 0) return;
 
-	// Resolved BEFORE the rule load: the sync dry-run path supplies its
-	// rolled-back transaction, and reading rules on the pool while that is open is
-	// the starvation this file exists to avoid (#2818).
-	const db = sql ?? getDb();
+  // Resolved BEFORE the rule load: the sync dry-run path supplies its
+  // rolled-back transaction, and reading rules on the pool while that is open is
+  // the starvation this file exists to avoid (#2818).
+  const db = sql ?? getDb();
 
-	const rulesByKind = await loadEventAttributionRules(db, {
-		connectorKey: params.connectorKey,
-		feedKey: params.feedKey,
-		orgId: params.orgId,
-	});
-	if (Object.keys(rulesByKind).length === 0) return;
-	await withEntityWriteTransaction(db, (tx) =>
-		resolveLinksByKind(
-			{
-				connectorKey: params.connectorKey,
-				connectionId: params.connectionId,
-				orgId: params.orgId,
-				items: params.items,
-				rulesByKind,
-			},
-			tx,
-		),
-	);
+  const rulesByKind = await loadEventAttributionRules(db, {
+    connectorKey: params.connectorKey,
+    feedKey: params.feedKey,
+    orgId: params.orgId,
+  });
+  if (Object.keys(rulesByKind).length === 0) return;
+  await withEntityWriteTransaction(db, (tx) =>
+    resolveLinksByKind(
+      {
+        connectorKey: params.connectorKey,
+        connectionId: params.connectionId,
+        orgId: params.orgId,
+        items: params.items,
+        rulesByKind,
+      },
+      tx
+    )
+  );
 }
 
 /**
@@ -960,32 +917,32 @@ export async function applyEventAttributions(
  * never crosses organizations.
  */
 export async function resolveEventAttributionsForItems(
-	params: {
-		connectorKey: string;
-		connectionId?: number | null;
-		orgId: string;
-		items: BatchItem[];
-		rules: RuleMap;
-	},
-	// Optional transaction handle — the webhook winner passes its tx so the actor
-	// graph writes commit atomically with the event insert. A pool or omitted
-	// handle opens a transaction here.
-	sql?: DbClient,
+  params: {
+    connectorKey: string;
+    connectionId?: number | null;
+    orgId: string;
+    items: BatchItem[];
+    rules: RuleMap;
+  },
+  // Optional transaction handle — the webhook winner passes its tx so the actor
+  // graph writes commit atomically with the event insert. A pool or omitted
+  // handle opens a transaction here.
+  sql?: DbClient
 ): Promise<Map<number, number[]>> {
-	if (params.items.length === 0) return new Map();
-	const db = sql ?? getDb();
-	return withEntityWriteTransaction(db, (tx) =>
-		resolveLinksByKind(
-			{
-				connectorKey: params.connectorKey,
-				connectionId: params.connectionId,
-				orgId: params.orgId,
-				items: params.items,
-				rulesByKind: params.rules,
-			},
-			tx,
-		),
-	);
+  if (params.items.length === 0) return new Map();
+  const db = sql ?? getDb();
+  return withEntityWriteTransaction(db, (tx) =>
+    resolveLinksByKind(
+      {
+        connectorKey: params.connectorKey,
+        connectionId: params.connectionId,
+        orgId: params.orgId,
+        items: params.items,
+        rulesByKind: params.rules,
+      },
+      tx
+    )
+  );
 }
 
 /**
@@ -996,97 +953,91 @@ export async function resolveEventAttributionsForItems(
  * traits. Returns a per-item map (by array index) of resolved entity ids.
  */
 async function resolveLinksByKind(
-	params: {
-		connectorKey: string;
-		connectionId?: number | null;
-		orgId: string;
-		items: BatchItem[];
-		rulesByKind: RuleMap;
-	},
-	// A real transaction handle for ALL match/insert/update writes. Public entry
-	// points either join the caller's tx or open one before reaching this core.
-	sql: DbClient,
+  params: {
+    connectorKey: string;
+    connectionId?: number | null;
+    orgId: string;
+    items: BatchItem[];
+    rulesByKind: RuleMap;
+  },
+  // A real transaction handle for ALL match/insert/update writes. Public entry
+  // points either join the caller's tx or open one before reaching this core.
+  sql: DbClient
 ): Promise<Map<number, number[]>> {
-	const resolvedByItem = new Map<number, number[]>();
-	if (
-		Object.keys(params.rulesByKind).length === 0 ||
-		params.items.length === 0
-	) {
-		return resolvedByItem;
-	}
+  const resolvedByItem = new Map<number, number[]>();
+  if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
+    return resolvedByItem;
+  }
 
-	await assertConnectorIdentityScopesActive({
-		sql,
-		organizationId: params.orgId,
-		connectorKey: params.connectorKey,
-		identities: Object.values(params.rulesByKind).flatMap((rules) =>
-			rules.flatMap((rule) => rule.identities),
-		),
-	});
+  await assertConnectorIdentityScopesActive({
+    sql,
+    organizationId: params.orgId,
+    connectorKey: params.connectorKey,
+    identities: Object.values(params.rulesByKind).flatMap((rules) =>
+      rules.flatMap((rule) => rule.identities)
+    ),
+  });
 
-	// entities.created_by is NOT NULL; resolve an org owner/admin once per batch
-	// so auto-created entities attribute to a real member rather than a seed user.
-	const creatorUserId = await resolveOrgCreator(sql, params.orgId);
+  // entities.created_by is NOT NULL; resolve an org owner/admin once per batch
+  // so auto-created entities attribute to a real member rather than a seed user.
+  const creatorUserId = await resolveOrgCreator(sql, params.orgId);
 
-	// rule -> per-item extracted link, carrying the source item + index (the
-	// caller recovers the resolved entity per item; metadata is stamped onto the
-	// item post-resolution).
-	const byRule = new Map<
-		ResolvedEventAttributionRule,
-		Array<{ index: number; item: BatchItem; link: ExtractedLink }>
-	>();
-	params.items.forEach((item, index) => {
-		const kind = item.origin_type;
-		if (!kind) return;
-		const rules = params.rulesByKind[kind];
-		if (!rules) return;
-		for (const rule of rules) {
-			const link = extractLink(item, rule);
-			if (!link) continue;
-			// Metadata stamping is deferred to post-resolution (below) — only
-			// attached identifiers are stamped, so a stale one (e.g. a vacated
-			// github_login) can't make read-time JOINs attribute to the wrong person.
-			let bucket = byRule.get(rule);
-			if (!bucket) {
-				bucket = [];
-				byRule.set(rule, bucket);
-			}
-			bucket.push({ index, item, link });
-		}
-	});
+  // rule -> per-item extracted link, carrying the source item + index (the
+  // caller recovers the resolved entity per item; metadata is stamped onto the
+  // item post-resolution).
+  const byRule = new Map<
+    ResolvedEventAttributionRule,
+    Array<{ index: number; item: BatchItem; link: ExtractedLink }>
+  >();
+  params.items.forEach((item, index) => {
+    const kind = item.origin_type;
+    if (!kind) return;
+    const rules = params.rulesByKind[kind];
+    if (!rules) return;
+    for (const rule of rules) {
+      const link = extractLink(item, rule);
+      if (!link) continue;
+      // Metadata stamping is deferred to post-resolution (below) — only
+      // attached identifiers are stamped, so a stale one (e.g. a vacated
+      // github_login) can't make read-time JOINs attribute to the wrong person.
+      let bucket = byRule.get(rule);
+      if (!bucket) {
+        bucket = [];
+        byRule.set(rule, bucket);
+      }
+      bucket.push({ index, item, link });
+    }
+  });
 
-	// Connector metadata is not trusted to author server protocol projections.
-	// Extraction above has already read every declared eventPath/scopeKeyPath;
-	// now discard any incoming values and rebuild them only from identities that
-	// actually attach to an entity below.
-	for (const item of params.items) {
-		if (!item.metadata) continue;
-		delete item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY];
-		delete item.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY];
-	}
-	if (byRule.size === 0) return resolvedByItem;
+  // Connector metadata is not trusted to author server protocol projections.
+  // Extraction above has already read every declared eventPath/scopeKeyPath;
+  // now discard any incoming values and rebuild them only from identities that
+  // actually attach to an entity below.
+  for (const item of params.items) {
+    if (!item.metadata) continue;
+    delete item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY];
+    delete item.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY];
+  }
+  if (byRule.size === 0) return resolvedByItem;
 
-	// Resolve first, then lock every existing entity in one ascending-id pass.
-	// Without a global lock order, two connector batches containing the same
-	// entities in opposite item order could deadlock after each locked its first
-	// row. Rows that disappeared between lookup and lock are removed from the
-	// match maps so they cannot be returned as live resolutions.
-	const matchesByRule = new Map<
-		ResolvedEventAttributionRule,
-		Map<string, number>
-	>();
-	const matchedEntityIds = new Set<number>();
-	for (const [rule, entries] of byRule) {
-		const matches = await lookupMatches(sql, {
-			orgId: params.orgId,
-			identities: entries.map((entry) => entry.link.identities),
-		});
-		matchesByRule.set(rule, matches);
-		for (const entityId of matches.values()) matchedEntityIds.add(entityId);
-	}
-	if (matchedEntityIds.size > 0) {
-		const ids = [...matchedEntityIds].sort((a, b) => a - b);
-		const lockedRows = await sql<{ id: number | string }>`
+  // Resolve first, then lock every existing entity in one ascending-id pass.
+  // Without a global lock order, two connector batches containing the same
+  // entities in opposite item order could deadlock after each locked its first
+  // row. Rows that disappeared between lookup and lock are removed from the
+  // match maps so they cannot be returned as live resolutions.
+  const matchesByRule = new Map<ResolvedEventAttributionRule, Map<string, number>>();
+  const matchedEntityIds = new Set<number>();
+  for (const [rule, entries] of byRule) {
+    const matches = await lookupMatches(sql, {
+      orgId: params.orgId,
+      identities: entries.map((entry) => entry.link.identities),
+    });
+    matchesByRule.set(rule, matches);
+    for (const entityId of matches.values()) matchedEntityIds.add(entityId);
+  }
+  if (matchedEntityIds.size > 0) {
+    const ids = [...matchedEntityIds].sort((a, b) => a - b);
+    const lockedRows = await sql<{ id: number | string }>`
       SELECT id
       FROM entities
       WHERE organization_id = ${params.orgId}
@@ -1095,263 +1046,260 @@ async function resolveLinksByKind(
       ORDER BY id
       FOR UPDATE
     `;
-		const lockedIds = new Set(lockedRows.map((row) => Number(row.id)));
-		for (const matches of matchesByRule.values()) {
-			for (const [key, entityId] of matches) {
-				if (!lockedIds.has(entityId)) matches.delete(key);
-			}
-		}
-	}
+    const lockedIds = new Set(lockedRows.map((row) => Number(row.id)));
+    for (const matches of matchesByRule.values()) {
+      for (const [key, entityId] of matches) {
+        if (!lockedIds.has(entityId)) matches.delete(key);
+      }
+    }
+  }
 
-	const recordResolved = (index: number, entityId: number): void => {
-		const existing = resolvedByItem.get(index);
-		if (existing) {
-			if (!existing.includes(entityId)) existing.push(entityId);
-		} else {
-			resolvedByItem.set(index, [entityId]);
-		}
-	};
+  const recordResolved = (index: number, entityId: number): void => {
+    const existing = resolvedByItem.get(index);
+    if (existing) {
+      if (!existing.includes(entityId)) existing.push(entityId);
+    } else {
+      resolvedByItem.set(index, [entityId]);
+    }
+  };
 
-	for (const [rule, entries] of byRule) {
-		const matches = matchesByRule.get(rule)!;
+  for (const [rule, entries] of byRule) {
+    const matches = matchesByRule.get(rule)!;
 
-		for (const { index, item, link } of entries) {
-			// Tier semantics are defined once in `resolveIdentityTier` and shared
-			// with the orphan-recovery re-resolution below. A present primary that
-			// matched nothing resolves to null here on purpose: the create path then
-			// mints a new entity keyed on it instead of absorbing a stale
-			// secondary's owner.
-			const tier = resolveIdentityTier(link.identities, matches);
-			const ambiguous = tier === "ambiguous";
-			let entityId: number | null = ambiguous ? null : tier;
-			let isCreate = false;
+    for (const { index, item, link } of entries) {
+      // Tier semantics are defined once in `resolveIdentityTier` and shared
+      // with the orphan-recovery re-resolution below. A present primary that
+      // matched nothing resolves to null here on purpose: the create path then
+      // mints a new entity keyed on it instead of absorbing a stale
+      // secondary's owner.
+      const tier = resolveIdentityTier(link.identities, matches);
+      const ambiguous = tier === 'ambiguous';
+      let entityId: number | null = ambiguous ? null : tier;
+      let isCreate = false;
 
-			if (ambiguous) {
-				logger.warn(
-					{
-						orgId: params.orgId,
-						connectorKey: params.connectorKey,
-						entityType: rule.entityType,
-						identifiers: link.identities.map(
-							(i) => `${i.namespace}:${i.identifier}`,
-						),
-					},
-					"entityLink merge candidate — multiple entities matched at the same identity tier",
-				);
-				continue;
-			}
+      if (ambiguous) {
+        logger.warn(
+          {
+            orgId: params.orgId,
+            connectorKey: params.connectorKey,
+            entityType: rule.entityType,
+            identifiers: link.identities.map((i) => `${i.namespace}:${i.identifier}`),
+          },
+          'entityLink merge candidate — multiple entities matched at the same identity tier'
+        );
+        continue;
+      }
 
-			// Identities that ACTUALLY attached to the resolved/created entity. We
-			// only ever claim THESE in the in-memory matches map below — an identifier
-			// that ON CONFLICT-skipped because another entity already owns it stays
-			// with that entity, so the map must not mis-claim it for this one.
-			let attached: AttachedIdentity[] = [];
-			if (entityId !== null) {
-				// Matched an existing entity: accrete the non-matchOnly identities; the
-				// identifier(s) we matched on already belong to this entity.
-				const fresh = await insertIdentities(sql, {
-					orgId: params.orgId,
-					entityId,
-					connectorKey: params.connectorKey,
-					connectionId: params.connectionId,
-					identities: link.identities.filter((i) => !i.matchOnly),
-				});
-				attached = [...fresh];
-				// Only organization-scoped identities enter the flat alias surface.
-				// Tenant-scoped identities are projected as (identifier, scope key)
-				// tuples below and resolved from entity_identities by the metric compiler.
-				await ensureAliases(sql, {
-					orgId: params.orgId,
-					entityId,
-					identities: link.identities
-						.filter((identity) => !identity.matchOnly)
-						.map((identity) => ({
-							namespace: identity.namespace,
-							identifier: identity.identifier,
-							scopeKey: identity.scopeKey ?? null,
-						})),
-				});
-				// The matched identifiers themselves are this entity's even if a
-				// re-insert was a no-op (they were how we found it), so claim them too.
-				for (const id of link.identities) {
-					if (matches.get(identityKey(id)) === entityId) {
-						attached.push({
-							namespace: id.namespace,
-							identifier: id.identifier,
-							scopeKey: id.scopeKey ?? null,
-						});
-					}
-				}
-			} else if (rule.autoCreate && passesCreateWhen(rule.createWhen, item)) {
-				if (!creatorUserId) {
-					logger.warn(
-						{ orgId: params.orgId, entityType: rule.entityType },
-						"autoCreate skipped: org has no member to attribute as creator",
-					);
-					continue;
-				}
-				const created = await createEntityWithIdentities(sql, {
-					orgId: params.orgId,
-					connectorKey: params.connectorKey,
-					connectionId: params.connectionId,
-					entityType: rule.entityType,
-					title: link.title,
-					identities: link.identities,
-					traits: link.traits,
-					creatorUserId,
-				});
-				if (created !== null && created.attached.length > 0) {
-					entityId = created.entityId;
-					attached = created.attached;
-					isCreate = true;
-				} else if (created !== null) {
-					// Concurrent auto-create lost the identity race: every identifier went
-					// to the winner via ON CONFLICT, so the row we just inserted is an
-					// identity-less orphan. Hard-delete it (no events reference a row born
-					// this turn) and re-resolve to the winning entity.
-					await hardDeleteEntityRows({ tx: sql, ids: [created.entityId] });
-					const winner = await lookupMatches(sql, {
-						orgId: params.orgId,
-						identities: [link.identities],
-					});
-					// Re-resolve through the SAME tier rule as the ordinary lookup. A
-					// tier-blind union here mis-resolved when the primary's owner was
-					// soft-deleted (so the primary matched nothing) while a live entity
-					// still held a recycled secondary claim: the union saw exactly one
-					// hit and adopted the recycled-claim holder. `member_of` is a read
-					// ACL, so that granted one person another person's channel access.
-					// Unmatched-primary and ambiguous both leave entityId null → skip,
-					// which fails closed (no edge) rather than guessing an owner.
-					const winnerTier = resolveIdentityTier(link.identities, winner);
-					if (typeof winnerTier === "number") {
-						entityId = winnerTier;
-						for (const id of link.identities) {
-							if (winner.get(identityKey(id)) === entityId) {
-								attached.push({
-									namespace: id.namespace,
-									identifier: id.identifier,
-									scopeKey: id.scopeKey ?? null,
-								});
-							}
-						}
-					}
-				}
-			}
+      // Identities that ACTUALLY attached to the resolved/created entity. We
+      // only ever claim THESE in the in-memory matches map below — an identifier
+      // that ON CONFLICT-skipped because another entity already owns it stays
+      // with that entity, so the map must not mis-claim it for this one.
+      let attached: AttachedIdentity[] = [];
+      if (entityId !== null) {
+        // Matched an existing entity: accrete the non-matchOnly identities; the
+        // identifier(s) we matched on already belong to this entity.
+        const fresh = await insertIdentities(sql, {
+          orgId: params.orgId,
+          entityId,
+          connectorKey: params.connectorKey,
+          connectionId: params.connectionId,
+          identities: link.identities.filter((i) => !i.matchOnly),
+        });
+        attached = [...fresh];
+        // Project the full identity tuple for metric resolution. Passing the
+        // full set (not just `fresh`) repairs a legacy entity whose identities
+        // predate aliases-on-create.
+        await ensureAliases(sql, {
+          orgId: params.orgId,
+          entityId,
+          identities: link.identities
+            .filter((identity) => !identity.matchOnly)
+            .map((identity) => ({
+              namespace: identity.namespace,
+              identifier: identity.identifier,
+              scopeKey: identity.scopeKey ?? null,
+            })),
+        });
+        // The matched identifiers themselves are this entity's even if a
+        // re-insert was a no-op (they were how we found it), so claim them too.
+        for (const id of link.identities) {
+          if (matches.get(identityKey(id)) === entityId) {
+            attached.push({
+              namespace: id.namespace,
+              identifier: id.identifier,
+              scopeKey: id.scopeKey ?? null,
+            });
+          }
+        }
+      } else if (rule.autoCreate && passesCreateWhen(rule.createWhen, item)) {
+        if (!creatorUserId) {
+          logger.warn(
+            { orgId: params.orgId, entityType: rule.entityType },
+            'autoCreate skipped: org has no member to attribute as creator'
+          );
+          continue;
+        }
+        const created = await createEntityWithIdentities(sql, {
+          orgId: params.orgId,
+          connectorKey: params.connectorKey,
+          connectionId: params.connectionId,
+          entityType: rule.entityType,
+          title: link.title,
+          identities: link.identities,
+          traits: link.traits,
+          creatorUserId,
+        });
+        if (created !== null && created.attached.length > 0) {
+          entityId = created.entityId;
+          attached = created.attached;
+          isCreate = true;
+        } else if (created !== null) {
+          // Concurrent auto-create lost the identity race: every identifier went
+          // to the winner via ON CONFLICT, so the row we just inserted is an
+          // identity-less orphan. Hard-delete it (no events reference a row born
+          // this turn) and re-resolve to the winning entity.
+          await hardDeleteEntityRows({ tx: sql, ids: [created.entityId] });
+          const winner = await lookupMatches(sql, {
+            orgId: params.orgId,
+            identities: [link.identities],
+          });
+          // Re-resolve through the SAME tier rule as the ordinary lookup. A
+          // tier-blind union here mis-resolved when the primary's owner was
+          // soft-deleted (so the primary matched nothing) while a live entity
+          // still held a recycled secondary claim: the union saw exactly one
+          // hit and adopted the recycled-claim holder. `member_of` is a read
+          // ACL, so that granted one person another person's channel access.
+          // Unmatched-primary and ambiguous both leave entityId null → skip,
+          // which fails closed (no edge) rather than guessing an owner.
+          const winnerTier = resolveIdentityTier(link.identities, winner);
+          if (typeof winnerTier === 'number') {
+            entityId = winnerTier;
+            for (const id of link.identities) {
+              if (winner.get(identityKey(id)) === entityId) {
+                attached.push({
+                  namespace: id.namespace,
+                  identifier: id.identifier,
+                  scopeKey: id.scopeKey ?? null,
+                });
+              }
+            }
+          }
+        }
+      }
 
-			if (entityId === null) continue;
+      if (entityId === null) continue;
 
-			await applyTraits(sql, {
-				orgId: params.orgId,
-				entityId,
-				rule,
-				traits: link.traits,
-				isCreate,
-			});
+      await applyTraits(sql, {
+        orgId: params.orgId,
+        entityId,
+        rule,
+        traits: link.traits,
+        isCreate,
+      });
 
-			recordResolved(index, entityId);
+      recordResolved(index, entityId);
 
-			// Cache the mapping for the rest of the batch — only for attached
-			// identifiers, so an identifier that stayed on another entity (ON CONFLICT
-			// no-op) keeps its existing owner and isn't mis-claimed. EVERY rule's map
-			// is updated, not just this one: all maps are resolved up front for the
-			// prelock, so a later rule can no longer re-read this create from the DB
-			// and would otherwise miss an entity the batch just minted. Sharing the
-			// claim is exactly what that re-read returned — `lookupMatches` is
-			// type-agnostic and an identity belongs to at most one entity org-wide.
-			for (const id of attached) {
-				const key = identityKey(id);
-				for (const ruleMatches of matchesByRule.values())
-					ruleMatches.set(key, entityId);
-			}
+      // Cache the mapping for the rest of the batch — only for attached
+      // identifiers, so an identifier that stayed on another entity (ON CONFLICT
+      // no-op) keeps its existing owner and isn't mis-claimed. EVERY rule's map
+      // is updated, not just this one: all maps are resolved up front for the
+      // prelock, so a later rule can no longer re-read this create from the DB
+      // and would otherwise miss an entity the batch just minted. Sharing the
+      // claim is exactly what that re-read returned — `lookupMatches` is
+      // type-agnostic and an identity belongs to at most one entity org-wide.
+      for (const id of attached) {
+        const key = identityKey(id);
+        for (const ruleMatches of matchesByRule.values()) ruleMatches.set(key, entityId);
+      }
 
-			// Stamp metadata slots and their scope projections for attached
-			// identifiers only. Read-time recall compares the full
-			// (namespace, identifier, scope key) tuple; metrics compare
-			// (alias, scope key). A stale identifier or tenant key would
-			// mis-attribute an append-only event.
-			//
-			// A namespace slot holds ONE value, but an event can carry multiple
-			// attribution rules that resolve the SAME namespace to DIFFERENT entities
-			// (e.g. an X DM stamps x_user_id for both the `authored_by` sender and the
-			// `about` counterparty). Read-time recall can only match one of them via
-			// this slot, so first-writer-wins: the earliest-declared rule (the primary
-			// author) keeps the slot, and we log the collision so the case that needs a
-			// richer, role-aware read model is observable rather than silently dropped.
-			// Making role queryable at read time is deliberately a separate change (it
-			// touches the shared recall SQL + every call site) — until then this is the
-			// honest boundary, not a workaround.
-			const md = item.metadata ?? {};
-			item.metadata = md;
-			let byNamespace = md[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY] as
-				| Record<string, string>
-				| undefined;
-			if (!byNamespace) {
-				byNamespace = {};
-				md[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY] = byNamespace;
-			}
-			let byAlias = md[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY] as
-				| Record<string, string>
-				| undefined;
-			if (!byAlias) {
-				byAlias = {};
-				md[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY] = byAlias;
-			}
-			for (const id of attached) {
-				const existing = md[id.namespace];
-				const projectedScope = id.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION;
-				const existingScope = byNamespace[id.namespace];
-				if (
-					existing !== undefined &&
-					(existing !== id.identifier ||
-						(existingScope !== undefined && existingScope !== projectedScope))
-				) {
-					logger.warn(
-						{
-							orgId: params.orgId,
-							connectorKey: params.connectorKey,
-							namespace: id.namespace,
-							kept: existing,
-							dropped: id.identifier,
-							keptScope: existingScope,
-							droppedScope: projectedScope,
-							role: rule.role,
-						},
-						"attribution metadata slot collision — a later rule resolved the same namespace to a different identity scope; keeping the first-stamped tuple (read-time recall matches only one)",
-					);
-					continue;
-				}
-				md[id.namespace] = id.identifier;
-				byNamespace[id.namespace] = projectedScope;
+      // Stamp metadata slots and their scope projections for attached
+      // identifiers only. Read-time recall compares the full
+      // (namespace, identifier, scope key) tuple; metrics compare
+      // (alias, scope key). A stale identifier or tenant key would
+      // mis-attribute an append-only event.
+      //
+      // A namespace slot holds ONE value, but an event can carry multiple
+      // attribution rules that resolve the SAME namespace to DIFFERENT entities
+      // (e.g. an X DM stamps x_user_id for both the `authored_by` sender and the
+      // `about` counterparty). Read-time recall can only match one of them via
+      // this slot, so first-writer-wins: the earliest-declared rule (the primary
+      // author) keeps the slot, and we log the collision so the case that needs a
+      // richer, role-aware read model is observable rather than silently dropped.
+      // Making role queryable at read time is deliberately a separate change (it
+      // touches the shared recall SQL + every call site) — until then this is the
+      // honest boundary, not a workaround.
+      const md = item.metadata ?? {};
+      item.metadata = md;
+      let byNamespace = md[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY] as
+        | Record<string, string>
+        | undefined;
+      if (!byNamespace) {
+        byNamespace = {};
+        md[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY] = byNamespace;
+      }
+      let byAlias = md[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY] as
+        | Record<string, string>
+        | undefined;
+      if (!byAlias) {
+        byAlias = {};
+        md[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY] = byAlias;
+      }
+      for (const id of attached) {
+        const existing = md[id.namespace];
+        const projectedScope = id.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION;
+        const existingScope = byNamespace[id.namespace];
+        if (
+          existing !== undefined &&
+          (existing !== id.identifier ||
+            (existingScope !== undefined && existingScope !== projectedScope))
+        ) {
+          logger.warn(
+            {
+              orgId: params.orgId,
+              connectorKey: params.connectorKey,
+              namespace: id.namespace,
+              kept: existing,
+              dropped: id.identifier,
+              keptScope: existingScope,
+              droppedScope: projectedScope,
+              role: rule.role,
+            },
+            'attribution metadata slot collision — a later rule resolved the same namespace to a different identity scope; keeping the first-stamped tuple (read-time recall matches only one)'
+          );
+          continue;
+        }
+        md[id.namespace] = id.identifier;
+        byNamespace[id.namespace] = projectedScope;
 
-				const aliasScope = byAlias[id.identifier];
-				if (aliasScope === undefined) {
-					byAlias[id.identifier] = projectedScope;
-				} else if (aliasScope !== projectedScope) {
-					logger.warn(
-						{
-							orgId: params.orgId,
-							connectorKey: params.connectorKey,
-							identifier: id.identifier,
-							keptScope: aliasScope,
-							droppedScope: projectedScope,
-							role: rule.role,
-						},
-						"metric alias scope collision — keeping the first-stamped tenant scope for this event alias",
-					);
-				}
-			}
-		}
-	}
+        const aliasScope = byAlias[id.identifier];
+        if (aliasScope === undefined) {
+          byAlias[id.identifier] = projectedScope;
+        } else if (aliasScope !== projectedScope) {
+          logger.warn(
+            {
+              orgId: params.orgId,
+              connectorKey: params.connectorKey,
+              identifier: id.identifier,
+              keptScope: aliasScope,
+              droppedScope: projectedScope,
+              role: rule.role,
+            },
+            'metric alias scope collision — keeping the first-stamped tenant scope for this event alias'
+          );
+        }
+      }
+    }
+  }
 
-	return resolvedByItem;
+  return resolvedByItem;
 }
 
 interface SenderIdentityParams {
-	orgId: string;
-	connectorKey: string;
-	mintEntityType: string;
-	identities: ResolvedIdentity[];
-	title?: string | null;
+  orgId: string;
+  connectorKey: string;
+  mintEntityType: string;
+  identities: ResolvedIdentity[];
+  title?: string | null;
 }
 
 /**
@@ -1380,70 +1328,59 @@ interface SenderIdentityParams {
  *      BEFORE calling (an empty `identities` list → null).
  */
 export async function resolveSenderIdentity(
-	sql: DbClient,
-	params: SenderIdentityParams,
+  sql: DbClient,
+  params: SenderIdentityParams
 ): Promise<number | null> {
-	if (params.identities.length === 0) return null;
-	// Every captured message calls this, and the overwhelming majority resolve a
-	// sender that already exists — answer those from a plain read rather than
-	// opening a write transaction per message. Only a miss (which may mint) needs
-	// one, and the in-transaction path re-runs this lookup because a concurrent
-	// mint can land between the two.
-	const existing = firstIdentityHit(
-		params.identities,
-		await lookupMatches(sql, {
-			orgId: params.orgId,
-			identities: [params.identities],
-		}),
-	);
-	if (existing !== null) return existing;
-	return withEntityWriteTransaction(sql, (tx) =>
-		resolveSenderIdentityInTransaction(tx, params),
-	);
+  if (params.identities.length === 0) return null;
+  // Every captured message calls this, and the overwhelming majority resolve a
+  // sender that already exists — answer those from a plain read rather than
+  // opening a write transaction per message. Only a miss (which may mint) needs
+  // one, and the in-transaction path re-runs this lookup because a concurrent
+  // mint can land between the two.
+  const existing = firstIdentityHit(
+    params.identities,
+    await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
+  );
+  if (existing !== null) return existing;
+  return withEntityWriteTransaction(sql, (tx) => resolveSenderIdentityInTransaction(tx, params));
 }
 
 async function resolveSenderIdentityInTransaction(
-	sql: DbClient,
-	params: SenderIdentityParams,
+  sql: DbClient,
+  params: SenderIdentityParams
 ): Promise<number | null> {
-	// 1) Any existing entity owning this identity — $member (signed-in human,
-	// #1646) or person, resolved by one type-agnostic lookup. No create.
-	const hit = firstIdentityHit(
-		params.identities,
-		await lookupMatches(sql, {
-			orgId: params.orgId,
-			identities: [params.identities],
-		}),
-	);
-	if (hit !== null) return hit;
+  // 1) Any existing entity owning this identity — $member (signed-in human,
+  // #1646) or person, resolved by one type-agnostic lookup. No create.
+  const hit = firstIdentityHit(
+    params.identities,
+    await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
+  );
+  if (hit !== null) return hit;
 
-	// 2) Mint. The only remaining gate is a real org member to attribute to.
-	const creatorUserId = await resolveOrgCreator(sql, params.orgId);
-	if (!creatorUserId) return null;
+  // 2) Mint. The only remaining gate is a real org member to attribute to.
+  const creatorUserId = await resolveOrgCreator(sql, params.orgId);
+  if (!creatorUserId) return null;
 
-	const created = await createEntityWithIdentities(sql, {
-		orgId: params.orgId,
-		connectorKey: params.connectorKey,
-		entityType: params.mintEntityType,
-		title: params.title?.trim() || "",
-		identities: params.identities,
-		traits: new Map(),
-		creatorUserId,
-	});
-	if (created !== null && created.attached.length > 0) {
-		return created.entityId;
-	}
-	// Lost the identity create-race (a concurrent ingest minted it first): drop
-	// the identity-less orphan and resolve to the winner instead.
-	if (created !== null) {
-		await hardDeleteEntityRows({ tx: sql, ids: [created.entityId] });
-		return firstIdentityHit(
-			params.identities,
-			await lookupMatches(sql, {
-				orgId: params.orgId,
-				identities: [params.identities],
-			}),
-		);
-	}
-	return null;
+  const created = await createEntityWithIdentities(sql, {
+    orgId: params.orgId,
+    connectorKey: params.connectorKey,
+    entityType: params.mintEntityType,
+    title: params.title?.trim() || '',
+    identities: params.identities,
+    traits: new Map(),
+    creatorUserId,
+  });
+  if (created !== null && created.attached.length > 0) {
+    return created.entityId;
+  }
+  // Lost the identity create-race (a concurrent ingest minted it first): drop
+  // the identity-less orphan and resolve to the winner instead.
+  if (created !== null) {
+    await hardDeleteEntityRows({ tx: sql, ids: [created.entityId] });
+    return firstIdentityHit(
+      params.identities,
+      await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
+    );
+  }
+  return null;
 }

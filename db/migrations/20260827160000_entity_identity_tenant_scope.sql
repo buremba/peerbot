@@ -53,6 +53,7 @@ ALTER TABLE public.entity_identities VALIDATE CONSTRAINT entity_identities_scope
 DO $scope_guard$
 DECLARE
   has_scoped_rows boolean;
+  has_connection_declarations boolean;
 BEGIN
   IF EXISTS (
     SELECT 1
@@ -70,6 +71,34 @@ BEGIN
         MESSAGE = 'entity identity tenant-scope migration refused: scope_connection_id contains non-NULL rows',
         HINT = 'Re-key those identities explicitly before retrying the migration.';
     END IF;
+  END IF;
+
+  -- The clean vocabulary break is only safe while #2846 remains unadopted.
+  -- Check the durable active manifests as well as identity rows: a connector
+  -- can declare connection scope before its first event creates a scoped row.
+  SELECT EXISTS (
+    SELECT 1
+    FROM public.connector_definitions definition
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(definition.feeds_schema, '{}'::jsonb)
+    ) AS feed(feed_key, feed_value)
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(feed.feed_value -> 'eventKinds', '{}'::jsonb)
+    ) AS event_kind(event_kind_key, event_kind_value)
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(event_kind.event_kind_value -> 'attributions', '[]'::jsonb)
+    ) AS attribution(value)
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE(attribution.value -> 'target' -> 'identities', '[]'::jsonb)
+    ) AS identity(value)
+    WHERE definition.status = 'active'
+      AND identity.value ->> 'scope' = 'connection'
+  ) INTO has_connection_declarations;
+
+  IF has_connection_declarations THEN
+    RAISE EXCEPTION USING
+      MESSAGE = 'entity identity tenant-scope migration refused: active connector declarations still use connection scope',
+      HINT = 'Apply organization- or tenant-scoped connector declarations before retrying the migration.';
   END IF;
 END
 $scope_guard$;

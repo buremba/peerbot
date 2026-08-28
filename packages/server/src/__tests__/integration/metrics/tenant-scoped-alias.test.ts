@@ -190,4 +190,89 @@ describe("metric compiler tenant-scoped aliases", () => {
 			],
 		]);
 	});
+
+	it("keeps organization aliases when the metric event field differs from the identity namespace", async () => {
+		const org = await createTestOrganization({ name: "Organization alias metric org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		const owner = await TestApiClient.for({
+			organizationId: org.id,
+			userId: user.id,
+			memberRole: "owner",
+		});
+		await owner.entity_schema.createType({
+			slug: "person",
+			name: "Person",
+			metrics_config: {
+				eventSets: {
+					messages: {
+						by: "alias",
+						field: "metadata->>'sender_jid'",
+					},
+				},
+				measures: {
+					messages: {
+						eventSet: "messages",
+						agg: "count",
+						description: "Messages attributed by the payload sender field.",
+					},
+				},
+			},
+		});
+		await createTestConnectorDefinition({
+			key: "organization-metric-contract",
+			name: "Organization metric connector",
+			organization_id: org.id,
+			feeds_schema: {
+				messages: {
+					eventKinds: {
+						message: {
+							attributions: [
+								{
+									role: "authored_by",
+									autoCreate: true,
+									target: {
+										entityType: "person",
+										titlePath: "metadata.name",
+										identities: [
+											{
+												namespace: "wa_jid",
+												eventPath: "metadata.sender_jid",
+											},
+										],
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		});
+		clearEntityLinkRulesCache();
+
+		const item = {
+			origin_type: "message",
+			metadata: { sender_jid: "15551234567@s.whatsapp.net", name: "Ada" },
+		};
+		await applyEventAttributions({
+			connectorKey: "organization-metric-contract",
+			feedKey: "messages",
+			orgId: org.id,
+			items: [item],
+		});
+		await createTestEvent({
+			organization_id: org.id,
+			content: "Organization alias observation",
+			connector_key: "organization-metric-contract",
+			metadata: item.metadata,
+		});
+
+		const rows = await runMetric({
+			organizationId: org.id,
+			entityType: "person",
+			measure: "messages",
+		});
+		expect(rows).toHaveLength(1);
+		expect(Number(rows[0]?.messages)).toBe(1);
+	});
 });

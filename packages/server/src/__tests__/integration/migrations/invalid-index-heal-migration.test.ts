@@ -444,4 +444,58 @@ describe("INVALID concurrent-index heal in transaction:false migrations", () => 
 			tenant_index_valid: true,
 		});
 	});
+
+	it("refuses the clean vocabulary break while an active connection-scoped declaration remains", async () => {
+		const migrationsDir = resolveMigrationsDir();
+		const file = "20260827160000_entity_identity_tenant_scope.sql";
+		const sql = getDb();
+		const execute = (statement: string) => sql.unsafe(statement);
+
+		await executeMigrationSection(
+			execute,
+			loadMigrationDown(migrationsDir, file),
+		);
+		const org = await createTestOrganization({
+			name: "Connection declaration migration guard org",
+		});
+		await createTestConnectorDefinition({
+			key: "connection-scope-upgrade-probe",
+			name: "Connection scope upgrade probe",
+			organization_id: org.id,
+			feeds_schema: {
+				customers: {
+					eventKinds: {
+						customer: {
+							attributions: [
+								{
+									role: "about",
+									target: {
+										entityType: "person",
+										identities: [
+											{
+												namespace: "erp_customer",
+												eventPath: "metadata.customer_id",
+												scope: "connection",
+											},
+										],
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		});
+
+		const up = loadMigrationUp(migrationsDir, file);
+		await expect(executeMigrationSection(execute, up)).rejects.toThrow(
+			/active connector declarations still use connection scope/i,
+		);
+		await sql`
+			DELETE FROM connector_definitions
+			WHERE organization_id = ${org.id}
+			  AND key = 'connection-scope-upgrade-probe'
+		`;
+		await executeMigrationSection(execute, up);
+	});
 });

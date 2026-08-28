@@ -666,6 +666,8 @@ export interface EntityIdentitySpec {
    *
    * NOT the same concept as `scope` on the auth schema, which scopes a
    * credential and retains its separate `connection | organization` values.
+   * The preview-only identity value `connection` was never adopted and is
+   * intentionally rejected: a Lobu connection row is not an upstream tenant.
    */
   scope?: 'organization' | 'tenant';
   /**

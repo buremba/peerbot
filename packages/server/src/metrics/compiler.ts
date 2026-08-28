@@ -142,11 +142,6 @@ export function compileMetricSql(input: CompileMetricInput): string {
               NULL::text AS namespace, NULL::text AS scope_key
        FROM entities ent, jsonb_array_elements_text(ent.metadata->'aliases') AS a(alias)
        WHERE ${entWhere.join(" AND ")}
-         AND NOT EXISTS (
-           SELECT 1
-           FROM jsonb_array_elements(COALESCE(ent.metadata->'${SCOPED_IDENTITY_ALIASES_METADATA_KEY}', '[]'::jsonb)) scoped(value)
-           WHERE scoped.value->>'identifier' = a.alias
-         )
        UNION
        SELECT ent.id AS entity_id,
               scoped.value->>'identifier' AS alias,
@@ -154,7 +149,15 @@ export function compileMetricSql(input: CompileMetricInput): string {
               scoped.value->>'scopeKey' AS scope_key
        FROM entities ent,
             jsonb_array_elements(COALESCE(ent.metadata->'${SCOPED_IDENTITY_ALIASES_METADATA_KEY}', '[]'::jsonb)) scoped(value)
-       WHERE ${entWhere.join(" AND ")}`;
+       WHERE ${entWhere.join(" AND ")}
+         AND (
+           COALESCE(scoped.value->>'scopeKey', '${ORGANIZATION_SCOPE_PROJECTION}') <> '${ORGANIZATION_SCOPE_PROJECTION}'
+           OR NOT EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements_text(COALESCE(ent.metadata->'aliases', '[]'::jsonb)) flat(alias)
+             WHERE flat.alias = scoped.value->>'identifier'
+           )
+         )`;
 
   // ── Resolved + deduped relation. DISTINCT over the dedupe tuple ∪ entity ∪
   //    dims ∪ measure expr so summing over distinct rows is correct (a missing

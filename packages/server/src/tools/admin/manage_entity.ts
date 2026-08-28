@@ -99,6 +99,7 @@ import {
 	assertManualRelationshipClaim,
 	assertManualRelationshipMutationAllowed,
 	assertNoReservedRelationshipMetadata,
+	RELATIONSHIP_CLAIMS_METADATA_KEY,
 	relationshipMetadataWithoutClaims,
 	retractManualRelationshipClaim,
 } from "../../utils/relationship-claims";
@@ -1693,7 +1694,7 @@ const RELATIONSHIP_SELECT = `
   fet.slug as from_entity_type,
   te.name as to_entity_name,
   tet.slug as to_entity_type,
-  NULLIF(r.metadata - '_lobu_claims', '{}'::jsonb) AS metadata,
+  NULLIF(r.metadata - '${RELATIONSHIP_CLAIMS_METADATA_KEY}', '{}'::jsonb) AS metadata,
   r.confidence,
   r.source,
   r.created_by,
@@ -1964,7 +1965,8 @@ async function handleUpdateLink(
 					WHEN ${hasMetadata} THEN
 						COALESCE(${metadataJson}, '{}'::jsonb)
 						|| jsonb_build_object(
-							'_lobu_claims', metadata -> '_lobu_claims'
+							${RELATIONSHIP_CLAIMS_METADATA_KEY}::text,
+							metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}::text
 						)
           ELSE metadata
         END,

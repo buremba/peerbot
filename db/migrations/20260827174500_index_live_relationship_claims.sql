@@ -1,5 +1,4 @@
 -- migrate:up transaction:false
--- lobu:no-quiesce
 
 -- Relationships created before claim ownership existed are user-managed.
 -- Stamp them as manual once so they remain editable after the cutover; all

@@ -167,9 +167,7 @@ describe('connector-declared relationships', () => {
       metadata: {
         _lobu_claims: {
           manual: {},
-          [`feed:${connection.id}:${originId}`]: {
-            rules: ['invoice_customer:invoice->customer'],
-          },
+          [`feed:${connection.id}:${originId}`]: {},
         },
       },
     });

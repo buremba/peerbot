@@ -32,10 +32,6 @@ interface DesiredConnectorRelationship {
   toEntityId: number;
 }
 
-interface ConnectorRelationshipClaim extends Record<string, unknown> {
-  rules: string[];
-}
-
 interface RelationshipTypeRow {
   id: number | string;
   slug: string;
@@ -456,7 +452,6 @@ export async function reconcileConnectorRelationshipClaims(
       toEntityId: number;
       relationshipTypeId: number;
       relationshipTypeSlug: string;
-      rules: Set<string>;
     }
   >();
   for (const desired of params.desired) {
@@ -472,17 +467,12 @@ export async function reconcileConnectorRelationshipClaims(
       ? canonicalizeSymmetricEdge(desired.fromEntityId, desired.toEntityId)
       : { from: desired.fromEntityId, to: desired.toEntityId };
     const key = `${endpoints.from}:${endpoints.to}:${type.id}`;
-    const declarationKey = `${desired.declaration.type}:${desired.declaration.from}->${desired.declaration.to}`;
-    const current = aggregated.get(key);
-    if (current) {
-      current.rules.add(declarationKey);
-    } else {
+    if (!aggregated.has(key)) {
       aggregated.set(key, {
         fromEntityId: endpoints.from,
         toEntityId: endpoints.to,
         relationshipTypeId: Number(type.id),
         relationshipTypeSlug: type.slug,
-        rules: new Set([declarationKey]),
       });
     }
   }
@@ -490,9 +480,6 @@ export async function reconcileConnectorRelationshipClaims(
   const claimKey = connectorRelationshipClaimKey(params.connectionId, params.originId);
   const keepRelationshipIds = new Set<number>();
   for (const edge of aggregated.values()) {
-    const claim: ConnectorRelationshipClaim = {
-      rules: [...edge.rules].sort(),
-    };
     const asserted = await assertRelationshipClaim(tx, {
       organizationId: params.organizationId,
       fromEntityId: edge.fromEntityId,
@@ -500,7 +487,7 @@ export async function reconcileConnectorRelationshipClaims(
       relationshipTypeId: edge.relationshipTypeId,
       relationshipTypeSlug: edge.relationshipTypeSlug,
       claimKey,
-      claim,
+      claim: {},
       source: 'feed',
     });
     keepRelationshipIds.add(asserted.id);

@@ -560,6 +560,28 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(changes.every((c) => c.kind === 'denied')).toBe(true);
     expect(changes.every((c) => c.denied?.source === 'policy')).toBe(true);
     expect(changes.every((c) => (c.denied?.reason ?? '').length > 0)).toBe(true);
+
+    const audits = await sql`
+      SELECT metadata, payload_type
+      FROM events
+      WHERE organization_id = ${workspace.org.id}
+        AND run_id = ${runId}
+        AND semantic_type = 'change'
+        AND metadata->>'category' = 'entity_write_denial'
+      ORDER BY id
+    `;
+    expect(audits).toHaveLength(2);
+    expect(
+      audits.every(
+        (event) =>
+          event.payload_type === 'empty' &&
+          event.metadata.denial_source === 'policy' &&
+          event.metadata.operation === 'create' &&
+          event.metadata.automation_id === automationId
+      )
+    ).toBe(true);
+    expect(JSON.stringify(audits)).not.toContain('App Crashes');
+    expect(JSON.stringify(audits)).not.toContain('Slow Loading');
   });
 
   it("a create=approval policy on the OWNING AGENT cards the create instead of refusing it", async () => {
@@ -1907,6 +1929,27 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         source: 'rule',
         reason: 'this topic is frozen for the quarter',
       });
+
+      const [audit] = await ctx.sql`
+        SELECT to_jsonb(entity_ids) AS entity_ids, metadata, payload_type
+        FROM events
+        WHERE organization_id = ${ctx.workspace.org.id}
+          AND run_id = ${denied.runId}
+          AND semantic_type = 'change'
+          AND metadata->>'category' = 'entity_write_denial'
+      `;
+      expect(audit).toBeDefined();
+      expect(audit.payload_type).toBe('empty');
+      expect(audit.metadata).toMatchObject({
+        denial_source: 'rule',
+        operation: 'update',
+        reason: 'this topic is frozen for the quarter',
+        denied_fields: ['summary'],
+        automation_id: ctx.automationId,
+        run_id: denied.runId,
+      });
+      expect(audit.entity_ids).toHaveLength(1);
+      expect(JSON.stringify(audit)).not.toContain('second');
     });
 
     it('cards with NO grant when the rule escalates the residual but allows the whole write', async () => {

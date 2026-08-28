@@ -12,6 +12,7 @@ import {
 	resolveWritePolicyDecision,
 	automationIdFromPrincipalId,
 } from "../../../../authz/entity-policy";
+import { EntityRowValidationError } from "../../../../authz/entity-row-validation";
 import { lockOrgForAclInvalidation } from "../../../../authz/acl-generation";
 import { type DbClient, getDb, parsePgNumberArray, pgTextArray } from "../../../../db/client";
 import { lockResolutionCandidate, wasResolutionRejected } from "../../../../entity-resolution/rejection";
@@ -22,6 +23,7 @@ import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
 import { validateOperationInput } from "../../../../operations/input-validation";
 import { insertEvent } from "../../../../utils/insert-event";
+import { recordEntityWriteDenial } from "../../../../utils/entity-write-denial-audit";
 import logger from "../../../../utils/logger";
 import { isAdminOrOwnerRole } from "../../../access-control";
 import type { ToolContext } from "../../../registry";
@@ -1117,6 +1119,11 @@ async function tryApproveEntityChangeRun(
 		error: unknown,
 	): Promise<ManageOperationsResult> => {
 		const errorMessage = error instanceof Error ? error.message : String(error);
+		const denial =
+			error instanceof EntityRowValidationError &&
+			error.verdict.outcome === "deny"
+				? error.verdict
+				: null;
 		// Apply failures here are often transient/situational (entity gained
 		// children before a non-force delete, schema changed, etc.). Put the run
 		// BACK to pending instead of burning the proposal on one errant click —
@@ -1135,6 +1142,28 @@ async function tryApproveEntityChangeRun(
 				RETURNING id
 			`;
 			if (resetRows.length > 0) {
+				if (denial) {
+					const attemptId =
+						`approval:run:${args.run_id}:${denial.operation}:` +
+						`${denial.entityId ?? "new"}`;
+					await recordEntityWriteDenial({
+						organizationId: ctx.organizationId,
+						attemptId,
+						denialSource: "rule",
+						operation: denial.operation,
+						reason: denial.reason,
+						deniedFields: denial.fields,
+						entityId: denial.entityId,
+						entityType: denial.entityType,
+						entityOrganizationId: denial.entityOrganizationId,
+						actor: { kind: "user", id: ctx.userId },
+						automationId: pendingProposal.automation_id ?? null,
+						runId: args.run_id,
+						createdBy: ctx.userId,
+						clientId: null,
+						sql: tx,
+					});
+				}
 				const eventId = await supersedeActionEvent(
 					args.run_id,
 					ctx.organizationId,

@@ -69,9 +69,18 @@ export default (row) => {
 };
 `;
 
+const DENY_ON_SIZE_RULE = `
+export default (row) => {
+  if (row.op === "update" && row.next.amount > 50000) {
+    row.deny("invoice amount is now blocked");
+  }
+};
+`;
+
 const TEST_ENV = {} as Env;
 let escalateOnSizeCompiled: string;
 let escalateOnDeleteCompiled: string;
+let denyOnSizeCompiled: string;
 
 function ctxFor(
 	organizationId: string,
@@ -161,9 +170,14 @@ async function persistedProposal(organizationId: string): Promise<{
 describe("an escalated card applies atomically or not at all", () => {
 	beforeAll(async () => {
 		await initWorkspaceProvider();
-		[escalateOnSizeCompiled, escalateOnDeleteCompiled] = await Promise.all([
+		[
+			escalateOnSizeCompiled,
+			escalateOnDeleteCompiled,
+			denyOnSizeCompiled,
+		] = await Promise.all([
 			compileEntityRule(ESCALATE_ON_SIZE_RULE),
 			compileEntityRule(ESCALATE_ON_DELETE_RULE),
+			compileEntityRule(DENY_ON_SIZE_RULE),
 		]);
 	}, 60_000);
 
@@ -310,6 +324,67 @@ describe("an escalated card applies atomically or not at all", () => {
 		// check past escalated cards would strand this card instead.
 		expect(after.vendor).toBe("HUMAN");
 		expect(after.notes).toBe("n1");
+	}, 60_000);
+
+	it("durably audits a rule denial that appears when an approval is applied", async () => {
+		const sql = getTestDb();
+		const { org, user, agent, invoice } = await seed();
+		const agentCtx = ctxFor(org.id, { agentId: agent.agentId });
+		const result = await updateEntity(
+			invoice.id,
+			{ metadata: { amount: 90000 } },
+			TEST_ENV,
+			agentCtx,
+		);
+		await result.deferred?.queue(agentCtx, TEST_ENV);
+		const [queued] = await sql<{ id: number }[]>`
+			SELECT id FROM runs
+			WHERE organization_id = ${org.id}
+			ORDER BY id DESC LIMIT 1
+		`;
+
+		// The rule changed after the card was issued. Approval must still fail
+		// closed, and the denial must survive the apply transaction's rollback.
+		await sql`
+			UPDATE entity_types SET rules_compiled = ${denyOnSizeCompiled}
+			WHERE organization_id = ${org.id} AND slug = 'invoice'
+		`;
+		const humanCtx = ctxFor(org.id, { userId: user.id });
+		for (let delivery = 0; delivery < 2; delivery += 1) {
+			const approval = await manageOperations(
+				{ action: "approve", run_id: queued.id },
+				TEST_ENV,
+				humanCtx,
+			);
+			expect(approval).toMatchObject({
+				error: expect.stringContaining("invoice amount is now blocked"),
+			});
+		}
+
+		expect((await readMetadata(invoice.id)).amount).toBe(1000);
+		const audits = await sql`
+			SELECT to_jsonb(entity_ids) AS entity_ids, metadata, payload_type
+			FROM events
+			WHERE organization_id = ${org.id}
+			  AND run_id = ${queued.id}
+			  AND semantic_type = 'change'
+			  AND metadata->>'category' = 'entity_write_denial'
+		`;
+		expect(audits).toHaveLength(1);
+		expect(audits[0].entity_ids).toEqual([invoice.id]);
+		expect(audits[0].payload_type).toBe("empty");
+		expect(audits[0].metadata).toMatchObject({
+			denial_source: "rule",
+			operation: "update",
+			reason: "invoice amount is now blocked",
+			denied_fields: ["amount"],
+			entity_id: invoice.id,
+			entity_type: "invoice",
+			principal_kind: "user",
+			principal_id: user.id,
+			run_id: queued.id,
+		});
+		expect(JSON.stringify(audits)).not.toContain("90000");
 	}, 60_000);
 });
 

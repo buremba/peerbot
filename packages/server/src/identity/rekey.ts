@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { validateEntityRowPatch } from '../authz/entity-row-validation';
 import { type DbClient, getDb, pgBigintArray, pgTextArray } from '../db/client';
 import {
+  parseScopedIdentityAliasProjections,
   SCOPED_IDENTITY_ALIASES_METADATA_KEY,
   scopedIdentityAliasProjectionKey,
   type ScopedIdentityAliasProjection,
@@ -10,7 +11,11 @@ import { patchEntityRows } from '../utils/entity-management';
 
 export class IdentityRekeyError extends Error {}
 
-class IdentityRekeyLockRetry extends Error {}
+class IdentityRekeyLockRetry extends Error {
+  constructor(message: string, readonly entityIds: number[] = []) {
+    super(message);
+  }
+}
 
 const MAX_LOCK_ORDER_RETRIES = 3;
 
@@ -22,6 +27,15 @@ type RekeyTarget = {
 
 type LiveIdentity = {
   id: string;
+  identifier: string;
+  scope_key: string | null;
+  scope_key_history: string[];
+};
+
+type IdentityProjectionRow = {
+  id: string;
+  entity_id: number | string;
+  namespace: string;
   identifier: string;
   scope_key: string | null;
   scope_key_history: string[];
@@ -249,7 +263,11 @@ async function refreshMetricIdentityAliases(params: {
   db: DbClient;
   organizationId: string;
   entityIds: number[];
-}): Promise<void> {
+  /** Proposed live keys to project before the authoritative rows are rewritten. */
+  scopeKeyOverrides?: Map<string, string | null>;
+}): Promise<{ entityIds: number[]; identities: IdentityProjectionRow[] }> {
+  const refreshedEntityIds: number[] = [];
+  const projectedSnapshot: IdentityProjectionRow[] = [];
   for (const entityId of [...params.entityIds].sort((left, right) => left - right)) {
     const entityRows = await params.db<{ metadata: Record<string, unknown> | null }>`
       SELECT metadata
@@ -260,13 +278,9 @@ async function refreshMetricIdentityAliases(params: {
       FOR UPDATE
     `;
     if (entityRows.length === 0) continue;
-    const identities = await params.db<{
-      namespace: string;
-      identifier: string;
-      scope_key: string | null;
-      scope_key_history: string[];
-    }>`
-      SELECT namespace, identifier, scope_key,
+    refreshedEntityIds.push(entityId);
+    const identities = await params.db<IdentityProjectionRow>`
+      SELECT id::text AS id, entity_id, namespace, identifier, scope_key,
              to_json(scope_key_history) AS scope_key_history
       FROM entity_identities
       WHERE organization_id = ${params.organizationId}
@@ -274,26 +288,49 @@ async function refreshMetricIdentityAliases(params: {
         AND deleted_at IS NULL
       ORDER BY namespace, identifier, COALESCE(scope_key, '')
     `;
+    projectedSnapshot.push(...identities);
+    const projectedIdentities = identities.map((identity) => {
+      if (!params.scopeKeyOverrides?.has(identity.id)) return identity;
+      const scopeKey = params.scopeKeyOverrides.get(identity.id) ?? null;
+      const previousScope = identity.scope_key ?? '';
+      const history = [...identity.scope_key_history];
+      if ((scopeKey ?? '') !== previousScope && !history.includes(previousScope)) {
+        history.push(previousScope);
+      }
+      return { ...identity, scope_key: scopeKey, scope_key_history: history };
+    });
     const organizationIdentifiers = new Set(
-      identities.filter((identity) => identity.scope_key === null).map((identity) => identity.identifier)
+      projectedIdentities
+        .filter((identity) => identity.scope_key === null)
+        .map((identity) => identity.identifier)
     );
     const tenantIdentifiers = new Set(
-      identities.filter((identity) => identity.scope_key !== null).map((identity) => identity.identifier)
+      projectedIdentities
+        .filter((identity) => identity.scope_key !== null)
+        .map((identity) => identity.identifier)
     );
     const current = entityRows[0]?.metadata ?? {};
     const aliases = Array.isArray(current.aliases)
       ? current.aliases.filter((value): value is string => typeof value === 'string')
       : [];
+    const previouslyProjectedOrganizationIdentifiers = new Set(
+      parseScopedIdentityAliasProjections(current[SCOPED_IDENTITY_ALIASES_METADATA_KEY])
+        .filter((projection) => projection.scopeKey === '')
+        .map((projection) => projection.identifier)
+    );
     const nextAliases = [
       ...new Set([
         ...aliases.filter(
-          (alias) => !tenantIdentifiers.has(alias) || organizationIdentifiers.has(alias)
+          (alias) =>
+            ((!tenantIdentifiers.has(alias) &&
+              !previouslyProjectedOrganizationIdentifiers.has(alias)) ||
+              organizationIdentifiers.has(alias))
         ),
         ...organizationIdentifiers,
       ]),
     ].sort();
     const projectionByKey = new Map<string, ScopedIdentityAliasProjection>();
-    for (const identity of identities) {
+    for (const identity of projectedIdentities) {
       for (const scopeKey of [identity.scope_key ?? '', ...identity.scope_key_history]) {
         const projection = {
           namespace: identity.namespace,
@@ -324,6 +361,43 @@ async function refreshMetricIdentityAliases(params: {
       }),
     });
   }
+  return { entityIds: refreshedEntityIds, identities: projectedSnapshot };
+}
+
+async function loadIdentityProjectionSnapshot(params: {
+  db: DbClient;
+  organizationId: string;
+  entityIds: number[];
+  identityIds: string[];
+}): Promise<IdentityProjectionRow[]> {
+  if (params.entityIds.length === 0 && params.identityIds.length === 0) return [];
+  return params.db<IdentityProjectionRow>`
+    SELECT id::text AS id, entity_id, namespace, identifier, scope_key,
+           to_json(scope_key_history) AS scope_key_history
+    FROM entity_identities
+    WHERE organization_id = ${params.organizationId}
+      AND deleted_at IS NULL
+      AND (
+        entity_id = ANY(${pgBigintArray(params.entityIds)}::bigint[])
+        OR id::text = ANY(${pgTextArray(params.identityIds)}::text[])
+      )
+    ORDER BY id, entity_id
+  `;
+}
+
+function identityProjectionSnapshotKey(rows: IdentityProjectionRow[]): string {
+  return JSON.stringify(
+    rows
+      .map((row) => [
+        row.id,
+        String(row.entity_id),
+        row.namespace,
+        row.identifier,
+        row.scope_key,
+        row.scope_key_history,
+      ])
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+  );
 }
 
 async function loadLiveIdentityEntityIds(params: {
@@ -362,6 +436,7 @@ export async function rekeyEntityIdentities(params: {
     });
   }
 
+  let retryEntityIds: number[] = [];
   for (let attempt = 1; attempt <= MAX_LOCK_ORDER_RETRIES; attempt++) {
     try {
       return await sql.begin(async (tx) => {
@@ -375,13 +450,17 @@ export async function rekeyEntityIdentities(params: {
         // Every ordinary identity path that also touches entity metadata takes
         // entity rows before entity_identities (connector attribution and
         // merge/unmerge included). Match that global order: discover and lock
-        // the current owners first, then take the brief table lock that closes
-        // the insert gap a row-level FOR UPDATE cannot cover.
-        const observedEntityIds = await loadLiveIdentityEntityIds({
+        // the current owners first. Build and persist their proposed metric
+        // projections while only namespace/entity locks are held; these writes
+        // are invisible until commit and roll back with any later revalidation.
+        const namespaceEntityIds = await loadLiveIdentityEntityIds({
           db: tx,
           organizationId: params.organizationId,
           namespace,
         });
+        const observedEntityIds = [
+          ...new Set([...namespaceEntityIds, ...retryEntityIds]),
+        ].sort((left, right) => left - right);
         const lockedEntityIds =
           observedEntityIds.length === 0
             ? []
@@ -393,6 +472,33 @@ export async function rekeyEntityIdentities(params: {
                 ORDER BY id
                 FOR UPDATE
               `;
+
+        const proposedReport = await buildReport({
+          db: tx,
+          organizationId: params.organizationId,
+          namespace,
+          mapping,
+          // Do not take identity tuple locks before the table lock below. A
+          // direct identity writer holds ROW EXCLUSIVE while updating its tuple;
+          // holding that tuple here and then requesting SHARE ROW EXCLUSIVE
+          // creates a row/table lock inversion. The final locked report is the
+          // authoritative validation and rolls these proposed projections back
+          // if the unlocked snapshot changed.
+          forUpdate: false,
+        });
+        const proposedProjection = await refreshMetricIdentityAliases({
+          db: tx,
+          organizationId: params.organizationId,
+          entityIds: observedEntityIds,
+          scopeKeyOverrides: new Map(
+            proposedReport.changes.map((change) => [change.id, change.toScopeKey])
+          ),
+        });
+
+        // Close the phantom-insert gap only for the final stable snapshot and
+        // authoritative row/registry rewrite. PostgreSQL table locks live until
+        // transaction end, so taking this before the per-entity projection work
+        // globally blocked unrelated identity ingestion for the whole refresh.
         await tx`LOCK TABLE entity_identities IN SHARE ROW EXCLUSIVE MODE`;
 
         // An already-running merge can move an identity to an owner that was
@@ -407,10 +513,43 @@ export async function rekeyEntityIdentities(params: {
         const locked = new Set(lockedEntityIds.map((row) => Number(row.id)));
         if (stableEntityIds.some((entityId) => !locked.has(entityId))) {
           throw new IdentityRekeyLockRetry(
-            `Identity namespace '${namespace}' changed owners during lock acquisition.`
+            `Identity namespace '${namespace}' changed owners during lock acquisition.`,
+            stableEntityIds
           );
         }
 
+        // The projection rebuild reads every live identity namespace owned by
+        // the affected entities. A direct writer can move one of those rows
+        // without taking the entity lock, so validate the exact tuples that the
+        // refresh observed as well as any row that moved into a refreshed
+        // entity. On change, retry from the global entity-before-identity order
+        // and include every newly observed owner in the next lock set.
+        const stableProjection = await loadIdentityProjectionSnapshot({
+          db: tx,
+          organizationId: params.organizationId,
+          entityIds: proposedProjection.entityIds,
+          identityIds: proposedProjection.identities.map((identity) => identity.id),
+        });
+        const stableProjectionEntityIds = stableProjection.map((identity) =>
+          Number(identity.entity_id)
+        );
+        const requiredEntityIds = [
+          ...new Set([...stableEntityIds, ...stableProjectionEntityIds]),
+        ];
+        if (
+          requiredEntityIds.some((entityId) => !locked.has(entityId)) ||
+          identityProjectionSnapshotKey(stableProjection) !==
+            identityProjectionSnapshotKey(proposedProjection.identities)
+        ) {
+          throw new IdentityRekeyLockRetry(
+            `Identity projections changed owners during re-key of namespace '${namespace}'.`,
+            [...new Set([...observedEntityIds, ...requiredEntityIds])]
+          );
+        }
+
+        // Re-run full coverage and collision validation after the table lock.
+        // Any identity inserted between the proposed snapshot and this point
+        // makes the mapping incomplete and rolls back the projected metadata.
         const report = await buildReport({
           db: tx,
           organizationId: params.organizationId,
@@ -465,20 +604,6 @@ export async function rekeyEntityIdentities(params: {
           AND identity.id::text = proposed.id
           `;
         }
-        const affectedEntities = await tx<{ entity_id: number | string }>`
-          SELECT DISTINCT entity_id
-          FROM entity_identities
-          WHERE organization_id = ${params.organizationId}
-            AND namespace = ${namespace}
-            AND deleted_at IS NULL
-            AND id::text = ANY(${pgTextArray(ids)}::text[])
-          ORDER BY entity_id
-        `;
-        await refreshMetricIdentityAliases({
-          db: tx,
-          organizationId: params.organizationId,
-          entityIds: affectedEntities.map((row) => Number(row.entity_id)),
-        });
         await tx`
           UPDATE connector_identity_scope_registry
           SET scope = pending_scope,
@@ -496,6 +621,7 @@ export async function rekeyEntityIdentities(params: {
       });
     } catch (error) {
       if (!(error instanceof IdentityRekeyLockRetry)) throw error;
+      retryEntityIds = [...new Set([...retryEntityIds, ...error.entityIds])];
       if (attempt === MAX_LOCK_ORDER_RETRIES) {
         throw new IdentityRekeyError(
           `Identity namespace '${namespace}' kept changing owners during re-key. Retry after concurrent merges finish.`

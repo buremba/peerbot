@@ -371,65 +371,24 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			let pendingTranscriptions: Parameters<
 				typeof triggerAudioTranscriptions
 			>[1] = [];
-
-			// Resolve or create entities declared via eventKinds[kind].attributions
-			// before inserting events. One query per (entityType, matchField) per
-			// batch — cheap compared to the per-event inserts that follow.
-			//
-			// Runs on a dry run too, against `db`: it creates entity rows, and those
-			// roll back with everything else. Running it is what makes the inserts
-			// below realistic — events carry the entity ids it resolves.
-			await applyEventAttributions(
-				{
-					connectorKey: run.connector_key,
-					connectionId: run.connection_id,
-					feedKey: run.feed_key,
-					orgId: run.organization_id,
-					items: batch.items,
-				},
-				db
-			);
-
 			let totalItems = 0;
 			const rejectedItems: Array<{
 				id: string;
 				semantic_type?: string;
 				errors: string[];
 			}> = [];
+			const acceptedItems: typeof batch.items = [];
 
-			// Platform-derived Automation activation: loaded once per batch, shared
-			// by every item. A connector that still attaches `automation_signals`
-			// (legacy) wins for those items. Loading is part of durable delivery:
-			// failure aborts the batch so a retry cannot persist an event without
-			// its matching Automation run.
-			let deriveContext: ConnectorDeriveFeedContext | null = null;
-			if (
-				run.feed_id != null &&
-				run.feed_key &&
-				batch.items.some((item) => (item.automation_signals?.length ?? 0) === 0)
-			) {
-				deriveContext = await loadConnectorDeriveFeedContext(
-					{
-						organizationId: run.organization_id,
-						connectorKey: run.connector_key,
-						feedKey: run.feed_key,
-						feedId: run.feed_id,
-					},
-					db,
-				);
-			}
-
-			for (let item of batch.items) {
-				const sourceOriginId = browserSourceOriginIds.get(item);
-				let publishedArtifactIds: string[] = [];
-				let artifactCommitted = false;
-			try {
+			// Validate the connector-authored payload before attribution adds any
+			// server-owned identity projection keys. Besides making strict
+			// additionalProperties:false schemas compatible with tenant scope, this
+			// keeps a rejected event from creating or accreting an entity that will
+			// never have a corresponding durable event.
+			for (const item of batch.items) {
 				const itemOriginType = item.origin_type ?? null;
 				const itemSemanticType =
 					item.semantic_type ?? itemOriginType ?? "content";
 				const validationType = itemOriginType ?? itemSemanticType;
-
-				// Validate connector-declared type against the feed's eventKinds schema.
 				if (validationType && run.feed_key) {
 					const kindResult = await validateConnectorEventSemanticType(
 						validationType,
@@ -456,6 +415,57 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						continue;
 					}
 				}
+				acceptedItems.push(item);
+			}
+
+			// Resolve or create entities declared via eventKinds[kind].attributions
+			// before inserting events. One query per (entityType, matchField) per
+			// batch — cheap compared to the per-event inserts that follow.
+			//
+			// Runs on a dry run too, against `db`: it creates entity rows, and those
+			// roll back with everything else. Running it is what makes the inserts
+			// below realistic — events carry the entity ids it resolves.
+			await applyEventAttributions(
+				{
+					connectorKey: run.connector_key,
+					connectionId: run.connection_id,
+					feedKey: run.feed_key,
+					orgId: run.organization_id,
+					items: acceptedItems,
+				},
+				db
+			);
+
+			// Platform-derived Automation activation: loaded once per batch, shared
+			// by every item. A connector that still attaches `automation_signals`
+			// (legacy) wins for those items. Loading is part of durable delivery:
+			// failure aborts the batch so a retry cannot persist an event without
+			// its matching Automation run.
+			let deriveContext: ConnectorDeriveFeedContext | null = null;
+			if (
+				run.feed_id != null &&
+				run.feed_key &&
+				acceptedItems.some((item) => (item.automation_signals?.length ?? 0) === 0)
+			) {
+				deriveContext = await loadConnectorDeriveFeedContext(
+					{
+						organizationId: run.organization_id,
+						connectorKey: run.connector_key,
+						feedKey: run.feed_key,
+						feedId: run.feed_id,
+					},
+					db,
+				);
+			}
+
+			for (let item of acceptedItems) {
+				const sourceOriginId = browserSourceOriginIds.get(item);
+				let publishedArtifactIds: string[] = [];
+				let artifactCommitted = false;
+			try {
+				const itemOriginType = item.origin_type ?? null;
+				const itemSemanticType =
+					item.semantic_type ?? itemOriginType ?? "content";
 
 				// Skip events with no content — connectors must provide text
 				if (!item.payload_text && !item.title) {

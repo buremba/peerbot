@@ -31,8 +31,19 @@ import type { Context } from 'hono';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../index';
 import { completeWorkerJob, streamContent } from '../../worker-api';
+import {
+  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+} from '../../identity/scope-projection';
+import { clearEntityLinkRulesCache } from '../../utils/entity-link-upsert';
+import { ensureMemberEntityType } from '../../utils/member-entity-type';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
-import { createTestOrganization } from '../setup/test-fixtures';
+import {
+  addUserToOrganization,
+  createTestConnectorDefinition,
+  createTestOrganization,
+  createTestUser,
+} from '../setup/test-fixtures';
 
 const WORKER_ID = 'worker-dry';
 const FEED_CHECKPOINT = { cursor: 'original-cursor' };
@@ -235,6 +246,87 @@ describe('feed dry run persists nothing', () => {
       SELECT dry_run_preview FROM runs WHERE id = ${runId}
     `) as Array<{ dry_run_preview: unknown }>;
     expect(runRow[0].dry_run_preview).toBeNull();
+  });
+
+  it('validates strict connector metadata before adding identity projections', async () => {
+    const sql = getTestDb();
+    const { orgId, runId } = await seed(false);
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, orgId, 'owner');
+    await ensureMemberEntityType(orgId);
+    await createTestConnectorDefinition({
+      key: 'rss',
+      name: 'Strict attributed feed',
+      organization_id: orgId,
+      feeds_schema: {
+        items: {
+          eventKinds: {
+            message: {
+              metadataSchema: {
+                type: 'object',
+                properties: {
+                  actor_id: { type: 'string' },
+                  tenant_id: { type: 'string' },
+                },
+                required: ['actor_id', 'tenant_id'],
+                additionalProperties: false,
+              },
+              attributions: [
+                {
+                  role: 'authored_by',
+                  autoCreate: true,
+                  target: {
+                    entityType: '$member',
+                    identities: [
+                      {
+                        namespace: 'strict_actor_id',
+                        eventPath: 'metadata.actor_id',
+                        scope: 'tenant',
+                        scopeKeyPath: 'metadata.tenant_id',
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    clearEntityLinkRulesCache();
+    const { ctx, result } = mockWorkerCtx({
+      run_id: runId,
+      worker_id: WORKER_ID,
+      items: [
+        {
+          id: 'strict-attributed-item',
+          title: 'Strict attributed item',
+          payload_text: 'body',
+          payload_type: 'text',
+          origin_type: 'message',
+          metadata: { actor_id: 'actor-1', tenant_id: 'tenant-a' },
+        },
+      ],
+    });
+
+    await streamContent(ctx);
+
+    expect(result().status).toBe(200);
+    expect(result().body).toMatchObject({ total_items: 1 });
+    expect(result().body).not.toHaveProperty('rejected_items');
+    const [event] = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM events
+      WHERE organization_id = ${orgId} AND origin_id = 'strict-attributed-item'
+    `;
+    expect(event?.metadata).toMatchObject({
+      actor_id: 'actor-1',
+      tenant_id: 'tenant-a',
+      strict_actor_id: 'actor-1',
+      [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { strict_actor_id: 'tenant-a' },
+      [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: {
+        strict_actor_id: { 'actor-1': 'tenant-a' },
+      },
+    });
   });
 
   const feedSyncState = (feedId: number) => {

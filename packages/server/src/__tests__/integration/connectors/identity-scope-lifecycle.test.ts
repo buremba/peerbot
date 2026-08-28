@@ -144,7 +144,7 @@ async function seedRows(options?: { duplicateIdentifier?: boolean }) {
     )
     WHERE id IN (${first.id}, ${second.id})
   `;
-  return { org, ids: rows.map((row) => row.id), first, second };
+  return { org, user, ids: rows.map((row) => row.id), first, second };
 }
 
 describe('connector identity scope lifecycle', () => {
@@ -393,6 +393,186 @@ describe('connector identity scope lifecycle', () => {
     await expect(rekey).resolves.toMatchObject({ applied: true });
   });
 
+  it('does not hold the global identity-table lock while refreshing metric projections', async () => {
+    const { org, user, ids, first, second } = await seedRows();
+    const [firstIdentityId, secondIdentityId] = ids;
+    if (!firstIdentityId || !secondIdentityId) throw new Error('Expected two identities');
+    await expect(
+      install(
+        org.id,
+        metadata('2.0.0', { scope: 'tenant', scopeKeyPath: 'metadata.tenant_id' })
+      )
+    ).rejects.toThrow(/live identity rows/i);
+
+    const sql = getTestDb();
+    const otherOrg = await createTestOrganization({ name: 'Unrelated identity writer org' });
+    const otherUser = await createTestUser();
+    await addUserToOrganization(otherUser.id, otherOrg.id, 'owner');
+    await sql`
+      INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+      VALUES (${otherOrg.id}, 'person', 'Person', current_timestamp, current_timestamp)
+    `;
+    const otherEntity = await createTestEntity({
+      name: 'Unrelated person',
+      entity_type: 'person',
+      organization_id: otherOrg.id,
+      created_by: otherUser.id,
+    });
+    const movedOwner = await createTestEntity({
+      name: 'Moved identity owner',
+      entity_type: 'person',
+      organization_id: org.id,
+      created_by: user.id,
+    });
+    await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector
+      ) VALUES (
+        ${org.id}, ${first.id}, 'unrelated_namespace', 'moving-identity', 'test'
+      )
+    `;
+
+    await sql.unsafe('DROP TRIGGER IF EXISTS identity_rekey_metric_refresh_probe ON entities');
+    await sql.unsafe('DROP FUNCTION IF EXISTS identity_rekey_metric_refresh_probe()');
+    await sql.unsafe(`
+      CREATE FUNCTION identity_rekey_metric_refresh_probe() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(hashtext('lobu:test:rekey-refresh'), 1);
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await sql.unsafe(`
+      CREATE TRIGGER identity_rekey_metric_refresh_probe
+      BEFORE UPDATE ON entities
+      FOR EACH ROW EXECUTE FUNCTION identity_rekey_metric_refresh_probe()
+    `);
+
+    let releaseProbe!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseProbe = resolve;
+    });
+    let probeHeld!: () => void;
+    const held = new Promise<void>((resolve) => {
+      probeHeld = resolve;
+    });
+    const blocker = sql.begin(async (tx) => {
+      await tx`
+        SELECT pg_advisory_xact_lock(hashtext('lobu:test:rekey-refresh'), 1)
+      `;
+      probeHeld();
+      await release;
+    });
+    await held;
+
+    const rekey = rekeyEntityIdentities({
+      organizationId: org.id,
+      namespace,
+      mapping: { [firstIdentityId]: 'tenant-a', [secondIdentityId]: 'tenant-b' },
+      apply: true,
+    });
+    try {
+      let refreshWaiting = false;
+      for (let attempt = 0; attempt < 200 && !refreshWaiting; attempt++) {
+        const [row] = await sql<{ waiting: boolean }[]>`
+          SELECT EXISTS (
+            SELECT 1 FROM pg_locks
+            WHERE locktype = 'advisory' AND granted = false
+          ) AS waiting
+        `;
+        refreshWaiting = row?.waiting === true;
+        if (!refreshWaiting) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(refreshWaiting).toBe(true);
+
+      // The target re-key is paused inside its per-entity metadata refresh.
+      // An unrelated organization must still be able to take ROW EXCLUSIVE and
+      // insert an identity. The old ordering held SHARE ROW EXCLUSIVE already
+      // and this statement timed out.
+      await expect(
+        sql.begin(async (tx) => {
+          await tx.unsafe(`SET LOCAL statement_timeout = '750ms'`);
+          await tx`
+            INSERT INTO entity_identities (
+              organization_id, entity_id, namespace, identifier, source_connector
+            ) VALUES (
+              ${otherOrg.id}, ${otherEntity.id}, 'unrelated_namespace',
+              'unrelated-identity', 'test'
+            )
+          `;
+        })
+      ).resolves.toBeUndefined();
+
+      // A direct identity writer (for example Slack sign-in adoption) takes a
+      // ROW EXCLUSIVE table lock and then its tuple without first locking the
+      // entity. The proposed re-key snapshot must not retain that tuple lock
+      // while projection refresh is paused, or the later re-key table lock and
+      // this writer form a PostgreSQL deadlock cycle.
+      await expect(
+        sql.begin(async (tx) => {
+          await tx.unsafe(`SET LOCAL statement_timeout = '750ms'`);
+          await tx`
+            UPDATE entity_identities
+            SET source_connector = 'test:direct-writer'
+            WHERE id = ${firstIdentityId}::bigint
+          `;
+          await tx`
+            UPDATE entity_identities
+            SET entity_id = ${movedOwner.id}, source_connector = 'test:direct-writer'
+            WHERE organization_id = ${org.id}
+              AND namespace = 'unrelated_namespace'
+              AND identifier = 'moving-identity'
+              AND deleted_at IS NULL
+          `;
+        })
+      ).resolves.toBeUndefined();
+    } finally {
+      releaseProbe();
+      await blocker;
+      await Promise.allSettled([rekey]);
+      await sql.unsafe('DROP TRIGGER IF EXISTS identity_rekey_metric_refresh_probe ON entities');
+      await sql.unsafe('DROP FUNCTION IF EXISTS identity_rekey_metric_refresh_probe()');
+    }
+    await expect(rekey).resolves.toMatchObject({ applied: true });
+    const projected = await sql<{
+      id: number | string;
+      metadata: {
+        aliases?: string[];
+        [SCOPED_IDENTITY_ALIASES_METADATA_KEY]?: Array<{
+          namespace: string;
+          identifier: string;
+          scopeKey: string;
+        }>;
+      };
+    }[]>`
+      SELECT id, metadata FROM entities
+      WHERE id IN (${first.id}, ${second.id}, ${movedOwner.id})
+      ORDER BY id
+    `;
+    const firstProjection = projected.find((row) => Number(row.id) === first.id)?.metadata;
+    const secondProjection = projected.find((row) => Number(row.id) === second.id)?.metadata;
+    const movedProjection = projected.find(
+      (row) => Number(row.id) === movedOwner.id
+    )?.metadata;
+    expect(firstProjection?.aliases).toEqual([]);
+    expect(
+      firstProjection?.[SCOPED_IDENTITY_ALIASES_METADATA_KEY]?.map(
+        (projection) => projection.identifier
+      ).sort()
+    ).toEqual(['1001', '1001']);
+    expect(secondProjection?.aliases).toEqual([]);
+    expect(
+      secondProjection?.[SCOPED_IDENTITY_ALIASES_METADATA_KEY]?.map(
+        (projection) => projection.identifier
+      ).sort()
+    ).toEqual(['1002', '1002']);
+    expect(movedProjection?.aliases).toEqual(['moving-identity']);
+    expect(movedProjection?.[SCOPED_IDENTITY_ALIASES_METADATA_KEY]).toEqual([
+      { namespace: 'unrelated_namespace', identifier: 'moving-identity', scopeKey: '' },
+    ]);
+  });
+
   it('blocks a live shape change, re-keys atomically, and lets the next apply succeed', async () => {
     const { org, ids, first } = await seedRows();
     const sql = getTestDb();
@@ -591,7 +771,10 @@ describe('connector identity scope lifecycle', () => {
     expect(blockedRows[0]?.count).toBe(0);
 
     await expect(install(org.id, next)).resolves.toBeDefined();
-    clearEntityLinkRulesCache();
+    // Do not clear the local attribution cache. The failed activation-gap
+    // attempt above deliberately cached the old organization-scoped rule; the
+    // active definition revision must make every replica load the newly
+    // activated tenant rule immediately instead of waiting for the TTL.
     await expect(
       applyEventAttributions({
         connectorKey,

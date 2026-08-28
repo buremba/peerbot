@@ -46,6 +46,7 @@ import {
 } from '../authz/entity-policy';
 import type { DbClient } from '../db/client';
 import { insertOrganizationScopedIdentity } from '../identity/claims';
+import { stripIdentityScopeProjectionMetadata } from '../identity/scope-projection';
 import type { EntityOutput } from '../types/automations';
 import type { AppliedChange, BlockedChange } from './entity-field-merge';
 import { recordEntityWriteDenial } from './entity-write-denial-audit';
@@ -744,7 +745,10 @@ export async function promoteAutomationEntityOutput(
     // The extracted record's data fields (everything except the computed stable
     // key) are the entity's field values — synced into metadata on create and,
     // for existing entities, merged honoring human ownership.
-    const fieldValues = { ...entityRecord };
+    // Automation output is agent-authored. Identity scope projections are a
+    // server-owned authorization/metric protocol and must never be proposed to
+    // policy, deferred for approval, or persisted by either create or update.
+    const fieldValues = stripIdentityScopeProjectionMetadata({ ...entityRecord }) ?? {};
     // `source_event_id` is an agent-authored provenance claim. Keep it only when
     // it names content this window actually read — same rule the classifier
     // applies to citations. An unverifiable id is worse than none: it reads like

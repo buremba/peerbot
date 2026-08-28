@@ -682,7 +682,12 @@ export async function mergeEntityFields(params: {
 	 */
 	approvedFields?: readonly string[];
 }): Promise<FieldMergeResult> {
-	const { tx, entityId, fields, source, actorId } = params;
+	const { tx, entityId, source, actorId } = params;
+	// This seam is used by Automation promotion and approval replay. Both carry
+	// tenant-authored metadata, so neither may overwrite the server-owned
+	// identity projections that metric/recall joins trust. Preserve projections
+	// already on the entity; only discard forged values from the proposed patch.
+	const fields = stripIdentityScopeProjectionMetadata(params.fields) ?? {};
 	const rows = await tx<{ metadata: unknown; field_controls: unknown }>`
     SELECT metadata, field_controls FROM entities
     WHERE id = ${entityId} AND deleted_at IS NULL

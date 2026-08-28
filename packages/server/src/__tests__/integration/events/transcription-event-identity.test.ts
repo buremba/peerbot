@@ -8,6 +8,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as lobuGateway from '../../../lobu/gateway';
+import {
+  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  SCOPED_IDENTITY_ALIASES_METADATA_KEY,
+} from '../../../identity/scope-projection';
 import { transcribeOne } from '../../../utils/inline-attachments';
 import { insertEvent } from '../../../utils/insert-event';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -172,6 +177,56 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
         connection_id: Number(secondConnection.id),
       }),
     ]);
+  });
+
+  it('preserves trusted identity scope projections on the transcript successor', async () => {
+    const org = await createTestOrganization();
+    const connection = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'whatsapp.local',
+    });
+    const connectionId = Number(connection.id);
+    const projections = {
+      visible: 'kept',
+      wa_jid: 'actor-1',
+      [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { wa_jid: 'tenant-a' },
+      [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { wa_jid: { 'actor-1': 'tenant-a' } },
+      [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
+        { namespace: 'wa_jid', identifier: 'actor-1', scopeKey: 'tenant-a' },
+      ],
+    };
+    const base = await insertEvent(
+      {
+        entityIds: [],
+        organizationId: org.id,
+        originId: ORIGIN_ID,
+        title: 'Tenant voice note',
+        content: '[voice note]',
+        semanticType: 'message',
+        connectorKey: 'whatsapp.local',
+        connectionId,
+        metadata: projections,
+      },
+      { trustedIdentityScopeProjections: true }
+    );
+
+    await transcribeOne(
+      transcriptionJob(Number(base.id), connectionId),
+      org.id,
+      'test-agent'
+    );
+
+    const [head] = await getTestDb()<{
+      metadata: Record<string, unknown>;
+    }[]>`
+      SELECT metadata
+      FROM events
+      WHERE organization_id = ${org.id}
+        AND connection_id = ${connectionId}
+        AND origin_id = ${ORIGIN_ID}
+        AND superseded_by IS NULL
+    `;
+    expect(head?.metadata).toEqual({ ...projections, transcript_provider: 'test-stt' });
   });
 
   it('keeps transcription and resync in one same-origin lineage', async () => {

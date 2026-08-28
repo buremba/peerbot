@@ -25,6 +25,11 @@ import { executeTool } from '../../../tools/execute';
 import { createAutomationRun } from '../../../runs/queue-service';
 import { computePendingWindow } from '../../../utils/window-utils';
 import { compileEntityRule } from '../../../authz/entity-rule-executor';
+import {
+  IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY,
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  SCOPED_IDENTITY_ALIASES_METADATA_KEY,
+} from '../../../identity/scope-projection';
 import { promoteAutomationEntityOutput } from '../../../utils/promote-keyed-entities';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity, createTestEvent } from '../../setup/test-fixtures';
@@ -498,6 +503,74 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       ]
     ).toBeNull();
     expect(Object.keys(byIdentifier)).toHaveLength(4);
+  });
+
+  it('strips forged identity projections on create and update without erasing trusted values', async () => {
+    const ctx = await setupKeyedAutomation();
+    const forgedCreate = {
+      [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { email: 'forged-tenant' },
+      [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { email: { victim: 'forged-tenant' } },
+      [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
+        { namespace: 'email', identifier: 'victim', scopeKey: 'forged-tenant' },
+      ],
+    };
+    const firstRunId = await queueRunningRun(ctx);
+    await completeWithToken(ctx, await readWindowToken(ctx), firstRunId, {
+      problems: [
+        {
+          category: 'Stability',
+          name: 'App Crashes',
+          severity: 'low',
+          ...forgedCreate,
+        },
+      ],
+    });
+
+    const [created] = await ctx.sql<{ id: number | string; metadata: Record<string, unknown> }>`
+      SELECT e.id, e.metadata
+      FROM entities e
+      JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.organization_id = ${ctx.workspace.org.id}
+        AND ei.namespace = 'automation_key'
+        AND ei.identifier = ${topicIdentity(ctx.automationId, APP_CRASHES_KEY)}
+    `;
+    expect(created.metadata.severity).toBe('low');
+    for (const key of Object.keys(forgedCreate)) {
+      expect(Object.hasOwn(created.metadata, key)).toBe(false);
+    }
+
+    const trustedProjections = {
+      [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: { email: 'trusted-tenant' },
+      [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: { email: { owner: 'trusted-tenant' } },
+      [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: [
+        { namespace: 'email', identifier: 'owner', scopeKey: 'trusted-tenant' },
+      ],
+    };
+    await ctx.sql`
+      UPDATE entities
+      SET metadata = metadata || ${ctx.sql.json(trustedProjections)}
+      WHERE id = ${Number(created.id)}
+    `;
+
+    const second = await nextCompletion(ctx);
+    await completeWithToken(ctx, second.token, second.runId, {
+      problems: [
+        {
+          category: 'Stability',
+          name: 'App Crashes',
+          severity: 'high',
+          [IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]: 'corrupt',
+          [IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]: 'corrupt',
+          [SCOPED_IDENTITY_ALIASES_METADATA_KEY]: 'corrupt',
+        },
+      ],
+    });
+
+    const [updated] = await ctx.sql<{ metadata: Record<string, unknown> }>`
+      SELECT metadata FROM entities WHERE id = ${Number(created.id)}
+    `;
+    expect(updated.metadata.severity).toBe('high');
+    expect(updated.metadata).toMatchObject(trustedProjections);
   });
 
   it("a create=deny policy on the automation's OWNING AGENT blocks its promotions", async () => {

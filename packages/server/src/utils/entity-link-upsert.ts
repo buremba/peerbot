@@ -74,6 +74,35 @@ interface RuleMap {
   [kind: string]: ResolvedEventAttributionRule[];
 }
 
+type CachedRuleMap = {
+  revision: string;
+  rules: RuleMap;
+};
+
+function ownValue<T>(record: Record<string, unknown>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? (record[key] as T) : undefined;
+}
+
+function ownRecord(
+  record: Record<string, unknown>,
+  key: string
+): Record<string, unknown> | undefined {
+  const value = ownValue<unknown>(record, key);
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Define hostile-but-valid identity keys such as `__proto__` as data. */
+function setOwn(record: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
 function assertNoReservedProjectionTraitKeys(keys: Iterable<string>): void {
   for (const key of keys) {
     if (isIdentityScopeProjectionMetadataKey(key)) {
@@ -136,8 +165,23 @@ function resolveEventAttributions(
 
 const RULES_CACHE_TTL_MS = 60_000;
 // Per-pod caches — no cross-replica sharing.
-const rulesCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
+const rulesCache = new TtlCache<CachedRuleMap>(RULES_CACHE_TTL_MS);
 const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
+
+function rulesForRevision(
+  cacheKey: string,
+  revision: string,
+  build: () => RuleMap
+): RuleMap {
+  const cached = rulesCache.get(cacheKey);
+  if (cached?.revision === revision) return cached.rules;
+  const rules = build();
+  // The logical lookup key is stable across connector revisions. Replacing its
+  // value makes activation visible immediately without retaining one cache
+  // entry for every historical connector_definitions.updated_at value.
+  rulesCache.set(cacheKey, { revision, rules });
+  return rules;
+}
 
 /**
  * Takes the caller's handle rather than reaching for `getDb()`, because both
@@ -179,17 +223,26 @@ async function loadEventAttributionRules(
     orgId: string;
   }
 ): Promise<RuleMap> {
-  const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
-  return rulesCache.getOrSet(cacheKey, async () => {
-    const rows = await sql`
-      SELECT feeds_schema
+  // Always read the active definition revision. The parsed rules stay cached,
+  // but a changed revision replaces the stable logical cache entry, so a
+  // pod that cached the pre-rekey shape cannot reject or mis-key events for the
+  // remainder of the TTL. This is intentionally DB-authoritative per batch;
+  // local cache invalidation alone cannot cover other replicas.
+  const rows = await sql<{
+    id: string;
+    updated_at: string;
+    feeds_schema: Record<string, unknown> | null;
+  }>`
+      SELECT id::text AS id, updated_at::text AS updated_at, feeds_schema
       FROM connector_definitions
       WHERE key = ${params.connectorKey}
         AND organization_id = ${params.orgId}
         AND status = 'active'
       LIMIT 1
-    `;
-
+  `;
+  const revision = rows[0] ? `${rows[0].id}:${rows[0].updated_at}` : 'missing';
+  const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
+  return rulesForRevision(cacheKey, revision, () => {
     const result: RuleMap = {};
     const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
     const feedDef = feedsSchema?.[params.feedKey];
@@ -226,16 +279,21 @@ export async function loadAttributionRuleByType(
   }
 ): Promise<ResolvedEventAttributionRule | null> {
   const roleKey = params.role ?? '__any__';
+  const rows = await sql<{
+    id: string;
+    updated_at: string;
+    feeds_schema: Record<string, unknown> | null;
+  }>`
+    SELECT id::text AS id, updated_at::text AS updated_at, feeds_schema
+    FROM connector_definitions
+    WHERE key = ${params.connectorKey}
+      AND organization_id = ${params.orgId}
+      AND status = 'active'
+    LIMIT 1
+  `;
+  const revision = rows[0] ? `${rows[0].id}:${rows[0].updated_at}` : 'missing';
   const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}:${roleKey}`;
-  const map = await rulesCache.getOrSet(cacheKey, async () => {
-    const rows = await sql`
-      SELECT feeds_schema
-      FROM connector_definitions
-      WHERE key = ${params.connectorKey}
-        AND organization_id = ${params.orgId}
-        AND status = 'active'
-      LIMIT 1
-    `;
+  const map = rulesForRevision(cacheKey, revision, () => {
     const result: RuleMap = {};
     const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
     if (feedsSchema) {
@@ -340,6 +398,15 @@ type AttachedIdentity = {
   identifier: string;
   scopeKey: string | null;
 };
+
+function appendIdentityIfMissing(
+  identities: AttachedIdentity[],
+  identity: AttachedIdentity
+): void {
+  if (!identities.some((candidate) => identityKey(candidate) === identityKey(identity))) {
+    identities.push(identity);
+  }
+}
 
 type ExtractedLink = {
   identities: ResolvedIdentity[];
@@ -1157,6 +1224,10 @@ async function resolveLinksByKind(
       // that ON CONFLICT-skipped because another entity already owns it stays
       // with that entity, so the map must not mis-claim it for this one.
       let attached: AttachedIdentity[] = [];
+      // matchOnly tuples may prove which entity owns this event without being
+      // persisted as an entity identity or alias. Keep that recall surface
+      // separate from the durable attachment set.
+      const eventOnlyIdentities: AttachedIdentity[] = [];
       if (entityId !== null) {
         // Matched an existing entity: accrete the non-matchOnly identities; the
         // identifier(s) we matched on already belong to this entity.
@@ -1168,31 +1239,35 @@ async function resolveLinksByKind(
           identities: link.identities.filter((i) => !i.matchOnly),
         });
         attached = [...fresh];
-        // Project the full identity tuple for metric resolution. Passing the
-        // full set (not just `fresh`) repairs a legacy entity whose identities
-        // predate aliases-on-create.
-        await ensureAliases(sql, {
-          orgId: params.orgId,
-          entityId,
-          identities: link.identities
-            .filter((identity) => !identity.matchOnly)
-            .map((identity) => ({
-              namespace: identity.namespace,
-              identifier: identity.identifier,
-              scopeKey: identity.scopeKey ?? null,
-            })),
-        });
-        // The matched identifiers themselves are this entity's even if a
-        // re-insert was a no-op (they were how we found it), so claim them too.
+        // Matched, persistent identifiers are this entity's even if a re-insert
+        // was a no-op (they were how we found it), so claim them too. A
+        // matchOnly identifier stays out of entity identity/alias projections;
+        // if it matched, event projection is handled separately below.
         for (const id of link.identities) {
-          if (matches.get(identityKey(id)) === entityId) {
-            attached.push({
+          if (!id.matchOnly && matches.get(identityKey(id)) === entityId) {
+            const matched = {
+              namespace: id.namespace,
+              identifier: id.identifier,
+              scopeKey: id.scopeKey ?? null,
+            };
+            appendIdentityIfMissing(attached, matched);
+          } else if (id.matchOnly && matches.get(identityKey(id)) === entityId) {
+            appendIdentityIfMissing(eventOnlyIdentities, {
               namespace: id.namespace,
               identifier: id.identifier,
               scopeKey: id.scopeKey ?? null,
             });
           }
         }
+        // Project only tuples that the resolved entity actually owns. A
+        // non-governing secondary may already belong to another entity; its
+        // ON CONFLICT no-op must never become an alias on this one. Including
+        // the matched rows still repairs legacy owners that predate projections.
+        await ensureAliases(sql, {
+          orgId: params.orgId,
+          entityId,
+          identities: attached,
+        });
       } else if (rule.autoCreate && passesCreateWhen(rule.createWhen, item)) {
         if (!creatorUserId) {
           logger.warn(
@@ -1238,11 +1313,15 @@ async function resolveLinksByKind(
             entityId = winnerTier;
             for (const id of link.identities) {
               if (winner.get(identityKey(id)) === entityId) {
-                attached.push({
+                const matched = {
                   namespace: id.namespace,
                   identifier: id.identifier,
                   scopeKey: id.scopeKey ?? null,
-                });
+                };
+                appendIdentityIfMissing(
+                  id.matchOnly ? eventOnlyIdentities : attached,
+                  matched
+                );
               }
             }
           }
@@ -1274,8 +1353,11 @@ async function resolveLinksByKind(
         for (const ruleMatches of matchesByRule.values()) ruleMatches.set(key, entityId);
       }
 
-      // Stamp metadata slots and their scope projections for attached
-      // identifiers only. Read-time recall compares the full
+      // Stamp metadata slots and their scope projections for identities that
+      // actually resolved this event. This includes a matched matchOnly tuple:
+      // it remains absent from entity_identities and entity aliases, but the
+      // pre-existing claim still needs the event tuple for read-time recall.
+      // Read-time recall compares the full
       // (namespace, identifier, scope key) tuple; metrics compare the same
       // complete tuple. A stale identifier or tenant key would
       // mis-attribute an append-only event.
@@ -1292,24 +1374,24 @@ async function resolveLinksByKind(
       // honest boundary, not a workaround.
       const md = item.metadata ?? {};
       item.metadata = md;
-      let byNamespace = md[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY] as
+      let byNamespace = ownRecord(md, IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY) as
         | Record<string, string>
         | undefined;
       if (!byNamespace) {
         byNamespace = {};
-        md[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY] = byNamespace;
+        setOwn(md, IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY, byNamespace);
       }
-      let byAlias = md[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY] as
+      let byAlias = ownRecord(md, IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY) as
         | IdentityScopeByAliasProjection
         | undefined;
       if (!byAlias) {
         byAlias = {};
-        md[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY] = byAlias;
+        setOwn(md, IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY, byAlias);
       }
-      for (const id of attached) {
-        const existing = md[id.namespace];
+      for (const id of [...attached, ...eventOnlyIdentities]) {
+        const existing = ownValue<unknown>(md, id.namespace);
         const projectedScope = id.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION;
-        const existingScope = byNamespace[id.namespace];
+        const existingScope = ownValue<string>(byNamespace, id.namespace);
         if (
           existing !== undefined &&
           (existing !== id.identifier ||
@@ -1330,17 +1412,20 @@ async function resolveLinksByKind(
           );
           continue;
         }
-        md[id.namespace] = id.identifier;
-        byNamespace[id.namespace] = projectedScope;
+        setOwn(md, id.namespace, id.identifier);
+        setOwn(byNamespace, id.namespace, projectedScope);
 
-        let aliasScopes = byAlias[id.namespace];
+        let aliasScopes = ownRecord(
+          byAlias as Record<string, unknown>,
+          id.namespace
+        ) as Record<string, string> | undefined;
         if (!aliasScopes) {
           aliasScopes = {};
-          byAlias[id.namespace] = aliasScopes;
+          setOwn(byAlias as Record<string, unknown>, id.namespace, aliasScopes);
         }
-        const aliasScope = aliasScopes[id.identifier];
+        const aliasScope = ownValue<string>(aliasScopes, id.identifier);
         if (aliasScope === undefined) {
-          aliasScopes[id.identifier] = projectedScope;
+          setOwn(aliasScopes, id.identifier, projectedScope);
         } else if (aliasScope !== projectedScope) {
           logger.warn(
             {

@@ -287,6 +287,54 @@ describe('applyEventAttributions', () => {
     });
   });
 
+  it('projects hostile namespace and identifier keys without prototype mutation', async () => {
+    const { org } = await setupOrg('prototype-safe identity projection org');
+    await installRule(org.id, 'prototype-safe-identities', 'customer', {
+      entityType: '$member',
+      autoCreate: true,
+      identities: [
+        {
+          namespace: '__proto__',
+          eventPath: 'metadata.customer_id',
+          scope: 'tenant',
+          scopeKeyPath: 'metadata.tenant_id',
+        },
+      ],
+    });
+    const item = {
+      origin_type: 'customer',
+      metadata: { customer_id: 'constructor', tenant_id: 'tenant-a' } as Record<
+        string,
+        unknown
+      >,
+    };
+
+    await applyEventAttributions({
+      connectorKey: 'prototype-safe-identities',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [item],
+    });
+
+    expect(Object.getPrototypeOf(item.metadata)).toBe(Object.prototype);
+    expect(Object.hasOwn(item.metadata, '__proto__')).toBe(true);
+    expect(item.metadata.__proto__).toBe('constructor');
+    const byNamespace = item.metadata[
+      IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY
+    ] as Record<string, unknown>;
+    expect(Object.getPrototypeOf(byNamespace)).toBe(Object.prototype);
+    expect(Object.hasOwn(byNamespace, '__proto__')).toBe(true);
+    expect(byNamespace.__proto__).toBe('tenant-a');
+    const byAlias = item.metadata[
+      IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY
+    ] as Record<string, Record<string, unknown>>;
+    expect(Object.getPrototypeOf(byAlias)).toBe(Object.prototype);
+    expect(Object.hasOwn(byAlias, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(byAlias.__proto__)).toBe(Object.prototype);
+    expect(Object.hasOwn(byAlias.__proto__, 'constructor')).toBe(true);
+    expect(byAlias.__proto__.constructor).toBe('tenant-a');
+  });
+
   it('consumes event attributions directly', async () => {
     const { org } = await setupOrg('attribution org');
 
@@ -604,6 +652,77 @@ describe('applyEventAttributions', () => {
     ]);
   });
 
+  it('does not project a non-governing identity owned by another entity', async () => {
+    const { org, user } = await setupOrg('identity ownership projection org');
+    const sql = getTestDb();
+    const entities = await sql<{ id: number | string; slug: string }[]>`
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES
+        (
+          ${org.id},
+          (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+          'Primary owner', 'primary-owner', '{}'::jsonb, ${user.id}
+        ),
+        (
+          ${org.id},
+          (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+          'Secondary owner', 'secondary-owner', '{}'::jsonb, ${user.id}
+        )
+      RETURNING id, slug
+    `;
+    const primaryEntity = entities.find((entity) => entity.slug === 'primary-owner');
+    const secondaryEntity = entities.find((entity) => entity.slug === 'secondary-owner');
+    if (!primaryEntity || !secondaryEntity) throw new Error('Expected both seeded entities');
+    const primaryOwner = Number(primaryEntity.id);
+    const secondaryOwner = Number(secondaryEntity.id);
+    await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector
+      ) VALUES
+        (${org.id}, ${primaryOwner}, 'stable_actor_id', 'actor-1', 'seed'),
+        (${org.id}, ${secondaryOwner}, 'mutable_login', 'recycled-login', 'seed')
+    `;
+    await installRule(org.id, 'tiered-owner', 'actor_seen', {
+      entityType: '$member',
+      autoCreate: true,
+      identities: [
+        { namespace: 'stable_actor_id', eventPath: 'metadata.user_id', primary: true },
+        { namespace: 'mutable_login', eventPath: 'metadata.login' },
+      ],
+    });
+    const item = {
+      origin_type: 'actor_seen',
+      metadata: { user_id: 'actor-1', login: 'recycled-login' } as Record<string, unknown>,
+    };
+
+    await applyEventAttributions({
+      connectorKey: 'tiered-owner',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [item],
+    });
+
+    const rows = await sql<{
+      id: number | string;
+      metadata: Record<string, unknown>;
+    }[]>`
+      SELECT id, metadata FROM entities
+      WHERE id IN (${primaryOwner}, ${secondaryOwner})
+      ORDER BY id
+    `;
+    const primaryRow = rows.find((row) => Number(row.id) === primaryOwner);
+    const secondaryRow = rows.find((row) => Number(row.id) === secondaryOwner);
+    if (!primaryRow || !secondaryRow) throw new Error('Expected both entity rows');
+    const primaryMetadata = primaryRow.metadata;
+    expect(primaryMetadata.aliases).toEqual(['actor-1']);
+    expect(primaryMetadata[SCOPED_IDENTITY_ALIASES_METADATA_KEY]).toEqual([
+      { namespace: 'stable_actor_id', identifier: 'actor-1', scopeKey: '' },
+    ]);
+    expect(item.metadata.stable_actor_id).toBe('actor-1');
+    expect(Object.hasOwn(item.metadata, 'mutable_login')).toBe(false);
+    expect(secondaryRow.metadata).toEqual({});
+  });
+
   it('skips linking when one event resolves to multiple distinct entities', async () => {
     const { org, user } = await setupOrg('ambiguous org');
 
@@ -688,30 +807,45 @@ describe('applyEventAttributions', () => {
     await installRule(org.id, 'crm', 'contact_seen', {
       entityType: '$member',
       autoCreate: false,
-      identities: [
-        { namespace: 'email', eventPath: 'metadata.email', matchOnly: true },
-        { namespace: 'crm_contact_id', eventPath: 'metadata.contact_id' },
-      ],
+      identities: [{ namespace: 'email', eventPath: 'metadata.email', matchOnly: true }],
     });
 
+    const item = {
+      origin_type: 'contact_seen',
+      metadata: { email: 'alex@example.com' } as Record<string, unknown>,
+    };
     await applyEventAttributions({
       connectorKey: 'crm',
       feedKey: FEED_KEY,
       orgId: org.id,
-      items: [
-        {
-          origin_type: 'contact_seen',
-          metadata: { email: 'alex@example.com', contact_id: 'crm_42' },
-        },
-      ],
+      items: [item],
     });
 
     const rows = await sql<{ namespace: string }[]>`
       SELECT namespace FROM entity_identities
       WHERE entity_id = ${Number(entityId)} ORDER BY namespace
     `;
-    // email was matchOnly, so only crm_contact_id is newly persisted alongside the seed email.
-    expect(rows.map((r) => r.namespace)).toEqual(['crm_contact_id', 'email']);
+    // The seeded email remains the only durable claim. It still stamps this
+    // event because it was the tuple that resolved the existing entity.
+    expect(rows.map((r) => r.namespace)).toEqual(['email']);
+    expect(item.metadata.email).toBe('alex@example.com');
+    expect(item.metadata[IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY]).toEqual({ email: '' });
+    expect(item.metadata[IDENTITY_SCOPE_BY_ALIAS_METADATA_KEY]).toEqual({
+      email: { 'alex@example.com': '' },
+    });
+    const [{ metadata }] = await sql<{
+      metadata: {
+        aliases?: string[];
+        [SCOPED_IDENTITY_ALIASES_METADATA_KEY]?: Array<{
+          namespace: string;
+          identifier: string;
+        }>;
+      };
+    }[]>`
+      SELECT metadata FROM entities WHERE id = ${Number(entityId)}
+    `;
+    expect(metadata.aliases).toBeUndefined();
+    expect(metadata[SCOPED_IDENTITY_ALIASES_METADATA_KEY]).toBeUndefined();
   });
 
   it('two concurrent auto-creates for the same new actor → one entity, no orphan', async () => {

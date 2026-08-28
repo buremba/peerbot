@@ -25,7 +25,10 @@ import {
 } from "../../../interactions/template-event-actions.js";
 import { __setChatInstanceManagerForTests } from "../../../lobu/gateway.js";
 import { runtimeConnectionIdToSlug } from "../../../lobu/stores/connections-projection.js";
-import { presentStoredEventToConversation } from "../../../notifications/service.js";
+import {
+	presentStoredEventToConversation,
+	refreshInteractiveEventCardTask,
+} from "../../../notifications/service.js";
 import { registerScheduledJobsTicker } from "../../../scheduled/scheduled-jobs-service.js";
 import { manageSchedules } from "../../../tools/admin/manage_schedules.js";
 import type { ToolContext } from "../../../tools/registry.js";
@@ -425,10 +428,20 @@ describe("Google Chat declared event action adapter", () => {
 			workspace.org.id,
 		);
 		const editMessageContent = vi.fn(async () => undefined);
-		const postToConversation = vi.fn(async () => ({
-			messageId: MESSAGE_NAME,
-			threadId,
-		}));
+		const postToConversation = vi.fn(
+			async (
+				_connectionId: string,
+				request: { channelId: string; threadId?: string },
+			) => ({
+				messageId:
+					request.channelId !== SPACE_NAME
+						? `${request.channelId}/messages/poll-card`
+						: request.threadId === "thread-two"
+							? `${SPACE_NAME}/messages/poll-card-thread-two`
+							: MESSAGE_NAME,
+				threadId: request.threadId ?? threadId,
+			}),
+		);
 		__setChatInstanceManagerForTests({
 			postToConversation,
 			editMessageContent,
@@ -482,7 +495,10 @@ describe("Google Chat declared event action adapter", () => {
 				conversationId: `gchat:${SPACE_NAME}:thread-two`,
 				threadId: "thread-two",
 			}),
-		).toMatchObject({ ok: true, messageId: MESSAGE_NAME });
+		).toMatchObject({
+			ok: true,
+			messageId: `${SPACE_NAME}/messages/poll-card-thread-two`,
+		});
 		expect(
 			await presentStoredEventToConversation({
 				organizationId: workspace.org.id,
@@ -494,7 +510,10 @@ describe("Google Chat declared event action adapter", () => {
 				conversationId: `gchat:${SPACE_NAME}/secondary:${threadId}`,
 				threadId,
 			}),
-		).toMatchObject({ ok: true, messageId: MESSAGE_NAME });
+		).toMatchObject({
+			ok: true,
+			messageId: `${SPACE_NAME}/secondary/messages/poll-card`,
+		});
 		expect(
 			await presentStoredEventToConversation({
 				organizationId: workspace.org.id,
@@ -580,7 +599,7 @@ describe("Google Chat declared event action adapter", () => {
 				responses: [response],
 			});
 			if (reachedQuorum) {
-				await agentApi.knowledge.save({
+				const successor = await agentApi.knowledge.save({
 					entity_ids: [board.id, poll.id],
 					content: `Poll closed after ${winningChoice} reached quorum 2.`,
 					title: `${question} — closed`,
@@ -589,6 +608,10 @@ describe("Google Chat declared event action adapter", () => {
 					metadata: pollOutput,
 					supersedes_event_id: source.id,
 					idempotency_key: `poll-close:${pollId}`,
+				});
+				await refreshInteractiveEventCardTask({
+					organizationId: workspace.org.id,
+					replacementEventId: Number(successor.id),
 				});
 			}
 			return pollOutput;
@@ -893,7 +916,7 @@ describe("Google Chat declared event action adapter", () => {
 					metadata: closed,
 				});
 			}
-			await agentApi.knowledge.save({
+			const successor = await agentApi.knowledge.save({
 				entity_ids: [board.id, params.entityId],
 				content: `Poll closed by ${closed.close_reason}.`,
 				title: `${params.state.question} — closed`,
@@ -902,6 +925,10 @@ describe("Google Chat declared event action adapter", () => {
 				metadata: closed,
 				supersedes_event_id: params.sourceEventId,
 				idempotency_key: `poll-close:${params.state.poll_id}`,
+			});
+			await refreshInteractiveEventCardTask({
+				organizationId: workspace.org.id,
+				replacementEventId: Number(successor.id),
 			});
 			return true;
 		};
@@ -935,7 +962,7 @@ describe("Google Chat declared event action adapter", () => {
 				{ pollId: deadlinePoll.poll_id, closed: true },
 			].sort((a, b) => a.pollId.localeCompare(b.pollId)),
 		);
-		await vi.waitFor(() => expect(editMessageContent).toHaveBeenCalledTimes(3));
+		expect(editMessageContent).toHaveBeenCalledTimes(4);
 		const [deadlineClosed] = await sql<{ metadata: typeof deadlinePoll }>`
 			SELECT metadata FROM entities
 			WHERE organization_id = ${workspace.org.id}

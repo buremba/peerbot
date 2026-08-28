@@ -15,6 +15,7 @@ import {
   canonicalizeSymmetricEdge,
   validateNoSelfReference,
   validateTypeRule,
+  withAclPrivilege,
 } from './relationship-validation';
 
 export const RELATIONSHIP_CLAIMS_METADATA_KEY = '_lobu_claims';
@@ -560,36 +561,38 @@ export async function retractConnectionRelationshipClaims(
 ): Promise<void> {
   await lockOrganization(tx, params.organizationId);
   const prefix = connectionRelationshipClaimPrefix(params.connectionId);
-  // One ascending-id pass over the org's live claimed edges, retracting every
-  // key this connection owns per row. Resolving the distinct claim keys first
-  // and re-scanning per key would cost one scan per ingested source item,
-  // inside the connection-delete transaction that already holds these rows.
-  // The prefix predicate cannot use the exact-claim GIN index, so this scan is
-  // deliberately constrained to one organization and runs only on deletion.
-  const rows = await tx<ClaimedRelationshipWithSlugRow>`
-    SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
-           rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
-    FROM entity_relationships r
-    JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
-    WHERE r.organization_id = ${params.organizationId}
-      AND r.deleted_at IS NULL
-      AND r.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
-      AND EXISTS (
-        SELECT 1
-        FROM jsonb_object_keys(r.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) AS claim(key)
-        WHERE left(claim.key, length(${prefix})) = ${prefix}
-      )
-    ORDER BY r.id
-    FOR UPDATE OF r
-  `;
+  await withAclPrivilege(tx, async () => {
+    // One ascending-id pass over the org's live claimed edges, retracting every
+    // key this connection owns per row. Resolving the distinct claim keys first
+    // and re-scanning per key would cost one scan per ingested source item,
+    // inside the connection-delete transaction that already holds these rows.
+    // The prefix predicate cannot use the exact-claim GIN index, so this scan is
+    // deliberately constrained to one organization and runs only on deletion.
+    const rows = await tx<ClaimedRelationshipWithSlugRow>`
+      SELECT r.id, r.from_entity_id, r.to_entity_id, r.relationship_type_id,
+             rt.slug AS relationship_type_slug, r.metadata, r.confidence, r.source
+      FROM entity_relationships r
+      JOIN entity_relationship_types rt ON rt.id = r.relationship_type_id
+      WHERE r.organization_id = ${params.organizationId}
+        AND r.deleted_at IS NULL
+        AND r.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
+        AND EXISTS (
+          SELECT 1
+          FROM jsonb_object_keys(r.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) AS claim(key)
+          WHERE left(claim.key, length(${prefix})) = ${prefix}
+        )
+      ORDER BY r.id
+      FOR UPDATE OF r
+    `;
 
-  for (const row of rows) {
-    const claims = claimsFromMetadata(row.metadata);
-    if (!claims) throw migrationRequired(row);
-    await retractLockedRelationshipClaims(tx, {
-      organizationId: params.organizationId,
-      claimKeys: Object.keys(claims).filter((key) => key.startsWith(prefix)),
-      row,
-    });
-  }
+    for (const row of rows) {
+      const claims = claimsFromMetadata(row.metadata);
+      if (!claims) throw migrationRequired(row);
+      await retractLockedRelationshipClaims(tx, {
+        organizationId: params.organizationId,
+        claimKeys: Object.keys(claims).filter((key) => key.startsWith(prefix)),
+        row,
+      });
+    }
+  });
 }

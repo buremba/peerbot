@@ -1,19 +1,37 @@
 -- migrate:up transaction:false
 
--- Existing relationships predate ownership claims, so the cutover treats them
--- as manual. This is a one-time data stamp; runtime code has no legacy path.
+-- Existing ordinary relationships predate ownership claims, so the cutover
+-- treats them as manual. Authorization edges cannot be attributed safely from
+-- their legacy rows; tombstone them so the next ACL sync recreates exact
+-- connection-owned claims instead of preserving an unowned access grant.
+-- This is a one-time data cutover; runtime code has no legacy path.
 -- The table is currently small, so batching this update would add machinery
 -- without reducing deployment risk.
-UPDATE public.entity_relationships
-SET metadata = jsonb_set(
-      COALESCE(metadata, '{}'::jsonb),
-      ARRAY['_lobu_claims']::text[],
-      '{"manual": {}}'::jsonb,
-      true
-    ),
-    updated_at = current_timestamp
-WHERE deleted_at IS NULL
-  AND NOT (COALESCE(metadata, '{}'::jsonb) ? '_lobu_claims');
+-- The DO statement gives the ACL-write flag transaction-local scope while the
+-- migration file itself remains transaction:false for the concurrent index.
+DO $claim_backfill$
+BEGIN
+  PERFORM set_config('lobu.acl_write', 'on', true);
+  UPDATE public.entity_relationships r
+  SET deleted_at = current_timestamp,
+      updated_at = current_timestamp
+  FROM public.entity_relationship_types rt
+  WHERE rt.id = r.relationship_type_id
+    AND rt.purpose = 'authorization'
+    AND r.deleted_at IS NULL;
+
+  UPDATE public.entity_relationships
+  SET metadata = jsonb_set(
+        COALESCE(metadata, '{}'::jsonb),
+        ARRAY['_lobu_claims']::text[],
+        '{"manual": {}}'::jsonb,
+        true
+      ),
+      updated_at = current_timestamp
+  WHERE deleted_at IS NULL
+    AND NOT (COALESCE(metadata, '{}'::jsonb) ? '_lobu_claims');
+END
+$claim_backfill$;
 
 -- Partial expression index used to find exact claims on live relationships.
 -- A failed concurrent build leaves an invalid index behind; remove it so a

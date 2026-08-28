@@ -2,13 +2,17 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { autoLinkEvent } from '../../../utils/auto-linker';
-import { upsertEdges } from '../../../utils/edge-writes';
+import { ensureRelationshipType, upsertEdges } from '../../../utils/edge-writes';
 import {
   connectionRelationshipClaimKey,
   reconcileConnectorRelationshipClaims,
   RELATIONSHIP_CLAIMS_METADATA_KEY,
   retractConnectionRelationshipClaims,
 } from '../../../utils/relationship-claims';
+import {
+  PURPOSE_AUTHORIZATION,
+  withAclEdgeWrite,
+} from '../../../utils/relationship-validation';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestConnection } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
@@ -236,6 +240,44 @@ describe('relationship source claims', () => {
     `;
     expect(row.deleted_at).toBeNull();
     expect(row.metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).toEqual({ manual: {} });
+  });
+
+  it('retracts a connection-owned authorization edge with scoped ACL privilege', async () => {
+    const { sql, workspace, connection, invoice, customer } = await seedClaimGraph();
+    const typeId = await ensureRelationshipType({
+      organizationId: workspace.org.id,
+      slug: 'acl_claim_probe',
+      name: 'ACL claim probe',
+      description: 'Authorization edge owned by a connection',
+      purpose: PURPOSE_AUTHORIZATION,
+    });
+    const relationshipIds = await withAclEdgeWrite(sql, (tx) =>
+      upsertEdges({
+        db: tx,
+        organizationId: workspace.org.id,
+        relationshipTypeId: typeId,
+        pairs: [
+          { fromEntityId: invoice.entity.id, toEntityId: customer.entity.id },
+        ],
+        source: 'feed',
+        claimKey: connectionRelationshipClaimKey(connection.id, 'config:access-graph'),
+        onConflict: 'ignore',
+      })
+    );
+    expect(relationshipIds).toHaveLength(1);
+    const relationshipId = relationshipIds[0];
+
+    await sql.begin((tx) =>
+      retractConnectionRelationshipClaims(tx, {
+        organizationId: workspace.org.id,
+        connectionId: connection.id,
+      })
+    );
+
+    const [row] = await sql`
+      SELECT deleted_at FROM entity_relationships WHERE id = ${relationshipId}
+    `;
+    expect(row.deleted_at).not.toBeNull();
   });
 
   it('keeps link duplicate semantics when a connector already owns the edge', async () => {

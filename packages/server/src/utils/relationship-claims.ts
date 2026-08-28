@@ -139,87 +139,55 @@ async function lockLiveConnection(
   }
 }
 
-async function assertRelationshipClaim(
-  tx: DbClient,
-  params: {
-    organizationId: string;
-    fromEntityId: number;
-    toEntityId: number;
-    relationshipTypeId: number;
-    relationshipTypeSlug: string;
-    claimKey: string;
-    claim: Record<string, unknown>;
-    source: string;
-    confidence?: number | null;
-    createdBy?: string | null;
-    clientId?: string | null;
-    metadata?: Record<string, unknown> | null;
-    mergeExisting?: boolean;
-  }
-): Promise<{ id: number; inserted: boolean; claimAdded: boolean }> {
-  const initialMetadata = {
+interface RelationshipClaimParams {
+  organizationId: string;
+  fromEntityId: number;
+  toEntityId: number;
+  relationshipTypeId: number;
+  relationshipTypeSlug: string;
+  claimKey: string;
+  claim: Record<string, unknown>;
+  source: string;
+  confidence?: number | null;
+  createdBy?: string | null;
+  clientId?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+type RelationshipClaimResult = { id: number; inserted: boolean; claimAdded: boolean };
+
+function initialRelationshipMetadata(params: RelationshipClaimParams): Record<string, unknown> {
+  return {
     ...(params.metadata ?? {}),
     [RELATIONSHIP_CLAIMS_METADATA_KEY]: { [params.claimKey]: params.claim },
   };
-  const conflictAction =
-    params.mergeExisting === false
-      ? tx`DO NOTHING`
-      : tx`DO UPDATE SET
-          metadata = jsonb_set(
-            COALESCE(entity_relationships.metadata, '{}'::jsonb),
-            ARRAY[${RELATIONSHIP_CLAIMS_METADATA_KEY}]::text[],
-            (entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY})
-              || jsonb_build_object(${params.claimKey}::text, ${tx.json(params.claim)}::jsonb),
-            true
-          ),
-          updated_at = current_timestamp
-        WHERE entity_relationships.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
-          AND entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY} -> ${params.claimKey}
-              IS DISTINCT FROM ${tx.json(params.claim)}::jsonb`;
-  const written = await tx<ClaimedRelationshipRow>`
-    INSERT INTO entity_relationships (
-      organization_id, from_entity_id, to_entity_id, relationship_type_id,
-      metadata, confidence, source, created_by, updated_by, created_at, updated_at
-    ) VALUES (
-      ${params.organizationId}, ${params.fromEntityId}, ${params.toEntityId},
-      ${params.relationshipTypeId}, ${tx.json(initialMetadata)},
-      ${params.confidence ?? null}, ${params.source}, ${params.createdBy ?? null},
-      ${params.createdBy ?? null}, current_timestamp, current_timestamp
-    )
-    ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
-      WHERE deleted_at IS NULL
-    ${conflictAction}
-    RETURNING id, from_entity_id, to_entity_id, relationship_type_id,
-              metadata, confidence, source, (xmax = 0) AS inserted
+}
+
+async function lockExistingRelationship(
+  tx: DbClient,
+  params: RelationshipClaimParams
+): Promise<ClaimedRelationshipRow> {
+  const rows = await tx<ClaimedRelationshipRow>`
+    SELECT id, from_entity_id, to_entity_id, relationship_type_id,
+           metadata, confidence, source
+    FROM entity_relationships
+    WHERE organization_id = ${params.organizationId}
+      AND from_entity_id = ${params.fromEntityId}
+      AND to_entity_id = ${params.toEntityId}
+      AND relationship_type_id = ${params.relationshipTypeId}
+      AND deleted_at IS NULL
+    LIMIT 1
+    FOR UPDATE
   `;
+  if (!rows[0]) throw new Error('Relationship claim insert returned no live relationship');
+  return rows[0];
+}
 
-  let row = written[0];
-  if (!row) {
-    const existing = await tx<ClaimedRelationshipRow>`
-      SELECT id, from_entity_id, to_entity_id, relationship_type_id,
-             metadata, confidence, source
-      FROM entity_relationships
-      WHERE organization_id = ${params.organizationId}
-        AND from_entity_id = ${params.fromEntityId}
-        AND to_entity_id = ${params.toEntityId}
-        AND relationship_type_id = ${params.relationshipTypeId}
-        AND deleted_at IS NULL
-      LIMIT 1
-      FOR UPDATE
-    `;
-    row = existing[0];
-    if (!row) throw new Error('Relationship claim upsert returned no live relationship');
-    if (params.mergeExisting === false) {
-      return { id: Number(row.id), inserted: false, claimAdded: false };
-    }
-    const claims = claimsFromMetadata(row.metadata);
-    if (!claims) throw migrationRequired(row);
-    if (!Object.hasOwn(claims, params.claimKey)) {
-      throw new Error(`Relationship ${row.id} did not persist claim '${params.claimKey}'`);
-    }
-    return { id: Number(row.id), inserted: false, claimAdded: false };
-  }
-
+async function finishRelationshipClaimWrite(
+  tx: DbClient,
+  params: RelationshipClaimParams,
+  row: ClaimedRelationshipRow
+): Promise<RelationshipClaimResult> {
   const inserted = row.inserted === true;
   if (inserted) {
     await insertEdgeChangeEventInTransaction(
@@ -246,6 +214,73 @@ async function assertRelationshipClaim(
   return { id: Number(row.id), inserted, claimAdded: true };
 }
 
+async function insertOnlyRelationshipClaim(
+  tx: DbClient,
+  params: RelationshipClaimParams
+): Promise<RelationshipClaimResult> {
+  const written = await tx<ClaimedRelationshipRow>`
+    INSERT INTO entity_relationships (
+      organization_id, from_entity_id, to_entity_id, relationship_type_id,
+      metadata, confidence, source, created_by, updated_by, created_at, updated_at
+    ) VALUES (
+      ${params.organizationId}, ${params.fromEntityId}, ${params.toEntityId},
+      ${params.relationshipTypeId}, ${tx.json(initialRelationshipMetadata(params))},
+      ${params.confidence ?? null}, ${params.source}, ${params.createdBy ?? null},
+      ${params.createdBy ?? null}, current_timestamp, current_timestamp
+    )
+    ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
+      WHERE deleted_at IS NULL
+    DO NOTHING
+    RETURNING id, from_entity_id, to_entity_id, relationship_type_id,
+              metadata, confidence, source, true AS inserted
+  `;
+  if (written[0]) return finishRelationshipClaimWrite(tx, params, written[0]);
+  const existing = await lockExistingRelationship(tx, params);
+  return { id: Number(existing.id), inserted: false, claimAdded: false };
+}
+
+async function mergeRelationshipClaim(
+  tx: DbClient,
+  params: RelationshipClaimParams
+): Promise<RelationshipClaimResult> {
+  const written = await tx<ClaimedRelationshipRow>`
+    INSERT INTO entity_relationships (
+      organization_id, from_entity_id, to_entity_id, relationship_type_id,
+      metadata, confidence, source, created_by, updated_by, created_at, updated_at
+    ) VALUES (
+      ${params.organizationId}, ${params.fromEntityId}, ${params.toEntityId},
+      ${params.relationshipTypeId}, ${tx.json(initialRelationshipMetadata(params))},
+      ${params.confidence ?? null}, ${params.source}, ${params.createdBy ?? null},
+      ${params.createdBy ?? null}, current_timestamp, current_timestamp
+    )
+    ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
+      WHERE deleted_at IS NULL
+    DO UPDATE SET
+      metadata = jsonb_set(
+        COALESCE(entity_relationships.metadata, '{}'::jsonb),
+        ARRAY[${RELATIONSHIP_CLAIMS_METADATA_KEY}]::text[],
+        (entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY})
+          || jsonb_build_object(${params.claimKey}::text, ${tx.json(params.claim)}::jsonb),
+        true
+      ),
+      updated_at = current_timestamp
+    WHERE entity_relationships.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
+      AND entity_relationships.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY} -> ${params.claimKey}
+          IS DISTINCT FROM ${tx.json(params.claim)}::jsonb
+    RETURNING id, from_entity_id, to_entity_id, relationship_type_id,
+              metadata, confidence, source, (xmax = 0) AS inserted
+  `;
+  if (written[0]) return finishRelationshipClaimWrite(tx, params, written[0]);
+
+  const existing = await lockExistingRelationship(tx, params);
+  const claims = claimsFromMetadata(existing.metadata);
+  if (!claims) throw migrationRequired(existing);
+  if (!Object.hasOwn(claims, params.claimKey)) {
+    throw new Error(`Relationship ${existing.id} did not persist claim '${params.claimKey}'`);
+  }
+  return { id: Number(existing.id), inserted: false, claimAdded: false };
+}
+
 /** Add the caller-owned claim to a manual relationship assertion. */
 export async function assertManualRelationshipClaim(
   tx: DbClient,
@@ -263,11 +298,10 @@ export async function assertManualRelationshipClaim(
   }
 ): Promise<{ id: number; inserted: boolean; claimAdded: boolean }> {
   await lockOrganization(tx, params.organizationId);
-  return assertRelationshipClaim(tx, {
+  return insertOnlyRelationshipClaim(tx, {
     ...params,
     claimKey: MANUAL_RELATIONSHIP_CLAIM_KEY,
     claim: {},
-    mergeExisting: false,
   });
 }
 
@@ -480,7 +514,7 @@ export async function reconcileConnectorRelationshipClaims(
   const claimKey = connectorRelationshipClaimKey(params.connectionId, params.originId);
   const keepRelationshipIds = new Set<number>();
   for (const edge of aggregated.values()) {
-    const asserted = await assertRelationshipClaim(tx, {
+    const asserted = await mergeRelationshipClaim(tx, {
       organizationId: params.organizationId,
       fromEntityId: edge.fromEntityId,
       toEntityId: edge.toEntityId,

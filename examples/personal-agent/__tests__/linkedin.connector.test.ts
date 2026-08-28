@@ -1954,7 +1954,8 @@ describe("LinkedInConnector home_feed", () => {
   const syncHomeFeedDom = async (
     body: string,
     setup?: (dom: JSDOM) => void,
-    expandRowsOverride?: Record<string, unknown>
+    expandRowsOverride?: Record<string, unknown>,
+    scrollOverride?: Record<string, number>
   ) => {
     const dom = new JSDOM(`<!doctype html><body>${body}</body>`, {
       url: "https://www.linkedin.com/feed/",
@@ -2002,7 +2003,7 @@ describe("LinkedInConnector home_feed", () => {
               cs_scrape: true,
               result: await genericScrape({
                 ...(input.scrape_config as Record<string, unknown>),
-                scroll: { max: 0, stall: 0, waitMs: 0 },
+                scroll: scrollOverride ?? { max: 0, stall: 0, waitMs: 0 },
                 ...(expandRowsOverride
                   ? {
                       expandRows: {
@@ -2087,7 +2088,11 @@ describe("LinkedInConnector home_feed", () => {
             });
             document.body.append(option);
           });
-      }
+      },
+      undefined,
+      // No iterative harvest follows this terminal pass. The unique replacement
+      // must receive its own fresh expansion attempt immediately.
+      { max: 0, stall: 0, waitMs: 0 }
     );
 
     expect(res.events.map((event: any) => event.origin_id)).toEqual([

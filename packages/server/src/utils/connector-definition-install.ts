@@ -320,7 +320,7 @@ type UpsertConnectorDefinitionRecordsParams = {
   replaceVersionArtifact?: boolean;
 };
 
-export type UpsertConnectorDefinitionResult = {
+type UpsertConnectorDefinitionResult = {
   updated: boolean;
 };
 

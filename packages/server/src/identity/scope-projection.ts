@@ -8,10 +8,6 @@
 export const IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY =
 	"__lobu_identity_scope_keys";
 
-export function isIdentityScopeProjectionMetadataKey(key: string): boolean {
-	return key === IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY;
-}
-
 export function stripIdentityScopeProjectionMetadata(
 	metadata: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> | undefined {

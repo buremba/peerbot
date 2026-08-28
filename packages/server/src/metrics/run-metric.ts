@@ -12,7 +12,17 @@
 import type { EntityMetrics } from "@lobu/connector-sdk";
 import { getDb } from "../db/client";
 import { validateAndScopeQuery } from "../utils/execute-data-sources";
+import { type ColumnDef, SAFE_COLUMN_DEFS } from "../utils/table-schema";
 import { compileDerivedMetricSql, compileMetricSql } from "./compiler";
+
+const METRIC_SAFE_COLUMNS = new Map<string, ColumnDef[]>(SAFE_COLUMN_DEFS);
+METRIC_SAFE_COLUMNS.set("entity_identities", [
+  { name: "entity_id", type: "bigint" },
+  { name: "namespace", type: "text" },
+  { name: "identifier", type: "text" },
+  { name: "scope_key", type: "text" },
+  { name: "deleted_at", type: "timestamptz" },
+]);
 
 interface RunMetricInput {
   organizationId: string;
@@ -56,9 +66,10 @@ export async function runMetric(input: RunMetricInput): Promise<Record<string, u
   const entityTypeId = Number(found[0].id);
   const metrics = (found[0].metrics_config ?? {}) as EntityMetrics;
   const backingSql = found[0].backing_sql as string | null;
-  const rawSql = !metrics.measures?.[input.measure] && backingSql
+  const usesDerivedMetric = !metrics.measures?.[input.measure] && backingSql !== null;
+  const rawSql = usesDerivedMetric
     ? compileDerivedMetricSql({
-        backingSql,
+        backingSql: backingSql!,
         measure: input.measure,
         by: input.by,
         segment: input.segment,
@@ -73,6 +84,7 @@ export async function runMetric(input: RunMetricInput): Promise<Record<string, u
         entityId: input.entityId,
       });
   const scoped = validateAndScopeQuery(rawSql, input.organizationId, {
+    safeColumns: usesDerivedMetric ? SAFE_COLUMN_DEFS : METRIC_SAFE_COLUMNS,
     userId: input.userId ?? null,
     excludeWorkspaceAudit: input.excludeWorkspaceAudit,
   });

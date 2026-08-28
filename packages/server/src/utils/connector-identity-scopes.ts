@@ -137,22 +137,29 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
 
   const activeDefinitionRows = await params.sql<{
     key: string;
+    status: string;
     feeds_schema: Record<string, unknown> | null;
   }>`
-    SELECT key, feeds_schema
+    SELECT key, status, feeds_schema
     FROM connector_definitions
     WHERE organization_id = ${params.organizationId}
-      AND status = 'active'
-      AND key <> ${params.metadata.key}
+      AND (status = 'active' OR key = ${params.metadata.key})
     ORDER BY key
   `;
-  const activeDeclarations = activeDefinitionRows.map((row) => ({
+  const definitionDeclarations = activeDefinitionRows.map((row) => ({
     connectorKey: row.key,
+    status: row.status,
     declarations: connectorIdentityScopeDeclarations({
       key: row.key,
       feeds: asRecord(row.feeds_schema),
     }),
   }));
+  const currentDefinition = definitionDeclarations.find(
+    ({ connectorKey }) => connectorKey === params.metadata.key
+  );
+  const activeDeclarations = definitionDeclarations.filter(
+    ({ connectorKey, status }) => connectorKey !== params.metadata.key && status === 'active'
+  );
 
   for (const declaration of sortedDeclarations) {
     const incompatible = activeDeclarations.find(({ declarations: peerDeclarations }) => {
@@ -168,6 +175,10 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
           'Connectors sharing an identity namespace must declare the same organization/tenant scope; their payload paths may differ.'
       );
     }
+    const compatiblePeer = activeDeclarations.find(({ declarations: peerDeclarations }) => {
+      const peer = peerDeclarations.get(declaration.namespace);
+      return peer !== undefined && peer.scope === declaration.scope;
+    });
 
     const rows = await params.sql<{
       scope: 'organization' | 'tenant';
@@ -201,7 +212,17 @@ export async function reconcileConnectorIdentityScopeRegistry(params: {
     const tenantCount = Number(counts[0]?.tenant_count ?? 0);
     const missingRegistryIsSafeOrganizationAdoption =
       currentShape === null && declaration.scope === 'organization' && tenantCount === 0;
-    if (liveCount > 0 && !missingRegistryIsSafeOrganizationAdoption) {
+    const priorDeclaration = currentDefinition?.declarations.get(declaration.namespace);
+    const missingRegistryIsSafePeerAdoption =
+      currentShape === null &&
+      compatiblePeer !== undefined &&
+      (currentDefinition === undefined ||
+        (priorDeclaration !== undefined && priorDeclaration.scope === declaration.scope));
+    if (
+      liveCount > 0 &&
+      !missingRegistryIsSafeOrganizationAdoption &&
+      !missingRegistryIsSafePeerAdoption
+    ) {
       const oldShape = currentShape ?? { scope: 'organization' as const, scopeKeyPath: null };
       throw new Error(
         `Identity namespace '${declaration.namespace}' cannot change scope for connector ` +

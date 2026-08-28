@@ -130,6 +130,10 @@ describe('connector identity scope registry', () => {
 
   it('allows connector-local paths but rejects conflicting scope semantics', async () => {
     const org = await createTestOrganization({ name: 'Shared namespace scope org' });
+    const entity = await createTestEntity({
+      organization_id: org.id,
+      name: 'Peer-owned customer',
+    });
     await createTestConnectorDefinition({
       key: 'active-peer',
       name: 'Active peer',
@@ -140,6 +144,13 @@ describe('connector identity scope registry', () => {
         scopeKeyPath: 'metadata.account_id',
       }).feeds,
     });
+    await getTestDb()`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector, scope_key
+      ) VALUES (
+        ${org.id}, ${entity.id}, 'erp_customer', 'C-1', 'connector:active-peer', 'tenant-a'
+      )
+    `;
 
     await expect(
       reconcile(
@@ -154,5 +165,57 @@ describe('connector identity scope registry', () => {
     await expect(
       reconcile(org.id, connectorMetadata({ key: 'conflicting-peer', scope: 'organization' }))
     ).rejects.toThrow(/organization.*active-peer.*tenant/i);
+  });
+
+  it('does not let a compatible peer bypass a legacy connector re-key', async () => {
+    const org = await createTestOrganization({ name: 'Legacy peer re-key org' });
+    const sql = getTestDb();
+    await createTestConnectorDefinition({
+      key: 'tenant-peer',
+      name: 'Tenant peer',
+      organization_id: org.id,
+      feeds_schema: connectorMetadata({
+        key: 'tenant-peer',
+        scope: 'tenant',
+        scopeKeyPath: 'metadata.account_id',
+      }).feeds,
+    });
+    await createTestConnectorDefinition({
+      key: 'legacy-connector',
+      name: 'Legacy connector',
+      organization_id: org.id,
+      feeds_schema: connectorMetadata({
+        key: 'legacy-connector',
+        scope: 'organization',
+      }).feeds,
+    });
+    await sql`
+      UPDATE connector_definitions
+      SET status = 'archived'
+      WHERE organization_id = ${org.id} AND key = 'legacy-connector'
+    `;
+    const entity = await createTestEntity({
+      organization_id: org.id,
+      name: 'Legacy customer',
+    });
+    await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector, scope_key
+      ) VALUES (
+        ${org.id}, ${entity.id}, 'erp_customer', 'C-legacy',
+        'connector:legacy-connector', NULL
+      )
+    `;
+
+    await expect(
+      reconcile(
+        org.id,
+        connectorMetadata({
+          key: 'legacy-connector',
+          scope: 'tenant',
+          scopeKeyPath: 'metadata.tenant_id',
+        })
+      )
+    ).rejects.toThrow(/Old shape:.*organization.*New shape:.*tenant/i);
   });
 });

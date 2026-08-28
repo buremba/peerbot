@@ -472,6 +472,14 @@ const HOME_FEED_SCRAPE_CONFIG = {
     // share the FeedType suffix but must never drive another post's controls.
     rowSelector:
       'div[componentkey^="expanded"][componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
+    // Sorting comments can replace the post row. Preserve the durable activity
+    // identity so the scraper can reacquire that exact row before expanding it.
+    identity: {
+      selector:
+        '[id*="shareId="], [id*="ugcPostId="], [id*="urn:li:activity:"]',
+      take: "attr",
+      attr: "id",
+    },
     expected: {
       // Keep this aligned with the post-level comment count fields below. The
       // count is not always interactive: LinkedIn also renders it as a plain

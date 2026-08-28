@@ -120,6 +120,9 @@ const config: KnipConfig = {
         "src/config/index.ts",
         "src/config/define.ts",
         "src/config/secret.ts",
+        // Standalone native auth helper compiled into Owletto.app by the root
+        // Mac packaging script; it is intentionally outside the npm `bin` map.
+        "src/mac-auth.ts",
         // Build helper invoked as `node scripts/build.cjs`.
         "scripts/build.cjs",
       ],

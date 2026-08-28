@@ -137,6 +137,9 @@ jobs:
             packages/owletto/apps/mac/Owletto.xcodeproj \
             packages/owletto/apps/mac/Owletto/Info.plist \
             packages/owletto/apps/mac/Owletto/lobu-device-daemon \
+            packages/cli/src/mac-auth.ts \
+            config/macos/lobu-auth.entitlements \
+            scripts/build-mac-auth-cli.sh \
             scripts/sparkle/update-appcast.py
           do
             if [ ! -e "$required" ]; then
@@ -372,6 +375,13 @@ jobs:
           fi
           scripts/with-owletto-mac-daemon.sh xcodebuild "${ARGS[@]}"
 
+      - name: Bundle version-pinned Lobu auth helper (signed)
+        if: steps.mode.outputs.signed == 'true'
+        run: |
+          APP="$RUNNER_TEMP/Owletto.xcarchive/Products/Applications/Owletto.app"
+          scripts/build-mac-auth-cli.sh \
+            "$APP/Contents/Resources/lobu-cli/bin/lobu"
+
       # Re-sign Sparkle's nested helpers — Xcode's archive doesn't apply
       # Developer ID + secure-timestamp to them when Sparkle is integrated
       # via SPM, and notarytool rejects the bundle on that basis. Sign
@@ -386,9 +396,14 @@ jobs:
           APP="$RUNNER_TEMP/Owletto.xcarchive/Products/Applications/Owletto.app"
           SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
           DAEMON="$APP/Contents/Resources/lobu-device-daemon/lobu-device-daemon"
+          AUTH_CLI="$APP/Contents/Resources/lobu-cli/bin/lobu"
           OPTS=(--force --options runtime --timestamp --sign "Developer ID Application")
 
           scripts/verify-mac-device-daemon.sh "$DAEMON"
+          test -x "$AUTH_CLI" || { echo "::error::Bundled Lobu auth helper is missing"; exit 1; }
+          codesign "${OPTS[@]}" \
+            --entitlements config/macos/lobu-auth.entitlements \
+            "$AUTH_CLI"
           codesign "${OPTS[@]}" "$DAEMON"
 
           # XPC services (each has an inner Mach-O + an outer bundle).
@@ -432,7 +447,10 @@ jobs:
           # developer". A real Developer ID + notarization removes that prompt.
           APP="$RUNNER_TEMP/Owletto.xcarchive/Products/Applications/Owletto.app"
           DAEMON="$APP/Contents/Resources/lobu-device-daemon/lobu-device-daemon"
+          AUTH_CLI="$APP/Contents/Resources/lobu-cli/bin/lobu"
+          scripts/build-mac-auth-cli.sh "$AUTH_CLI"
           scripts/verify-mac-device-daemon.sh "$DAEMON"
+          codesign --force --sign - "$AUTH_CLI"
           codesign --force --sign - "$DAEMON"
           codesign --force --deep --sign - "$APP"
 

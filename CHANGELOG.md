@@ -1,5 +1,53 @@
 # Changelog
 
+## [17.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v17.1.0...lobu-v17.2.0) (2026-08-29)
+
+
+### Features
+
+* add portable template event actions ([#3174](https://github.com/lobu-ai/lobu/issues/3174)) ([0ad36c1](https://github.com/lobu-ai/lobu/commit/0ad36c1ce9730bc32c5e5066366fc1c8565ff6c0))
+* **chat:** add event-backed polls ([#3215](https://github.com/lobu-ai/lobu/issues/3215)) ([2b37d9e](https://github.com/lobu-ai/lobu/commit/2b37d9e7b330cd28a8ccd9709e0022685eb24b7d))
+* **content:** bound agent-facing event reads ([#3197](https://github.com/lobu-ai/lobu/issues/3197)) ([2ba9641](https://github.com/lobu-ai/lobu/commit/2ba9641d9687994d278e70111f5b65f578fa6865))
+* **identity:** scope identities by upstream tenant ([#3217](https://github.com/lobu-ai/lobu/issues/3217)) ([96ff93e](https://github.com/lobu-ai/lobu/commit/96ff93e7c9a8b5e1a4081cc7c283cc0b75c2a059))
+* run Activity chat on selected devices ([#3184](https://github.com/lobu-ai/lobu/issues/3184)) ([568ae61](https://github.com/lobu-ai/lobu/commit/568ae61508351e36946911a11833a9db5e572a43))
+* **server:** add explicit MCP workspace grants ([#3191](https://github.com/lobu-ai/lobu/issues/3191)) ([8fcdc31](https://github.com/lobu-ai/lobu/commit/8fcdc311a73bd13db69da9d5c25244d46c6309ec))
+* **server:** materialize connector-declared edges ([#3209](https://github.com/lobu-ai/lobu/issues/3209)) ([2cd21cd](https://github.com/lobu-ai/lobu/commit/2cd21cdd38eb82fdda3c79a574706eb6bea0a99e))
+* **server:** persist durable entity denial audits ([#3208](https://github.com/lobu-ai/lobu/issues/3208)) ([5385d2d](https://github.com/lobu-ai/lobu/commit/5385d2d8e6cd81bc265d1bdef08c4f9276a14314))
+
+
+### Bug Fixes
+
+* **auth:** reject worker tokens off MCP routes ([#3182](https://github.com/lobu-ai/lobu/issues/3182)) ([b76f7bc](https://github.com/lobu-ai/lobu/commit/b76f7bcc471b0497a2d60758ac3df56296b1f358))
+* auto-pause repeatedly failing automations ([#3200](https://github.com/lobu-ai/lobu/issues/3200)) ([5aadc42](https://github.com/lobu-ai/lobu/commit/5aadc4268f9f71936811e26e8bc5e50183d0a419))
+* **automations:** encode poll response slugs ([#3225](https://github.com/lobu-ai/lobu/issues/3225)) ([d48e3cd](https://github.com/lobu-ai/lobu/commit/d48e3cd54585cb12f1f9df2895ad01b88af67f84))
+* **automations:** make reactions crash-safe through TaskScheduler ([#3219](https://github.com/lobu-ai/lobu/issues/3219)) ([45587eb](https://github.com/lobu-ai/lobu/commit/45587eb6270488e54f4c8b8189bdc4a85c37e5b4))
+* **automations:** normalize run-bound poll entity ids ([#3222](https://github.com/lobu-ai/lobu/issues/3222)) ([68b9164](https://github.com/lobu-ai/lobu/commit/68b91643ae841e126470bb27d689bee704add906))
+* **automations:** query the durable poll head ([#3223](https://github.com/lobu-ai/lobu/issues/3223)) ([0ca8d0c](https://github.com/lobu-ai/lobu/commit/0ca8d0c146aa800344230ef1309676a3f2db87d9))
+* **automations:** scope poll responses by poll actor ([#3224](https://github.com/lobu-ai/lobu/issues/3224)) ([a79ae25](https://github.com/lobu-ai/lobu/commit/a79ae2507271b09356d788c318e2ef26ce0ace47))
+* **chat:** complete live event-card interactions ([#3221](https://github.com/lobu-ai/lobu/issues/3221)) ([de4d78f](https://github.com/lobu-ai/lobu/commit/de4d78f0589141f278a0fe4b1d0d3bc9daef2020))
+* **cli:** isolate Mac debug bootstrap context ([#3162](https://github.com/lobu-ai/lobu/issues/3162)) ([4f4c235](https://github.com/lobu-ai/lobu/commit/4f4c235135b8dd1b235fe98a9759ebed4054b3fb))
+* **connector-worker:** stop terminal interactive handoffs ([#3187](https://github.com/lobu-ai/lobu/issues/3187)) ([3d864f9](https://github.com/lobu-ai/lobu/commit/3d864f98397ef7272e7203aa431ca97213542f57))
+* **connectors:** harden Outlook and Reddit sync ([#3192](https://github.com/lobu-ai/lobu/issues/3192)) ([78077f7](https://github.com/lobu-ai/lobu/commit/78077f7881838f28fb7fa45a80bc9161d1a88abb))
+* **connectors:** pin device readiness to the exact selected artifact ([#3175](https://github.com/lobu-ai/lobu/issues/3175)) ([25ebd3b](https://github.com/lobu-ai/lobu/commit/25ebd3b37f00478fdc8eca7bcf665d4fa1d147f2))
+* **gateway:** verify worker readiness before dispatch ([#3176](https://github.com/lobu-ai/lobu/issues/3176)) ([2a51ce3](https://github.com/lobu-ai/lobu/commit/2a51ce37ca165b0c5e0ba5f059710a8ce4d71624))
+* **github:** encode REST path segments ([#3194](https://github.com/lobu-ai/lobu/issues/3194)) ([1bd3826](https://github.com/lobu-ai/lobu/commit/1bd3826219360be47ec58092b36078a054a320f5))
+* **linkedin:** bind expansion to durable row identity ([#3193](https://github.com/lobu-ai/lobu/issues/3193)) ([5c0db44](https://github.com/lobu-ai/lobu/commit/5c0db449445f01078e78801527d01c46f3e380cc))
+* **linkedin:** settle asynchronous comments ([#3163](https://github.com/lobu-ai/lobu/issues/3163)) ([a67710c](https://github.com/lobu-ai/lobu/commit/a67710c7f0dac0b1055225ea3dbad6cf02b8b307))
+* **mac:** make Owletto browser login survive non-TTY supervision ([#3216](https://github.com/lobu-ai/lobu/issues/3216)) ([5862c07](https://github.com/lobu-ai/lobu/commit/5862c07dedb51bf80f9156ba4c5b3f5f06168b75))
+* **mcp:** align app review metadata ([#3198](https://github.com/lobu-ai/lobu/issues/3198)) ([c26d899](https://github.com/lobu-ai/lobu/commit/c26d8996d0855b553ef7871610a37e468e2e910f))
+* **mcp:** declare ChatGPT app widget domain ([#3180](https://github.com/lobu-ai/lobu/issues/3180)) ([27b8df7](https://github.com/lobu-ai/lobu/commit/27b8df7c7f1928dae17fea7bd66d68920eff14db))
+* **mcp:** negotiate app sandbox domain ([#3181](https://github.com/lobu-ai/lobu/issues/3181)) ([10de689](https://github.com/lobu-ai/lobu/commit/10de6890e149ec00429703107a74bb4c0d30efd3))
+* **mcp:** scope app sandbox domain per session ([#3183](https://github.com/lobu-ai/lobu/issues/3183)) ([a54d815](https://github.com/lobu-ai/lobu/commit/a54d8153c7262460dd02f34caff501c5bb1b3b50))
+* **photos:** align v1 connector contract ([#3195](https://github.com/lobu-ai/lobu/issues/3195)) ([664f9db](https://github.com/lobu-ai/lobu/commit/664f9dbefb5acc16fede1075dff3f0612dc7d044))
+* **sdk:** align device-aware method signatures ([#3188](https://github.com/lobu-ai/lobu/issues/3188)) ([0c4a89d](https://github.com/lobu-ai/lobu/commit/0c4a89d0b1b6a5986cceaa91712c9178d9544567))
+* **sdk:** document nullable entity schema lookups ([#3178](https://github.com/lobu-ai/lobu/issues/3178)) ([2627d9e](https://github.com/lobu-ai/lobu/commit/2627d9ee3aec24ba3a3d27d22da0033c9229cf5d))
+* **server:** contain escaped browser callback parameters ([#3186](https://github.com/lobu-ai/lobu/issues/3186)) ([4460b85](https://github.com/lobu-ai/lobu/commit/4460b85362c92752904c6a1670ac2de8d6716bf8))
+* **server:** harden connector relationship claims ([#3228](https://github.com/lobu-ai/lobu/issues/3228)) ([5dd31ea](https://github.com/lobu-ai/lobu/commit/5dd31ea0739335c17407f7af6258399e6172f847))
+* **server:** preserve device auto-wire suppression ([#3189](https://github.com/lobu-ai/lobu/issues/3189)) ([39fa7b2](https://github.com/lobu-ai/lobu/commit/39fa7b23554dd47b0c8477722935abddab914a3c))
+* **server:** reject invalid identity scope keys ([#3218](https://github.com/lobu-ai/lobu/issues/3218)) ([09fc772](https://github.com/lobu-ai/lobu/commit/09fc77267722781178eca60aafa03ae4b10cd996))
+* **server:** reject structured tenant scope keys ([#3227](https://github.com/lobu-ai/lobu/issues/3227)) ([5fe58fc](https://github.com/lobu-ai/lobu/commit/5fe58fc0e86717428eec48a7f64643b6465b0d46))
+* **worker-api:** ship bundled code to device workers ([#3220](https://github.com/lobu-ai/lobu/issues/3220)) ([648a495](https://github.com/lobu-ai/lobu/commit/648a4957baf085d505e881734039235cef63fe23))
+
 ## [17.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v17.0.0...lobu-v17.1.0) (2026-08-25)
 
 

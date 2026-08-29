@@ -68,6 +68,10 @@ describe('connector-declared relationships', () => {
                     titlePath: 'metadata.customer_name',
                     identities: [
                       { namespace: 'crm_customer_id', eventPath: 'metadata.customer_id' },
+                      {
+                        namespace: 'email',
+                        eventPath: 'metadata.customer_email',
+                      },
                     ],
                   },
                 },
@@ -181,6 +185,137 @@ describe('connector-declared relationships', () => {
       `connection:${connection.id}:feed:${originId}`,
       'manual',
     ]);
+
+    // A temporarily ambiguous endpoint is not evidence that the source item
+    // withdrew its previous assertion. Preserve the existing connector claim
+    // until every referenced attribution resolves again.
+    const conflictingCustomer = (await workspace.owner.entities.create({
+      type: 'customer',
+      name: 'Rival GmbH',
+    })) as { entity: { id: number } };
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier)
+      VALUES (
+        ${workspace.org.id},
+        ${conflictingCustomer.entity.id},
+        'email',
+        'rival@example.com'
+      )
+    `;
+    const ambiguous = await post('/api/workers/stream', {
+      body: {
+        type: 'batch',
+        run_id: Number(run.id),
+        items: [
+          {
+            id: originId,
+            origin_type: 'invoice',
+            title: 'Invoice INV-1001',
+            payload_text: 'Invoice INV-1001 has an ambiguous customer identity',
+            metadata: {
+              invoice_id: 'inv-1001',
+              invoice_number: 'INV-1001',
+              customer_id: 'cust-42',
+              customer_email: 'rival@example.com',
+              customer_name: 'Acme Ltd',
+            },
+          },
+        ],
+      },
+    });
+    expect(ambiguous.status).toBe(200);
+    const [afterAmbiguousResolution] = await sql`
+      SELECT metadata FROM entity_relationships WHERE id = ${edges[0].id}
+    `;
+    expect(afterAmbiguousResolution.metadata._lobu_claims).toHaveProperty(
+      `connection:${connection.id}:feed:${originId}`
+    );
+
+    // A present but malformed identity is also an unresolved read, not proof
+    // that the source withdrew the endpoint.
+    const malformed = await post('/api/workers/stream', {
+      body: {
+        type: 'batch',
+        run_id: Number(run.id),
+        items: [
+          {
+            id: originId,
+            origin_type: 'invoice',
+            title: 'Invoice INV-1001',
+            payload_text: 'Invoice INV-1001 carries an invalid customer email',
+            metadata: {
+              invoice_id: 'inv-1001',
+              invoice_number: 'INV-1001',
+              customer_email: 'not-an-email',
+              customer_name: 'Acme Ltd',
+            },
+          },
+        ],
+      },
+    });
+    expect(malformed.status).toBe(200);
+    const [afterMalformedIdentity] = await sql`
+      SELECT metadata FROM entity_relationships WHERE id = ${edges[0].id}
+    `;
+    expect(afterMalformedIdentity.metadata._lobu_claims).toHaveProperty(
+      `connection:${connection.id}:feed:${originId}`
+    );
+
+    // An endpoint the item stops mentioning at all IS a withdrawal, and stays
+    // distinct from the unresolved case above: the connector claim is retracted
+    // while the co-owning manual claim keeps the graph fact live.
+    const withdrawn = await post('/api/workers/stream', {
+      body: {
+        type: 'batch',
+        run_id: Number(run.id),
+        items: [
+          {
+            id: originId,
+            origin_type: 'invoice',
+            title: 'Invoice INV-1001',
+            payload_text: 'Invoice INV-1001 no longer names a customer',
+            metadata: { invoice_id: 'inv-1001', invoice_number: 'INV-1001' },
+          },
+        ],
+      },
+    });
+    expect(withdrawn.status).toBe(200);
+    const [afterWithdrawal] = await sql`
+      SELECT deleted_at, metadata FROM entity_relationships WHERE id = ${edges[0].id}
+    `;
+    expect(afterWithdrawal.deleted_at).toBeNull();
+    expect(afterWithdrawal.metadata._lobu_claims).toEqual({ manual: {} });
+
+    // Restore the connector claim for the rest of the lifecycle below.
+    const reasserted = await post('/api/workers/stream', {
+      body: {
+        type: 'batch',
+        run_id: Number(run.id),
+        items: [
+          {
+            id: originId,
+            origin_type: 'invoice',
+            title: 'Invoice INV-1001',
+            payload_text: 'Invoice INV-1001 belongs to Acme Ltd',
+            metadata: {
+              invoice_id: 'inv-1001',
+              invoice_number: 'INV-1001',
+              customer_id: 'cust-42',
+              customer_name: 'Acme Ltd',
+            },
+          },
+        ],
+      },
+    });
+    expect(reasserted.status).toBe(200);
+    const [afterReassertion] = await sql`
+      SELECT metadata FROM entity_relationships WHERE id = ${edges[0].id}
+    `;
+    expect(Object.keys(afterReassertion.metadata._lobu_claims).sort()).toEqual([
+      `connection:${connection.id}:feed:${originId}`,
+      'manual',
+    ]);
+
     await workspace.owner.entities.manage({
       action: 'update_link',
       relationship_id: Number(edges[0].id),

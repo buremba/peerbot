@@ -80,16 +80,6 @@ function buildContentQuery(opts: {
   const attachments = boundAgentContent
     ? boundedAttachmentsSql(a)
     : `${a}.attachments, false AS attachments_truncated, NULL::int AS attachments_bytes`;
-  const metadata = boundAgentContent ? boundedJsonSql(a, 'metadata') : `${a}.metadata`;
-  const interactionInputSchema = boundAgentContent
-    ? boundedJsonSql(a, 'interaction_input_schema')
-    : `${a}.interaction_input_schema`;
-  const interactionInput = boundAgentContent
-    ? boundedJsonSql(a, 'interaction_input')
-    : `${a}.interaction_input`;
-  const interactionOutput = boundAgentContent
-    ? boundedJsonSql(a, 'interaction_output')
-    : `${a}.interaction_output`;
   // The only bounded caller is fetchIncludeSuperseded. Select its page first,
   // then run octet_length/json replacement in the outer projection so large
   // JSON cells outside the page are never measured. Exact-ID reads stay on the
@@ -129,14 +119,14 @@ function buildContentQuery(opts: {
       ${payloadTemplate},
       ${attachments},
       ${a}.score,
-      ${metadata},
+      ${a}.metadata,
       ${a}.created_at,
       COALESCE(${a}.connector_key, c.connector_key) as platform,
       ${a}.interaction_type,
       ${a}.interaction_status,
-      ${interactionInputSchema},
-      ${interactionInput},
-      ${interactionOutput},
+      ${a}.interaction_input_schema,
+      ${a}.interaction_input,
+      ${a}.interaction_output,
       ${a}.interaction_error,
       ${a}.supersedes_event_id,
       ${a}.superseded_by,

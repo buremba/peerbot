@@ -23,6 +23,14 @@ import { TestApiClient } from '../../setup/test-mcp-client';
 
 const HEAD_CHARS = 4_000;
 const LARGE_EVENT_CHARS = 5 * 1024 * 1024;
+const LARGE_CONTROL_VALUE = 'c'.repeat(32 * 1024);
+const LARGE_CONTROL_METADATA = { proposal: { note: LARGE_CONTROL_VALUE } };
+const LARGE_CONTROL_SCHEMA = {
+  type: 'object',
+  properties: { note: { type: 'string', description: LARGE_CONTROL_VALUE } },
+};
+const LARGE_CONTROL_INPUT = { note: LARGE_CONTROL_VALUE };
+const LARGE_CONTROL_OUTPUT = { preview: LARGE_CONTROL_VALUE };
 
 describe('agent-facing content read bounds', () => {
   let owner: TestApiClient;
@@ -76,17 +84,27 @@ describe('agent-facing content read bounds', () => {
       LARGE_EVENT_CHARS - HEAD_CHARS
     )}`;
     const db = getTestDb();
+    const [run] = await db<{ id: number | string }[]>`
+      INSERT INTO runs (organization_id, run_type, status, approval_status)
+      VALUES (${org.id}, 'action', 'pending', 'pending')
+      RETURNING id
+    `;
     const [inserted] = await db<{ id: number | string }[]>`
       INSERT INTO events (
         organization_id, entity_ids, connection_id, feed_id, feed_key,
         origin_id, title, payload_type, payload_text, payload_data, attachments,
-        occurred_at, semantic_type, connector_key, metadata, created_at
+        occurred_at, semantic_type, connector_key, metadata, created_at,
+        interaction_type, interaction_status, interaction_input_schema,
+        interaction_input, interaction_output, run_id
       ) VALUES (
         ${org.id}, ARRAY[${entityId}]::bigint[], ${connection.id}, ${feedId}, 'default',
         'content-bounds-huge', 'Huge document', 'text', ${hugeText},
         ${db.json({ body: 'p'.repeat(32 * 1024) })},
         ${db.json([{ text: 't'.repeat(32 * 1024) }])},
-        NOW() - INTERVAL '1 second', 'content', 'test.connector', '{}'::jsonb, NOW()
+        NOW() - INTERVAL '1 second', 'operation', 'test.connector',
+        ${db.json(LARGE_CONTROL_METADATA)}, NOW(), 'approval', 'pending',
+        ${db.json(LARGE_CONTROL_SCHEMA)}, ${db.json(LARGE_CONTROL_INPUT)},
+        ${db.json(LARGE_CONTROL_OUTPUT)}, ${run.id}
       )
       RETURNING id
     `;
@@ -121,6 +139,10 @@ describe('agent-facing content read bounds', () => {
     expect(huge?.attachments).toEqual([]);
     expect(huge?.attachments_truncated).toBe(true);
     expect(huge?.attachments_bytes).toBeGreaterThan(32 * 1024);
+    expect(huge?.metadata).toEqual(LARGE_CONTROL_METADATA);
+    expect(huge?.interaction_input_schema).toEqual(LARGE_CONTROL_SCHEMA);
+    expect(huge?.interaction_input).toEqual(LARGE_CONTROL_INPUT);
+    expect(huge?.interaction_output).toEqual(LARGE_CONTROL_OUTPUT);
   });
 
   it('applies the same final projection after score ranking', async () => {
@@ -136,6 +158,10 @@ describe('agent-facing content read bounds', () => {
     expect(huge?.payload_data).toEqual({ _truncated: true, bytes: expect.any(Number) });
     expect(huge?.attachments).toEqual([]);
     expect(huge?.attachments_truncated).toBe(true);
+    expect(huge?.metadata).toEqual(LARGE_CONTROL_METADATA);
+    expect(huge?.interaction_input_schema).toEqual(LARGE_CONTROL_SCHEMA);
+    expect(huge?.interaction_input).toEqual(LARGE_CONTROL_INPUT);
+    expect(huge?.interaction_output).toEqual(LARGE_CONTROL_OUTPUT);
   });
 
   it('bounds the historical listing after selecting its page', async () => {
@@ -149,6 +175,10 @@ describe('agent-facing content read bounds', () => {
     expect(huge?.payload_truncated).toBe(true);
     expect(huge?.payload_data).toEqual({ _truncated: true, bytes: expect.any(Number) });
     expect(huge?.attachments).toEqual([]);
+    expect(huge?.metadata).toEqual(LARGE_CONTROL_METADATA);
+    expect(huge?.interaction_input_schema).toEqual(LARGE_CONTROL_SCHEMA);
+    expect(huge?.interaction_input).toEqual(LARGE_CONTROL_INPUT);
+    expect(huge?.interaction_output).toEqual(LARGE_CONTROL_OUTPUT);
   });
 
   it('keeps the same event full on an explicit content_ids read', async () => {

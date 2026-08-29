@@ -177,7 +177,6 @@ async function currentHead(
      FROM events
      WHERE entity_ids @> ARRAY[${entityId}]::bigint[]
        AND semantic_type IN ('poll_opened', 'poll_closed')
-       AND superseded_by IS NULL
      ORDER BY id DESC
      LIMIT 2`
   )) as Array<{

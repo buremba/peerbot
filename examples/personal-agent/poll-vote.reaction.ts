@@ -82,6 +82,17 @@ function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
+function responseSlug(platform: string, actorId: string): string {
+  const hex = (value: string) => {
+    let encoded = "";
+    for (let index = 0; index < value.length; index += 1) {
+      encoded += value.charCodeAt(index).toString(16).padStart(4, "0");
+    }
+    return encoded;
+  };
+  return `actor-${hex(platform)}-${hex(actorId)}`;
+}
+
 function pollState(value: unknown): PollState | null {
   const row = objectValue(value);
   const options = Array.isArray(row.options)
@@ -281,7 +292,7 @@ async function upsertResponse(params: {
     type: "poll-response",
     name: params.actorName,
     parent_id: params.pollEntityId,
-    slug: `${encodeURIComponent(params.platform)}-${encodeURIComponent(params.actorId)}`,
+    slug: responseSlug(params.platform, params.actorId),
     metadata,
   });
 }

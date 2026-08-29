@@ -256,7 +256,7 @@ describe("poll vote reaction", () => {
     expect(poll.responses()).toHaveLength(1);
   });
 
-  test("scopes response identity to the poll and platform actor", async () => {
+  test("scopes response identity with a contract-valid platform actor slug", async () => {
     const poll = harness();
     await poll.vote({
       actorId: "users/ada@example.com",
@@ -270,8 +270,9 @@ describe("poll vote reaction", () => {
       type: "poll-response",
       name: "Ada",
       parent_id: 77,
-      slug: "gchat-users%2Fada%40example.com",
+      slug: "actor-00670063006800610074-00750073006500720073002f0061006400610040006500780061006d0070006c0065002e0063006f006d",
     });
+    expect(poll.createdResponses[0]?.slug).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
   });
 
   test("materializes two actors, a vote change, and quorum closure", async () => {

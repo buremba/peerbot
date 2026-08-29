@@ -1605,9 +1605,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //     bundles totalled ~384 MB).
   //   - Device workers and DB-only user-uploaded connectors don't have the
   //     source on disk. When their version has stored TypeScript code, the
-  //     gateway ships `compiled_code` inline. Metadata-only device manifests
-  //     are implemented natively by the device bridge and need no bundle.
-  //     We check the gateway-local
+  //     gateway ships `compiled_code` inline. A metadata-only device manifest
+  //     needs no bundle only when it is an attested native-bridge run, or when
+  //     the gateway has no connector source it could deliver. We check the
+  //     gateway-local
   //     `findBundledConnectorFile` (different filesystem layout from the
   //     worker image — see worker-side resolver in
   //     connector-worker/src/compile-connector.ts) to decide whether the

@@ -548,6 +548,52 @@ export async function reconcileConnectorRelationshipClaims(
       left.toEntityId - right.toEntityId ||
       left.relationshipTypeId - right.relationshipTypeId
   );
+
+  // A move asserts the new triple before retracting the old one. Lock both the
+  // desired existing rows and every row this source currently owns in one
+  // ascending-id pass, so two sources swapping edges cannot each hold their
+  // destination while waiting to retract the other's source row.
+  //
+  // The two candidate sets are collected separately so each keeps its own index
+  // (`idx_entity_relationships_live_triple` and `idx_entity_relationships_live_claims`).
+  // ORing them in a single predicate turns this into a scan of the org's whole
+  // live edge set, once per ingested item.
+  const desiredFroms = orderedEdges.map((edge) => edge.fromEntityId);
+  const desiredTos = orderedEdges.map((edge) => edge.toEntityId);
+  const desiredTypeIds = orderedEdges.map((edge) => edge.relationshipTypeId);
+  await tx`
+    WITH desired(from_entity_id, to_entity_id, relationship_type_id) AS (
+      SELECT *
+      FROM unnest(
+        ${pgBigintArray(desiredFroms)}::bigint[],
+        ${pgBigintArray(desiredTos)}::bigint[],
+        ${pgBigintArray(desiredTypeIds)}::bigint[]
+      )
+    ),
+    candidates AS (
+      SELECT r.id
+      FROM desired d
+      JOIN entity_relationships r
+        ON r.from_entity_id = d.from_entity_id
+       AND r.to_entity_id = d.to_entity_id
+       AND r.relationship_type_id = d.relationship_type_id
+      WHERE r.organization_id = ${params.organizationId}
+        AND r.deleted_at IS NULL
+      UNION
+      SELECT r.id
+      FROM entity_relationships r
+      WHERE r.organization_id = ${params.organizationId}
+        AND r.deleted_at IS NULL
+        AND r.metadata ? ${RELATIONSHIP_CLAIMS_METADATA_KEY}
+        AND (r.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}) ? ${claimKey}
+    )
+    SELECT r.id
+    FROM entity_relationships r
+    WHERE r.id IN (SELECT id FROM candidates)
+    ORDER BY r.id
+    FOR UPDATE OF r
+  `;
+
   for (const edge of orderedEdges) {
     const asserted = await mergeRelationshipClaim(tx, {
       organizationId: params.organizationId,

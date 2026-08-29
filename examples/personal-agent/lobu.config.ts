@@ -538,6 +538,17 @@ const poll = defineEntityType({
       description:
         "A trusted vote or vote change appended by an interactive surface",
     },
+    poll_response_recorded: {
+      description:
+        "The current derived choice for one trusted platform actor; vote changes supersede it",
+      metadataSchema: Type.Object({
+        platform: Type.String({ minLength: 1, maxLength: 50 }),
+        actor_id: Type.String({ minLength: 1, maxLength: 500 }),
+        choice: Type.String({ minLength: 1, maxLength: 100 }),
+        vote_event_id: Type.Integer({ minimum: 1 }),
+        updated_at: Type.String({ format: "date-time" }),
+      }),
+    },
     poll_closed: {
       description: "A terminal poll result",
       metadataSchema: pollStateSchema,

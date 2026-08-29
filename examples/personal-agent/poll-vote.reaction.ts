@@ -243,26 +243,92 @@ async function updatePollEntity(
   });
 }
 
+async function currentResponseEvent(
+  entityId: number,
+  platform: string,
+  actorId: string,
+  client: ReactionClient
+): Promise<{ id: number; voteEventId: number } | null> {
+  const rows = (await client.query(
+    `SELECT id, metadata
+     FROM events
+     WHERE entity_ids @> ARRAY[${entityId}]::bigint[]
+       AND semantic_type = 'poll_response_recorded'
+       AND metadata->>'platform' = ${sqlLiteral(platform)}
+       AND metadata->>'actor_id' = ${sqlLiteral(actorId)}
+     ORDER BY id DESC
+     LIMIT 2`
+  )) as Array<{ id: number | string; metadata: unknown }>;
+  if (rows.length > 1) {
+    throw new Error("Ambiguous current poll response projection");
+  }
+  if (!rows[0]) return null;
+  const id = positiveInteger(rows[0].id);
+  const voteEventId = positiveInteger(
+    objectValue(rows[0].metadata).vote_event_id
+  );
+  if (id == null || voteEventId == null) {
+    throw new Error("Invalid current poll response projection");
+  }
+  return { id, voteEventId };
+}
+
+async function upsertResponseEvent(params: {
+  ctx: ReactionContext;
+  pollEntityId: number;
+  platform: string;
+  actorId: string;
+  choice: string;
+  trigger: TriggerEvent;
+  client: ReactionClient;
+}): Promise<void> {
+  const current = await currentResponseEvent(
+    params.pollEntityId,
+    params.platform,
+    params.actorId,
+    params.client
+  );
+  if (current && current.voteEventId >= params.trigger.id) return;
+  await params.client.knowledge.save({
+    entity_ids: [params.pollEntityId],
+    content: `Current poll response from vote event ${params.trigger.id}.`,
+    semantic_type: "poll_response_recorded",
+    payload_type: "empty",
+    metadata: {
+      platform: params.platform,
+      actor_id: params.actorId,
+      choice: params.choice,
+      vote_event_id: params.trigger.id,
+      updated_at: params.trigger.occurred_at,
+    },
+    ...(current ? { supersedes_event_id: current.id } : {}),
+    idempotency_key: `poll-response:${params.pollEntityId}:vote:${params.trigger.id}`,
+    automation_source: {
+      automation_id: params.ctx.window.automation_id,
+      run_id: params.ctx.window.run_id,
+    },
+  });
+}
+
 async function resultsForPoll(
   entityId: number,
   options: string[],
   closesAt: string,
   client: ReactionClient
 ): Promise<{ results: PollResult[]; responseCount: number }> {
+  // client.query reads the governed current-event view, so this scan is bounded
+  // to one live projection per actor rather than the append-only vote history.
   const rows = (await client.query(
     `WITH latest AS (
-       SELECT metadata->'interaction'->>'value' AS choice,
+       SELECT metadata->>'choice' AS choice,
               row_number() OVER (
-                PARTITION BY metadata->'interaction'->'actor'->>'platform',
-                             metadata->'interaction'->'actor'->>'id'
-                ORDER BY occurred_at DESC, id DESC
+                PARTITION BY metadata->>'platform', metadata->>'actor_id'
+                ORDER BY (metadata->>'updated_at') DESC, id DESC
               ) AS rank
        FROM events
        WHERE entity_ids @> ARRAY[${entityId}]::bigint[]
-         AND semantic_type = 'poll_vote_cast'
-         AND origin_type = 'template_interaction'
-         AND occurred_at < ${sqlLiteral(closesAt)}::timestamptz
-         AND metadata->'interaction'->>'action' = 'vote'
+         AND semantic_type = 'poll_response_recorded'
+         AND (metadata->>'updated_at')::timestamptz < ${sqlLiteral(closesAt)}::timestamptz
      )
      SELECT choice, count(*)::int AS count
      FROM latest
@@ -321,6 +387,17 @@ export default async function reducePollVote(
   if (alreadyClosed && deadlineReached) {
     await updatePollEntity(entityId, head.metadata, client);
     return;
+  }
+  if (!deadlineReached) {
+    await upsertResponseEvent({
+      ctx,
+      pollEntityId: entityId,
+      platform,
+      actorId,
+      choice,
+      trigger,
+      client,
+    });
   }
 
   const { results, responseCount } = await resultsForPoll(

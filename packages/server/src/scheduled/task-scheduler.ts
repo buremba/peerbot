@@ -12,7 +12,8 @@
  *
  * The TaskScheduler collapses all of that into a single concept: every
  * platform-side scheduled or lazy job is a *task* with a registered handler.
- * Tasks live as rows in `public.runs` (run_type='task', queue_name='task'),
+ * Tasks live as rows in `public.runs` (run_type='task', queue_name='task' or a
+ * rollout-safe `task:<name>` lane),
  * which gives us — for free — claim semantics, retry/backoff, heartbeats,
  * idempotency-key dedup, observability via the existing runs/operations
  * dashboards, and LISTEN/NOTIFY wakeups via the existing runs-queue.
@@ -46,7 +47,10 @@ import { incrementCounter } from '../gateway/metrics/prometheus';
 import { notifyChannelFor } from '../gateway/infrastructure/queue/runs-queue';
 import type { IMessageQueue, QueueJob } from '../gateway/infrastructure/queue/types';
 import { nextRunAt } from '../utils/cron';
-import { isTransactionalTaskName } from './task-definitions';
+import {
+  isTransactionalTaskName,
+  taskQueueName,
+} from './task-definitions';
 
 const logger = createLogger('task-scheduler');
 
@@ -57,6 +61,8 @@ interface TaskContext<P = unknown> {
   payload: P;
   /** runs.id — useful for correlating logs. */
   taskRunId: number;
+  /** One-based delivery attempt for this task run. */
+  attempt: number;
 }
 
 type TaskHandler<P = unknown> = (ctx: TaskContext<P>) => Promise<void>;
@@ -97,6 +103,8 @@ interface TransactionalTask<P = unknown> {
     maxAttempts?: number;
     priority?: number;
     organizationId?: string;
+    automationId?: number;
+    parentRunId?: number;
   };
 }
 
@@ -106,16 +114,16 @@ interface TransactionalTask<P = unknown> {
  * nested transaction and acquires no domain/Automation locks. Postgres holds the
  * NOTIFY until the caller commits; the queue poller remains the fallback if
  * notification delivery fails. Domain writers persist a bounded set of rows in
- * one transaction, so the whole batch takes one INSERT and one NOTIFY rather
- * than a database round-trip per row. Transactional handoffs deliberately have
- * no expiry: if every worker is unavailable, the durable row must remain until
- * it is claimed.
+ * one transaction, so the whole batch takes one INSERT and one NOTIFY per queue
+ * lane rather than a database round-trip per row. Transactional handoffs
+ * deliberately have no expiry: if every worker is unavailable, the durable row
+ * must remain until it is claimed.
  */
 export async function enqueueTasksInTransaction<P>(
   tx: DbClient,
   tasks: TransactionalTask<P>[],
-): Promise<void> {
-  if (tasks.length === 0) return;
+): Promise<Map<string, number>> {
+  if (tasks.length === 0) return new Map();
   const unknownTask = tasks.find((task) => !isTransactionalTaskName(task.name));
   if (unknownTask) {
     throw new Error(
@@ -124,43 +132,54 @@ export async function enqueueTasksInTransaction<P>(
   }
   const requested = tasks.map(({ name, payload, opts }) => ({
     name,
+    queue_name: taskQueueName(name),
     data: { name, payload } satisfies TaskJobData,
     idempotency_key: opts.idempotencyKey,
     max_attempts: opts.maxAttempts ?? 5,
     priority: opts.priority ?? 0,
     organization_id: opts.organizationId ?? null,
+    automation_id: opts.automationId ?? null,
+    parent_run_id: opts.parentRunId ?? null,
   }));
   await tx`
     INSERT INTO public.runs (
       run_type, queue_name, action_key, action_input, idempotency_key,
       max_attempts, attempts, status, run_at, priority, expires_at,
-      organization_id
+      organization_id, automation_id, parent_run_id
     )
     SELECT
-      'task', ${TASK_QUEUE_NAME}, task.name, task.data, task.idempotency_key,
+      'task', task.queue_name, task.name, task.data, task.idempotency_key,
       task.max_attempts, 0, 'pending', now(), task.priority, NULL,
-      task.organization_id
+      task.organization_id, task.automation_id, task.parent_run_id
     FROM jsonb_to_recordset(${tx.json(requested)}::jsonb) AS task(
       name text,
+      queue_name text,
       data jsonb,
       idempotency_key text,
       max_attempts integer,
       priority integer,
-      organization_id text
+      organization_id text,
+      automation_id bigint,
+      parent_run_id bigint
     )
     ON CONFLICT (idempotency_key)
       WHERE idempotency_key IS NOT NULL
         AND status IN ('pending', 'claimed', 'running')
     DO NOTHING
   `;
-  const keys = requested.map((task) => task.idempotency_key);
-  const resolved = await tx<{ idempotency_key: string }>`
-    SELECT r.idempotency_key
+  const resolved = await tx<{
+    id: number | string;
+    idempotency_key: string;
+  }>`
+    SELECT r.id, r.idempotency_key
     FROM public.runs r
-    JOIN jsonb_array_elements_text(${tx.json(keys)}::jsonb) requested(key)
-      ON requested.key = r.idempotency_key
+    JOIN jsonb_to_recordset(${tx.json(requested)}::jsonb) requested(
+      idempotency_key text,
+      queue_name text
+    )
+      ON requested.idempotency_key = r.idempotency_key
+     AND requested.queue_name = r.queue_name
     WHERE r.run_type = 'task'
-      AND r.queue_name = ${TASK_QUEUE_NAME}
       AND r.status IN ('pending', 'claimed', 'running')
   `;
   const resolvedKeys = new Set(resolved.map((row) => row.idempotency_key));
@@ -172,7 +191,12 @@ export async function enqueueTasksInTransaction<P>(
       `Failed to enqueue transactional task "${missingTask.name}"`,
     );
   }
-  await tx`SELECT pg_notify(${notifyChannelFor(TASK_QUEUE_NAME)}, ${TASK_QUEUE_NAME})`;
+  for (const queueName of new Set(requested.map((task) => task.queue_name))) {
+    await tx`SELECT pg_notify(${notifyChannelFor(queueName)}, ${queueName})`;
+  }
+  return new Map(
+    resolved.map((row) => [row.idempotency_key, Number(row.id)]),
+  );
 }
 
 interface TaskRegistration {
@@ -224,7 +248,7 @@ export class TaskScheduler {
     const delayMs = opts?.runAt
       ? Math.max(0, opts.runAt.getTime() - Date.now())
       : 0;
-    return this.queue.send(TASK_QUEUE_NAME, data, {
+    return this.queue.send(taskQueueName(name), data, {
       singletonKey: opts?.idempotencyKey,
       delayMs,
       retryLimit: opts?.maxAttempts,
@@ -256,7 +280,13 @@ export class TaskScheduler {
       }
     }
 
-    await this.queue.work<TaskJobData>(TASK_QUEUE_NAME, (job) => this.dispatch(job));
+    const queueNames = new Set([
+      TASK_QUEUE_NAME,
+      ...[...this.handlers.keys()].map(taskQueueName),
+    ]);
+    for (const queueName of queueNames) {
+      await this.queue.work<TaskJobData>(queueName, (job) => this.dispatch(job));
+    }
 
     const periodic = [...this.handlers.values()].filter((r) => r.cron).length;
     logger.info(
@@ -339,6 +369,7 @@ export class TaskScheduler {
       await reg.handler({
         payload: data.payload,
         taskRunId: Number(job.id),
+        attempt: (job.attempt ?? 0) + 1,
       });
       // Label is `task`, NOT `job`: Prometheus reserves `job` for the scrape
       // target and overwrites any same-named metric label, which silently
@@ -376,7 +407,7 @@ export class TaskScheduler {
       payload: {},
       __scheduledTick: tick.toISOString(),
     };
-    await this.queue.send(TASK_QUEUE_NAME, data, {
+    await this.queue.send(taskQueueName(reg.name), data, {
       singletonKey: cronSeedKey(reg.name, tick),
       delayMs,
       actionKey: reg.name,

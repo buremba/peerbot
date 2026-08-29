@@ -25,6 +25,10 @@ import {
   enqueueTasksInTransaction,
   TaskScheduler,
 } from "../task-scheduler";
+import {
+  AUTOMATION_REACTION_TASK,
+  AUTOMATION_REACTION_TASK_QUEUE,
+} from "../task-definitions";
 
 interface SentRecord {
   queueName: string;
@@ -122,6 +126,16 @@ describe("TaskScheduler.spawn", () => {
     expect(delayMs).toBeGreaterThan(55_000);
     expect(delayMs).toBeLessThanOrEqual(60_000);
   });
+
+  test("uses a rollout-safe dedicated lane for Automation reactions", async () => {
+    const queue = new FakeQueue();
+    const scheduler = new TaskScheduler(queue);
+    scheduler.register(AUTOMATION_REACTION_TASK, async () => {});
+
+    await scheduler.spawn(AUTOMATION_REACTION_TASK, { sourceRunId: 42 });
+
+    expect(queue.sent[0]?.queueName).toBe(AUTOMATION_REACTION_TASK_QUEUE);
+  });
 });
 
 describe("enqueueTasksInTransaction", () => {
@@ -177,17 +191,36 @@ describe("TaskScheduler.start (cron seeding)", () => {
     await scheduler.start();
     expect(queue.sent).toHaveLength(1);
   });
+
+  test("registers the Automation reaction lane only when its handler exists", async () => {
+    const withoutReactionQueue = new FakeQueue();
+    await new TaskScheduler(withoutReactionQueue).start();
+    expect(
+      withoutReactionQueue.workers.has(AUTOMATION_REACTION_TASK_QUEUE),
+    ).toBe(false);
+
+    const withReactionQueue = new FakeQueue();
+    const scheduler = new TaskScheduler(withReactionQueue);
+    scheduler.register(AUTOMATION_REACTION_TASK, async () => {});
+    await scheduler.start();
+
+    expect(withReactionQueue.workers.has(AUTOMATION_REACTION_TASK_QUEUE)).toBe(
+      true,
+    );
+  });
 });
 
 describe("TaskScheduler.dispatch", () => {
-  test("routes to the registered handler with payload + run id", async () => {
+  test("routes payload, run id, and one-based attempt to the handler", async () => {
     const queue = new FakeQueue();
     const scheduler = new TaskScheduler(queue);
     let received: unknown = null;
     let receivedRunId: number | null = null;
+    let receivedAttempt: number | null = null;
     scheduler.register("foo", async (ctx) => {
       received = ctx.payload;
       receivedRunId = ctx.taskRunId;
+      receivedAttempt = ctx.attempt;
     });
     await scheduler.start();
 
@@ -197,11 +230,13 @@ describe("TaskScheduler.dispatch", () => {
       id: "42",
       data: { name: "foo", payload: { x: 1 } },
       name: "task",
+      attempt: 1,
     };
     await handler(job);
 
     expect(received).toEqual({ x: 1 });
     expect(receivedRunId).toBe(42);
+    expect(receivedAttempt).toBe(2);
   });
 
   test("seeds next cron tick BEFORE running the handler", async () => {

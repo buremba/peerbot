@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { reactionErrorIsNonTransient } from '../../../tools/admin/manage_automations/complete-window';
+import { reactionErrorIsNonTransient } from '../../../automations/reaction-task';
 
 describe('reactionErrorIsNonTransient', () => {
   it('classifies deterministic sandbox failures as non-retryable', () => {

@@ -66,6 +66,18 @@ function positiveInteger(value: unknown): number | null {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function positiveIntegerList(value: unknown): number[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string" && /^\{\d+(,\d+)*\}$/.test(value)
+      ? value.slice(1, -1).split(",")
+      : [];
+  return values.flatMap((item) => {
+    const parsed = positiveInteger(item);
+    return parsed == null ? [] : [parsed];
+  });
+}
+
 function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -133,12 +145,7 @@ async function readTrigger(
   if (id == null) return null;
   return {
     id,
-    entity_ids: Array.isArray(row.entity_ids)
-      ? row.entity_ids.flatMap((value) => {
-          const parsed = positiveInteger(value);
-          return parsed == null ? [] : [parsed];
-        })
-      : [],
+    entity_ids: positiveIntegerList(row.entity_ids),
     origin_type: typeof row.origin_type === "string" ? row.origin_type : null,
     occurred_at: typeof row.occurred_at === "string" ? row.occurred_at : "",
     metadata: objectValue(row.metadata),

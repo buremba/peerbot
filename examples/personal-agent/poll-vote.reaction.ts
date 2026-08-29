@@ -280,6 +280,8 @@ async function upsertResponse(params: {
   await client.entities.create({
     type: "poll-response",
     name: params.actorName,
+    parent_id: params.pollEntityId,
+    slug: `${encodeURIComponent(params.platform)}-${encodeURIComponent(params.actorId)}`,
     metadata,
   });
 }

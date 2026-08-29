@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   CONTENT_JSON_MAX_BYTES,
   CONTENT_TEXT_HEAD_CHARS,
-  QUERY_SQL_ROWS_MAX_BYTES,
+  QUERY_SQL_RESULT_MAX_BYTES,
   finalizeDynamicQueryRows,
 } from '../../utils/content-read-bounds';
 
@@ -75,7 +75,7 @@ describe('finalizeDynamicQueryRows', () => {
 
     expect(result.omittedRows).toBeGreaterThan(0);
     expect(Buffer.byteLength(JSON.stringify(result.rows), 'utf8')).toBeLessThanOrEqual(
-      QUERY_SQL_ROWS_MAX_BYTES
+      QUERY_SQL_RESULT_MAX_BYTES
     );
   });
 });

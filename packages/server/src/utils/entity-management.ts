@@ -112,7 +112,7 @@ export async function queryDerivedEntityView(
 		undefined,
 		ctx,
 		options?.preservePageRows
-			? { maxSerializedRowsBytes: Number.POSITIVE_INFINITY }
+			? { maxSerializedResultBytes: Number.POSITIVE_INFINITY }
 			: undefined,
 	);
 }

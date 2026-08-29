@@ -219,6 +219,46 @@ describe('agent-facing content read bounds', () => {
     expect(defaultHuge).toHaveProperty('interaction_type');
     expect(defaultHuge).toHaveProperty('run_id');
 
+    const customCreated = (await owner.automations.create({
+      entity_id: entityId,
+      slug: 'content-bounds-custom-sql-automation',
+      name: 'Content Bounds Custom SQL Automation',
+      prompt: 'Summarize {{content}}.',
+      agent_id: agentId,
+      sources: [
+        {
+          name: 'content',
+          query: `SELECT id, payload_text, payload_data, attachments, occurred_at
+            FROM events WHERE feed_id = ${feedId} ORDER BY occurred_at DESC`,
+        },
+      ],
+    })) as { automation_id: string };
+    const customResult = (await owner.knowledge.read({
+      automation_id: Number(customCreated.automation_id),
+      since: 'today',
+      until: 'today',
+      limit: 50,
+    })) as {
+      content: Array<Record<string, unknown>>;
+      sources: Record<string, Array<Record<string, unknown>>>;
+      total_count_chars: number;
+    };
+    const customSourceHuge = customResult.sources.content.find(
+      (row) => Number(row.id) === hugeEventId
+    );
+    const customContentHuge = customResult.content.find(
+      (row) => Number(row.id) === hugeEventId
+    );
+    expect(customSourceHuge?.payload_truncated).toBe(true);
+    expect(customSourceHuge?.content_length).toBe(LARGE_EVENT_CHARS);
+    expect(customSourceHuge?.payload_data).toEqual({
+      _truncated: true,
+      bytes: expect.any(Number),
+    });
+    expect(customSourceHuge?.attachments).toBeNull();
+    expect(customContentHuge?.payload_truncated).toBe(true);
+    expect(customResult.total_count_chars).toBeGreaterThanOrEqual(LARGE_EVENT_CHARS);
+
     const exact = (await owner.knowledge.read({
       automation_id: Number(created.automation_id),
       content_ids: [hugeEventId],

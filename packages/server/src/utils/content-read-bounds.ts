@@ -5,11 +5,11 @@
  * aggregate query_sql limits are internal serialization guards, deliberately
  * not configuration or public API: 16 KiB keeps nested values useful while
  * preventing one JSONB cell from dwarfing the text head, and the 1 MiB
- * row-list ceiling matches the existing sandbox script-output ceiling.
+ * response ceiling matches the existing sandbox script-output ceiling.
  */
 export const CONTENT_TEXT_HEAD_CHARS = 4_000;
 export const CONTENT_JSON_MAX_BYTES = 16 * 1024;
-export const QUERY_SQL_ROWS_MAX_BYTES = 1_048_576;
+export const QUERY_SQL_RESULT_MAX_BYTES = 1_048_576;
 
 const TRUNCATION_SUFFIX = '… [truncated]';
 const SAFE_SQL_REF = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -117,7 +117,7 @@ function assignGeneratedSidecar(
  */
 export function finalizeDynamicQueryRows(
   inputRows: Record<string, unknown>[],
-  maxSerializedBytes = QUERY_SQL_ROWS_MAX_BYTES
+  maxSerializedBytes = QUERY_SQL_RESULT_MAX_BYTES
 ): FinalizedDynamicRows {
   const boundedRows: Record<string, unknown>[] = [];
   const sidecarCollisions = new Set<string>();

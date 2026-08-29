@@ -546,10 +546,10 @@ export async function normalizeAutomationSources(
       normalized.push({
         ...source,
         kind: source.context ? 'entity' : 'event',
-        // The default source historically exposes every events column. Preserve
-        // that projection and bound only its selected page in the JS fallback.
-        dynamicEventProjection:
-          !source.context && source.query === DEFAULT_AUTOMATION_SOURCE_QUERY,
+        // Custom event SQL owns its projection, so preserve that projection and
+        // bound its selected page at the shared dynamic-row chokepoint. Context
+        // SQL is not event content and keeps its authored values unchanged.
+        dynamicEventProjection: !source.context,
       });
       continue;
     }

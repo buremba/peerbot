@@ -65,6 +65,8 @@ interface ContentQueryParams {
   entityIds?: number[];
   query?: Record<string, string>;
   minimumSourceLimits?: Record<string, number>;
+  /** Exact event-pointer sources that deliberately retain full-fidelity rows. */
+  fullFidelitySourceNames?: string[];
   /**
    * The Automation these sources belong to. Its own output is excluded from the
    * result — see `excludeProducedByAutomationId` in execute-data-sources.
@@ -125,8 +127,14 @@ async function queryContentData(
       .filter((source) => source.controlledEventProjection)
       .map((source) => source.name)
   );
+  const fullFidelitySourceNames = new Set(params.fullFidelitySourceNames ?? []);
   const dynamicEventSourceNames = new Set(
-    normalizedSources.filter((source) => source.dynamicEventProjection).map((source) => source.name)
+    normalizedSources
+      .filter(
+        (source) =>
+          source.dynamicEventProjection && !fullFidelitySourceNames.has(source.name)
+      )
+      .map((source) => source.name)
   );
   const sqlSources = normalizedSources
     .filter((source) => source.kind !== 'metric')
@@ -208,10 +216,17 @@ async function queryContentData(
       // selected this page. Keep the limit+1 sentinel so sources_page and the
       // chronological cursor retain their existing row-count contract.
       const sourceRows = (results[sourceName] ?? []) as Record<string, unknown>[];
-      results[sourceName] = finalizeDynamicQueryRows(
+      const finalized = finalizeDynamicQueryRows(
         sourceRows,
         Number.POSITIVE_INFINITY
-      ).rows;
+      );
+      if (finalized.sidecarCollisions.length > 0) {
+        throw new ToolUserError(
+          `Automation source "${sourceName}" cannot add truncation metadata because its projection defines incompatible sidecar column(s): ${finalized.sidecarCollisions.join(', ')}. Rename those aliases and retry.`,
+          422
+        );
+      }
+      results[sourceName] = finalized.rows;
     }
   }
 
@@ -271,9 +286,10 @@ async function queryContentData(
   if (statsEventSources.length > 0) {
     const statsSources = statsEventSources.map((source, idx) => {
       const alias = `__stats_s_${idx}`;
-      const charsExpr = source.controlledEventProjection || source.dynamicEventProjection
-        ? `${alias}.content_length`
-        : `LENGTH(to_jsonb(${alias})->>'payload_text')`;
+      const charsExpr =
+        source.controlledEventProjection || source.query === DEFAULT_AUTOMATION_SOURCE_QUERY
+          ? `${alias}.content_length`
+          : `LENGTH(to_jsonb(${alias})->>'payload_text')`;
       return {
         name: `__stats_${idx}`,
         // security-allowed: source.query is an internally-built SQL fragment
@@ -837,6 +853,9 @@ export async function handleAutomationMode(
         : undefined,
     minimumSourceLimits: triggerInputSourceName
       ? { [triggerInputSourceName]: triggerContentIds.length }
+      : undefined,
+    fullFidelitySourceNames: triggerInputSourceName
+      ? [triggerInputSourceName]
       : undefined,
     automationId: Number(automation.id),
     throwOnSourceError: context.throwOnSourceError,

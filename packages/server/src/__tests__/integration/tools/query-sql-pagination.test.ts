@@ -19,7 +19,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { querySql } from '../../../tools/admin/query_sql';
 import type { ToolContext } from '../../../tools/registry';
-import { QUERY_SQL_ROWS_MAX_BYTES } from '../../../utils/content-read-bounds';
+import { QUERY_SQL_RESULT_MAX_BYTES } from '../../../utils/content-read-bounds';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -95,8 +95,8 @@ describe('query_sql internal-path pagination contract', () => {
     expect(res.rows.length).toBeLessThan(500);
     expect(res.omitted_rows).toBe(500 - res.rows.length);
     expect(res.has_more).toBe(true);
-    expect(Buffer.byteLength(JSON.stringify(res.rows), 'utf8')).toBeLessThanOrEqual(
-      QUERY_SQL_ROWS_MAX_BYTES
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_RESULT_MAX_BYTES
     );
   });
 
@@ -135,6 +135,63 @@ describe('query_sql internal-path pagination contract', () => {
     expect(res.error_code).toBe('VALIDATION');
     expect(res.retryable).toBe(false);
     expect(res.error).toContain('Select fewer or narrower columns');
+  });
+
+  it('counts the response envelope when deciding whether one bounded row fits', async () => {
+    const wideColumns = Array.from(
+      { length: 260 },
+      (_, index) => `repeat('x', 4000) AS pad_${index}`
+    ).join(', ');
+    const res = await querySql(
+      { title: 'W'.repeat(200), sql: `SELECT ${wideColumns}`, limit: 1 },
+      {},
+      ownerCtx
+    );
+
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.sql).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_RESULT_MAX_BYTES
+    );
+  });
+
+  it('fails closed within the ceiling when an empty result has an oversized echoed SQL envelope', async () => {
+    const oversizedComment = 'x'.repeat(QUERY_SQL_RESULT_MAX_BYTES);
+    const res = await querySql(
+      {
+        title: 'T'.repeat(200),
+        sql: `/* ${oversizedComment} */ SELECT 1 AS id WHERE false`,
+        limit: 1,
+      },
+      {},
+      ownerCtx
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.error).toContain('response envelope exceeds');
+    expect(res.sql).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_RESULT_MAX_BYTES
+    );
+  });
+
+  it('routes oversized early validation errors through the same response ceiling', async () => {
+    const res = await querySql(
+      {
+        sql: 'SELECT 1 AS id',
+        sort_by: `${'x'.repeat(QUERY_SQL_RESULT_MAX_BYTES)}-`,
+      },
+      {},
+      ownerCtx
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.error).toContain('response envelope exceeds');
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_RESULT_MAX_BYTES
+    );
   });
 
   it('keeps total_count exact on an out-of-range offset (empty page fallback)', async () => {

@@ -21,7 +21,7 @@ import { isAdminOrOwnerRole, isInProcessSystemCall } from '../access-control';
 import { classifyToolError, getErrorMessage, isRetryable, type ToolErrorCode } from "@lobu/core";
 import { ToolUserError } from '../../utils/errors';
 import {
-  QUERY_SQL_ROWS_MAX_BYTES,
+  QUERY_SQL_RESULT_MAX_BYTES,
   finalizeDynamicQueryRows,
 } from '../../utils/content-read-bounds';
 import { resolveGrantedWorkspaceTarget } from '../../auth/oauth/workspace-grants';
@@ -169,19 +169,64 @@ interface QuerySqlResult {
 }
 
 /**
- * Final response chokepoint for every successful dynamic SELECT * branch
- * (internal scoped SQL and external connection pushdown). The database/source
- * columns remain typed; only oversized final cells are replaced.
+ * Final response chokepoint for every QuerySqlResult branch, including soft
+ * validation/database errors. Successful database/source columns remain typed;
+ * only oversized final cells are replaced.
  */
 function finalizeQuerySqlResult(
   result: QuerySqlResult,
-  maxSerializedRowsBytes?: number
+  maxSerializedResultBytes = QUERY_SQL_RESULT_MAX_BYTES
 ): QuerySqlResult {
+  const additiveColumns = [
+    ['payload_truncated', 'boolean'],
+    ['content_length', 'integer'],
+    ['attachments_truncated', 'boolean'],
+    ['attachments_bytes', 'integer'],
+  ] as const;
+  const possibleColumns = [...result.columns];
+  const possibleColumnNames = new Set(possibleColumns.map((column) => column.name));
+  if (result.rows.length > 0) {
+    for (const [name, type] of additiveColumns) {
+      if (possibleColumnNames.has(name)) continue;
+      possibleColumns.push({ name, type });
+      possibleColumnNames.add(name);
+    }
+  }
+
+  // Reserve the complete response envelope before admitting rows. The
+  // possible sidecars and omitted_rows are deliberately pessimistic; the
+  // actual response can only be smaller than this budget calculation.
+  const envelope = {
+    ...result,
+    rows: [],
+    columns: possibleColumns,
+    has_more: false,
+    ...(result.rows.length > 0 ? { omitted_rows: result.rows.length } : {}),
+  };
+  const envelopeBytes = Buffer.byteLength(JSON.stringify(envelope), 'utf8') - 2; // []
+  const maxSerializedRowsBytes = maxSerializedResultBytes - envelopeBytes;
+  const resultTooLarge = (message: string, totalCount = result.total_count): QuerySqlResult => ({
+    ...(result.title ? { title: result.title } : {}),
+    rows: [],
+    columns: [],
+    total_count: totalCount,
+    has_more: false,
+    ...(result.rows.length > 0 ? { omitted_rows: result.rows.length } : {}),
+    execution_time_ms: result.execution_time_ms,
+    error: message,
+    error_code: 'VALIDATION',
+    retryable: false,
+  });
+  if (maxSerializedRowsBytes < 2) {
+    return resultTooLarge(
+      `The query_sql response envelope exceeds the strict ${QUERY_SQL_RESULT_MAX_BYTES}-byte ceiling. Select fewer columns or use a shorter query and retry.`
+    );
+  }
+
   const finalized = finalizeDynamicQueryRows(result.rows, maxSerializedRowsBytes);
   if (finalized.sidecarCollisions.length > 0) {
     return {
       ...(result.title ? { title: result.title } : {}),
-      ...(result.sql ? { sql: result.sql } : {}),
       rows: [],
       columns: [],
       total_count: 0,
@@ -196,42 +241,31 @@ function finalizeQuerySqlResult(
     };
   }
   if (finalized.rows.length === 0 && finalized.omittedRows > 0) {
-    return {
-      ...(result.title ? { title: result.title } : {}),
-      ...(result.sql ? { sql: result.sql } : {}),
-      rows: [],
-      columns: result.columns,
-      total_count: result.total_count,
-      has_more: false,
-      omitted_rows: finalized.omittedRows,
-      execution_time_ms: result.execution_time_ms,
-      error:
-        `The first bounded row exceeds the strict ${QUERY_SQL_ROWS_MAX_BYTES}-byte ` +
-        'query_sql response ceiling. Select fewer or narrower columns and retry.',
-      error_code: 'VALIDATION',
-      retryable: false,
-    };
+    return resultTooLarge(
+      `The first bounded row exceeds the strict ${QUERY_SQL_RESULT_MAX_BYTES}-byte ` +
+        'query_sql response ceiling. Select fewer or narrower columns and retry.'
+    );
   }
   const columns = [...result.columns];
   const known = new Set(columns.map((column) => column.name));
-  const additiveColumns = [
-    ['payload_truncated', 'boolean'],
-    ['content_length', 'integer'],
-    ['attachments_truncated', 'boolean'],
-    ['attachments_bytes', 'integer'],
-  ] as const;
   for (const [name, type] of additiveColumns) {
     if (known.has(name) || !finalized.rows.some((row) => name in row)) continue;
     columns.push({ name, type });
     known.add(name);
   }
-  return {
+  const response = {
     ...result,
     rows: finalized.rows,
     columns,
     has_more: result.has_more || finalized.omittedRows > 0,
     ...(finalized.omittedRows > 0 ? { omitted_rows: finalized.omittedRows } : {}),
   };
+  if (Buffer.byteLength(JSON.stringify(response), 'utf8') > maxSerializedResultBytes) {
+    return resultTooLarge(
+      `The query_sql response exceeds the strict ${QUERY_SQL_RESULT_MAX_BYTES}-byte ceiling. Select fewer or narrower columns and retry.`
+    );
+  }
+  return response;
 }
 
 // Cost-attribution ledger: a single expensive user/derived query is how an org
@@ -290,14 +324,18 @@ export async function querySqlImpl(
   args: QuerySqlArgs,
   _env: unknown,
   ctx: ToolContext,
-  options?: { maxSerializedRowsBytes?: number }
+  options?: { maxSerializedResultBytes?: number }
 ): Promise<QuerySqlResult> {
   const startTime = Date.now();
   const title = args.title?.trim() || undefined;
-  const fail = (message: string, code?: ToolErrorCode): QuerySqlResult => ({
-    ...(title ? { title } : {}),
-    ...errorResult(message, startTime, code),
-  });
+  const fail = (message: string, code?: ToolErrorCode): QuerySqlResult =>
+    finalizeQuerySqlResult(
+      {
+        ...(title ? { title } : {}),
+        ...errorResult(message, startTime, code),
+      },
+      options?.maxSerializedResultBytes
+    );
 
   const baseSql = args.sql.trim();
 
@@ -400,7 +438,7 @@ export async function querySqlImpl(
           has_more: r.total !== undefined ? offset + limit < r.total : r.rows.length >= limit,
           execution_time_ms: Date.now() - startTime,
         },
-        options?.maxSerializedRowsBytes
+        options?.maxSerializedResultBytes
       );
     } catch (err) {
       // A pushdown failure is a hard tool
@@ -559,7 +597,7 @@ export async function querySqlImpl(
         has_more: offset + limit < totalCount,
         execution_time_ms: executionTimeMs,
       },
-      options?.maxSerializedRowsBytes
+      options?.maxSerializedResultBytes
     );
   } catch (error) {
     const msg = getErrorMessage(error);

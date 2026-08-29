@@ -42,6 +42,7 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
     string,
     { id: number; metadata: Record<string, unknown> }
   >();
+  const createdResponses: Array<Record<string, unknown>> = [];
   const savedKinds: string[] = [];
 
   const client = {
@@ -77,9 +78,13 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
       },
     },
     entities: {
-      create: async (input: { metadata?: Record<string, unknown> }) => {
+      create: async (input: {
+        metadata?: Record<string, unknown>;
+        [key: string]: unknown;
+      }) => {
         responseId += 1;
         const metadata = input.metadata ?? {};
+        createdResponses.push(input);
         responses.set(`${metadata.platform}:${metadata.actor_id}`, {
           id: responseId,
           metadata,
@@ -222,6 +227,7 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
     state: () => head.metadata,
     entityState: () => entityState,
     responses: () => [...responses.values()].map((row) => row.metadata),
+    createdResponses,
     savedKinds,
   };
 }
@@ -248,6 +254,24 @@ describe("poll vote reaction", () => {
       response_count: 1,
     });
     expect(poll.responses()).toHaveLength(1);
+  });
+
+  test("scopes response identity to the poll and platform actor", async () => {
+    const poll = harness();
+    await poll.vote({
+      actorId: "users/ada@example.com",
+      actorName: "Ada",
+      choice: "A",
+      occurredAt: "2026-08-28T14:10:00.000Z",
+    });
+
+    expect(poll.createdResponses).toHaveLength(1);
+    expect(poll.createdResponses[0]).toMatchObject({
+      type: "poll-response",
+      name: "Ada",
+      parent_id: 77,
+      slug: "gchat-users%2Fada%40example.com",
+    });
   });
 
   test("materializes two actors, a vote change, and quorum closure", async () => {

@@ -670,7 +670,8 @@ export interface EntityIdentitySpec {
   /**
    * Dot path into the event containing the stable upstream tenant key.
    * Required exactly when `scope === 'tenant'`; forbidden for organization
-   * scope. The extracted value is stringified, trimmed, and must be non-empty.
+   * scope. The extracted value must be a string, number, or boolean; it is
+   * stringified, trimmed, and must be non-empty.
    */
   scopeKeyPath?: string;
 }

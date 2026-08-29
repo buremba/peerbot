@@ -1,7 +1,9 @@
 import { deviceManifestHash, type DeviceConnectorManifest } from '@lobu/connector-sdk';
+import { HEADLESS_OS_SHELL_MANIFEST } from '@lobu/connector-worker/daemon/device-manifests';
 import { describe, expect, test } from 'vitest';
 import {
   classifySelectedConnectorExecution,
+  deviceExecutesConnectorNatively,
   type SelectedConnectorDefinition,
 } from '../connector-execution-backend';
 
@@ -151,5 +153,146 @@ describe('selected connector execution backend', () => {
       backend: 'native_bridge',
       manifestHash: omittedAuthHash,
     });
+  });
+});
+
+describe('device manifests served by connector-worker rather than a bridge', () => {
+  const headless = HEADLESS_OS_SHELL_MANIFEST as unknown as DeviceConnectorManifest;
+  const headlessDefinition: SelectedConnectorDefinition = {
+    key: headless.key,
+    version: headless.version,
+    name: headless.name,
+    requiredCapability: headless.required_capability,
+    runtime: headless.runtime,
+    authSchema: headless.auth_schema,
+    feeds: headless.feeds_schema,
+    actions: headless.actions_schema,
+    optionsSchema: headless.options_schema,
+  };
+  const headlessHash = deviceManifestHash(headless);
+  const headlessSourcePath = `device-manifest://headless/${headless.key}@${headless.version}`;
+
+  function classifyHeadless(overrides: Record<string, unknown> = {}) {
+    return classifySelectedConnectorExecution({
+      artifact: {
+        sourcePath: headlessSourcePath,
+        manifestHash: headlessHash,
+        compiledCode: null,
+        compileConfigHash: null,
+        hasSourceCode: false,
+      },
+      definition: headlessDefinition,
+      connectorKey: headless.key,
+      connectorVersion: headless.version,
+      authorizations: [{
+        connectorKey: headless.key,
+        connectorVersion: headless.version,
+        manifestHash: headlessHash,
+        sourcePath: headlessSourcePath,
+      }],
+      expectedPlatform: 'headless',
+      ...overrides,
+    });
+  }
+
+  test('the shipped headless os.shell manifest declares no bridge execution', () => {
+    expect(headless.runtime).not.toHaveProperty('execution');
+  });
+
+  test('classifies headless os.shell as manifest-backed but not native_bridge', () => {
+    expect(classifyHeadless()).toEqual({ manifestBacked: true });
+  });
+
+  test('stays non-bridge even when the device authorization claims bridge execution', () => {
+    expect(classifyHeadless({
+      authorizations: [{
+        connectorKey: headless.key,
+        connectorVersion: headless.version,
+        manifestHash: headlessHash,
+        sourcePath: headlessSourcePath,
+        runtimeExecution: 'bridge',
+      }],
+    })).toEqual({ manifestBacked: true });
+  });
+});
+
+describe('deviceExecutesConnectorNatively', () => {
+  const base = {
+    isUserScopedWorker: true,
+    hasStoredCompiledCode: false,
+    gatewayHasLocalSource: true,
+    isNativeBridgeRun: false,
+    manifestBacked: false,
+    deviceAdvertisesRequiredCapability: false,
+  };
+
+  test('a native-bridge run needs no bundle', () => {
+    expect(deviceExecutesConnectorNatively({ ...base, isNativeBridgeRun: true })).toBe(true);
+  });
+
+  test('manifest-backed alone does not mean native execution', () => {
+    expect(deviceExecutesConnectorNatively({ ...base, manifestBacked: true })).toBe(false);
+  });
+
+  test('advertising the required capability does not mean native execution', () => {
+    expect(
+      deviceExecutesConnectorNatively({ ...base, deviceAdvertisesRequiredCapability: true })
+    ).toBe(false);
+  });
+
+  test('manifest-backed plus the capability gate still needs the bundle', () => {
+    expect(
+      deviceExecutesConnectorNatively({
+        ...base,
+        manifestBacked: true,
+        deviceAdvertisesRequiredCapability: true,
+      })
+    ).toBe(false);
+  });
+
+  test('keeps a legacy manifest device-executed when the gateway has no code to send', () => {
+    expect(
+      deviceExecutesConnectorNatively({
+        ...base,
+        gatewayHasLocalSource: false,
+        manifestBacked: true,
+      })
+    ).toBe(true);
+  });
+
+  test('keeps a legacy capability-only device-executed when the gateway has no code to send', () => {
+    expect(
+      deviceExecutesConnectorNatively({
+        ...base,
+        gatewayHasLocalSource: false,
+        deviceAdvertisesRequiredCapability: true,
+      })
+    ).toBe(true);
+  });
+
+  test('does not invent native execution without a bridge, manifest, or capability claim', () => {
+    expect(
+      deviceExecutesConnectorNatively({ ...base, gatewayHasLocalSource: false })
+    ).toBe(false);
+  });
+
+  test('stored compiled code always ships inline, even for a bridge run', () => {
+    expect(
+      deviceExecutesConnectorNatively({
+        ...base,
+        isNativeBridgeRun: true,
+        hasStoredCompiledCode: true,
+      })
+    ).toBe(false);
+  });
+
+  test('a fleet worker resolves locally and is never treated as native', () => {
+    expect(
+      deviceExecutesConnectorNatively({
+        ...base,
+        isUserScopedWorker: false,
+        isNativeBridgeRun: true,
+      })
+    ).toBe(false);
   });
 });

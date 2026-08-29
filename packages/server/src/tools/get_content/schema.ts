@@ -213,7 +213,7 @@ export const GetContentSchema = Type.Object({
   content_ids: Type.Optional(
     Type.Array(Type.Number(), {
       description:
-        'Filter to specific content IDs. With automation_id, these exact durable rows are added to the Automation read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.',
+        'Filter to specific content IDs. This is the full-fidelity read: list and Automation reads return a bounded payload_text head (payload_truncated: true, with the full character count in content_length) and drop oversized attachments (attachments_truncated: true), so re-read those ids here to get the complete payload. With automation_id, these exact durable rows are added to the Automation read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.',
     })
   ),
   exclude_automation_id: Type.Optional(

@@ -7,6 +7,7 @@ import {
 	parseAutomationSourceRef,
 	validateAutomationSourceRef,
 	automationSourceKindForRef,
+	DEFAULT_AUTOMATION_SOURCE_QUERY,
 } from "../../automations/source-refs";
 
 describe("automation source refs", () => {
@@ -160,6 +161,7 @@ describe("normalizeAutomationSources source.context classification", () => {
 			{ name: "window", query: "SELECT id FROM events WHERE 1=0" },
 		]);
 		expect(normalized.kind).toBe("event");
+		expect(normalized.dynamicEventProjection).toBe(true);
 	});
 
 	it("classifies a context:true SQL source as entity context (no events FK)", async () => {
@@ -174,6 +176,7 @@ describe("normalizeAutomationSources source.context classification", () => {
 		// window's content_ids (see automation-mode allContent), so the entity `id`
 		// never hits the automation_run_events → events(id) foreign key.
 		expect(normalized.kind).toBe("entity");
+		expect(normalized.dynamicEventProjection).not.toBe(true);
 	});
 
 	it("context:false stays event content", async () => {
@@ -181,5 +184,19 @@ describe("normalizeAutomationSources source.context classification", () => {
 			{ name: "window", query: "SELECT id FROM events", context: false },
 		]);
 		expect(normalized.kind).toBe("event");
+		expect(normalized.dynamicEventProjection).toBe(true);
+	});
+
+	it("marks the canonical full-row event source for post-page JS bounding", async () => {
+		const source = [{ name: "content", query: DEFAULT_AUTOMATION_SOURCE_QUERY }];
+		const [normalized] = await normalizeAutomationSources(sql, "org", source);
+
+		expect(normalized.dynamicEventProjection).toBe(true);
+		expect(normalized.controlledEventProjection).not.toBe(true);
+		// The default source stays a raw `SELECT *`: bounding is applied to the
+		// selected page, never to the stored/normalized source query itself.
+		expect(normalized.query).toBe(
+			"SELECT * FROM events WHERE semantic_type NOT IN ('change', 'audit') ORDER BY occurred_at DESC",
+		);
 	});
 });

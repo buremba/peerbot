@@ -786,9 +786,30 @@ async function findApprovalRow(
     env,
     ctx
   );
-  const row = result.content.find((item) => isApprovalContentItem(item, runId));
-  if (!row) throw new ToolUserError(`Approval run ${runId} was not found`, 404);
-  return row;
+  const listedRow = result.content.find((item) => isApprovalContentItem(item, runId));
+  if (!listedRow) throw new ToolUserError(`Approval run ${runId} was not found`, 404);
+
+  // Agent-facing list reads intentionally bound nested event JSON. The
+  // host-authored card still needs the full canonical approval context so it
+  // can redact secrets first and then apply its own view limits. Re-read the
+  // already-authorized event through the exact-id path rather than bypassing
+  // get_content visibility with a direct table query.
+  let offset = 0;
+  while (true) {
+    const exact = await getContent(
+      { content_ids: [listedRow.id], limit: 50, offset },
+      env,
+      ctx
+    );
+    const row = exact.content.find(
+      (item): item is ApprovalContentItem =>
+        isApprovalContentItem(item, runId) && item.id === listedRow.id
+    );
+    if (row) return row;
+    if (!exact.page.has_more || exact.content.length === 0) break;
+    offset += exact.content.length;
+  }
+  throw new ToolUserError(`Approval run ${runId} was not found`, 404);
 }
 
 async function buildApprovalView(runId: number, env: Env, ctx: ToolContext): Promise<LobuView> {

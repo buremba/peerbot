@@ -975,17 +975,23 @@ async function resolveDerivedLeaf(
   const PAGE = 500;
   const MAX_PAGES = 40;
   let match: Record<string, unknown> | undefined;
+  let offset = 0;
   for (let pageNum = 0; pageNum < MAX_PAGES; pageNum += 1) {
     const result = await queryDerivedEntityView(
       backingSql,
       backingSource,
-      { limit: PAGE, offset: pageNum * PAGE },
-      ctx
+      { limit: PAGE, offset },
+      ctx,
+      // This is an internal exact-slug scan, not an agent response. Retain the
+      // database page cardinality so MAX_PAGES remains a source-row guard even
+      // when wide rows would produce tiny serialized response chunks.
+      { preservePageRows: true }
     );
     if (result.error) return null;
     match = result.rows.find((r) => derivedRowSlug(r) === segment.slug);
     if (match) break;
-    if (!result.has_more || result.rows.length < PAGE) break;
+    if (!result.has_more || result.rows.length === 0) break;
+    offset += result.rows.length;
   }
   if (!match) return null;
 

@@ -1260,9 +1260,23 @@ export interface ContentItem {
   title: string | null;
   text_content: string;
   payload_text?: string | null;
+  /**
+   * True when a query/list response returns only the bounded payload_text head.
+   * Re-read the event by `content_ids` for the full body.
+   */
+  payload_truncated?: boolean;
+  /** Full original payload_text character count (PostgreSQL length semantics). */
+  content_length?: number;
   payload_data?: Record<string, unknown>;
   payload_template?: Record<string, unknown> | null;
   attachments?: Array<Record<string, unknown>>;
+  /**
+   * True when oversized attachment contents were omitted and `attachments` is
+   * empty. Re-read the event by `content_ids` for the full array.
+   */
+  attachments_truncated?: boolean;
+  /** Full serialized attachment-array size in UTF-8 bytes when truncated. */
+  attachments_bytes?: number;
   rating: string | null;
   source_url: string | null;
   score: number;

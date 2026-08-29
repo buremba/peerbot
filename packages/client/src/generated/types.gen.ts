@@ -688,6 +688,9 @@ export type QuerySqlResponses = {
      * The original caller-supplied SQL statement. This is never the tenant-scoped SQL rewritten by Lobu.
      */
     sql?: string;
+    /**
+     * Returned rows. String cells longer than 4,000 Unicode code points contain the 4,000-character head followed by the literal suffix "… [truncated]". payload_text and text_content also receive content_length and payload_truncated sidecars.
+     */
     rows: Array<{
       [key: string]: unknown;
     }>;
@@ -697,6 +700,10 @@ export type QuerySqlResponses = {
     }>;
     total_count: number;
     has_more: boolean;
+    /**
+     * Rows fetched for this page but omitted by the serialized response-size ceiling. When rows are present, continue from offset + rows.length rather than offset + limit. If no bounded row fits, query_sql returns a VALIDATION error and the projection must be narrowed.
+     */
+    omitted_rows?: number;
     execution_time_ms: number;
     error?: string;
     error_code?: string;
@@ -5447,7 +5454,7 @@ export type ReadKnowledgeData = {
      */
     classification_source?: "user" | "embedding" | "llm";
     /**
-     * Filter to specific content IDs. With automation_id, these exact durable rows are added to the Automation read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.
+     * Filter to specific content IDs. This is the full-fidelity read: list and Automation reads return a bounded payload_text head (payload_truncated: true, with the full character count in content_length) and drop oversized attachments (attachments_truncated: true), so re-read those ids here to get the complete payload. With automation_id, these exact durable rows are added to the Automation read and signed into its window token in addition to authored sources; this is how workspace-sourced event activations pass bounded event pointers without copying payloads.
      */
     content_ids?: Array<number>;
     /**

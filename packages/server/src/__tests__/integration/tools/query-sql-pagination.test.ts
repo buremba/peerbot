@@ -19,6 +19,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { querySql } from '../../../tools/admin/query_sql';
 import type { ToolContext } from '../../../tools/registry';
+import { QUERY_SQL_RESULT_MAX_BYTES } from '../../../utils/content-read-bounds';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -59,6 +60,7 @@ describe('query_sql internal-path pagination contract', () => {
     expect(res.rows).toHaveLength(2);
     expect(res.total_count).toBe(5);
     expect(res.has_more).toBe(true);
+    expect(res.omitted_rows).toBeUndefined();
     // The internal window column must never leak into rows or columns.
     expect(res.columns.map((c) => c.name)).not.toContain('__lobu_total_count__');
     expect(Object.keys(res.rows[0])).not.toContain('__lobu_total_count__');
@@ -76,6 +78,120 @@ describe('query_sql internal-path pagination contract', () => {
     expect(res.total_count).toBe(25);
     expect(res.rows[0]).toEqual({ row_number: 1 });
     expect(res.rows[24]).toEqual({ row_number: 25 });
+  });
+
+  it('caps the serialized dynamic row list and reports omitted rows as more data', async () => {
+    const res = await querySql(
+      {
+        sql: "SELECT generate_series(1, 500) AS id, repeat('x', 8000) AS body",
+        limit: 500,
+      },
+      {},
+      ownerCtx
+    );
+
+    expect(res.error).toBeUndefined();
+    expect(res.total_count).toBe(500);
+    expect(res.rows.length).toBeLessThan(500);
+    expect(res.omitted_rows).toBe(500 - res.rows.length);
+    expect(res.has_more).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_RESULT_MAX_BYTES
+    );
+  });
+
+  it('rejects incompatible caller-projected truncation sidecars', async () => {
+    const res = await querySql(
+      {
+        sql: `SELECT repeat('x', 5000) AS payload_text,
+          false AS payload_truncated, 7 AS content_length`,
+        limit: 1,
+      },
+      {},
+      ownerCtx
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.retryable).toBe(false);
+    expect(res.error).toContain('content_length, payload_truncated');
+  });
+
+  it('fails closed when one bounded row cannot fit under the hard ceiling', async () => {
+    const wideColumns = Array.from(
+      { length: 280 },
+      (_, index) => `repeat('x', 4000) AS pad_${index}`
+    ).join(', ');
+    const res = await querySql(
+      { sql: `SELECT ${wideColumns}`, limit: 1 },
+      {},
+      ownerCtx
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(res.total_count).toBe(1);
+    expect(res.has_more).toBe(false);
+    expect(res.omitted_rows).toBe(1);
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.retryable).toBe(false);
+    expect(res.error).toContain('Select fewer or narrower columns');
+  });
+
+  it('counts the response envelope when deciding whether one bounded row fits', async () => {
+    const wideColumns = Array.from(
+      { length: 260 },
+      (_, index) => `repeat('x', 4000) AS pad_${index}`
+    ).join(', ');
+    const res = await querySql(
+      { title: 'W'.repeat(200), sql: `SELECT ${wideColumns}`, limit: 1 },
+      {},
+      ownerCtx
+    );
+
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.sql).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_RESULT_MAX_BYTES
+    );
+  });
+
+  it('fails closed within the ceiling when an empty result has an oversized echoed SQL envelope', async () => {
+    const oversizedComment = 'x'.repeat(QUERY_SQL_RESULT_MAX_BYTES);
+    const res = await querySql(
+      {
+        title: 'T'.repeat(200),
+        sql: `/* ${oversizedComment} */ SELECT 1 AS id WHERE false`,
+        limit: 1,
+      },
+      {},
+      ownerCtx
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.error).toContain('response envelope exceeds');
+    expect(res.sql).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_RESULT_MAX_BYTES
+    );
+  });
+
+  it('routes oversized early validation errors through the same response ceiling', async () => {
+    const res = await querySql(
+      {
+        sql: 'SELECT 1 AS id',
+        sort_by: `${'x'.repeat(QUERY_SQL_RESULT_MAX_BYTES)}-`,
+      },
+      {},
+      ownerCtx
+    );
+
+    expect(res.rows).toEqual([]);
+    expect(res.error_code).toBe('VALIDATION');
+    expect(res.error).toContain('response envelope exceeds');
+    expect(Buffer.byteLength(JSON.stringify(res), 'utf8')).toBeLessThanOrEqual(
+      QUERY_SQL_RESULT_MAX_BYTES
+    );
   });
 
   it('keeps total_count exact on an out-of-range offset (empty page fallback)', async () => {

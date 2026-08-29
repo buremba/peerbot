@@ -93,6 +93,7 @@ export async function queryDerivedEntityView(
 	backingSource: string | undefined,
 	page: { limit: number; offset: number; search?: string },
 	ctx: ToolContext,
+	options?: { preservePageRows?: boolean },
 ): Promise<Awaited<ReturnType<typeof querySqlImpl>>> {
 	// Search pushes down only on the internal path (the connection path rejects
 	// search_term); external derived views simply ignore the search box.
@@ -110,6 +111,9 @@ export async function queryDerivedEntityView(
 		},
 		undefined,
 		ctx,
+		options?.preservePageRows
+			? { maxSerializedResultBytes: Number.POSITIVE_INFINITY }
+			: undefined,
 	);
 }
 
@@ -2288,6 +2292,10 @@ async function listDerivedEntities(
 		backingSource,
 		page,
 		ctx,
+		// manage_entity transforms this already-limited page into entity rows.
+		// Preserve its cardinality so fixed-offset UI pagination cannot skip a
+		// byte-capped tail; per-cell text/JSON bounds still apply in querySqlImpl.
+		{ preservePageRows: true },
 	);
 	if (result.error) {
 		throw new ToolUserError(

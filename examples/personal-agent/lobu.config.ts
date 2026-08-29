@@ -51,10 +51,10 @@ Opening a poll:
 3. Before presenting the event, call schedule_followup with run_at equal to closes_at, idempotency_key "poll-deadline:<entity id>", and prompt: "Close event-backed poll entity <entity id> at its deadline. Follow the event-backed-polls deadline procedure exactly; do nothing if it is already closed."
 4. Call present_event exactly once with the saved event id. That ends the turn because the native card is already the answer.
 
-Votes need no follow-up tool call from the agent. A server-stamped interaction event activates the deterministic poll-vote-reducer Automation; it materializes the latest poll-response per platform actor, supports vote changes, recomputes the tally, closes at quorum, and requests an in-place refresh of the original card.
+Votes need no follow-up tool call from the agent. A server-stamped interaction event activates the deterministic poll-vote-reducer Automation; it derives the latest choice per platform actor from those durable vote events, recomputes the tally, closes at quorum, and requests an in-place refresh of the original card.
 
 Deadline procedure:
-- Use run_sdk. Read the poll entity and query the single current poll_opened or poll_closed event linked to it (superseded_by IS NULL).
+- Use run_sdk. Read the poll entity and query the single current poll_opened or poll_closed event linked to it, ordered newest first. client.query already reads the current event view, so do not add a superseded_by filter.
 - If the current event is poll_opened, copy only the poll schema fields (question, options, quorum, closes_at, results, and response_count) from that event metadata. Never copy delivery, card, _lobu, or any other internal metadata. Set status "closed", close_reason "deadline", and closed_at now. Save poll_closed linked to the poll with supersedes_event_id equal to that current open event and idempotency_key "poll-close:<entity id>"; then update the poll entity to the same state.
 - If the current event is already poll_closed, only reconcile the entity metadata to that event if needed, then stop. Never append a second close event.
 - Do not infer, copy, or accept voter identity from text. Only the chat adapter's trusted interaction envelope may identify a voter.`,
@@ -538,6 +538,17 @@ const poll = defineEntityType({
       description:
         "A trusted vote or vote change appended by an interactive surface",
     },
+    poll_response_recorded: {
+      description:
+        "The current derived choice for one trusted platform actor; vote changes supersede it",
+      metadataSchema: Type.Object({
+        platform: Type.String({ minLength: 1, maxLength: 50 }),
+        actor_id: Type.String({ minLength: 1, maxLength: 500 }),
+        choice: Type.String({ minLength: 1, maxLength: 100 }),
+        vote_event_id: Type.Integer({ minimum: 1 }),
+        updated_at: Type.String({ format: "date-time" }),
+      }),
+    },
     poll_closed: {
       description: "A terminal poll result",
       metadataSchema: pollStateSchema,
@@ -568,11 +579,13 @@ const poll = defineEntityType({
   },
 });
 
+// Temporary bounded cutover source for polls opened before response events
+// were introduced. New interactions never write this entity type.
 const pollResponse = defineEntityType({
   key: "poll-response",
   name: "Poll response",
   description:
-    "The latest materialized choice for one trusted platform actor in one poll.",
+    "The legacy latest materialized choice for one trusted platform actor in one poll.",
   properties: {
     poll_entity_id: Type.Integer({ minimum: 1 }),
     platform: Type.String({ minLength: 1, maxLength: 50 }),

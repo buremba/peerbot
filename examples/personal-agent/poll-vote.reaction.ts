@@ -82,17 +82,6 @@ function sqlLiteral(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-function responseSlug(platform: string, actorId: string): string {
-  const hex = (value: string) => {
-    let encoded = "";
-    for (let index = 0; index < value.length; index += 1) {
-      encoded += value.charCodeAt(index).toString(16).padStart(4, "0");
-    }
-    return encoded;
-  };
-  return `actor-${hex(platform)}-${hex(actorId)}`;
-}
-
 function pollState(value: unknown): PollState | null {
   const row = objectValue(value);
   const options = Array.isArray(row.options)
@@ -254,46 +243,70 @@ async function updatePollEntity(
   });
 }
 
-async function upsertResponse(params: {
+async function currentResponseEvent(
+  entityId: number,
+  platform: string,
+  actorId: string,
+  client: ReactionClient
+): Promise<{ id: number; voteEventId: number } | null> {
+  const rows = (await client.query(
+    `SELECT id, metadata
+     FROM events
+     WHERE entity_ids @> ARRAY[${entityId}]::bigint[]
+       AND semantic_type = 'poll_response_recorded'
+       AND metadata->>'platform' = ${sqlLiteral(platform)}
+       AND metadata->>'actor_id' = ${sqlLiteral(actorId)}
+     ORDER BY id DESC
+     LIMIT 2`
+  )) as Array<{ id: number | string; metadata: unknown }>;
+  if (rows.length > 1) {
+    throw new Error("Ambiguous current poll response projection");
+  }
+  if (!rows[0]) return null;
+  const id = positiveInteger(rows[0].id);
+  const voteEventId = positiveInteger(
+    objectValue(rows[0].metadata).vote_event_id
+  );
+  if (id == null || voteEventId == null) {
+    throw new Error("Invalid current poll response projection");
+  }
+  return { id, voteEventId };
+}
+
+async function upsertResponseEvent(params: {
+  ctx: ReactionContext;
   pollEntityId: number;
   platform: string;
   actorId: string;
-  actorName: string;
   choice: string;
-  voteEventId: number;
+  trigger: TriggerEvent;
   client: ReactionClient;
 }): Promise<void> {
-  const { client } = params;
-  const rows = (await client.query(
-    `SELECT id FROM entities
-     WHERE entity_type = 'poll-response'
-       AND deleted_at IS NULL
-       AND (metadata->>'poll_entity_id')::bigint = ${params.pollEntityId}
-       AND metadata->>'platform' = ${sqlLiteral(params.platform)}
-       AND metadata->>'actor_id' = ${sqlLiteral(params.actorId)}
-     ORDER BY (metadata->>'updated_at') DESC, id DESC
-     LIMIT 1`
-  )) as Array<{ id: number | string }>;
-  const metadata = {
-    poll_entity_id: params.pollEntityId,
-    platform: params.platform,
-    actor_id: params.actorId,
-    actor_name: params.actorName,
-    choice: params.choice,
-    vote_event_id: params.voteEventId,
-    updated_at: new Date().toISOString(),
-  };
-  const existingId = rows[0] ? positiveInteger(rows[0].id) : null;
-  if (existingId != null) {
-    await client.entities.update({ entity_id: existingId, metadata });
-    return;
-  }
-  await client.entities.create({
-    type: "poll-response",
-    name: params.actorName,
-    parent_id: params.pollEntityId,
-    slug: responseSlug(params.platform, params.actorId),
-    metadata,
+  const current = await currentResponseEvent(
+    params.pollEntityId,
+    params.platform,
+    params.actorId,
+    params.client
+  );
+  if (current && current.voteEventId >= params.trigger.id) return;
+  await params.client.knowledge.save({
+    entity_ids: [params.pollEntityId],
+    content: `Current poll response from vote event ${params.trigger.id}.`,
+    semantic_type: "poll_response_recorded",
+    payload_type: "empty",
+    metadata: {
+      platform: params.platform,
+      actor_id: params.actorId,
+      choice: params.choice,
+      vote_event_id: params.trigger.id,
+      updated_at: params.trigger.occurred_at,
+    },
+    ...(current ? { supersedes_event_id: current.id } : {}),
+    idempotency_key: `poll-response:${params.pollEntityId}:vote:${params.trigger.id}`,
+    automation_source: {
+      automation_id: params.ctx.window.automation_id,
+      run_id: params.ctx.window.run_id,
+    },
   });
 }
 
@@ -302,17 +315,28 @@ async function resultsForPoll(
   options: string[],
   client: ReactionClient
 ): Promise<{ results: PollResult[]; responseCount: number }> {
+  // The event view contains one current projection per actor. Legacy entity
+  // rows are a bounded cutover source for polls opened before this event kind.
   const rows = (await client.query(
-    `WITH latest AS (
-       SELECT metadata->>'choice' AS choice,
-              row_number() OVER (
-                PARTITION BY metadata->>'platform', metadata->>'actor_id'
-                ORDER BY (metadata->>'updated_at') DESC, id DESC
-              ) AS rank
+    `WITH candidates AS (
+       SELECT metadata
        FROM entities
        WHERE entity_type = 'poll-response'
          AND deleted_at IS NULL
          AND (metadata->>'poll_entity_id')::bigint = ${entityId}
+       UNION ALL
+       SELECT metadata
+       FROM events
+       WHERE entity_ids @> ARRAY[${entityId}]::bigint[]
+         AND semantic_type = 'poll_response_recorded'
+     ), latest AS (
+       SELECT metadata->>'choice' AS choice,
+              row_number() OVER (
+                PARTITION BY metadata->>'platform', metadata->>'actor_id'
+                ORDER BY (metadata->>'vote_event_id')::bigint DESC,
+                         (metadata->>'updated_at')::timestamptz DESC
+              ) AS rank
+       FROM candidates
      )
      SELECT choice, count(*)::int AS count
      FROM latest
@@ -346,10 +370,6 @@ export default async function reducePollVote(
   const choice = typeof interaction.value === "string" ? interaction.value : "";
   const platform = typeof actor.platform === "string" ? actor.platform : "";
   const actorId = typeof actor.id === "string" ? actor.id : "";
-  const actorName =
-    typeof actor.name === "string" && actor.name.trim()
-      ? actor.name.trim().slice(0, 500)
-      : actorId.slice(0, 500);
   if (
     interaction.action !== "vote" ||
     positiveInteger(interaction.source_event_id) == null ||
@@ -377,13 +397,13 @@ export default async function reducePollVote(
     return;
   }
   if (!deadlineReached) {
-    await upsertResponse({
+    await upsertResponseEvent({
+      ctx,
       pollEntityId: entityId,
       platform,
       actorId,
-      actorName,
       choice,
-      voteEventId: trigger.id,
+      trigger,
       client,
     });
   }

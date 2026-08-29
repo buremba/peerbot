@@ -19,6 +19,8 @@ import { cleanupExpiredMcpAppResultSnapshots } from '../mcp-app-result-snapshots
 import logger from '../utils/logger';
 import { runAutomationTick } from '../automations/automation';
 import { runAutomationAutoPauseNotificationSweep } from '../automations/auto-pause-notifications';
+import type { AutomationReactionTaskPayload } from '../automations/reaction-enqueue';
+import { runAutomationReactionTask } from '../automations/reaction-task';
 import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { retryPendingFeedAutoPausedSignals } from '../automations/platform-events';
@@ -32,6 +34,7 @@ import {
 } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
 import {
+  AUTOMATION_REACTION_TASK,
   INTERACTIVE_EVENT_CARD_REFRESH_TASK,
   WORKSPACE_EVENT_ACTIVATION_TASK,
 } from './task-definitions';
@@ -468,6 +471,27 @@ function registerMaintenanceTasks(
     await refreshInteractiveEventCardTask(
       ctx.payload as InteractiveEventCardRefreshTaskPayload,
     );
+  });
+
+  // The Automation reaction script. Queued inside `complete_window`'s window
+  // transaction, so the handoff survives a crash that would previously have
+  // lost the reaction outright. The handler throws only on a TRANSIENT script
+  // failure — that is what asks this scheduler for another attempt; a
+  // deterministic failure settles the task and is recorded on
+  // `automation_reactions` instead of re-burning the 60s executor budget.
+  scheduler.register(AUTOMATION_REACTION_TASK, async (ctx) => {
+    const outcome = await runAutomationReactionTask(
+      ctx.payload as AutomationReactionTaskPayload,
+      env,
+      ctx.taskRunId,
+      ctx.attempt,
+    );
+    if (outcome.status !== 'success') {
+      logger.info(
+        { ...outcome, payload: ctx.payload },
+        '[task] automation-reaction settled',
+      );
+    }
   });
 
   // scheduled_jobs ticker: scans the table every minute, spawns due rows

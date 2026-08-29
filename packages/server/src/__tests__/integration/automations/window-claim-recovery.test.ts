@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { clearAuthCacheForTests } from '../../../auth';
 import { closeDbSingleton, type DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
+import { runAutomationReactionTask } from '../../../automations/reaction-task';
 import { createAutomationRun } from '../../../runs/queue-service';
 import { manageAutomations } from '../../../tools/admin/manage_automations';
 import { handleClaimNextWindow } from '../../../tools/admin/manage_automations/claim-next-window';
@@ -771,6 +772,7 @@ describe('Automation window claim and recovery', () => {
     };
     const first = (await api.automations.completeWindow(completionInput)) as {
       completed_now: boolean;
+      reaction_task_run_id?: number;
     };
     expect(first.completed_now).toBe(true);
     const outputCountAfterFirst = await sql<{ count: number }>`
@@ -783,6 +785,20 @@ describe('Automation window claim and recovery', () => {
       SELECT COUNT(*)::int AS count FROM automation_reactions
       WHERE source_run_id = ${empty.run_id}
     `;
+
+    // The reaction is a durable task now, so drive it the way the scheduler
+    // would; the invariant under test is unchanged — a replayed completion must
+    // not produce a second execution.
+    await runAutomationReactionTask(
+      { organizationId: orgId, automationId, sourceRunId: empty.run_id },
+      {} as Env,
+      Number(first.reaction_task_run_id)
+    );
+    const reactionCountAfterTask = await sql<{ count: number }>`
+      SELECT COUNT(*)::int AS count FROM automation_reactions
+      WHERE source_run_id = ${empty.run_id}
+    `;
+    expect(Number(reactionCountAfterTask[0].count)).toBe(1);
 
     const replay = (await api.automations.completeWindow(completionInput)) as {
       completed_now: boolean;
@@ -799,8 +815,11 @@ describe('Automation window claim and recovery', () => {
       WHERE source_run_id = ${empty.run_id}
     `;
     expect(Number(outputCountAfterFirst[0].count)).toBe(1);
-    expect(Number(reactionCountAfterFirst[0].count)).toBe(1);
+    // Zero BEFORE the task runs: completion commits the handoff, it no longer
+    // executes the script inline.
+    expect(Number(reactionCountAfterFirst[0].count)).toBe(0);
     expect(outputCountAfterReplay).toEqual(outputCountAfterFirst);
-    expect(reactionCountAfterReplay).toEqual(reactionCountAfterFirst);
+    // Still exactly one execution after the replay — the replay queued nothing.
+    expect(Number(reactionCountAfterReplay[0].count)).toBe(1);
   });
 });

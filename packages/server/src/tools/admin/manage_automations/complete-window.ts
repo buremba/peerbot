@@ -2,7 +2,8 @@
  * complete_window action handler for manage_automations.
  *
  * Validates token, writes the run result + content links, processes classifications,
- * marks run completed, advances schedule, and runs reaction script.
+ * marks run completed, advances schedule, and queues the reaction script as a
+ * durable task inside the same transaction (see automations/reaction-enqueue).
  */
 
 import Ajv from 'ajv';
@@ -32,14 +33,13 @@ import { isUniqueViolation } from '../../../utils/pg-errors';
 import { persistAutomationEventOutput } from '../../../utils/persist-automation-event-output';
 import { validateStableKeyComponents } from '../../../utils/stable-keys';
 import { deriveAutomationExtractionSchema } from '../../../utils/automation-extraction-schema';
-import { trackAutomationReaction } from '../../../utils/automation-reactions';
 import {
   getFieldsToStrip,
   processAutomationClassifications,
   stripFields,
 } from '../../../automations/classifier-extraction';
 import { advanceAutomationScheduleAfterSuccessfulWindow } from '../../../automations/schedule-cursor';
-import { executeReaction } from '../../../automations/reaction-executor';
+import { enqueueAutomationReaction } from '../../../automations/reaction-enqueue';
 import { getNextNumericId } from '../helpers/db-helpers';
 import type { Outputs } from '../../../types/automations';
 import type { ToolContext } from '../../registry';
@@ -58,27 +58,6 @@ import {
  *  be read, and an unbounded id list on a wide window is neither useful nor
  *  cheap to store. Mirrors the capping rationale in worker-api/run-lifecycle. */
 const CAPTURE_PREVIEW_CONTENT_CAP = 200;
-
-/**
- * Deterministic reaction-script failure classes that a retry can never fix.
- * The sandbox prefixes these errors (`run-script.ts` classifyRuntimeError +
- * terminateRun): a timed-out, quota-exhausted, oversize, or compile-failed
- * reaction burns its full wall-clock budget on EVERY attempt, so retrying
- * multiplies the stall (a 60s TimeoutError retried 3x costs ~182s) with zero
- * recovery probability. Everything else — provider/network 5xx, transient SDK
- * failures — stays retryable.
- */
-export function reactionErrorIsNonTransient(error: string | undefined): boolean {
-  if (!error) return false;
-  return (
-    /^(TimeoutError|CompileError|QuotaExceeded|OutputSizeExceeded|InvalidSleepDuration|SleepLimitExceeded|OutOfMemory|ValidationError|ClientSdkActionError|McpScopeRequiredError):/.test(
-      error
-    ) ||
-    /^ScriptError: (?:Script must `export default` an async function|NamespaceNotAvailable:|CrossOrgAccessDenied:|InvalidSDKDispatchEnvelope|Unknown SDK method:)/.test(
-      error
-    )
-  );
-}
 
 function assertCompleteWindowPageChain(
   tokens: Array<{
@@ -189,8 +168,13 @@ export async function handleCompleteWindow(
   content_linked: number;
   /** Internal reaction gate; false on idempotent replays. */
   completed_now: boolean;
-  reaction_status: 'success' | 'failed' | 'skipped';
-  reaction_error?: string;
+  /** `queued` = the reaction handoff committed with the window and the
+   *  scheduler owns it from here; `skipped` = this Automation has no compiled
+   *  reaction script, or the completion was an idempotent replay / capture. The
+   *  script's own success or failure is recorded on `automation_reactions`. */
+  reaction_status: 'queued' | 'skipped';
+  /** Durable task run that owns the queued reaction. */
+  reaction_task_run_id?: number;
   /** Set only on an eval replay (`executionMode = 'capture'`): the extraction
    *  was recorded on the eval run's `dry_run_preview` and nothing was written. */
   captured?: true;
@@ -668,8 +652,15 @@ export async function handleCompleteWindow(
       }
     }
 
-    const [lockedAutomation] = await tx<{ schedule: string | null }>`
-      SELECT schedule FROM automations
+    // `reaction_script_compiled` is read under the same row lock as the
+    // schedule so the decision to queue a reaction is made from the state this
+    // transaction commits against, not from a post-commit re-read that could
+    // observe a script cleared in between.
+    const [lockedAutomation] = await tx<{
+      schedule: string | null;
+      reaction_script_compiled: string | null;
+    }>`
+      SELECT schedule, reaction_script_compiled FROM automations
       WHERE id = ${automationId} AND organization_id = ${automationOrgId}
       FOR UPDATE
     `;
@@ -691,6 +682,9 @@ export async function handleCompleteWindow(
       throw new ToolUserError(`Automation run ${runId} not found.`, 404);
     }
     if (lockedRun.status === 'completed') {
+      // Idempotent replay. The reaction was queued by whichever transaction won
+      // the completion transition; re-queueing here would double-fire it,
+      // because the scheduler's idempotency index only covers in-flight rows.
       return {
         action: 'complete_window' as const,
         automation_id: String(automationId),
@@ -699,6 +693,8 @@ export async function handleCompleteWindow(
         window_end,
         content_linked: 0,
         completed_now: false,
+        queues_reaction: false,
+        reaction_task_run_id: undefined,
       };
     }
     if (lockedRun.expires_at != null) {
@@ -951,6 +947,25 @@ export async function handleCompleteWindow(
       );
     }
 
+    // Reaction handoff, committed WITH the window. Reaching here means the
+    // completion UPDATE matched, i.e. this transaction owns the single
+    // `running|claimed -> completed` transition for the run — so the enqueue
+    // happens exactly once per run without needing a durable claim of its own.
+    const reactionScriptSnapshot = lockedAutomation.reaction_script_compiled;
+    const queuesReaction = Boolean(reactionScriptSnapshot);
+    let reactionTaskRunId: number | undefined;
+    if (reactionScriptSnapshot) {
+      reactionTaskRunId = await enqueueAutomationReaction(
+        tx,
+        {
+          organizationId: automationOrgId,
+          automationId: Number(automationId),
+          sourceRunId: runId,
+        },
+        reactionScriptSnapshot
+      );
+    }
+
     logger.info(
       `[manage_automations] Completed run ${runId} for automation ${automationId} ` +
         `(${window_start} - ${window_end}), linked ${batchContentIds.length} content items`
@@ -964,6 +979,8 @@ export async function handleCompleteWindow(
       window_end,
       content_linked: batchContentIds.length,
       completed_now: true,
+      queues_reaction: queuesReaction,
+      reaction_task_run_id: reactionTaskRunId,
     };
   });
 
@@ -982,152 +999,13 @@ export async function handleCompleteWindow(
       );
   }
 
-  // Execute the reaction script inline in the isolated reaction sandbox.
-  // Fire on linked content OR on a freshly created window: device-run and
-  // other self-sourcing automations link no server-side content — their signal
-  // is the extracted_data itself, and the reaction script decides what to do
-  // with it. Idempotent replays (no new window, nothing linked) still skip,
-  // so a retried completion can't double-fire a reaction.
-  let reactionStatus: 'success' | 'failed' | 'skipped' = 'skipped';
-  let reactionError: string | undefined;
-
-  // Fetch automation metadata once — used for both reaction script and auto-notify
-  const automationMetaSql = getDb();
-  const automationMetaRows = await automationMetaSql`
-    SELECT w.reaction_script_compiled, w.entity_ids,
-           w.organization_id, w.current_version_id,
-           w.name, o.slug AS organization_slug,
-           wv.version as automation_version
-    FROM automations w
-    JOIN organization o ON o.id = w.organization_id
-    LEFT JOIN automation_versions wv ON w.current_version_id = wv.id
-    WHERE w.id = ${result.automation_id}
-  `;
-
-  try {
-    const sql = automationMetaSql;
-    const scriptRows = automationMetaRows;
-    if (
-      result.completed_now &&
-      scriptRows.length > 0 &&
-      scriptRows[0].reaction_script_compiled
-    ) {
-      const row = scriptRows[0];
-      const orgId = row.organization_id as string;
-
-      // Fetch all entities
-      const eIds = Array.isArray(row.entity_ids) ? row.entity_ids.map(Number) : [];
-      const entityRows =
-        eIds.length > 0
-          ? await sql`
-              SELECT e.id, e.name, et.slug AS entity_type, e.metadata
-              FROM entities e
-              JOIN entity_types et ON et.id = e.entity_type_id
-              WHERE e.id = ANY(${`{${eIds.join(',')}}`}::bigint[])
-            `
-          : [];
-
-      // Fetch automation name from version, slug from template (pre-consolidation)
-      const automationMeta = await sql`
-        SELECT w.id, COALESCE(wv.name, 'automation-' || w.id) as name,
-               COALESCE(w.slug, 'automation-' || w.id) as slug
-        FROM automations w
-        LEFT JOIN automation_versions wv ON w.current_version_id = wv.id
-        WHERE w.id = ${result.automation_id}
-      `;
-
-      const reactionContext = {
-        extracted_data: cleanedExtractedData,
-        entities: entityRows.map((e: any) => ({
-          id: Number(e.id),
-          name: e.name as string,
-          entity_type: e.entity_type as string,
-          metadata: (e.metadata ?? {}) as Record<string, unknown>,
-        })),
-        window: {
-          run_id: result.run_id,
-          automation_id: Number(result.automation_id),
-          window_start: result.window_start,
-          window_end: result.window_end,
-          granularity: timeGranularity,
-          content_analyzed: batchContentIds.length,
-        },
-        automation: {
-          id: Number(result.automation_id),
-          slug: (automationMeta[0]?.slug ?? `automation-${result.automation_id}`) as string,
-          name: (automationMeta[0]?.name ?? `automation-${result.automation_id}`) as string,
-          version: Number(row.automation_version ?? 1),
-        },
-        organization_id: orgId,
-        organization_slug: String(row.organization_slug),
-      };
-
-      const MAX_ATTEMPTS = 3;
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-        const execResult = await executeReaction({
-          compiledScript: row.reaction_script_compiled as string,
-          context: reactionContext,
-          env: env as Record<string, string | undefined>,
-        });
-
-        await trackAutomationReaction({
-          organizationId: orgId,
-          automationId: Number(result.automation_id),
-          sourceRunId: result.run_id,
-          reactionType: 'script_execution',
-          toolName: 'reaction_executor',
-          toolArgs: { attempt },
-          toolResult: { success: execResult.success, error: execResult.error },
-        });
-
-        if (execResult.success) {
-          reactionStatus = 'success';
-          logger.info(
-            {
-              automation_id: result.automation_id,
-              run_id: result.run_id,
-              attempt,
-            },
-            'Reaction script executed successfully (inline)'
-          );
-          break;
-        }
-
-        // Deterministic script failures are NOT transient: retrying a timed-out
-        // or quota-exhausted reaction re-burns the same 60s budget 3x and
-        // stalls complete_window by ~3 minutes for zero chance of recovery
-        // (run-script's error names are stable — TimeoutError, CompileError,
-        // QuotaExceeded, OutputSizeExceeded, ValidationError, …). Only the transient
-        // remainder (provider/network 5xx and similar) gets the retry loop.
-        const isNonTransient = reactionErrorIsNonTransient(execResult.error);
-        if (isNonTransient || attempt === MAX_ATTEMPTS) {
-          reactionStatus = 'failed';
-          reactionError = execResult.error;
-          logger[isNonTransient ? 'warn' : 'error'](
-            { automation_id: result.automation_id, attempt, error: execResult.error },
-            isNonTransient
-              ? 'Reaction script failed on a non-transient error; not retrying'
-              : 'Reaction script failed after all retries'
-          );
-          break;
-        }
-
-        logger.warn(
-          { automation_id: result.automation_id, attempt, error: execResult.error },
-          'Reaction script failed, retrying...'
-        );
-        await new Promise((r) => setTimeout(r, 1000));
-      }
-    }
-  } catch (err) {
-    reactionStatus = 'failed';
-    reactionError = getErrorMessage(err);
-    logger.warn({ err }, '[manage_automations] Failed to execute reaction script');
-  }
-
+  // `queued` means the handoff committed inside the window transaction above,
+  // NOT that the script ran: `automations/reaction-task.ts` executes it and
+  // records the outcome on the `automation_reactions` log that `get_automation`
+  // already surfaces. The task run id lets callers follow the durable handoff.
+  const { queues_reaction: queuesReaction, ...completion } = result;
   return {
-    ...result,
-    reaction_status: reactionStatus,
-    reaction_error: reactionError,
+    ...completion,
+    reaction_status: queuesReaction ? ('queued' as const) : ('skipped' as const),
   };
 }

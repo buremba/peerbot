@@ -34,6 +34,7 @@ import {
 	sweepStaleAutomationRuns,
 } from "../../../automations/automation";
 import { advanceAutomationSchedule } from "../../../automations/schedule-cursor";
+import { runAutomationReactionTask } from "../../../automations/reaction-task";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	createTestAgent,
@@ -794,6 +795,7 @@ describe("automation contract", () => {
 				run_id: number;
 				content_linked: number;
 				reaction_status: string;
+				reaction_task_run_id?: number;
 			};
 
       // Zero content linked, yet the reaction fired for the completed run.
@@ -802,7 +804,21 @@ describe("automation contract", () => {
 			// suite covers executor health), so assert "attempted", never
 			// 'skipped' — the pre-fix outcome this test exists to prevent.
 			expect(completion.content_linked).toBe(0);
-			expect(completion.reaction_status).not.toBe("skipped");
+			expect(completion.reaction_status).toBe("queued");
+
+			// The reaction is now a durable task committed with the window rather
+			// than an inline call, so drive it the way the scheduler would before
+			// asserting on its log. Crash safety itself is pinned in
+			// reaction-crash-safety.test.ts.
+			await runAutomationReactionTask(
+				{
+					organizationId: workspace.org.id,
+					automationId,
+					sourceRunId: completion.run_id,
+				},
+				{} as Env,
+				Number(completion.reaction_task_run_id)
+			);
 
 			const reactionRows = await sql`
         SELECT reaction_type, tool_name FROM automation_reactions

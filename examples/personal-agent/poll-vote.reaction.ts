@@ -313,22 +313,41 @@ async function upsertResponseEvent(params: {
 async function resultsForPoll(
   entityId: number,
   options: string[],
-  closesAt: string,
   client: ReactionClient
 ): Promise<{ results: PollResult[]; responseCount: number }> {
-  // client.query reads the governed current-event view, so this scan is bounded
-  // to one live projection per actor rather than the append-only vote history.
+  // The event view contains one current projection per actor. Legacy entity
+  // rows are a bounded cutover source for polls opened before this event kind.
   const rows = (await client.query(
-    `WITH latest AS (
-       SELECT metadata->>'choice' AS choice,
-              row_number() OVER (
-                PARTITION BY metadata->>'platform', metadata->>'actor_id'
-                ORDER BY (metadata->>'updated_at') DESC, id DESC
-              ) AS rank
+    `WITH candidates AS (
+       SELECT metadata->>'platform' AS platform,
+              metadata->>'actor_id' AS actor_id,
+              metadata->>'choice' AS choice,
+              (metadata->>'vote_event_id')::bigint AS vote_event_id,
+              (metadata->>'updated_at')::timestamptz AS updated_at,
+              id,
+              0 AS source_order
+       FROM entities
+       WHERE entity_type = 'poll-response'
+         AND deleted_at IS NULL
+         AND (metadata->>'poll_entity_id')::bigint = ${entityId}
+       UNION ALL
+       SELECT metadata->>'platform' AS platform,
+              metadata->>'actor_id' AS actor_id,
+              metadata->>'choice' AS choice,
+              (metadata->>'vote_event_id')::bigint AS vote_event_id,
+              (metadata->>'updated_at')::timestamptz AS updated_at,
+              id,
+              1 AS source_order
        FROM events
        WHERE entity_ids @> ARRAY[${entityId}]::bigint[]
          AND semantic_type = 'poll_response_recorded'
-         AND (metadata->>'updated_at')::timestamptz < ${sqlLiteral(closesAt)}::timestamptz
+     ), latest AS (
+       SELECT choice,
+              row_number() OVER (
+                PARTITION BY platform, actor_id
+                ORDER BY vote_event_id DESC, updated_at DESC, source_order DESC, id DESC
+              ) AS rank
+       FROM candidates
      )
      SELECT choice, count(*)::int AS count
      FROM latest
@@ -403,7 +422,6 @@ export default async function reducePollVote(
   const { results, responseCount } = await resultsForPoll(
     entityId,
     head.metadata.options,
-    head.metadata.closes_at,
     client
   );
   const reachedQuorum = results.some(
@@ -449,7 +467,6 @@ export default async function reducePollVote(
     const reconciled = await resultsForPoll(
       entityId,
       winner.metadata.options,
-      winner.metadata.closes_at,
       client
     );
     const terminal: PollState = {

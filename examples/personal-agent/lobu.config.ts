@@ -579,6 +579,33 @@ const poll = defineEntityType({
   },
 });
 
+// Temporary bounded cutover source for polls opened before response events
+// were introduced. New interactions never write this entity type.
+const pollResponse = defineEntityType({
+  key: "poll-response",
+  name: "Poll response",
+  description:
+    "The legacy latest materialized choice for one trusted platform actor in one poll.",
+  properties: {
+    poll_entity_id: Type.Integer({ minimum: 1 }),
+    platform: Type.String({ minLength: 1, maxLength: 50 }),
+    actor_id: Type.String({ minLength: 1, maxLength: 500 }),
+    actor_name: Type.String({ minLength: 1, maxLength: 500 }),
+    choice: Type.String({ minLength: 1, maxLength: 100 }),
+    vote_event_id: Type.Integer({ minimum: 1 }),
+    updated_at: Type.String({ format: "date-time" }),
+  },
+  required: [
+    "poll_entity_id",
+    "platform",
+    "actor_id",
+    "actor_name",
+    "choice",
+    "vote_event_id",
+    "updated_at",
+  ],
+});
+
 // GBP-equivalent of a transaction amount, using ONLY exact, Revolut-booked
 // values — never a fuzzy FX-rate lookup:
 //   • native GBP                       → the amount itself
@@ -1525,6 +1552,7 @@ export default defineConfig({
     company,
     task,
     poll,
+    pollResponse,
     channel,
     account,
     netWorthSnapshot,

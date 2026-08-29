@@ -16,7 +16,6 @@ interface State {
 function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
   let runId = 0;
   let eventId = 100;
-  let responseId = 1_000;
   let closeBeforeNextSave = false;
   let failNextPollEntityUpdate = false;
   let trigger: Record<string, unknown> = {};
@@ -38,11 +37,13 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
     } as State,
   };
   let entityState: State = { ...head.metadata };
-  const responses = new Map<
-    string,
-    { id: number; metadata: Record<string, unknown> }
-  >();
-  const createdResponses: Array<Record<string, unknown>> = [];
+  const voteEvents: Array<{
+    id: number;
+    occurredAt: string;
+    platform: string;
+    actorId: string;
+    choice: string;
+  }> = [];
   const savedKinds: string[] = [];
 
   const client = {
@@ -78,18 +79,8 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
       },
     },
     entities: {
-      create: async (input: {
-        metadata?: Record<string, unknown>;
-        [key: string]: unknown;
-      }) => {
-        responseId += 1;
-        const metadata = input.metadata ?? {};
-        createdResponses.push(input);
-        responses.set(`${metadata.platform}:${metadata.actor_id}`, {
-          id: responseId,
-          metadata,
-        });
-        return { entity: { id: responseId } };
+      create: async () => {
+        throw new Error("Reducer must not create response entities");
       },
       update: async (input: {
         entity_id: number;
@@ -103,42 +94,36 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
           if (input.metadata) entityState = input.metadata as unknown as State;
           return;
         }
-        const current = [...responses.entries()].find(
-          ([, response]) => response.id === input.entity_id
-        );
-        if (current && input.metadata) {
-          responses.set(current[0], {
-            id: input.entity_id,
-            metadata: input.metadata,
-          });
-        }
+        throw new Error(`Unexpected entity update: ${input.entity_id}`);
       },
     },
     query: async (sql: string) => {
       if (sql.includes("entity_type = 'poll'")) return [{ id: 77 }];
+      if (sql.includes("WITH latest AS")) {
+        expect(sql).toContain("semantic_type = 'poll_vote_cast'");
+        expect(sql).toContain("origin_type = 'template_interaction'");
+        const latest = new Map<string, (typeof voteEvents)[number]>();
+        for (const event of voteEvents) {
+          if (Date.parse(event.occurredAt) >= Date.parse(closesAt)) continue;
+          const key = `${event.platform}:${event.actorId}`;
+          const previous = latest.get(key);
+          if (
+            !previous ||
+            event.occurredAt > previous.occurredAt ||
+            (event.occurredAt === previous.occurredAt && event.id > previous.id)
+          ) {
+            latest.set(key, event);
+          }
+        }
+        const counts = new Map<string, number>();
+        for (const event of latest.values()) {
+          counts.set(event.choice, (counts.get(event.choice) ?? 0) + 1);
+        }
+        return [...counts].map(([choice, count]) => ({ choice, count }));
+      }
       if (sql.includes("FROM events")) {
         expect(sql).not.toContain("superseded_by");
         return [head];
-      }
-      if (sql.includes("SELECT id FROM entities")) {
-        const actor = [...responses.values()].find(
-          (response) =>
-            sql.includes(
-              `metadata->>'platform' = '${response.metadata.platform}'`
-            ) &&
-            sql.includes(
-              `metadata->>'actor_id' = '${response.metadata.actor_id}'`
-            )
-        );
-        return actor ? [{ id: actor.id }] : [];
-      }
-      if (sql.includes("WITH latest AS")) {
-        const counts = new Map<string, number>();
-        for (const response of responses.values()) {
-          const choice = String(response.metadata.choice);
-          counts.set(choice, (counts.get(choice) ?? 0) + 1);
-        }
-        return [...counts].map(([choice, count]) => ({ choice, count }));
       }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
@@ -198,6 +183,13 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
         },
       },
     };
+    voteEvents.push({
+      id: Number(trigger.id),
+      occurredAt: params.occurredAt,
+      platform: "gchat",
+      actorId: params.actorId,
+      choice: params.choice,
+    });
     await run();
   };
 
@@ -226,8 +218,6 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
     retryLastVote: run,
     state: () => head.metadata,
     entityState: () => entityState,
-    responses: () => [...responses.values()].map((row) => row.metadata),
-    createdResponses,
     savedKinds,
   };
 }
@@ -253,29 +243,9 @@ describe("poll vote reaction", () => {
       ],
       response_count: 1,
     });
-    expect(poll.responses()).toHaveLength(1);
   });
 
-  test("scopes response identity with a contract-valid platform actor slug", async () => {
-    const poll = harness();
-    await poll.vote({
-      actorId: "users/ada@example.com",
-      actorName: "Ada",
-      choice: "A",
-      occurredAt: "2026-08-28T14:10:00.000Z",
-    });
-
-    expect(poll.createdResponses).toHaveLength(1);
-    expect(poll.createdResponses[0]).toMatchObject({
-      type: "poll-response",
-      name: "Ada",
-      parent_id: 77,
-      slug: "actor-00670063006800610074-00750073006500720073002f0061006400610040006500780061006d0070006c0065002e0063006f006d",
-    });
-    expect(poll.createdResponses[0]?.slug).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
-  });
-
-  test("materializes two actors, a vote change, and quorum closure", async () => {
+  test("derives two actors, a vote change, and quorum closure from events", async () => {
     const poll = harness();
     await poll.vote({
       actorId: "users/ada",
@@ -306,7 +276,6 @@ describe("poll vote reaction", () => {
       ],
       response_count: 2,
     });
-    expect(poll.responses()).toHaveLength(2);
     expect(poll.savedKinds).toEqual([
       "poll_opened",
       "poll_opened",
@@ -314,7 +283,7 @@ describe("poll vote reaction", () => {
     ]);
   });
 
-  test("closes at the deadline without materializing the late vote", async () => {
+  test("closes at the deadline without counting the late vote", async () => {
     const poll = harness("2026-08-28T14:05:00.000Z");
     await poll.vote({
       actorId: "users/late",
@@ -328,7 +297,6 @@ describe("poll vote reaction", () => {
       close_reason: "deadline",
       response_count: 0,
     });
-    expect(poll.responses()).toEqual([]);
     expect(poll.savedKinds).toEqual(["poll_closed"]);
   });
 

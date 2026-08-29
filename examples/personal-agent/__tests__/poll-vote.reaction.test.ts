@@ -169,10 +169,11 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
     actorName: string;
     choice: string;
     occurredAt: string;
+    entityIds?: unknown;
   }) => {
     trigger = {
       id: 200 + runId,
-      entity_ids: [77],
+      entity_ids: params.entityIds ?? [77],
       semantic_type: "poll_vote_cast",
       origin_type: "template_interaction",
       occurred_at: params.occurredAt,
@@ -223,6 +224,29 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
 }
 
 describe("poll vote reaction", () => {
+  test("accepts run-bound PostgreSQL array text for event entity ids", async () => {
+    const poll = harness("2026-08-28T15:00:00.000Z", 1);
+    await poll.vote({
+      actorId: "users/ada",
+      actorName: "Ada",
+      choice: "A",
+      occurredAt: "2026-08-28T14:10:00.000Z",
+      entityIds: "{77,31540}",
+    });
+
+    expect(poll.state()).toMatchObject({
+      status: "closed",
+      close_reason: "quorum",
+      results: [
+        { option: "A", count: 1 },
+        { option: "B", count: 0 },
+        { option: "C", count: 0 },
+      ],
+      response_count: 1,
+    });
+    expect(poll.responses()).toHaveLength(1);
+  });
+
   test("materializes two actors, a vote change, and quorum closure", async () => {
     const poll = harness();
     await poll.vote({

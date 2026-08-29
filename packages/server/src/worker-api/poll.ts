@@ -60,7 +60,10 @@ import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execut
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { selectedConnectorVersionArtifactSql } from '../utils/connector-execution-placement';
-import { classifySelectedConnectorExecution } from '../utils/connector-execution-backend';
+import {
+  classifySelectedConnectorExecution,
+  deviceExecutesConnectorNatively,
+} from '../utils/connector-execution-backend';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
 import { normalizeAdvertisedCapabilities, normalizeAgentKinds } from './shared';
@@ -1602,9 +1605,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //     bundles totalled ~384 MB).
   //   - Device workers and DB-only user-uploaded connectors don't have the
   //     source on disk. When their version has stored TypeScript code, the
-  //     gateway ships `compiled_code` inline. Metadata-only device manifests
-  //     are implemented natively by the device bridge and need no bundle.
-  //     We check the gateway-local
+  //     gateway ships `compiled_code` inline. A metadata-only device manifest
+  //     needs no bundle only when it is an attested native-bridge run, or when
+  //     the gateway has no connector source it could deliver. We check the
+  //     gateway-local
   //     `findBundledConnectorFile` (different filesystem layout from the
   //     worker image — see worker-side resolver in
   //     connector-worker/src/compile-connector.ts) to decide whether the
@@ -1648,18 +1652,18 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const hasStoredCompiledCode = Boolean(row.compiled_code);
   const workerWillResolveLocally =
     !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
-  // Metadata-only device manifests describe connectors implemented natively by
-  // the device bridge, so there is no TypeScript bundle to deliver. A device
-  // connector that does have compiled code (for example an `os.files` takeout
-  // connector installed from source) runs in connector-worker and needs that
-  // code inline because it is not part of the worker's bundled catalog.
-  const deviceWillExecuteNativeConnector =
-    isUserScopedWorker &&
-    !hasStoredCompiledCode &&
-    (isNativeBridgeRun ||
-      row.connector_manifest_backed ||
-      (row.connector_required_capability != null &&
-        authorizedCapabilities.includes(row.connector_required_capability)));
+  // Only a native-bridge run is implemented by the device itself. Manifest
+  // backing and the capability gate do not establish who executes the code.
+  const deviceWillExecuteNativeConnector = deviceExecutesConnectorNatively({
+    isUserScopedWorker,
+    hasStoredCompiledCode,
+    gatewayHasLocalSource,
+    isNativeBridgeRun,
+    manifestBacked: row.connector_manifest_backed,
+    deviceAdvertisesRequiredCapability:
+      row.connector_required_capability != null &&
+      authorizedCapabilities.includes(row.connector_required_capability),
+  });
   if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteNativeConnector) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, {
@@ -1743,10 +1747,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
 
   // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
   // The worker provisions these on PATH via nix-shell before executing.
-  const nixPackages = (
-    isNativeBridgeRun || row.connector_manifest_backed
-      ? []
-      : (row.connector_runtime?.nix?.packages ?? [])
+  // A connector executed by connector-worker needs its declared native
+  // dependencies. Device-native bridge and legacy manifest implementations do
+  // not, because the device owns their runtime.
+  const nixPackages = (deviceWillExecuteNativeConnector
+    ? []
+    : (row.connector_runtime?.nix?.packages ?? [])
   ).filter(
     (p): p is string => typeof p === 'string'
   );

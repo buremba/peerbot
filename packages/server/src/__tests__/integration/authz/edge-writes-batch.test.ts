@@ -5,6 +5,7 @@ import {
 	ensureRelationshipType,
 	upsertEdges,
 } from "../../../utils/edge-writes";
+import { RELATIONSHIP_CLAIMS_METADATA_KEY } from "../../../utils/relationship-claims";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	createTestEntity,
@@ -64,6 +65,7 @@ describe("upsertEdges", () => {
 				pairs: [{ fromEntityId: a, toEntityId: b }],
 				source: "feed",
 				confidence: 0.4,
+				claimKey: "config:concurrent-writer",
 				onConflict: "ignore",
 			});
 
@@ -86,6 +88,7 @@ describe("upsertEdges", () => {
 			],
 			source: "feed",
 			confidence: 1.0,
+			claimKey: "config:batch-writer",
 			onConflict: "ignore",
 		});
 
@@ -101,6 +104,7 @@ describe("upsertEdges", () => {
 			pairs: [{ fromEntityId: a, toEntityId: b }],
 			source: "feed",
 			confidence: 1.0,
+			claimKey: "config:rerun-writer",
 			onConflict: "ignore" as const,
 		};
 		await upsertEdges(params);
@@ -124,6 +128,7 @@ describe("upsertEdges", () => {
 			source: "config",
 			confidence: 1.0,
 			metadata: { connection_id: "conn-1" },
+			claimKey: "config:dedupe-writer",
 			onConflict: "update",
 		});
 
@@ -143,6 +148,7 @@ describe("upsertEdges", () => {
 			...base,
 			source: "config",
 			metadata: { connection_id: "conn-1" },
+			claimKey: "config:first-writer",
 			onConflict: "update",
 		});
 
@@ -150,21 +156,32 @@ describe("upsertEdges", () => {
 			...base,
 			source: "manual",
 			metadata: { connection_id: "conn-2" },
+			claimKey: "config:second-writer",
 			onConflict: "update",
 		});
 		let rows = await liveEdges(orgId, typeId);
 		expect(rows[0].source).toBe("manual");
 		expect(rows[0].metadata).toMatchObject({ connection_id: "conn-2" });
+		expect(rows[0].metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).toEqual({
+			"config:first-writer": {},
+			"config:second-writer": {},
+		});
 
 		await upsertEdges({
 			...base,
 			source: "feed",
 			metadata: { connection_id: "conn-3" },
+			claimKey: "config:ignored-writer",
 			onConflict: "ignore",
 		});
 		rows = await liveEdges(orgId, typeId);
 		expect(rows[0].source).toBe("manual");
 		expect(rows[0].metadata).toMatchObject({ connection_id: "conn-2" });
+		expect(rows[0].metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).toEqual({
+			"config:first-writer": {},
+			"config:second-writer": {},
+			"config:ignored-writer": {},
+		});
 	});
 
 	it("drops a self-edge without failing the rest of the batch", async () => {
@@ -178,6 +195,7 @@ describe("upsertEdges", () => {
 			],
 			source: "feed",
 			confidence: 1.0,
+			claimKey: "config:self-edge-writer",
 			onConflict: "ignore",
 		});
 
@@ -195,6 +213,7 @@ describe("upsertEdges", () => {
 			source: "config",
 			confidence: 1.0,
 			metadata: { connection_id: "conn-1" },
+			claimKey: "config:tombstone-writer",
 			onConflict: "update" as const,
 		};
 		const first = await upsertEdges(params);

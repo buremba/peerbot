@@ -140,6 +140,10 @@ import {
 } from "../../helpers/connect-setup-continuation";
 import { createConnectionSetupBundle } from "../../helpers/interactive-connection-setup";
 import { supersedeActionEvent } from "../../approval-events";
+import {
+	lockOrganizationForRelationshipClaims,
+	retractConnectionRelationshipClaims,
+} from "../../../../utils/relationship-claims";
 
 // These Atlassian MCP config keys select a separately-consented Jira OAuth
 // grant. A member must not bind an admin's Jira authorization to a connection.
@@ -2294,6 +2298,9 @@ export async function handleDelete(
   // so no pending approval can be inserted between this expiry scan and the
   // tombstone commit.
   const deleted = await sql.begin(async (tx) => {
+    // Match organization deletion's parent -> child lock order before taking
+    // the connection row lock below.
+    await lockOrganizationForRelationshipClaims(tx, organizationId);
     const tombstoned = await tx`
       UPDATE connections
       SET deleted_at = NOW(),
@@ -2310,6 +2317,11 @@ export async function handleDelete(
       RETURNING id, slug, display_name, connector_key
     `;
     if (tombstoned.length === 0) return null; // concurrently deleted
+
+		await retractConnectionRelationshipClaims(tx, {
+			organizationId,
+			connectionId: args.connection_id,
+		});
 
 		const expiredApprovalRunIds = await expirePendingApprovalsBeforeDelete(tx);
 

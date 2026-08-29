@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
+import { validateAndScopeQuery } from "../../../packages/server/src/utils/execute-data-sources";
 import reducePollVote from "../poll-vote.reaction";
 
 interface State {
@@ -127,6 +128,7 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
       },
     },
     query: async (sql: string) => {
+      validateAndScopeQuery(sql, "org-test");
       if (sql.includes("entity_type = 'poll'")) return [{ id: 77 }];
       if (
         sql.includes("semantic_type = 'poll_response_recorded'") &&

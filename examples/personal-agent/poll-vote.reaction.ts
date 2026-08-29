@@ -319,33 +319,22 @@ async function resultsForPoll(
   // rows are a bounded cutover source for polls opened before this event kind.
   const rows = (await client.query(
     `WITH candidates AS (
-       SELECT metadata->>'platform' AS platform,
-              metadata->>'actor_id' AS actor_id,
-              metadata->>'choice' AS choice,
-              (metadata->>'vote_event_id')::bigint AS vote_event_id,
-              (metadata->>'updated_at')::timestamptz AS updated_at,
-              id,
-              0 AS source_order
+       SELECT metadata
        FROM entities
        WHERE entity_type = 'poll-response'
          AND deleted_at IS NULL
          AND (metadata->>'poll_entity_id')::bigint = ${entityId}
        UNION ALL
-       SELECT metadata->>'platform' AS platform,
-              metadata->>'actor_id' AS actor_id,
-              metadata->>'choice' AS choice,
-              (metadata->>'vote_event_id')::bigint AS vote_event_id,
-              (metadata->>'updated_at')::timestamptz AS updated_at,
-              id,
-              1 AS source_order
+       SELECT metadata
        FROM events
        WHERE entity_ids @> ARRAY[${entityId}]::bigint[]
          AND semantic_type = 'poll_response_recorded'
      ), latest AS (
-       SELECT choice,
+       SELECT metadata->>'choice' AS choice,
               row_number() OVER (
-                PARTITION BY platform, actor_id
-                ORDER BY vote_event_id DESC, updated_at DESC, source_order DESC, id DESC
+                PARTITION BY metadata->>'platform', metadata->>'actor_id'
+                ORDER BY (metadata->>'vote_event_id')::bigint DESC,
+                         (metadata->>'updated_at')::timestamptz DESC
               ) AS rank
        FROM candidates
      )

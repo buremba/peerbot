@@ -87,7 +87,7 @@ function jsonBytes(value: unknown): number {
   }
 }
 
-export interface FinalizedDynamicRows {
+interface FinalizedDynamicRows {
   rows: Record<string, unknown>[];
   omittedRows: number;
   sidecarCollisions: string[];

@@ -1759,7 +1759,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
       interactionType: 'approval',
       interactionStatus: 'pending',
     });
-    for (let index = 1; index <= 50; index += 1) {
+    for (let index = 1; index <= 200; index += 1) {
       current = await insertEvent({
         entityIds: [],
         organizationId: org.id,
@@ -1787,7 +1787,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
     });
     const body = await response.json();
     expect(body.result?.isError).not.toBe(true);
-    expect(body.result?.structuredContent?.title).toContain('Deep approval 50');
+    expect(body.result?.structuredContent?.title).toContain('Deep approval 200');
   });
 
   it('redacts approval secrets before key context is lost and enforces view limits', async () => {

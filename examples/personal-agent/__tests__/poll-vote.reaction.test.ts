@@ -111,7 +111,10 @@ function harness(closesAt = "2026-08-28T15:00:00.000Z", quorum = 2) {
     },
     query: async (sql: string) => {
       if (sql.includes("entity_type = 'poll'")) return [{ id: 77 }];
-      if (sql.includes("FROM events")) return [head];
+      if (sql.includes("FROM events")) {
+        expect(sql).not.toContain("superseded_by");
+        return [head];
+      }
       if (sql.includes("SELECT id FROM entities")) {
         const actor = [...responses.values()].find(
           (response) =>

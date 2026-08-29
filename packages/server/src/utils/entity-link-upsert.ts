@@ -111,12 +111,40 @@ interface EventAttributionPlan {
 interface AttributionResolution {
   entityIdsByItem: Map<number, number[]>;
   namedEntityIdsByItem: Map<number, Map<string, number>>;
+  unresolvedNamedAttributionsByItem: Map<number, Set<string>>;
 }
 
 interface AppliedEventAttributions {
   /** Entity id per attribution `name`, keyed by the caller's item index. */
   namedEntityIdsByItem: Map<number, Map<string, number>>;
+  /** Named rules that were applicable but did not resolve for this item. */
+  unresolvedNamedAttributionsByItem: Map<number, Set<string>>;
   relationshipsByKind: Record<string, ConnectorRelationshipDeclaration[]>;
+}
+
+/**
+ * Named rules the item supplied at least one raw identifier for, yet which
+ * produced no entity — invalid normalization, an ambiguous merge candidate, an
+ * entity that vanished between lookup and lock, or a `createWhen`/`autoCreate`
+ * miss. An endpoint the source item never mentioned is a withdrawal instead.
+ */
+function collectUnresolvedNamedAttributions(
+  suppliedNamesByItem: ReadonlyMap<number, ReadonlySet<string>>,
+  namedEntityIdsByItem: Map<number, Map<string, number>>
+): Map<number, Set<string>> {
+  const unresolved = new Map<number, Set<string>>();
+  for (const [index, suppliedNames] of suppliedNamesByItem) {
+    for (const name of suppliedNames) {
+      if (namedEntityIdsByItem.get(index)?.has(name)) continue;
+      let unresolvedNames = unresolved.get(index);
+      if (!unresolvedNames) {
+        unresolvedNames = new Set();
+        unresolved.set(index, unresolvedNames);
+      }
+      unresolvedNames.add(name);
+    }
+  }
+  return unresolved;
 }
 
 function resolveEventAttributions(
@@ -487,6 +515,17 @@ function extractLink(item: BatchItem, rule: ResolvedEventAttributionRule): Extra
         );
       }
       const rawScopeKey = getValueAtPath(item, scopeKeyPath);
+      if (
+        rawScopeKey !== null &&
+        rawScopeKey !== undefined &&
+        typeof rawScopeKey !== 'string' &&
+        typeof rawScopeKey !== 'number' &&
+        typeof rawScopeKey !== 'boolean'
+      ) {
+        throw new Error(
+          `Identity namespace '${spec.namespace}' at '${scopeKeyPath}' requires a string, number, or boolean tenant scope key.`
+        );
+      }
       scopeKey =
         rawScopeKey === null || rawScopeKey === undefined ? '' : String(rawScopeKey).trim();
       if (!scopeKey || scopeKey.includes('\u0000')) {
@@ -917,6 +956,7 @@ export async function applyEventAttributions(
   scrubIdentityScopeProjections(params.items);
   const empty: AppliedEventAttributions = {
     namedEntityIdsByItem: new Map(),
+    unresolvedNamedAttributionsByItem: new Map(),
     relationshipsByKind: {},
   };
   if (!params.feedKey || params.items.length === 0) return empty;
@@ -948,6 +988,7 @@ export async function applyEventAttributions(
   );
   return {
     namedEntityIdsByItem: resolved.namedEntityIdsByItem,
+    unresolvedNamedAttributionsByItem: resolved.unresolvedNamedAttributionsByItem,
     relationshipsByKind: plan.relationshipsByKind,
   };
 }
@@ -1021,7 +1062,11 @@ async function resolveLinksByKind(
   const namedEntityIdsByItem = new Map<number, Map<string, number>>();
   scrubIdentityScopeProjections(params.items);
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
-    return { entityIdsByItem: resolvedByItem, namedEntityIdsByItem };
+    return {
+      entityIdsByItem: resolvedByItem,
+      namedEntityIdsByItem,
+      unresolvedNamedAttributionsByItem: new Map(),
+    };
   }
 
   // entities.created_by is NOT NULL; resolve an org owner/admin once per batch
@@ -1031,6 +1076,7 @@ async function resolveLinksByKind(
   // rule -> per-item extracted link, carrying the source item + index (the
   // caller recovers the resolved entity per item; metadata is stamped onto the
   // item post-resolution).
+  const suppliedNamesByItem = new Map<number, Set<string>>();
   const byRule = new Map<
     ResolvedEventAttributionRule,
     Array<{ index: number; item: BatchItem; link: ExtractedLink }>
@@ -1041,6 +1087,20 @@ async function resolveLinksByKind(
     const rules = params.rulesByKind[kind];
     if (!rules) return;
     for (const rule of rules) {
+      if (
+        rule.name &&
+        rule.identities.some((identity) => {
+          const raw = getValueAtPath(item, identity.eventPath);
+          return raw !== undefined && raw !== null && raw !== '';
+        })
+      ) {
+        let names = suppliedNamesByItem.get(index);
+        if (!names) {
+          names = new Set();
+          suppliedNamesByItem.set(index, names);
+        }
+        names.add(rule.name);
+      }
       const link = extractLink(item, rule);
       if (!link) continue;
       // Metadata stamping is deferred to post-resolution (below) — only
@@ -1057,7 +1117,14 @@ async function resolveLinksByKind(
   // The reserved projections were scrubbed before extraction and are rebuilt
   // below only from identities that actually attach to an entity.
   if (byRule.size === 0) {
-    return { entityIdsByItem: resolvedByItem, namedEntityIdsByItem };
+    return {
+      entityIdsByItem: resolvedByItem,
+      namedEntityIdsByItem,
+      unresolvedNamedAttributionsByItem: collectUnresolvedNamedAttributions(
+        suppliedNamesByItem,
+        namedEntityIdsByItem
+      ),
+    };
   }
 
   // Resolve first, then lock every existing entity in one ascending-id pass.
@@ -1336,7 +1403,14 @@ async function resolveLinksByKind(
     }
   }
 
-  return { entityIdsByItem: resolvedByItem, namedEntityIdsByItem };
+  return {
+    entityIdsByItem: resolvedByItem,
+    namedEntityIdsByItem,
+    unresolvedNamedAttributionsByItem: collectUnresolvedNamedAttributions(
+      suppliedNamesByItem,
+      namedEntityIdsByItem
+    ),
+  };
 }
 
 interface SenderIdentityParams {

@@ -54,6 +54,37 @@ async function seedClaimGraph() {
   return { sql, workspace, connection, invoice, customer, desired };
 }
 
+async function withPausedRelationshipUpdates(run: () => Promise<unknown>): Promise<void> {
+  const sql = getTestDb();
+  await sql.unsafe(`
+    CREATE OR REPLACE FUNCTION test_pause_relationship_claim_update()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      PERFORM pg_sleep(0.5);
+      RETURN NEW;
+    END
+    $$
+  `);
+  await sql.unsafe(`
+    CREATE TRIGGER test_pause_relationship_claim_update
+    BEFORE UPDATE ON entity_relationships
+    FOR EACH ROW
+    EXECUTE FUNCTION test_pause_relationship_claim_update()
+  `);
+
+  try {
+    await run();
+  } finally {
+    await sql.unsafe(`
+      DROP TRIGGER IF EXISTS test_pause_relationship_claim_update
+      ON entity_relationships
+    `);
+    await sql.unsafe(`DROP FUNCTION IF EXISTS test_pause_relationship_claim_update()`);
+  }
+}
+
 describe('relationship source claims', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
@@ -167,6 +198,147 @@ describe('relationship source claims', () => {
         `connection:${connection.id}:feed:invoice:ordered-b`,
       ]);
     }
+  });
+
+  it('locks desired and departing claims in one order during concurrent moves', async () => {
+    const { sql, workspace, connection, desired } = await seedClaimGraph();
+    const secondCustomer = (await workspace.owner.entities.create({
+      type: 'customer',
+      name: 'Move Race Customer',
+    })) as { entity: { id: number } };
+    const secondEdge = {
+      ...desired[0],
+      toEntityId: secondCustomer.entity.id,
+    };
+
+    await sql.begin((tx) =>
+      reconcileConnectorRelationshipClaims(tx, {
+        organizationId: workspace.org.id,
+        connectionId: connection.id,
+        originId: 'invoice:move-a',
+        desired: [secondEdge],
+      })
+    );
+    await sql.begin((tx) =>
+      reconcileConnectorRelationshipClaims(tx, {
+        organizationId: workspace.org.id,
+        connectionId: connection.id,
+        originId: 'invoice:move-b',
+        desired,
+      })
+    );
+
+    await withPausedRelationshipUpdates(() =>
+      Promise.all([
+        sql.begin((tx) =>
+          reconcileConnectorRelationshipClaims(tx, {
+            organizationId: workspace.org.id,
+            connectionId: connection.id,
+            originId: 'invoice:move-a',
+            desired,
+          })
+        ),
+        sql.begin((tx) =>
+          reconcileConnectorRelationshipClaims(tx, {
+            organizationId: workspace.org.id,
+            connectionId: connection.id,
+            originId: 'invoice:move-b',
+            desired: [secondEdge],
+          })
+        ),
+      ])
+    );
+
+    const rows = await sql`
+      SELECT to_entity_id, metadata
+      FROM entity_relationships
+      WHERE organization_id = ${workspace.org.id}
+        AND deleted_at IS NULL
+      ORDER BY to_entity_id
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).toEqual({
+      [`connection:${connection.id}:feed:invoice:move-a`]: {},
+    });
+    expect(rows[1].metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).toEqual({
+      [`connection:${connection.id}:feed:invoice:move-b`]: {},
+    });
+  });
+
+  it('uses the same existing-row lock order in batch and claim writers', async () => {
+    const { sql, workspace, connection, desired } = await seedClaimGraph();
+    const secondCustomer = (await workspace.owner.entities.create({
+      type: 'customer',
+      name: 'Cross Writer Customer',
+    })) as { entity: { id: number } };
+    const secondEdge = {
+      ...desired[0],
+      toEntityId: secondCustomer.entity.id,
+    };
+    const [type] = await sql`
+      SELECT id FROM entity_relationship_types
+      WHERE organization_id = ${workspace.org.id} AND slug = 'invoice_customer'
+    `;
+
+    // Create the lexicographically later triple first so row-id and triple order
+    // disagree. The two writers must still prelock both existing rows by id.
+    await sql.begin((tx) =>
+      reconcileConnectorRelationshipClaims(tx, {
+        organizationId: workspace.org.id,
+        connectionId: connection.id,
+        originId: 'invoice:cross-writer',
+        desired: [secondEdge],
+      })
+    );
+    await upsertEdges({
+      db: sql,
+      organizationId: workspace.org.id,
+      relationshipTypeId: Number(type.id),
+      pairs: [desired[0]],
+      source: 'feed',
+      claimKey: 'config:cross-writer-seed',
+      onConflict: 'ignore',
+    });
+
+    await withPausedRelationshipUpdates(() =>
+      Promise.all([
+        upsertEdges({
+          db: sql,
+          organizationId: workspace.org.id,
+          relationshipTypeId: Number(type.id),
+          pairs: [desired[0], secondEdge],
+          source: 'feed',
+          claimKey: 'config:cross-writer-batch',
+          onConflict: 'ignore',
+        }),
+        sql.begin((tx) =>
+          reconcileConnectorRelationshipClaims(tx, {
+            organizationId: workspace.org.id,
+            connectionId: connection.id,
+            originId: 'invoice:cross-writer',
+            desired,
+          })
+        ),
+      ])
+    );
+
+    const rows = await sql`
+      SELECT to_entity_id, metadata
+      FROM entity_relationships
+      WHERE organization_id = ${workspace.org.id}
+        AND relationship_type_id = ${type.id}
+        AND deleted_at IS NULL
+      ORDER BY to_entity_id
+    `;
+    expect(rows).toHaveLength(2);
+    expect(rows[0].metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).toEqual({
+      'config:cross-writer-seed': {},
+      'config:cross-writer-batch': {},
+      [`connection:${connection.id}:feed:invoice:cross-writer`]: {},
+    });
+    expect(rows[1].metadata[RELATIONSHIP_CLAIMS_METADATA_KEY]).toEqual({
+      'config:cross-writer-batch': {},
+    });
   });
 
   it('fails closed on an unclaimed pre-cutover row instead of silently adopting it', async () => {

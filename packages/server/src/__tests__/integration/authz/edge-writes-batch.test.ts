@@ -77,6 +77,79 @@ describe("upsertEdges", () => {
 		expect(await liveEdges(orgId, typeId)).toHaveLength(1);
 	});
 
+	it("locks overlapping batches in one global pair order", async () => {
+		const sql = getTestDb();
+		const pairs = [
+			{ fromEntityId: a, toEntityId: b },
+			{ fromEntityId: a, toEntityId: c },
+		];
+		await upsertEdges({
+			db: sql,
+			organizationId: orgId,
+			relationshipTypeId: typeId,
+			pairs,
+			source: "feed",
+			claimKey: "config:seed-writer",
+			onConflict: "ignore",
+		});
+		await sql.unsafe(`
+			CREATE OR REPLACE FUNCTION test_pause_edge_batch_update()
+			RETURNS trigger
+			LANGUAGE plpgsql
+			AS $$
+			BEGIN
+				PERFORM pg_sleep(0.5);
+				RETURN NEW;
+			END
+			$$
+		`);
+		await sql.unsafe(`
+			CREATE TRIGGER test_pause_edge_batch_update
+			BEFORE UPDATE ON entity_relationships
+			FOR EACH ROW
+			EXECUTE FUNCTION test_pause_edge_batch_update()
+		`);
+
+		try {
+			await Promise.all([
+				upsertEdges({
+					db: sql,
+					organizationId: orgId,
+					relationshipTypeId: typeId,
+					pairs,
+					source: "feed",
+					claimKey: "config:ordered-writer-a",
+					onConflict: "ignore",
+				}),
+				upsertEdges({
+					db: sql,
+					organizationId: orgId,
+					relationshipTypeId: typeId,
+					pairs: [...pairs].reverse(),
+					source: "feed",
+					claimKey: "config:ordered-writer-b",
+					onConflict: "ignore",
+				}),
+			]);
+		} finally {
+			await sql.unsafe(`
+				DROP TRIGGER IF EXISTS test_pause_edge_batch_update
+				ON entity_relationships
+			`);
+			await sql.unsafe(`DROP FUNCTION IF EXISTS test_pause_edge_batch_update()`);
+		}
+
+		const rows = await liveEdges(orgId, typeId);
+		expect(rows).toHaveLength(2);
+		for (const row of rows) {
+			expect(row.metadata?.[RELATIONSHIP_CLAIMS_METADATA_KEY]).toEqual({
+				"config:seed-writer": {},
+				"config:ordered-writer-a": {},
+				"config:ordered-writer-b": {},
+			});
+		}
+	});
+
 	it("writes a batch and reports what it created", async () => {
 		const result = await upsertEdges({
 			db: getTestDb(),

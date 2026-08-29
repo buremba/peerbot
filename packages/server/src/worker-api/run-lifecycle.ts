@@ -47,7 +47,10 @@ import {
 import { toSecretRefAuthData } from "../utils/auth-credential-secrets";
 import { autoLinkEvent } from "../utils/auto-linker";
 import { nextRunAt as nextRunAtFromCron } from "../utils/cron";
-import { getConfiguredEmbeddingModel, needsEmbeddingSql } from "../utils/embeddings";
+import {
+	getConfiguredEmbeddingModel,
+	needsEmbeddingSql,
+} from "../utils/embeddings";
 import { applyEventAttributions } from "../utils/entity-link-upsert";
 import { errorMessage } from "../utils/errors";
 import { validateConnectorEventSemanticType } from "../utils/event-kind-validation";
@@ -59,6 +62,7 @@ import {
 } from "../utils/inline-attachments";
 import { insertEvent, recordLifecycleEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
+import { reconcileConnectorRelationshipClaims } from "../utils/relationship-claims";
 import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import {
 	isBrowserConnectorKey,
@@ -128,7 +132,10 @@ async function finalizeRun(
   `) as unknown as Array<Record<string, unknown>>;
 }
 
-async function runUsesBrowserConnector(sql: DbClient, runId: number): Promise<boolean> {
+async function runUsesBrowserConnector(
+	sql: DbClient,
+	runId: number
+): Promise<boolean> {
 	const rows = (await sql`
     SELECT connector_key FROM runs WHERE id = ${runId} LIMIT 1
   `) as unknown as Array<{ connector_key: string | null }>;
@@ -425,7 +432,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			// Runs on a dry run too, against `db`: it creates entity rows, and those
 			// roll back with everything else. Running it is what makes the inserts
 			// below realistic — events carry the entity ids it resolves.
-			await applyEventAttributions(
+			const appliedAttributions = await applyEventAttributions(
 				{
 					connectorKey: run.connector_key,
 					connectionId: run.connection_id,
@@ -445,7 +452,9 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 			if (
 				run.feed_id != null &&
 				run.feed_key &&
-				acceptedItems.some((item) => (item.automation_signals?.length ?? 0) === 0)
+				acceptedItems.some(
+					(item) => (item.automation_signals?.length ?? 0) === 0
+				)
 			) {
 				deriveContext = await loadConnectorDeriveFeedContext(
 					{
@@ -454,233 +463,271 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 						feedKey: run.feed_key,
 						feedId: run.feed_id,
 					},
-					db,
+					db
 				);
 			}
 
-			for (let item of acceptedItems) {
+			for (const [itemIndex, batchItem] of acceptedItems.entries()) {
+				let item = batchItem;
 				const sourceOriginId = browserSourceOriginIds.get(item);
 				let publishedArtifactIds: string[] = [];
 				let artifactCommitted = false;
-			try {
-				const itemOriginType = item.origin_type ?? null;
-				const itemSemanticType =
-					item.semantic_type ?? itemOriginType ?? "content";
+				try {
+					const itemOriginType = item.origin_type ?? null;
+					const itemSemanticType =
+						item.semantic_type ?? itemOriginType ?? "content";
 
-				// Skip events with no content — connectors must provide text
-				if (!item.payload_text && !item.title) {
-					logger.warn(
-						{
-							run_id: batch.run_id,
-							item_id: browserRun ? "[browser-item]" : item.id,
-							connector: run.connector_key,
-						},
-						"[stream] Skipping event with empty payload_text and title"
-					);
-					continue;
-				}
-
-				let itemPendingTranscriptions: Awaited<
-					ReturnType<typeof materializeInlineAttachments>
-				>["pendingTranscriptions"] = [];
-				if (!isDry) {
-					// ESCAPES THE TX: publish only after validation, immediately before
-					// the event insert. The finally block deletes this item's artifacts
-					// unless insertEvent wrote a row that references them.
-					const materialized = await materializeInlineAttachments(
-						[item],
-						() =>
-							eventArtifactBinding({
-								organizationId: run.organization_id,
-								connectionId: run.connection_id,
-								feedId: run.feed_id,
-								originId: item.id,
-							})
-					);
-					item = materialized.items[0] as typeof item;
-					itemPendingTranscriptions = materialized.pendingTranscriptions;
-					publishedArtifactIds = materialized.publishedArtifactIds;
-				}
-
-				const activations: AutomationActivationResult[] = [];
-				const inserted = await insertEvent(
-					{
-						entityIds: entityIds,
-						organizationId: run.organization_id,
-						originId: item.id,
-						title: item.title,
-						payloadType: item.payload_type,
-						content: item.payload_text,
-						payloadData: item.payload_data,
-						payloadTemplate: item.payload_template,
-						attachments: item.attachments,
-						authorName: item.author_name,
-						sourceUrl: item.source_url,
-						occurredAt: item.occurred_at,
-						score: item.score,
-						embedding: item.embedding,
-						embeddingModel: item.embedding_model,
-						metadata: item.metadata as Record<string, unknown> | undefined,
-						semanticType: itemSemanticType,
-						originType: itemOriginType,
-						connectorKey: run.connector_key,
-						connectionId: run.connection_id,
-						feedKey: run.feed_key,
-						feedId: run.feed_id,
-						runId: batch.run_id,
-						parentOriginId: item.origin_parent_id,
-					},
-					{
-						onConflictUpdate: true,
-						// applyEventAttributions scrubbed connector input and rebuilt
-						// these reserved fields from identities in the transaction above.
-						trustedIdentityScopeProjections: true,
-						sourceOriginId,
-						// Dry path only: the tx that gets rolled back — the INSERT
-						// genuinely executes, so every constraint, trigger and NOT NULL
-						// is exercised for real. The real path must NOT pass `db` even
-						// though it equals the singleton: a caller-supplied `sql` makes
-						// insertEvent skip its advisory-lock dedup transaction (the
-						// caller's tx is assumed to be the atomic scope), and that lock
-						// is what serializes concurrent ingests of the same
-						// (connection_id, origin_id) across replicas.
-						sql: isDry ? db : undefined,
-						afterPersist: async (persisted, tx) => {
-							const drafts = item.automation_signals ?? [];
-							if (drafts.length > 0) {
-								for (const [draftIndex, draft] of drafts.entries()) {
-									const signal = materializeConnectorAutomationSignal({
-										draft,
-										change: persisted.change,
-										connectorKey: run.connector_key,
-										connectionId: run.connection_id,
-										deliveryId: `sync:${batch.run_id}:event:${persisted.id}:${draftIndex}`,
-									});
-									if (!signal) continue;
-									activations.push(
-										...(await activateAutomationSignal({
-											organizationId: run.organization_id,
-											signal,
-											db: tx,
-										}))
-									);
-								}
-							} else if (deriveContext) {
-								const derived = deriveConnectorActivationSignals(
-									deriveContext,
-									{
-										connectionId: run.connection_id,
-										originId: item.id,
-										kind: itemOriginType ?? itemSemanticType,
-										title: item.title ?? null,
-										payloadText: item.payload_text ?? null,
-										sourceUrl: item.source_url ?? null,
-										occurredAt: item.occurred_at ?? new Date(),
-										metadata:
-											item.metadata as Record<string, unknown> | undefined,
-									},
-									persisted.change,
-									persisted.id,
-								);
-								for (const signal of derived) {
-									activations.push(
-										...(await activateAutomationSignal({
-											organizationId: run.organization_id,
-											signal,
-											db: tx,
-										}))
-									);
-								}
-							}
-						},
-					}
-				);
-				// `unchanged` reuses the pre-existing row, which still points at the
-				// artifacts published by an earlier sync — the ones we just published
-				// were never referenced by any row, so the finally block reclaims them.
-				// `state_updated` reconciles counters on the existing row and leaves
-				// `attachments` untouched, so it reuses the earlier sync's artifacts
-				// exactly as `unchanged` does — the ones just published are unreferenced.
-				if (inserted.change !== "unchanged" && inserted.change !== "state_updated") {
-					artifactCommitted = true;
-					const transcriptionConnectionId = run.connection_id;
-					if (transcriptionConnectionId != null) {
-						pendingTranscriptions.push(
-							...itemPendingTranscriptions.map((job) => ({
-								...job,
-								originId: inserted.origin_id,
-								baseEventId: inserted.id,
-								connectionId: transcriptionConnectionId,
-								title: inserted.title,
-							}))
-						);
-					} else if (itemPendingTranscriptions.length > 0) {
+					// Skip events with no content — connectors must provide text
+					if (!item.payload_text && !item.title) {
 						logger.warn(
-							{ run_id: batch.run_id },
-							"[stream] Audio transcription skipped — source connection missing"
+							{
+								run_id: batch.run_id,
+								item_id: browserRun ? "[browser-item]" : item.id,
+								connector: run.connector_key,
+							},
+							"[stream] Skipping event with empty payload_text and title"
 						);
+						continue;
 					}
-				}
-				// ESCAPES THE TX: this dispatches real Automation runs to the worker
-				// fleet. The activation ROWS roll back with the tx, but a dispatched
-				// agent run has already left the database — it would run against, and
-				// react to, an event that is about to cease to exist.
-				if (!isDry) {
-					await dispatchAutomationRunsBestEffort(activations);
-				}
-				if (inserted) {
-					totalItems++;
-					// ESCAPES THE TX: detached (`.catch(() => {})`) and writes through
-					// the getDb() singleton, not `db`, so its writes would commit
-					// independently of the rollback — and race it, since nothing awaits
-					// them.
-					if (entityIds.length > 0 && !isDry) {
-						autoLinkEvent({
-							eventId: Number(inserted.id),
-							entityIds,
-							content: item.payload_text,
-							title: item.title,
+
+					let itemPendingTranscriptions: Awaited<
+						ReturnType<typeof materializeInlineAttachments>
+					>["pendingTranscriptions"] = [];
+					if (!isDry) {
+						// ESCAPES THE TX: publish only after validation, immediately before
+						// the event insert. The finally block deletes this item's artifacts
+						// unless insertEvent wrote a row that references them.
+						const materialized = await materializeInlineAttachments(
+							[item],
+							() =>
+								eventArtifactBinding({
+									organizationId: run.organization_id,
+									connectionId: run.connection_id,
+									feedId: run.feed_id,
+									originId: item.id,
+								})
+						);
+						item = materialized.items[0] as typeof item;
+						itemPendingTranscriptions = materialized.pendingTranscriptions;
+						publishedArtifactIds = materialized.publishedArtifactIds;
+					}
+
+					const activations: AutomationActivationResult[] = [];
+					const inserted = await insertEvent(
+						{
+							entityIds: entityIds,
 							organizationId: run.organization_id,
-						}).catch(() => {});
-					}
-					// Captured after a successful insert, so the preview describes rows
-					// that really did land (and would land again on a real sync) rather
-					// than rows we merely hoped would.
-					if (isDry && dryPreview.length < DRY_RUN_PREVIEW_LIMIT) {
-						dryPreview.push({
-							origin_id: item.id,
+							originId: item.id,
 							title: item.title,
-							semantic_type: itemSemanticType,
-							payload_type: item.payload_type,
-							occurred_at: item.occurred_at,
-							author_name: item.author_name,
-							source_url: item.source_url,
-							// Bounded: a preview is for eyeballing shape, and some
-							// connectors emit very large bodies.
-							content_preview:
-								typeof item.payload_text === "string"
-									? item.payload_text.slice(0, DRY_RUN_CONTENT_CHARS)
-									: null,
-							attachment_count: item.attachments?.length ?? 0,
-						});
-					}
-				}
-			} catch (err) {
-				if (browserRun) {
-					console.error(
-						"[stream] Insert failed for browser item:",
-						sanitizeBrowserText(errorMessage(err)),
+							payloadType: item.payload_type,
+							content: item.payload_text,
+							payloadData: item.payload_data,
+							payloadTemplate: item.payload_template,
+							attachments: item.attachments,
+							authorName: item.author_name,
+							sourceUrl: item.source_url,
+							occurredAt: item.occurred_at,
+							score: item.score,
+							embedding: item.embedding,
+							embeddingModel: item.embedding_model,
+							metadata: item.metadata as Record<string, unknown> | undefined,
+							semanticType: itemSemanticType,
+							originType: itemOriginType,
+							connectorKey: run.connector_key,
+							connectionId: run.connection_id,
+							feedKey: run.feed_key,
+							feedId: run.feed_id,
+							runId: batch.run_id,
+							parentOriginId: item.origin_parent_id,
+						},
+						{
+							onConflictUpdate: true,
+							// applyEventAttributions scrubbed connector input and rebuilt
+							// these reserved fields from identities in the transaction above.
+							trustedIdentityScopeProjections: true,
+							sourceOriginId,
+							// Dry path only: the tx that gets rolled back — the INSERT
+							// genuinely executes, so every constraint, trigger and NOT NULL
+							// is exercised for real. The real path must NOT pass `db` even
+							// though it equals the singleton: a caller-supplied `sql` makes
+							// insertEvent skip its advisory-lock dedup transaction (the
+							// caller's tx is assumed to be the atomic scope), and that lock
+							// is what serializes concurrent ingests of the same
+							// (connection_id, origin_id) across replicas.
+							sql: isDry ? db : undefined,
+							afterPersist: async (persisted, tx) => {
+								// Keyed by `origin_type`, like attribution rules. Declarations
+								// whose named entities were not resolved are omitted below; an
+								// empty desired set means this source no longer asserts the edge.
+								const relationshipDeclarations = itemOriginType
+									? (appliedAttributions.relationshipsByKind[itemOriginType] ??
+										[])
+									: [];
+								if (
+									relationshipDeclarations.length > 0 &&
+									run.connection_id == null
+								) {
+									throw new Error(
+										"Connector-declared relationships require a source connection"
+									);
+								}
+								if (run.connection_id != null) {
+									const named =
+										appliedAttributions.namedEntityIdsByItem.get(itemIndex) ??
+										new Map<string, number>();
+									await reconcileConnectorRelationshipClaims(tx, {
+										organizationId: run.organization_id,
+										connectionId: run.connection_id,
+										originId: persisted.origin_id,
+										desired: relationshipDeclarations.flatMap((declaration) => {
+											const fromEntityId = named.get(declaration.from);
+											const toEntityId = named.get(declaration.to);
+											return fromEntityId === undefined ||
+												toEntityId === undefined
+												? []
+												: [{ declaration, fromEntityId, toEntityId }];
+										}),
+									});
+								}
+								const drafts = item.automation_signals ?? [];
+								if (drafts.length > 0) {
+									for (const [draftIndex, draft] of drafts.entries()) {
+										const signal = materializeConnectorAutomationSignal({
+											draft,
+											change: persisted.change,
+											connectorKey: run.connector_key,
+											connectionId: run.connection_id,
+											deliveryId: `sync:${batch.run_id}:event:${persisted.id}:${draftIndex}`,
+										});
+										if (!signal) continue;
+										activations.push(
+											...(await activateAutomationSignal({
+												organizationId: run.organization_id,
+												signal,
+												db: tx,
+											}))
+										);
+									}
+								} else if (deriveContext) {
+									const derived = deriveConnectorActivationSignals(
+										deriveContext,
+										{
+											connectionId: run.connection_id,
+											originId: item.id,
+											kind: itemOriginType ?? itemSemanticType,
+											title: item.title ?? null,
+											payloadText: item.payload_text ?? null,
+											sourceUrl: item.source_url ?? null,
+											occurredAt: item.occurred_at ?? new Date(),
+											metadata: item.metadata as
+												| Record<string, unknown>
+												| undefined,
+										},
+										persisted.change,
+										persisted.id
+									);
+									for (const signal of derived) {
+										activations.push(
+											...(await activateAutomationSignal({
+												organizationId: run.organization_id,
+												signal,
+												db: tx,
+											}))
+										);
+									}
+								}
+							},
+						}
 					);
-				} else {
-					console.error("[stream] Insert failed for item", item.id, ":", err);
-				}
-				throw err;
-			} finally {
-				if (!artifactCommitted) {
-					await deleteMaterializedArtifacts(publishedArtifactIds);
+					// `unchanged` reuses the pre-existing row, which still points at the
+					// artifacts published by an earlier sync — the ones we just published
+					// were never referenced by any row, so the finally block reclaims them.
+					// `state_updated` reconciles counters on the existing row and leaves
+					// `attachments` untouched, so it reuses the earlier sync's artifacts
+					// exactly as `unchanged` does — the ones just published are unreferenced.
+					if (
+						inserted.change !== "unchanged" &&
+						inserted.change !== "state_updated"
+					) {
+						artifactCommitted = true;
+						const transcriptionConnectionId = run.connection_id;
+						if (transcriptionConnectionId != null) {
+							pendingTranscriptions.push(
+								...itemPendingTranscriptions.map((job) => ({
+									...job,
+									originId: inserted.origin_id,
+									baseEventId: inserted.id,
+									connectionId: transcriptionConnectionId,
+									title: inserted.title,
+								}))
+							);
+						} else if (itemPendingTranscriptions.length > 0) {
+							logger.warn(
+								{ run_id: batch.run_id },
+								"[stream] Audio transcription skipped — source connection missing"
+							);
+						}
+					}
+					// ESCAPES THE TX: this dispatches real Automation runs to the worker
+					// fleet. The activation ROWS roll back with the tx, but a dispatched
+					// agent run has already left the database — it would run against, and
+					// react to, an event that is about to cease to exist.
+					if (!isDry) {
+						await dispatchAutomationRunsBestEffort(activations);
+					}
+					if (inserted) {
+						totalItems++;
+						// ESCAPES THE TX: detached (`.catch(() => {})`) and writes through
+						// the getDb() singleton, not `db`, so its writes would commit
+						// independently of the rollback — and race it, since nothing awaits
+						// them.
+						if (entityIds.length > 0 && !isDry) {
+							autoLinkEvent({
+								eventId: Number(inserted.id),
+								entityIds,
+								content: item.payload_text,
+								title: item.title,
+								organizationId: run.organization_id,
+							}).catch(() => {});
+						}
+						// Captured after a successful insert, so the preview describes rows
+						// that really did land (and would land again on a real sync) rather
+						// than rows we merely hoped would.
+						if (isDry && dryPreview.length < DRY_RUN_PREVIEW_LIMIT) {
+							dryPreview.push({
+								origin_id: item.id,
+								title: item.title,
+								semantic_type: itemSemanticType,
+								payload_type: item.payload_type,
+								occurred_at: item.occurred_at,
+								author_name: item.author_name,
+								source_url: item.source_url,
+								// Bounded: a preview is for eyeballing shape, and some
+								// connectors emit very large bodies.
+								content_preview:
+									typeof item.payload_text === "string"
+										? item.payload_text.slice(0, DRY_RUN_CONTENT_CHARS)
+										: null,
+								attachment_count: item.attachments?.length ?? 0,
+							});
+						}
+					}
+				} catch (err) {
+					if (browserRun) {
+						console.error(
+							"[stream] Insert failed for browser item:",
+							sanitizeBrowserText(errorMessage(err))
+						);
+					} else {
+						console.error("[stream] Insert failed for item", item.id, ":", err);
+					}
+					throw err;
+				} finally {
+					if (!artifactCommitted) {
+						await deleteMaterializedArtifacts(publishedArtifactIds);
+					}
 				}
 			}
-		}
 
 			// ESCAPES THE TX: transcription is an external, paid API call, and it
 			// is fired detached so nothing awaits it. `pendingTranscriptions` is
@@ -847,7 +894,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			// produces a visible terminal response.
 			return c.json(
 				{ error: "Device chat runs must use the complete-chat endpoint" },
-				409,
+				409
 			);
 		}
 		const isBrowserRun = await runUsesBrowserConnector(sql, req.run_id);
@@ -1019,7 +1066,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 					// but do not fail the worker complete ACK (run is terminal).
 					logger.error(
 						{ feed_id: feedId, error: errorMessage(err) },
-						"[completeWorkerJob] maybeEmitFeedAutoPausedAfterFailure threw",
+						"[completeWorkerJob] maybeEmitFeedAutoPausedAfterFailure threw"
 					);
 				}
 			}
@@ -1401,7 +1448,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 				automationId,
 				typeof approved.dispatch_source === "string"
 					? approved.dispatch_source
-					: null,
+					: null
 			);
 			await advanceScheduleAfterTerminalFailure(
 				tx,
@@ -1516,10 +1563,10 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			});
 		}
 		const agentKind =
-				typeof approved.agent_kind === "string" &&
-				(approved.agent_kind as string).trim()
-					? (approved.agent_kind as string).trim()
-					: null;
+			typeof approved.agent_kind === "string" &&
+			(approved.agent_kind as string).trim()
+				? (approved.agent_kind as string).trim()
+				: null;
 		// The run's pinned agent_kind is trusted device provenance. An explicit
 		// model passed by the agent still wins.
 		await sql`
@@ -1743,7 +1790,9 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 
 	const reason =
 		"Device CLI exited without calling completeWindow " +
-		(budget > 0 ? `after ${budget + 1} attempt(s)` : "(finalize nudges disabled)") +
+		(budget > 0
+			? `after ${budget + 1} attempt(s)`
+			: "(finalize nudges disabled)") +
 		". Use the lobu skill + `lobu memory exec` (knowledge.read → completeWindow) " +
 		"or MCP query_sdk/run_sdk. Check lobu CLI login/org, gateway reachability, " +
 		"and that the device token has mcp:write if using MCP.";
@@ -2198,10 +2247,7 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 
 			const organizationId = (rows[0] as any)?.organization_id;
 			const actionKey = (rows[0] as any)?.action_key ?? "Action";
-			if (
-				organizationId &&
-				(rows[0] as any)?.approval_status === "approved"
-			) {
+			if (organizationId && (rows[0] as any)?.approval_status === "approved") {
 				const newStatus = req.status === "success" ? "completed" : "failed";
 				const eventId = await supersedeActionEvent(
 					req.run_id,
@@ -2215,11 +2261,11 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 						? { action_output: actionOutput }
 						: { error_message: req.error_message },
 					null,
-					tx,
+					tx
 				);
 				if (eventId === undefined) {
 					throw new Error(
-						`Cannot finalize approval run ${req.run_id} as '${newStatus}': its approval card is missing`,
+						`Cannot finalize approval run ${req.run_id} as '${newStatus}': its approval card is missing`
 					);
 				}
 			}

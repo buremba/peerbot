@@ -305,6 +305,10 @@ export async function buildGithubTeamGraph(params: {
 			source: "feed",
 			confidence: 1.0,
 			createdBy: creatorUserId,
+			// Installation ownership is account-scoped, not connection-scoped. The
+			// stable account key is reused across reinstall/refresh and therefore
+			// does not accumulate one claim per connection generation.
+			claimKey: `config:github-team-graph:${params.account.id ?? params.account.login}`,
 			onConflict: "ignore",
 		}),
 	);

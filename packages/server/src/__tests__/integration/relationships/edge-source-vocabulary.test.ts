@@ -46,10 +46,10 @@ describe('relationship source vocabulary', () => {
       await sql`
         UPDATE entity_relationships
         SET source = ${source},
-            metadata = ${sql.json({
+            metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json({
               connection_id: 'test-connection',
               channel_key: prefix,
-            })}
+            })}::jsonb
         WHERE id = ${linked.relationship.id}
       `;
     }

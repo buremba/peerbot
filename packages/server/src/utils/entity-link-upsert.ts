@@ -17,10 +17,7 @@
  * recovers the relationship via entity_identities.
  */
 
-import {
-  validateEntityRowInsert,
-  validateEntityRowPatch,
-} from '../authz/entity-row-validation';
+import { validateEntityRowInsert, validateEntityRowPatch } from '../authz/entity-row-validation';
 import { randomBytes } from 'node:crypto';
 import {
   ACL_RESOURCE_TYPE_SLUG,
@@ -45,6 +42,7 @@ import {
 } from './entity-management';
 import logger from './logger';
 import { getValueAtPath } from './object-path';
+import type { ConnectorRelationshipDeclaration } from './relationship-claims';
 import { TtlCache } from './ttl-cache';
 
 interface BatchItem {
@@ -54,6 +52,7 @@ interface BatchItem {
 }
 
 type ResolvedEventAttributionRule = {
+  name?: string;
   role: EventAttributionRule['role'];
   entityType: string;
   autoCreate?: boolean;
@@ -101,7 +100,24 @@ function scrubIdentityScopeProjections(items: BatchItem[]): void {
 
 type EventKindAttributionDefinition = {
   attributions?: EventAttributionRule[];
+  relationships?: ConnectorRelationshipDeclaration[];
 };
+
+interface EventAttributionPlan {
+  rulesByKind: RuleMap;
+  relationshipsByKind: Record<string, ConnectorRelationshipDeclaration[]>;
+}
+
+interface AttributionResolution {
+  entityIdsByItem: Map<number, number[]>;
+  namedEntityIdsByItem: Map<number, Map<string, number>>;
+}
+
+interface AppliedEventAttributions {
+  /** Entity id per attribution `name`, keyed by the caller's item index. */
+  namedEntityIdsByItem: Map<number, Map<string, number>>;
+  relationshipsByKind: Record<string, ConnectorRelationshipDeclaration[]>;
+}
 
 function resolveEventAttributions(
   def: EventKindAttributionDefinition | undefined
@@ -113,6 +129,7 @@ function resolveEventAttributions(
     }
     return [
       {
+        name: rule.name,
         role: rule.role,
         entityType: rule.target.entityType,
         autoCreate: rule.autoCreate,
@@ -133,7 +150,8 @@ function resolveEventAttributions(
 
 const RULES_CACHE_TTL_MS = 60_000;
 // Per-pod caches — no cross-replica sharing.
-const rulesCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
+const plansCache = new TtlCache<EventAttributionPlan>(RULES_CACHE_TTL_MS);
+const rulesByTypeCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
 const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
 
 /**
@@ -168,16 +186,16 @@ function randomSlug(entityType: string): string {
   return `${prefix}-${randomBytes(5).toString('hex')}`;
 }
 
-async function loadEventAttributionRules(
+async function loadEventAttributionPlan(
   sql: DbClient,
   params: {
     connectorKey: string;
     feedKey: string;
     orgId: string;
   }
-): Promise<RuleMap> {
+): Promise<EventAttributionPlan> {
   const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
-  return rulesCache.getOrSet(cacheKey, async () => {
+  return plansCache.getOrSet(cacheKey, async () => {
     const rows = await sql`
       SELECT feeds_schema
       FROM connector_definitions
@@ -186,17 +204,23 @@ async function loadEventAttributionRules(
         AND status = 'active'
       LIMIT 1
     `;
-    const result: RuleMap = {};
+    const rulesByKind: RuleMap = {};
+    const relationshipsByKind: Record<string, ConnectorRelationshipDeclaration[]> = {};
     const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
     const feedDef = feedsSchema?.[params.feedKey];
-    const eventKinds = feedDef?.eventKinds as Record<string, EventKindAttributionDefinition> | undefined;
+    const eventKinds = feedDef?.eventKinds as
+      | Record<string, EventKindAttributionDefinition>
+      | undefined;
     if (eventKinds) {
       for (const [kind, def] of Object.entries(eventKinds)) {
         const resolved = resolveEventAttributions(def);
-        if (resolved.length > 0) result[kind] = resolved;
+        if (resolved.length > 0) rulesByKind[kind] = resolved;
+        if (Array.isArray(def.relationships) && def.relationships.length > 0) {
+          relationshipsByKind[kind] = def.relationships;
+        }
       }
     }
-    return result;
+    return { rulesByKind, relationshipsByKind };
   });
 }
 
@@ -223,7 +247,7 @@ export async function loadAttributionRuleByType(
 ): Promise<ResolvedEventAttributionRule | null> {
   const roleKey = params.role ?? '__any__';
   const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}:${roleKey}`;
-  const map = await rulesCache.getOrSet(cacheKey, async () => {
+  const map = await rulesByTypeCache.getOrSet(cacheKey, async () => {
     const rows = await sql`
       SELECT feeds_schema
       FROM connector_definitions
@@ -236,14 +260,17 @@ export async function loadAttributionRuleByType(
     const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
     if (feedsSchema) {
       for (const feed of Object.values(feedsSchema)) {
-        const eventKinds = (feed as { eventKinds?: Record<string, EventKindAttributionDefinition> })
-          ?.eventKinds;
+        const eventKinds = (
+          feed as {
+            eventKinds?: Record<string, EventKindAttributionDefinition>;
+          }
+        )?.eventKinds;
         if (!eventKinds) continue;
         for (const def of Object.values(eventKinds)) {
           const match = resolveEventAttributions(def).find(
             (r) =>
               r.entityType === params.entityType &&
-              (params.role === undefined || r.role === params.role),
+              (params.role === undefined || r.role === params.role)
           );
           if (match) {
             result[params.entityType] = [match];
@@ -258,7 +285,8 @@ export async function loadAttributionRuleByType(
 }
 
 export function clearEntityLinkRulesCache(): void {
-  rulesCache.clear();
+  plansCache.clear();
+  rulesByTypeCache.clear();
   creatorCache.clear();
 }
 
@@ -337,10 +365,7 @@ type AttachedIdentity = {
   scopeKey: string | null;
 };
 
-function appendIdentityIfMissing(
-  identities: AttachedIdentity[],
-  identity: AttachedIdentity
-): void {
+function appendIdentityIfMissing(identities: AttachedIdentity[], identity: AttachedIdentity): void {
   if (!identities.some((candidate) => identityKey(candidate) === identityKey(identity))) {
     identities.push(identity);
   }
@@ -446,10 +471,7 @@ function normalizeIdentityValue(namespace: string, raw: string): string | null {
  * keys fail hard rather than silently widening the identity to organization
  * scope.
  */
-function extractLink(
-  item: BatchItem,
-  rule: ResolvedEventAttributionRule
-): ExtractedLink | null {
+function extractLink(item: BatchItem, rule: ResolvedEventAttributionRule): ExtractedLink | null {
   const identities: ExtractedLink['identities'] = [];
   for (const spec of rule.identities) {
     const raw = getValueAtPath(item, spec.eventPath);
@@ -465,7 +487,8 @@ function extractLink(
         );
       }
       const rawScopeKey = getValueAtPath(item, scopeKeyPath);
-      scopeKey = rawScopeKey === null || rawScopeKey === undefined ? '' : String(rawScopeKey).trim();
+      scopeKey =
+        rawScopeKey === null || rawScopeKey === undefined ? '' : String(rawScopeKey).trim();
       if (!scopeKey || scopeKey.includes('\u0000')) {
         throw new Error(
           `Identity namespace '${spec.namespace}' at '${scopeKeyPath}' requires a non-empty tenant scope key.`
@@ -890,33 +913,43 @@ export async function applyEventAttributions(
   // handle opens a transaction here. The sync dry-run path threads its rolled-
   // back tx so auto-created entities disappear with their events.
   sql?: DbClient
-): Promise<void> {
+): Promise<AppliedEventAttributions> {
   scrubIdentityScopeProjections(params.items);
-  if (!params.feedKey || params.items.length === 0) return;
+  const empty: AppliedEventAttributions = {
+    namedEntityIdsByItem: new Map(),
+    relationshipsByKind: {},
+  };
+  if (!params.feedKey || params.items.length === 0) return empty;
 
   // Resolved BEFORE the rule load: the sync dry-run path supplies its
   // rolled-back transaction, and reading rules on the pool while that is open is
   // the starvation this file exists to avoid (#2818).
   const db = sql ?? getDb();
 
-  const rulesByKind = await loadEventAttributionRules(db, {
+  const plan = await loadEventAttributionPlan(db, {
     connectorKey: params.connectorKey,
     feedKey: params.feedKey,
     orgId: params.orgId,
   });
-  if (Object.keys(rulesByKind).length === 0) return;
-  await withEntityWriteTransaction(db, (tx) =>
+  if (Object.keys(plan.rulesByKind).length === 0) {
+    return { ...empty, relationshipsByKind: plan.relationshipsByKind };
+  }
+  const resolved = await withEntityWriteTransaction(db, (tx) =>
     resolveLinksByKind(
       {
         connectorKey: params.connectorKey,
         connectionId: params.connectionId,
         orgId: params.orgId,
         items: params.items,
-        rulesByKind,
+        rulesByKind: plan.rulesByKind,
       },
       tx
     )
   );
+  return {
+    namedEntityIdsByItem: resolved.namedEntityIdsByItem,
+    relationshipsByKind: plan.relationshipsByKind,
+  };
 }
 
 /**
@@ -950,7 +983,7 @@ export async function resolveEventAttributionsForItems(
   if (params.items.length === 0) return new Map();
   if (Object.keys(params.rules).length === 0) return new Map();
   const db = sql ?? getDb();
-  return withEntityWriteTransaction(db, (tx) =>
+  const resolved = await withEntityWriteTransaction(db, (tx) =>
     resolveLinksByKind(
       {
         connectorKey: params.connectorKey,
@@ -962,6 +995,7 @@ export async function resolveEventAttributionsForItems(
       tx
     )
   );
+  return resolved.entityIdsByItem;
 }
 
 /**
@@ -982,11 +1016,12 @@ async function resolveLinksByKind(
   // A real transaction handle for ALL match/insert/update writes. Public entry
   // points either join the caller's tx or open one before reaching this core.
   sql: DbClient
-): Promise<Map<number, number[]>> {
+): Promise<AttributionResolution> {
   const resolvedByItem = new Map<number, number[]>();
+  const namedEntityIdsByItem = new Map<number, Map<string, number>>();
   scrubIdentityScopeProjections(params.items);
   if (Object.keys(params.rulesByKind).length === 0 || params.items.length === 0) {
-    return resolvedByItem;
+    return { entityIdsByItem: resolvedByItem, namedEntityIdsByItem };
   }
 
   // entities.created_by is NOT NULL; resolve an org owner/admin once per batch
@@ -1019,10 +1054,11 @@ async function resolveLinksByKind(
       bucket.push({ index, item, link });
     }
   });
-
   // The reserved projections were scrubbed before extraction and are rebuilt
   // below only from identities that actually attach to an entity.
-  if (byRule.size === 0) return resolvedByItem;
+  if (byRule.size === 0) {
+    return { entityIdsByItem: resolvedByItem, namedEntityIdsByItem };
+  }
 
   // Resolve first, then lock every existing entity in one ascending-id pass.
   // Without a global lock order, two connector batches containing the same
@@ -1058,13 +1094,30 @@ async function resolveLinksByKind(
     }
   }
 
-  const recordResolved = (index: number, entityId: number): void => {
+  const recordResolved = (
+    index: number,
+    entityId: number,
+    rule: ResolvedEventAttributionRule
+  ): void => {
     const existing = resolvedByItem.get(index);
     if (existing) {
       if (!existing.includes(entityId)) existing.push(entityId);
     } else {
       resolvedByItem.set(index, [entityId]);
     }
+    if (!rule.name) return;
+    let named = namedEntityIdsByItem.get(index);
+    if (!named) {
+      named = new Map();
+      namedEntityIdsByItem.set(index, named);
+    }
+    const previous = named.get(rule.name);
+    if (previous !== undefined && previous !== entityId) {
+      throw new Error(
+        `Attribution name '${rule.name}' resolved to more than one entity for item ${index}`
+      );
+    }
+    named.set(rule.name, entityId);
   };
 
   for (const [rule, entries] of byRule) {
@@ -1193,10 +1246,7 @@ async function resolveLinksByKind(
                   identifier: id.identifier,
                   scopeKey: id.scopeKey ?? null,
                 };
-                appendIdentityIfMissing(
-                  id.matchOnly ? eventOnlyIdentities : attached,
-                  matched
-                );
+                appendIdentityIfMissing(id.matchOnly ? eventOnlyIdentities : attached, matched);
               }
             }
           }
@@ -1213,7 +1263,7 @@ async function resolveLinksByKind(
         isCreate,
       });
 
-      recordResolved(index, entityId);
+      recordResolved(index, entityId, rule);
 
       // Cache the mapping for the rest of the batch — only for attached
       // identifiers, so an identifier that stayed on another entity (ON CONFLICT
@@ -1286,7 +1336,7 @@ async function resolveLinksByKind(
     }
   }
 
-  return resolvedByItem;
+  return { entityIdsByItem: resolvedByItem, namedEntityIdsByItem };
 }
 
 interface SenderIdentityParams {
@@ -1334,7 +1384,10 @@ export async function resolveSenderIdentity(
   // mint can land between the two.
   const existing = firstIdentityHit(
     params.identities,
-    await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
+    await lookupMatches(sql, {
+      orgId: params.orgId,
+      identities: [params.identities],
+    })
   );
   if (existing !== null) return existing;
   return withEntityWriteTransaction(sql, (tx) => resolveSenderIdentityInTransaction(tx, params));
@@ -1348,7 +1401,10 @@ async function resolveSenderIdentityInTransaction(
   // #1646) or person, resolved by one type-agnostic lookup. No create.
   const hit = firstIdentityHit(
     params.identities,
-    await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
+    await lookupMatches(sql, {
+      orgId: params.orgId,
+      identities: [params.identities],
+    })
   );
   if (hit !== null) return hit;
 
@@ -1374,7 +1430,10 @@ async function resolveSenderIdentityInTransaction(
     await hardDeleteEntityRows({ tx: sql, ids: [created.entityId] });
     return firstIdentityHit(
       params.identities,
-      await lookupMatches(sql, { orgId: params.orgId, identities: [params.identities] })
+      await lookupMatches(sql, {
+        orgId: params.orgId,
+        identities: [params.identities],
+      })
     );
   }
   return null;

@@ -20,6 +20,7 @@ import {
 import { isInternalUrl } from '../gateway/proxy/ssrf-guard';
 import type { McpOAuthMetadata } from '../mcp-proxy/types';
 import { preflightConnectorRelationshipTypes } from './connector-relationship-declarations';
+import { reconcileConnectorIdentityScopeRegistry } from './connector-identity-scopes';
 
 type SqlClient = ReturnType<typeof getDb>;
 
@@ -295,7 +296,7 @@ export async function resolveConnectorInstallSource(params: {
   };
 }
 
-export async function upsertConnectorDefinitionRecords(params: {
+type UpsertConnectorDefinitionRecordsParams = {
   sql: SqlClient;
   organizationId: string;
   metadata: ConnectorMetadata;
@@ -317,7 +318,31 @@ export async function upsertConnectorDefinitionRecords(params: {
   versionScope: 'shared' | 'organization';
   /** Replace every version artifact/provenance field, including with NULL. */
   replaceVersionArtifact?: boolean;
-}): Promise<{ updated: boolean }> {
+};
+
+type UpsertConnectorDefinitionResult = {
+  updated: boolean;
+};
+
+/**
+ * Reconcile identity-scope registry state and activate the matching definition
+ * in one transaction, so a rejected shape change cannot partially install.
+ */
+export async function upsertConnectorDefinitionRecords(
+  params: UpsertConnectorDefinitionRecordsParams
+): Promise<UpsertConnectorDefinitionResult> {
+  const run = (sql: SqlClient) =>
+    upsertConnectorDefinitionRecordsInTransaction({ ...params, sql });
+  const callerOwnsTransaction = typeof params.sql.savepoint === 'function';
+  const result = callerOwnsTransaction
+    ? await params.sql.savepoint(run)
+    : await params.sql.begin(run);
+  return result;
+}
+
+async function upsertConnectorDefinitionRecordsInTransaction(
+  params: UpsertConnectorDefinitionRecordsParams
+): Promise<UpsertConnectorDefinitionResult> {
   const { sql } = params;
   const { metadata } = params;
 
@@ -327,6 +352,11 @@ export async function upsertConnectorDefinitionRecords(params: {
   // declaration graph and resolves it against the org's own relationship
   // vocabulary before any definition or version row can become active.
   await preflightConnectorRelationshipTypes({
+    sql,
+    organizationId: params.organizationId,
+    metadata,
+  });
+  await reconcileConnectorIdentityScopeRegistry({
     sql,
     organizationId: params.organizationId,
     metadata,

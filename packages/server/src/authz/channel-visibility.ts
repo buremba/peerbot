@@ -76,6 +76,7 @@ export async function resolveRequesterMemberEntityId(
 		WHERE ei.organization_id = ${organizationId}
 		  AND ei.namespace = 'auth_user_id'
 		  AND ei.identifier = ${userId}
+		  AND ei.scope_key IS NULL
 		  AND ei.deleted_at IS NULL
 		  AND ei.source_connector = 'auth:signup'
 		LIMIT 1
@@ -130,6 +131,7 @@ async function resolveRequesterByChatUserId(
 			WHERE ei.organization_id = ${organizationId}
 			  AND ei.namespace = ${namespace}
 			  AND ei.identifier = ANY(${pgTextArray([...keys])}::text[])
+			  AND ei.scope_key IS NULL
 			  AND ei.deleted_at IS NULL
 			LIMIT 1
 		`;
@@ -192,6 +194,7 @@ export async function getVisibleChannelKeysForMember(
 		  ON ei.entity_id = r.to_entity_id
 		 AND ei.organization_id = r.organization_id
 		 AND ei.namespace = ANY(${pgTextArray(CHANNEL_KEY_NAMESPACES)}::text[])
+		 AND ei.scope_key IS NULL
 		 AND ei.deleted_at IS NULL
 		WHERE r.organization_id = ${organizationId}
 		  AND r.from_entity_id = ${memberEntityId}

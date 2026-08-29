@@ -131,6 +131,38 @@ timeout, and one failure does not discard successful results from the others.
   `automationEvents` keys that differ from your feed `eventKinds`, attach matching
   `automation_signals` to each emitted `EventEnvelope`, or those triggers never
   fire (the picker advertises them but ingestion never emits them).
+- **Entity relationships.** Give the event kind's attribution rules stable
+  `name` values, then reference those names from `relationships`:
+
+  ```ts
+  eventKinds: {
+    invoice: {
+      attributions: [
+        {
+          name: "invoice",
+          role: "belongs_to",
+          target: { entityType: "invoice", identities: [/* ... */] },
+        },
+        {
+          name: "customer",
+          role: "about",
+          target: { entityType: "customer", identities: [/* ... */] },
+        },
+      ],
+      relationships: [
+        { type: "invoice_customer", from: "invoice", to: "customer" },
+      ],
+    },
+  }
+  ```
+
+  Install preflight requires the relationship type to be active in the target
+  organization and rejects authorization-bearing types. On ingestion, Lobu
+  resolves the named attributions and reconciles the event's complete edge set
+  atomically with its event row. Ownership follows `(connection_id, origin_id)`,
+  so resync changes retract only that source item's claim; another source or a
+  manual claim can retain the same graph fact. Deleting the connection retracts
+  its remaining claims.
 - **No real credentials in code.** Secrets flow through `ctx.credentials` /
   `ctx.config`; workers never receive durable stored credentials.
 

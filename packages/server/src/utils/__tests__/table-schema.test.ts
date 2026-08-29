@@ -36,6 +36,7 @@ describe('QUERYABLE_TABLE_NAMES', () => {
   it('should not include non-allowlisted tables', () => {
     expect(QUERYABLE_TABLE_NAMES.has('session')).toBe(false);
     expect(QUERYABLE_TABLE_NAMES.has('member')).toBe(false);
+    expect(QUERYABLE_TABLE_NAMES.has('entity_identities')).toBe(false);
   });
 });
 
@@ -137,6 +138,16 @@ describe('validateAndScopeQuery', () => {
     expect(scoped.tableRefs).toEqual([]);
     expect(scoped.sql).toBe(sql);
     expect(scoped.params).toEqual([]);
+  });
+
+  it('keeps identity claims out of the raw query allowlist', () => {
+    expect(() =>
+      validateAndScopeQuery(
+        'SELECT identifier FROM entity_identities',
+        'org_test',
+        { safeColumns: SAFE_COLUMN_DEFS }
+      )
+    ).toThrow(/Unknown table 'entity_identities'/);
   });
 
   it('keeps tableless params empty when an unused entity context is present', () => {

@@ -126,6 +126,7 @@ export function compileResourceVisibility(
             WHERE mei.organization_id = ${orgParam}
               AND mei.namespace = 'auth_user_id'
               AND mei.identifier = ${userParam}
+              AND mei.scope_key IS NULL
               AND mei.source_connector = 'auth:signup'
               AND mei.deleted_at IS NULL
             LIMIT 1

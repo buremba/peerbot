@@ -32,6 +32,7 @@ export async function resolveMemberOrgsForUser(
       ON ei.organization_id = m."organizationId"
      AND ei.namespace = 'auth_user_id'
      AND ei.identifier = ${userId}
+     AND ei.scope_key IS NULL
      AND ei.deleted_at IS NULL
      AND ei.source_connector = 'auth:signup'
     JOIN entities e

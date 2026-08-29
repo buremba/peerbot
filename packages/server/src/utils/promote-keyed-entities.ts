@@ -8,8 +8,8 @@
  * typed key tuple; the full tuple remains in entity metadata for inspection,
  * so a re-run — or a second replica racing the same window — resolves to the
  * existing entity instead of creating a duplicate. The partial unique index
- * `idx_entity_identities_live_unique_scoped (organization_id, namespace, identifier,
- * COALESCE(scope_connection_id, 0))
+ * `idx_entity_identities_live_unique_tenant_scoped (organization_id, namespace, identifier,
+ * COALESCE(scope_key, ''))
  * WHERE deleted_at IS NULL` is the lock.
  *
  * Origin provenance (the run that first produced the entity, its stable key,
@@ -269,7 +269,7 @@ async function insertEntityWithUniqueSlug(params: {
  * Upsert a child entity by stable key. Returns its id and whether it was newly
  * created. Idempotent across re-runs / concurrent replicas via the
  * `entity_identities` live-unique index on
- * (org, namespace, identifier, COALESCE(scope_connection_id, 0)) — automation
+ * (org, namespace, identifier, COALESCE(scope_key, '')) — automation
  * keys are org-scoped, so that column is always NULL here. Slug
  * collisions are disambiguated by `insertEntityWithUniqueSlug` (the stable key,
  * not the slug, is the identity).
@@ -344,6 +344,7 @@ async function upsertKeyedEntity(params: {
     WHERE ei.organization_id = ${organizationId}
       AND ei.namespace = ${AUTOMATION_KEY_NAMESPACE}
       AND ei.identifier = ${identifier}
+      AND ei.scope_key IS NULL
       AND ei.deleted_at IS NULL
       AND e.deleted_at IS NULL
     LIMIT 1
@@ -573,14 +574,14 @@ async function upsertKeyedEntity(params: {
 
   // 3. Claim the stable key. ON CONFLICT DO NOTHING against the live-unique
   //    index: if a concurrent completion already claimed it, our insert is a
-  //    no-op and we resolve the winner instead.
+  //    no-op and we resolve the winner below.
   const claimed = await tx<{ entity_id: number | string }>`
     INSERT INTO entity_identities (
-      organization_id, entity_id, namespace, identifier, source_connector
+      organization_id, entity_id, namespace, identifier, source_connector, scope_key
     ) VALUES (
-      ${organizationId}, ${entityId}, ${AUTOMATION_KEY_NAMESPACE}, ${identifier}, 'automation'
+      ${organizationId}, ${entityId}, ${AUTOMATION_KEY_NAMESPACE}, ${identifier}, 'automation', NULL
     )
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
     DO NOTHING
     RETURNING entity_id
   `;
@@ -589,14 +590,14 @@ async function upsertKeyedEntity(params: {
   }
 
   // Lost the race: another live transaction already claimed this key. Resolve
-  // the winner, then drop the entity we just created so it doesn't linger as an
-  // orphaned (identity-less) duplicate child under the parent.
+  // the winner, then drop the provisional entity so it does not linger.
   const winner = await tx<{ entity_id: number | string }>`
     SELECT entity_id
     FROM entity_identities
     WHERE organization_id = ${organizationId}
       AND namespace = ${AUTOMATION_KEY_NAMESPACE}
       AND identifier = ${identifier}
+      AND scope_key IS NULL
       AND deleted_at IS NULL
     LIMIT 1
   `;

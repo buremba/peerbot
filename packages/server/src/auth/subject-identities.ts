@@ -46,7 +46,7 @@ type Sql = ReturnType<typeof getDb>;
 /**
  * Insert (or no-op on conflict) entity_identities rows pointing at the given
  * member entity. The unique index on (organization_id, namespace, identifier,
- * COALESCE(scope_connection_id, 0))
+ * COALESCE(scope_key, ''))
  * WHERE deleted_at IS NULL guards against duplicates.
  */
 async function writeIdentities(
@@ -59,11 +59,11 @@ async function writeIdentities(
 	for (const row of rows) {
 		await sql`
       INSERT INTO entity_identities (
-        organization_id, entity_id, namespace, identifier, source_connector
+        organization_id, entity_id, namespace, identifier, source_connector, scope_key
       ) VALUES (
-        ${organizationId}, ${memberEntityId}, ${row.namespace}, ${row.identifier}, ${source}
+        ${organizationId}, ${memberEntityId}, ${row.namespace}, ${row.identifier}, ${source}, NULL
       )
-      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+      ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
       DO NOTHING
     `;
 	}
@@ -75,7 +75,7 @@ async function writeIdentities(
  *
  * Why an UPDATE and not another INSERT: `entity_identities` has a live-unique
  * index on `(organization_id, namespace, identifier,
- * COALESCE(scope_connection_id, 0))`, so the claim exists at most once —
+ * COALESCE(scope_key, ''))`, so the claim exists at most once —
  * auth-written identities are always org-scoped (NULL). `writeIdentities`'
  * `ON CONFLICT DO NOTHING` therefore SILENTLY LOSES
  * whenever the ACL sync minted a `person` for this workspace user before the
@@ -108,11 +108,11 @@ async function adoptSlackIdentityOntoMember(
 ): Promise<"created" | "adopted" | "already-owned" | "conflict"> {
 	const inserted = await sql<{ id: number }>`
     INSERT INTO entity_identities (
-      organization_id, entity_id, namespace, identifier, source_connector
+      organization_id, entity_id, namespace, identifier, source_connector, scope_key
     ) VALUES (
-      ${organizationId}, ${memberEntityId}, ${SLACK_IDENTITY.USER_ID}, ${identifier}, 'auth:signup'
+      ${organizationId}, ${memberEntityId}, ${SLACK_IDENTITY.USER_ID}, ${identifier}, 'auth:signup', NULL
     )
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
     DO NOTHING
     RETURNING id
   `;
@@ -136,6 +136,7 @@ async function adoptSlackIdentityOntoMember(
     WHERE ei.organization_id = ${organizationId}
       AND ei.namespace = ${SLACK_IDENTITY.USER_ID}
       AND ei.identifier = ${identifier}
+      AND ei.scope_key IS NULL
       AND ei.deleted_at IS NULL
       AND e.id = ei.entity_id
       AND e.organization_id = ei.organization_id
@@ -149,6 +150,7 @@ async function adoptSlackIdentityOntoMember(
     WHERE organization_id = ${organizationId}
       AND namespace = ${SLACK_IDENTITY.USER_ID}
       AND identifier = ${identifier}
+      AND scope_key IS NULL
       AND entity_id = ${memberEntityId}
       AND deleted_at IS NULL
     LIMIT 1

@@ -48,6 +48,12 @@ import {
 } from '../utils/entity-management.js';
 import { ensureRelationshipType, upsertEdges } from '../utils/edge-writes.js';
 import {
+  connectionRelationshipClaimKey,
+  lockLiveConnectionForRelationshipClaims,
+  lockOrganizationForRelationshipClaims,
+  retractRelationshipClaimFromDepartures,
+} from '../utils/relationship-claims.js';
+import {
   PURPOSE_AUTHORIZATION,
   withAclEdgeWrite,
 } from '../utils/relationship-validation.js';
@@ -277,6 +283,7 @@ async function resolveMembers(
 			WHERE ei.organization_id = ${orgId}
 			  AND ei.namespace = ${namespace}
 			  AND ei.identifier = ANY(${pgTextArray(list)}::text[])
+			  AND ei.scope_key IS NULL
 			  AND ei.deleted_at IS NULL
 			  AND e.deleted_at IS NULL
 		`;
@@ -582,6 +589,22 @@ export async function buildAccessGraph(params: {
   const { createdEdges, removedEdges } = await withAclEdgeWrite(
     sql,
     async (tx) => {
+      if (identityConnectionId !== null) {
+        await lockOrganizationForRelationshipClaims(tx, organizationId);
+        await lockLiveConnectionForRelationshipClaims(
+          tx,
+          organizationId,
+          identityConnectionId
+        );
+      }
+      // Connection cleanup is keyed by the stored row id. Chat ACL syncs use a
+      // runtime id derived from the row slug, so claiming under that runtime id
+      // would leave authorization edges behind when the numeric row is deleted.
+      // Synthetic direct callers have no row and retain their supplied id.
+      const claimKey = connectionRelationshipClaimKey(
+        identityConnectionId ?? connectionId,
+        'config:access-graph',
+      );
       const created = await upsertEdges({
         db: tx,
         organizationId,
@@ -590,6 +613,7 @@ export async function buildAccessGraph(params: {
         source: 'feed',
         confidence: 1.0,
         createdBy: creatorUserId,
+        claimKey,
         onConflict: 'ignore',
       });
 
@@ -602,18 +626,13 @@ export async function buildAccessGraph(params: {
       // not pass empty-on-fetch-error.
       let removedEdges = 0;
       for (const [resourceEntityId, resourceMembers] of currentMembersByResource) {
-        const keep = [...resourceMembers];
-        const removed = await tx<{ id: number }[]>`
-			UPDATE entity_relationships
-			SET deleted_at = current_timestamp, updated_at = current_timestamp
-			WHERE organization_id = ${organizationId}
-			  AND relationship_type_id = ${typeId}
-			  AND to_entity_id = ${resourceEntityId}
-			  AND deleted_at IS NULL
-			  AND from_entity_id <> ALL(${pgBigintArray(keep)}::bigint[])
-			RETURNING id
-		`;
-        removedEdges += removed.length;
+        removedEdges += await retractRelationshipClaimFromDepartures(tx, {
+          organizationId,
+          relationshipTypeId: typeId,
+          toEntityId: resourceEntityId,
+          claimKey,
+          keepFromEntityIds: [...resourceMembers],
+        });
       }
       return { createdEdges: created.length, removedEdges };
     },

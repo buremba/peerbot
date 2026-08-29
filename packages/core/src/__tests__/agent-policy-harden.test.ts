@@ -113,6 +113,15 @@ describe("getCustomToolDescription", () => {
     expect(desc).toContain("user's next turn");
   });
 
+  test("registers the event presentation and scoped follow-up tools", () => {
+    expect(getCustomToolDescription("present_event")).toContain(
+      "declared json_template"
+    );
+    expect(getCustomToolDescription("schedule_followup")).toContain(
+      "current conversation"
+    );
+  });
+
   test("falls back to the tool name for unknown tools", () => {
     expect(getCustomToolDescription("UnknownTool")).toBe("UnknownTool");
   });

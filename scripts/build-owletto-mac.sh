@@ -64,6 +64,9 @@ echo ">> Building Owletto (Release, $SIGN_ID, version $VERSION)..."
 
 APP="$DERIVED/Build/Products/Release/Owletto.app"
 [ -d "$APP" ] || die "build succeeded but $APP is missing"
+AUTH_CLI="$APP/Contents/Resources/lobu-cli/bin/lobu"
+"$ROOT/scripts/build-mac-auth-cli.sh" "$AUTH_CLI"
+AUTH_ENTITLEMENTS="$ROOT/config/macos/lobu-auth.entitlements"
 DAEMON="$APP/Contents/Resources/lobu-device-daemon/lobu-device-daemon"
 "$ROOT/scripts/verify-mac-device-daemon.sh" "$DAEMON" >/dev/null
 
@@ -74,6 +77,7 @@ OPTS=(--force --options runtime --timestamp --sign "$SIGN_ID")
 
 # Xcode treats the daemon as a resource, so seal its Mach-O explicitly before
 # re-signing the umbrella app that records the nested signature.
+codesign "${OPTS[@]}" --entitlements "$AUTH_ENTITLEMENTS" "$AUTH_CLI"
 codesign "${OPTS[@]}" "$DAEMON"
 
 resign_xpc() {

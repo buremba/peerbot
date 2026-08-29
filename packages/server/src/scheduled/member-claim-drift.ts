@@ -65,6 +65,7 @@ export async function runMemberClaimDriftCheck(): Promise<MemberClaimDriftResult
       ON et.id = e.entity_type_id
      AND et.organization_id = e.organization_id
     WHERE ei.namespace = 'auth_user_id'
+      AND ei.scope_key IS NULL
       AND ei.deleted_at IS NULL
       AND (
         e.deleted_at IS NOT NULL

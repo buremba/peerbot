@@ -10,6 +10,14 @@
 import { ACL_RESOURCE_TYPE_SLUG } from "@lobu/connector-sdk";
 import { type DbClient, getDb } from "../db/client.js";
 import { upsertEdges } from "../utils/edge-writes.js";
+import { withEntityWriteTransaction } from "../utils/entity-management.js";
+import {
+	connectionRelationshipClaimKey,
+	lockLiveConnectionForRelationshipClaims,
+	lockOrganizationForRelationshipClaims,
+	RELATIONSHIP_CLAIMS_METADATA_KEY,
+	retractRelationshipClaimExcept,
+} from "../utils/relationship-claims.js";
 import { resolveEventAttributionsForItems } from "../utils/entity-link-upsert.js";
 import { ensureResourceEntityType } from "./access-graph.js";
 import { EDGE_SOURCE_MANUAL } from "../utils/relationship-validation";
@@ -166,24 +174,25 @@ export async function ensureChannelResourceEntity(opts: {
 
 /**
  * Take ownership of one channel's `about` edges: create what is missing and
- * re-stamp metadata/source on what already exists.
+ * add this connection's claim to what already exists.
  *
- * The metadata is per-channel (it carries `channel_key`), so this is one batch
- * per channel rather than one for the whole sync.
+ * The claim payload is per-channel (it carries `channel_key`), so this is one
+ * batch per channel rather than one for the whole sync.
  */
 async function upsertAboutEdges(opts: {
 	organizationId: string;
 	fromChannelEntityId: number;
 	toBusinessEntityIds: number[];
 	source: string;
-	metadata: ChannelAboutMetadata;
 	userId: string | null | undefined;
 	typeId: number;
+	claimKey: string;
+	claim: ChannelAboutMetadata;
 	sql: DbClient;
-}): Promise<void> {
+}): Promise<number[]> {
 	// The partial conflict target only matches live rows; a tombstoned triple
 	// therefore gets a fresh live row, exactly as this path did before.
-	await upsertEdges({
+	return upsertEdges({
 		db: opts.sql,
 		organizationId: opts.organizationId,
 		relationshipTypeId: opts.typeId,
@@ -194,7 +203,8 @@ async function upsertAboutEdges(opts: {
 		source: opts.source,
 		confidence: 1.0,
 		createdBy: opts.userId ?? null,
-		metadata: opts.metadata,
+		claimKey: opts.claimKey,
+		claim: opts.claim,
 		onConflict: 'update',
 	});
 }
@@ -202,7 +212,7 @@ async function upsertAboutEdges(opts: {
 /** Replace manual `about` edges for one channel, taking ownership of desired pairs. */
 export async function setManualChannelAboutEdges(opts: {
 	organizationId: string;
-	connectionId: string | number;
+	connectionId: number;
 	connectorKey: string;
 	teamId: string | null | undefined;
 	channelId: string;
@@ -210,66 +220,57 @@ export async function setManualChannelAboutEdges(opts: {
 	userId?: string | null;
 	sql?: DbClient;
 }): Promise<void> {
-	const sql = opts.sql ?? getDb();
-	const typeId = await ensureAboutRelationshipType(opts.organizationId, sql);
-	const connectionId = String(opts.connectionId);
-	const { key } = channelResourceIdentity(
-		opts.connectorKey,
-		opts.teamId,
-		opts.channelId,
-	);
+	const db = opts.sql ?? getDb();
+	await withEntityWriteTransaction(db, async (sql) => {
+		await lockOrganizationForRelationshipClaims(sql, opts.organizationId);
+		await lockLiveConnectionForRelationshipClaims(
+			sql,
+			opts.organizationId,
+			opts.connectionId,
+		);
 
-	const channelEntityId = await ensureChannelResourceEntity({
-		organizationId: opts.organizationId,
-		connectorKey: opts.connectorKey,
-		teamId: opts.teamId,
-		channelId: opts.channelId,
-		sql,
-	});
-	if (channelEntityId === null) {
-		throw new Error("Channel entity could not be resolved for this channel");
-	}
-
-	const metadata: ChannelAboutMetadata = {
-		connection_id: connectionId,
-		channel_key: key,
-	};
-
-	const desired = new Set(opts.aboutEntityIds.map(Number));
-
-	const existing = await sql<{ id: number; to_entity_id: number }>`
-    SELECT r.id, r.to_entity_id
-    FROM entity_relationships r
-    WHERE r.organization_id = ${opts.organizationId}
-      AND r.from_entity_id = ${channelEntityId}
-      AND r.relationship_type_id = ${typeId}
-      AND r.source = ${EDGE_SOURCE_MANUAL}
-      AND r.deleted_at IS NULL
-      AND r.metadata->>'connection_id' = ${connectionId}
-  `;
-
-	for (const row of existing) {
-		const toId = Number(row.to_entity_id);
-		if (desired.has(toId)) {
-			desired.delete(toId);
-			continue;
+		const typeId = await ensureAboutRelationshipType(opts.organizationId, sql);
+		const connectionId = String(opts.connectionId);
+		const { key } = channelResourceIdentity(
+			opts.connectorKey,
+			opts.teamId,
+			opts.channelId,
+		);
+		const channelEntityId = await ensureChannelResourceEntity({
+			organizationId: opts.organizationId,
+			connectorKey: opts.connectorKey,
+			teamId: opts.teamId,
+			channelId: opts.channelId,
+			sql,
+		});
+		if (channelEntityId === null) {
+			throw new Error("Channel entity could not be resolved for this channel");
 		}
-		await sql`
-      UPDATE entity_relationships
-      SET deleted_at = current_timestamp, updated_at = current_timestamp
-      WHERE id = ${row.id}
-    `;
-	}
 
-	await upsertAboutEdges({
-		organizationId: opts.organizationId,
-		fromChannelEntityId: channelEntityId,
-		toBusinessEntityIds: [...desired],
-		source: EDGE_SOURCE_MANUAL,
-		metadata,
-		userId: opts.userId,
-		typeId,
-		sql,
+		const metadata: ChannelAboutMetadata = {
+			connection_id: connectionId,
+			channel_key: key,
+		};
+		const claimKey = connectionRelationshipClaimKey(
+			connectionId,
+			`config:channel-about:${key}`,
+		);
+		const keepRelationshipIds = await upsertAboutEdges({
+			organizationId: opts.organizationId,
+			fromChannelEntityId: channelEntityId,
+			toBusinessEntityIds: opts.aboutEntityIds,
+			source: EDGE_SOURCE_MANUAL,
+			userId: opts.userId,
+			typeId,
+			claimKey,
+			claim: metadata,
+			sql,
+		});
+		await retractRelationshipClaimExcept(sql, {
+			organizationId: opts.organizationId,
+			claimKey,
+			keepRelationshipIds: new Set(keepRelationshipIds),
+		});
 	});
 }
 
@@ -319,9 +320,12 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
     SELECT
       r.from_entity_id AS channel_entity_id,
       e.name AS channel_name,
-      r.metadata->>'connection_id' AS connection_id,
-      r.metadata->>'channel_key' AS channel_key
+      claim.value->>'connection_id' AS connection_id,
+      claim.value->>'channel_key' AS channel_key
     FROM entity_relationships r
+    CROSS JOIN LATERAL jsonb_each(
+      COALESCE(r.metadata -> ${RELATIONSHIP_CLAIMS_METADATA_KEY}, '{}'::jsonb)
+    ) AS claim(key, value)
     JOIN entities e
       ON e.id = r.from_entity_id
      AND e.organization_id = r.organization_id
@@ -330,7 +334,12 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
       AND r.to_entity_id = ${opts.businessEntityId}
       AND r.relationship_type_id = ${typeId}
       AND r.deleted_at IS NULL
-    ORDER BY e.name NULLS LAST, r.from_entity_id
+      AND claim.value ? 'connection_id'
+      AND claim.value ? 'channel_key'
+      AND claim.key =
+        'connection:' || (claim.value->>'connection_id') ||
+        ':config:channel-about:' || (claim.value->>'channel_key')
+    ORDER BY e.name NULLS LAST, r.from_entity_id, connection_id
   `;
 	return rows.map((r) => ({
 		channelEntityId: Number(r.channel_entity_id),
@@ -340,7 +349,31 @@ export async function listChannelEntitiesAboutBusinessEntity(opts: {
 	}));
 }
 
-/** Channel key stored on `about` edge metadata for a channel feed row.
+function channelAboutClaimExistsSql(
+	relationshipAlias: string,
+	connectionIdExpr: string,
+	channelKeyExpr?: string,
+): string {
+	const channelMatch = channelKeyExpr
+		? `AND claim.value->>'channel_key' = ${channelKeyExpr}`
+		: "";
+	return `EXISTS (
+    SELECT 1
+    FROM jsonb_each(
+      COALESCE(
+        ${relationshipAlias}.metadata -> '${RELATIONSHIP_CLAIMS_METADATA_KEY}',
+        '{}'::jsonb
+      )
+    ) AS claim(key, value)
+    WHERE claim.value->>'connection_id' = (${connectionIdExpr})::text
+      AND claim.key =
+        'connection:' || (${connectionIdExpr})::text ||
+        ':config:channel-about:' || (claim.value->>'channel_key')
+      ${channelMatch}
+  )`;
+}
+
+/** Channel key stored in `about` claim metadata for a channel feed row.
  *
  * The team half is the channel's CONCRETE workspace, taken from the streaming
  * feed's Automation subscription team — the SAME real team the
@@ -388,6 +421,11 @@ export function feedLinkedToBusinessEntitySql(
 ): string {
 	const org = orgIdExpr ?? `${feedAlias}.organization_id`;
 	const tagMatch = `${entityIdExpr} = ANY(${feedAlias}.entity_ids)`;
+	const claimMatch = channelAboutClaimExistsSql(
+		"r",
+		`${feedAlias}.connection_id`,
+		channelFeedChannelKeyExpr(feedAlias, connectionAlias),
+	);
 	const aboutMatch = `(
     ${feedAlias}.config ->> 'store' = 'channel_messages'
     AND EXISTS (
@@ -401,8 +439,7 @@ export function feedLinkedToBusinessEntitySql(
       WHERE r.organization_id = ${org}
         AND r.to_entity_id = ${entityIdExpr}
         AND r.deleted_at IS NULL
-        AND r.metadata->>'connection_id' = ${feedAlias}.connection_id::text
-        AND r.metadata->>'channel_key' = ${channelFeedChannelKeyExpr(feedAlias, connectionAlias)}
+        AND ${claimMatch}
     )
   )`;
 	return `(${tagMatch} OR ${aboutMatch})`;
@@ -414,6 +451,10 @@ export function connectionAboutBusinessEntityIdsSubquery(
 	orgIdExpr?: string,
 ): string {
 	const org = orgIdExpr ?? `${connectionAlias}.organization_id`;
+	const claimMatch = channelAboutClaimExistsSql(
+		"r",
+		`${connectionAlias}.id`,
+	);
 	return `(
     SELECT r.to_entity_id
     FROM entity_relationships r
@@ -424,7 +465,7 @@ export function connectionAboutBusinessEntityIdsSubquery(
      AND rt.status = 'active'
     WHERE r.organization_id = ${org}
       AND r.deleted_at IS NULL
-      AND r.metadata->>'connection_id' = ${connectionAlias}.id::text
+      AND ${claimMatch}
   )`;
 }
 
@@ -449,6 +490,10 @@ export function connectionLinkedToBusinessEntitySql(
 	orgIdExpr?: string,
 ): string {
 	const org = orgIdExpr ?? `${connectionAlias}.organization_id`;
+	const claimMatch = channelAboutClaimExistsSql(
+		"r",
+		`${connectionAlias}.id`,
+	);
 	return `(
     ${entityIdExpr} = ANY(${connectionAlias}.entity_ids)
     OR EXISTS (
@@ -469,7 +514,7 @@ export function connectionLinkedToBusinessEntitySql(
       WHERE r.organization_id = ${org}
         AND r.to_entity_id = ${entityIdExpr}
         AND r.deleted_at IS NULL
-        AND r.metadata->>'connection_id' = ${connectionAlias}.id::text
+        AND ${claimMatch}
     )
   )`;
 }
@@ -479,6 +524,11 @@ export function feedLinkedEntityIdsSql(
 	feedAlias = "f",
 	connectionAlias = "c",
 ): string {
+	const claimMatch = channelAboutClaimExistsSql(
+		"r",
+		`${feedAlias}.connection_id`,
+		channelFeedChannelKeyExpr(feedAlias, connectionAlias),
+	);
 	return `(
     SELECT unnest(${feedAlias}.entity_ids)
     UNION
@@ -492,7 +542,6 @@ export function feedLinkedEntityIdsSql(
     WHERE ${feedAlias}.config ->> 'store' = 'channel_messages'
       AND r.organization_id = ${feedAlias}.organization_id
       AND r.deleted_at IS NULL
-      AND r.metadata->>'connection_id' = ${feedAlias}.connection_id::text
-      AND r.metadata->>'channel_key' = ${channelFeedChannelKeyExpr(feedAlias, connectionAlias)}
+      AND ${claimMatch}
   )`;
 }

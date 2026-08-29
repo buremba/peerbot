@@ -7,6 +7,10 @@
 import { EVENT_RECALL_IDENTITY_NAMESPACES } from '@lobu/connector-sdk/identity-namespaces';
 import { type DbClient, pgTextArray } from '../../db/client';
 import { CONNECTOR_RECALL_NAMESPACES } from '../../identity/connector-identity-modules';
+import {
+  IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY,
+  ORGANIZATION_SCOPE_PROJECTION,
+} from '../../identity/scope-projection';
 
 /**
  * Identity namespaces backed by partial BTREE indexes on `events.metadata`.
@@ -73,7 +77,9 @@ export function entityLinkMatchSql(paramRef: string, alias = 'f'): string {
         ON ei.entity_id = ${paramRef}
        AND ei.namespace = '${ns}'
        AND ei.deleted_at IS NULL
-      WHERE e2.metadata ? '${ns}' AND e2.metadata->>'${ns}' = ei.identifier`
+      WHERE e2.metadata ? '${ns}'
+        AND e2.metadata->>'${ns}' = ei.identifier
+        AND COALESCE((e2.metadata->'${IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY}')->>'${ns}', '${ORGANIZATION_SCOPE_PROJECTION}') = COALESCE(ei.scope_key, '${ORGANIZATION_SCOPE_PROJECTION}')`
   );
 
   const branches = [directBranch, ...standardBranches].join('\n    UNION\n    ');
@@ -81,7 +87,7 @@ export function entityLinkMatchSql(paramRef: string, alias = 'f'): string {
 }
 
 /**
- * One identity claim for an entity — `(namespace, identifier)`.
+ * One identity claim for an entity — `(namespace, identifier, scope key)`.
  *
  * Used by `fetchEntityIdentityScopes` + `buildEntityLinkUnion` to skip the
  * UNION branches that would never match for this entity. On a 4.7GB events
@@ -91,6 +97,7 @@ export function entityLinkMatchSql(paramRef: string, alias = 'f'): string {
 export interface EntityIdentityScope {
   namespace: string;
   identifier: string;
+  scopeKey: string | null;
 }
 
 /**
@@ -105,15 +112,18 @@ export async function fetchEntityIdentityScopes(
   entityId: number
 ): Promise<EntityIdentityScope[]> {
   const rows = (await sql`
-    SELECT namespace, identifier
-    FROM entity_identities
-    WHERE entity_id = ${entityId}
-      AND deleted_at IS NULL
-      AND namespace = ANY(${pgTextArray([...STANDARD_IDENTITY_NAMESPACES])}::text[])
-  `) as Array<{ namespace: unknown; identifier: unknown }>;
+    SELECT identity.namespace,
+           identity.identifier,
+           identity.scope_key
+    FROM entity_identities identity
+    WHERE identity.entity_id = ${entityId}
+      AND identity.deleted_at IS NULL
+      AND identity.namespace = ANY(${pgTextArray([...STANDARD_IDENTITY_NAMESPACES])}::text[])
+  `) as Array<{ namespace: unknown; identifier: unknown; scope_key: unknown }>;
   return rows.map((r) => ({
     namespace: String(r.namespace),
     identifier: String(r.identifier),
+    scopeKey: r.scope_key == null ? null : String(r.scope_key),
   }));
 }
 
@@ -163,11 +173,11 @@ export function buildEntityLinkUnion(opts: {
   const scopeBranches: string[] = [];
   for (const scope of opts.scopes) {
     if (!indexed.has(scope.namespace)) continue;
-    params.push(scope.identifier);
+    params.push(scope.identifier, scope.scopeKey ?? ORGANIZATION_SCOPE_PROJECTION);
     scopeBranches.push(
-      `SELECT e2.id FROM events e2 WHERE e2.metadata ? '${scope.namespace}' AND e2.metadata->>'${scope.namespace}' = $${paramIndex}`
+      `SELECT e2.id FROM events e2 WHERE e2.metadata ? '${scope.namespace}' AND e2.metadata->>'${scope.namespace}' = $${paramIndex} AND COALESCE((e2.metadata->'${IDENTITY_SCOPE_BY_NAMESPACE_METADATA_KEY}')->>'${scope.namespace}', '${ORGANIZATION_SCOPE_PROJECTION}') = $${paramIndex + 1}`
     );
-    paramIndex += 1;
+    paramIndex += 2;
   }
 
   const branches = [direct, ...scopeBranches].join('\n    UNION\n    ');

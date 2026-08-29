@@ -1064,7 +1064,7 @@ export async function linkSlackIdentityInGraph(opts: {
     ) VALUES (
       ${opts.organizationId}, ${memberEntityId}, 'slack_user_id', ${identifier}, 'auth:signup'
     )
-    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_connection_id, 0)) WHERE deleted_at IS NULL
+    ON CONFLICT (organization_id, namespace, identifier, COALESCE(scope_key, '')) WHERE deleted_at IS NULL
     DO NOTHING
   `;
 }

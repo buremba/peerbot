@@ -487,6 +487,17 @@ function extractLink(item: BatchItem, rule: ResolvedEventAttributionRule): Extra
         );
       }
       const rawScopeKey = getValueAtPath(item, scopeKeyPath);
+      if (
+        rawScopeKey !== null &&
+        rawScopeKey !== undefined &&
+        typeof rawScopeKey !== 'string' &&
+        typeof rawScopeKey !== 'number' &&
+        typeof rawScopeKey !== 'boolean'
+      ) {
+        throw new Error(
+          `Identity namespace '${spec.namespace}' at '${scopeKeyPath}' requires a string, number, or boolean tenant scope key.`
+        );
+      }
       scopeKey =
         rawScopeKey === null || rawScopeKey === undefined ? '' : String(rawScopeKey).trim();
       if (!scopeKey || scopeKey.includes('\u0000')) {

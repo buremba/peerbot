@@ -266,6 +266,35 @@ describe('connector tenant identity scope', () => {
     expect(rows[0].scope_key).toBe('false');
   });
 
+  it('rejects structured tenant keys instead of collapsing them through String()', async () => {
+    const { org, tenantA } = await seed();
+    const sql = getTestDb();
+
+    for (const tenantKey of [{ tenant: 'a' }, ['tenant-a']]) {
+      await expect(
+        applyEventAttributions({
+          connectorKey,
+          feedKey,
+          orgId: org.id,
+          connectionId: tenantA.id,
+          items: [customerEvent('CARI-044', 'Structured Tenant', tenantKey)],
+        })
+      ).rejects.toThrow(
+        /erp_customer.*metadata\.tenant_id.*string, number, or boolean tenant scope key/i
+      );
+    }
+
+    const rows = await sql`
+      SELECT id
+      FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = 'erp_customer'
+        AND identifier = 'CARI-044'
+        AND deleted_at IS NULL
+    `;
+    expect(rows).toHaveLength(0);
+  });
+
   it('fails ingestion when a tenant-scoped identity has a missing or empty tenant key', async () => {
     const { org } = await seed();
 

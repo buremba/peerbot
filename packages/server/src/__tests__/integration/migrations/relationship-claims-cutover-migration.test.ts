@@ -17,6 +17,8 @@ import {
 } from '../../setup/test-fixtures';
 
 const MIGRATION = '20260827174500_index_live_relationship_claims.sql';
+const TOMBSTONED_ABOUT_BACKFILL =
+  '20260829090000_backfill_tombstoned_about_claims.sql';
 
 function resolveMigrationsDir(): string {
   let dir = __dirname;
@@ -123,10 +125,33 @@ describe('relationship claims cutover migration', () => {
          'manual', current_timestamp, current_timestamp)
       RETURNING id
     `;
+    const [tombstonedOrphanAbout] = await sql<{ id: number }[]>`
+      INSERT INTO entity_relationships
+        (organization_id, from_entity_id, to_entity_id, relationship_type_id,
+         metadata, source, deleted_at, created_at, updated_at)
+      VALUES (
+        ${org.id}, ${from.id}, ${to.id}, ${aboutTypeId},
+        ${sql.json({ connection_id: '999999998', channel_key: 'T01:C03' })},
+        'manual', current_timestamp, current_timestamp, current_timestamp
+      )
+      RETURNING id
+    `;
 
     const up = loadMigrationUp(resolveMigrationsDir(), MIGRATION);
     await executeMigrationSection((statement) => sql.unsafe(statement), up);
     await executeMigrationSection((statement) => sql.unsafe(statement), up);
+    const tombstonedAboutBackfill = loadMigrationUp(
+      resolveMigrationsDir(),
+      TOMBSTONED_ABOUT_BACKFILL
+    );
+    await executeMigrationSection(
+      (statement) => sql.unsafe(statement),
+      tombstonedAboutBackfill
+    );
+    await executeMigrationSection(
+      (statement) => sql.unsafe(statement),
+      tombstonedAboutBackfill
+    );
 
     const [ordinaryAfter] = await sql`
       SELECT deleted_at, metadata FROM entity_relationships WHERE id = ${ordinary.id}
@@ -174,6 +199,19 @@ describe('relationship claims cutover migration', () => {
     expect(orphanedAboutAfter.metadata).toEqual({
       connection_id: '999999999',
       channel_key: 'T01:C02',
+      _lobu_claims: { manual: {} },
+    });
+
+    const [tombstonedOrphanAboutAfter] = await sql`
+      SELECT deleted_at, metadata
+      FROM entity_relationships
+      WHERE id = ${tombstonedOrphanAbout.id}
+    `;
+    expect(tombstonedOrphanAboutAfter.deleted_at).not.toBeNull();
+    expect(tombstonedOrphanAboutAfter.metadata).toEqual({
+      connection_id: '999999998',
+      channel_key: 'T01:C03',
+      _lobu_claims: { manual: {} },
     });
 
     const [index] = await sql<{ indisvalid: boolean }[]>`

@@ -556,9 +556,11 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 							// (connection_id, origin_id) across replicas.
 							sql: isDry ? db : undefined,
 							afterPersist: async (persisted, tx) => {
-								// Keyed by `origin_type`, like attribution rules. Declarations
-								// whose named entities were not resolved are omitted below; an
-								// empty desired set means this source no longer asserts the edge.
+								// Keyed by `origin_type`, like attribution rules. A declaration
+								// naming an endpoint the item never mentioned is omitted below,
+								// and an empty desired set means this source no longer asserts
+								// the edge. An endpoint the item DID mention but that failed to
+								// resolve is handled separately — see below.
 								const relationshipDeclarations = itemOriginType
 									? (appliedAttributions.relationshipsByKind[itemOriginType] ??
 										[])
@@ -575,19 +577,48 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
 									const named =
 										appliedAttributions.namedEntityIdsByItem.get(itemIndex) ??
 										new Map<string, number>();
-									await reconcileConnectorRelationshipClaims(tx, {
-										organizationId: run.organization_id,
-										connectionId: run.connection_id,
-										originId: persisted.origin_id,
-										desired: relationshipDeclarations.flatMap((declaration) => {
-											const fromEntityId = named.get(declaration.from);
-											const toEntityId = named.get(declaration.to);
-											return fromEntityId === undefined ||
-												toEntityId === undefined
-												? []
-												: [{ declaration, fromEntityId, toEntityId }];
-										}),
-									});
+									const unresolved =
+										appliedAttributions.unresolvedNamedAttributionsByItem.get(
+											itemIndex
+										) ?? new Set<string>();
+									const hasUnresolvedRelationshipEndpoint =
+										relationshipDeclarations.some(
+											(declaration) =>
+												unresolved.has(declaration.from) ||
+												unresolved.has(declaration.to)
+										);
+									// A named endpoint that the item asserted but that resolved to
+									// nothing (ambiguous merge candidate, create declined) is a
+									// transient read failure, not a withdrawal. Reconciliation is
+									// all-or-nothing per source item because the claim key covers the
+									// item's whole edge set: partially reconciling would retract the
+									// unreadable edge. Hold every edge until the next sync reads the
+									// item completely.
+									if (hasUnresolvedRelationshipEndpoint) {
+										logger.warn(
+											{
+												organizationId: run.organization_id,
+												connectionId: run.connection_id,
+												originId: persisted.origin_id,
+												unresolvedAttributions: [...unresolved],
+											},
+											"Connector relationship reconciliation skipped because an endpoint attribution did not resolve"
+										);
+									} else {
+										await reconcileConnectorRelationshipClaims(tx, {
+											organizationId: run.organization_id,
+											connectionId: run.connection_id,
+											originId: persisted.origin_id,
+											desired: relationshipDeclarations.flatMap((declaration) => {
+												const fromEntityId = named.get(declaration.from);
+												const toEntityId = named.get(declaration.to);
+												return fromEntityId === undefined ||
+													toEntityId === undefined
+													? []
+													: [{ declaration, fromEntityId, toEntityId }];
+											}),
+										});
+									}
 								}
 								const drafts = item.automation_signals ?? [];
 								if (drafts.length > 0) {

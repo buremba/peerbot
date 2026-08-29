@@ -99,6 +99,13 @@ export async function upsertEdges(params: UpsertEdgesParams): Promise<number[]> 
     pairs.push(pair);
   }
   if (pairs.length === 0) return [];
+  // `unnest` feeds the INSERT in array order. Keep new-triple conflicts in one
+  // deterministic order; existing rows are prelocked by id in the statement
+  // below, matching the relationship reconcilers and entity merge/unmerge.
+  pairs.sort(
+    (left, right) =>
+      left.fromEntityId - right.fromEntityId || left.toEntityId - right.toEntityId
+  );
 
   const froms = pairs.map((p) => p.fromEntityId);
   const tos = pairs.map((p) => p.toEntityId);
@@ -141,18 +148,41 @@ export async function upsertEdges(params: UpsertEdgesParams): Promise<number[]> 
             ) ? ${params.claimKey}
           )`;
 
+  // The non-negative count predicate is an execution barrier, not validation:
+  // it forces the materialized lock CTE to finish before the INSERT can begin.
   const written = await db<{ id: number; inserted: boolean }>`
+    WITH input(from_entity_id, to_entity_id) AS (
+      SELECT *
+      FROM unnest(
+        ${pgBigintArray(froms)}::bigint[],
+        ${pgBigintArray(tos)}::bigint[]
+      )
+    ),
+    locked AS MATERIALIZED (
+      SELECT r.id
+      FROM input i
+      JOIN entity_relationships r
+        ON r.from_entity_id = i.from_entity_id
+       AND r.to_entity_id = i.to_entity_id
+       AND r.relationship_type_id = ${relationshipTypeId}
+      WHERE r.organization_id = ${organizationId}
+        AND r.deleted_at IS NULL
+      ORDER BY r.id
+      FOR UPDATE OF r
+    )
     INSERT INTO entity_relationships (
       organization_id, from_entity_id, to_entity_id, relationship_type_id,
       metadata, confidence, source, created_by, updated_by, created_at, updated_at
     )
     SELECT
-      ${organizationId}, v.f, v.t, ${relationshipTypeId},
+      ${organizationId}, v.from_entity_id, v.to_entity_id, ${relationshipTypeId},
       ${db.json(metadata)},
       ${params.confidence ?? null}, ${source},
       ${params.createdBy ?? null}, ${params.createdBy ?? null},
       current_timestamp, current_timestamp
-    FROM unnest(${pgBigintArray(froms)}::bigint[], ${pgBigintArray(tos)}::bigint[]) AS v(f, t)
+    FROM input v
+    CROSS JOIN (SELECT count(*) FROM locked) AS lock_barrier
+    WHERE lock_barrier.count >= 0
     ON CONFLICT (from_entity_id, to_entity_id, relationship_type_id)
       WHERE deleted_at IS NULL
     ${conflictAction}

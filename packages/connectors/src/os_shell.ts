@@ -5,7 +5,9 @@
  * devices (servers, VMs, k8s pods). Executes through `bash -lc` and returns
  * structured stdout/stderr/exit_code - the same contract as the macOS
  * os.shell manifest, but for boxes without a UI. Commands run in the device's
- * real environment (host PATH, files), so the action is approval-gated.
+ * real environment (host PATH, files), so the action is approval-gated. The
+ * timeout bounds this call and cleans up its process group; it is not sandbox
+ * containment, and deliberately daemonized/session-detached work may outlive it.
  */
 
 import { spawn } from 'node:child_process';
@@ -70,9 +72,9 @@ function runShellCommand(
       cwd: opts.cwd || undefined,
       env: { ...process.env, LC_ALL: 'C' },
       // Give the command its own process group. Killing only the `bash`
-      // process leaves background descendants alive with stdout/stderr open,
-      // so a timed-out run can otherwise stay pending until those descendants
-      // eventually exit.
+      // process leaves same-group background work alive with stdout/stderr
+      // open. A command can deliberately escape with setsid/daemonization;
+      // this timeout is bounded cleanup, not an OS containment boundary.
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -138,7 +140,24 @@ function runShellCommand(
       timedOut = true;
       killProcessGroup('SIGTERM');
       forceKillTimer = setTimeout(() => {
-        if (!settled) killProcessGroup('SIGKILL');
+        if (settled) return;
+        killProcessGroup('SIGKILL');
+        // A setsid/daemonized descendant can escape the owned group while
+        // retaining inherited pipe descriptors. Destroy our pipe ends and
+        // settle explicitly so such a process cannot extend the caller's
+        // timeout. The escaped process is outside this connector's cleanup
+        // contract and may continue running.
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish({
+          stdout,
+          stderr,
+          exit_code: child.exitCode ?? -1,
+          success: false,
+          timed_out: true,
+          duration_ms: Date.now() - started,
+        });
       }, SIGTERM_GRACE_MS);
     }, opts.timeoutMs);
 
@@ -210,7 +229,8 @@ export default class OsShellConnector extends ConnectorRuntime {
               minimum: 100,
               maximum: 300000,
               default: 60000,
-              description: 'Wall-clock budget in milliseconds. On timeout the process gets SIGTERM (3s grace) then SIGKILL.',
+              description:
+                'Wall-clock budget in milliseconds. On timeout the owned process group gets SIGTERM (3s grace) then SIGKILL. Session-detached or daemonized commands may outlive the call; this is not sandbox containment.',
             },
             stdin: {
               type: 'string',

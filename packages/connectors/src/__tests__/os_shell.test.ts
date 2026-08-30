@@ -19,6 +19,40 @@ function runContext(actionKey: string, input: Record<string, unknown>) {
   } as never;
 }
 
+function processIsLive(pid: number): boolean {
+  try {
+    if (process.platform === 'linux') {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const state = stat.slice(stat.lastIndexOf(') ') + 2, stat.lastIndexOf(') ') + 3);
+      return state !== 'Z';
+    }
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ESRCH') return false;
+    throw err;
+  }
+}
+
+function forceKillProcessGroup(pid: number): void {
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') throw err;
+  }
+}
+
+function processGroupExists(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw err;
+  }
+}
+
 describe('os.shell connector', () => {
   const connector = new OsShellConnector();
 
@@ -80,7 +114,7 @@ describe('os.shell connector', () => {
     expect((result.output as Record<string, unknown>).stdout).toBe('stdin-through-anchor');
   });
 
-  it('force-kills redirected descendants after the shell leader closes', async () => {
+  it('force-kills SIGTERM-ignoring descendants in the owned process group', async () => {
     const result = await connector.execute(
       runContext('run', {
         // Print the descendant pid, then wait on a child that ignores SIGTERM
@@ -96,22 +130,58 @@ describe('os.shell connector', () => {
 
     // Some minimal PID 1 implementations reap orphans only when the test
     // process exits. A zombie is already dead; only a live state means the
-    // descendant escaped the process-tree timeout.
-    let live = false;
+    // same-group descendant escaped cleanup.
+    expect(processIsLive(descendantPid)).toBe(false);
+  });
+
+  it('settles on time when a session-detached child inherits stdio', async () => {
+    if (process.platform !== 'linux') return;
+
+    let escapedPid = 0;
     try {
-      if (process.platform === 'linux') {
-        const stat = readFileSync(`/proc/${descendantPid}/stat`, 'utf8');
-        const state = stat.slice(stat.lastIndexOf(') ') + 2, stat.lastIndexOf(') ') + 3);
-        live = state !== 'Z';
-      } else {
-        process.kill(descendantPid, 0);
-        live = true;
-      }
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ESRCH') throw err;
+      const started = Date.now();
+      const result = await connector.execute(
+        runContext('run', {
+          command: `setsid bash -c 'trap "" TERM; sleep 10' & echo $!; wait`,
+          timeout_ms: 300,
+        })
+      );
+      const output = result.output as Record<string, unknown>;
+      escapedPid = Number(String(output.stdout).trim());
+
+      expect(output.timed_out).toBe(true);
+      expect(Date.now() - started).toBeLessThan(4000);
+      expect(Number.isInteger(escapedPid)).toBe(true);
+      // setsid is explicitly outside process-group cleanup. The connector must
+      // return on time even though the escaped session is still alive.
+      expect(processGroupExists(escapedPid)).toBe(true);
+    } finally {
+      if (escapedPid > 0) forceKillProcessGroup(escapedPid);
     }
-    expect(live).toBe(false);
+  });
+
+  it('settles on time when a redirected child escapes into a new session', async () => {
+    if (process.platform !== 'linux') return;
+
+    let escapedPid = 0;
+    try {
+      const started = Date.now();
+      const result = await connector.execute(
+        runContext('run', {
+          command: `setsid bash -c 'trap "" TERM; sleep 10' >/dev/null 2>&1 & echo $!; wait`,
+          timeout_ms: 300,
+        })
+      );
+      const output = result.output as Record<string, unknown>;
+      escapedPid = Number(String(output.stdout).trim());
+
+      expect(output.timed_out).toBe(true);
+      expect(Date.now() - started).toBeLessThan(4000);
+      expect(Number.isInteger(escapedPid)).toBe(true);
+      expect(processGroupExists(escapedPid)).toBe(true);
+    } finally {
+      if (escapedPid > 0) forceKillProcessGroup(escapedPid);
+    }
   });
 
   it('rejects an unknown action', async () => {

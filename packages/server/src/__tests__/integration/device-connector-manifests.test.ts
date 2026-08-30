@@ -1193,7 +1193,7 @@ describe('device connector manifests', () => {
         connector_version, action_key, action_input, approval_status, status,
         created_at
       ) VALUES (
-        ${orgId}, 'action', ${connection.id}, 'os.shell', '0.1.0', 'run',
+        ${orgId}, 'action', ${connection.id}, 'os.shell', '0.2.0', 'run',
         ${sql.json({ command: 'hostname' })}, 'auto', 'pending', NOW()
       )
       RETURNING id
@@ -1210,9 +1210,8 @@ describe('device connector manifests', () => {
     const body = (await claimingPoll.json()) as Record<string, unknown>;
     expect(body.run_id).toBe(Number(run.id));
     expect(body.connector_key).toBe('os.shell');
-    expect(body.execution_backend).toBeUndefined();
-    expect(typeof body.compiled_code).toBe('string');
-    expect((body.compiled_code as string).length).toBeGreaterThan(0);
+    expect(body.execution_backend).toBe('daemon_builtin');
+    expect(body.compiled_code).toBeUndefined();
   });
 
   it('drops a manifest that still declares removed entityLinks rules', async () => {

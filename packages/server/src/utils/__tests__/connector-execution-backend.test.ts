@@ -103,10 +103,13 @@ describe('selected connector execution backend', () => {
     })).toEqual({ manifestBacked: false });
   });
 
-  test('active exact non-bridge definition wins over retained bridge authorization', () => {
+  test('active exact unsupported definition wins over retained bridge authorization', () => {
     expect(classify({
       definition: { ...definition, runtime: { platforms: ['macos'], execution: 'compiled' } },
-    })).toEqual({ manifestBacked: true, inconsistency: 'active exact definition is not bridge execution' });
+    })).toEqual({
+      manifestBacked: true,
+      inconsistency: 'active exact definition declares an unsupported execution backend',
+    });
   });
 
   test('rejects a bridge artifact that is not authorized by the claiming device', () => {
@@ -162,6 +165,8 @@ describe('device manifests served by connector-worker rather than a bridge', () 
     key: headless.key,
     version: headless.version,
     name: headless.name,
+    description: headless.description,
+    faviconDomain: headless.favicon_domain,
     requiredCapability: headless.required_capability,
     runtime: headless.runtime,
     authSchema: headless.auth_schema,
@@ -189,21 +194,26 @@ describe('device manifests served by connector-worker rather than a bridge', () 
         connectorVersion: headless.version,
         manifestHash: headlessHash,
         sourcePath: headlessSourcePath,
+        runtimeExecution: 'daemon_builtin',
       }],
       expectedPlatform: 'headless',
       ...overrides,
     });
   }
 
-  test('the shipped headless os.shell manifest declares no bridge execution', () => {
-    expect(headless.runtime).not.toHaveProperty('execution');
+  test('the shipped headless os.shell manifest declares daemon-owned execution', () => {
+    expect(headless.runtime.execution).toBe('daemon_builtin');
   });
 
-  test('classifies headless os.shell as manifest-backed but not native_bridge', () => {
-    expect(classifyHeadless()).toEqual({ manifestBacked: true });
+  test('classifies headless os.shell as an attested daemon built-in', () => {
+    expect(classifyHeadless()).toEqual({
+      manifestBacked: true,
+      backend: 'daemon_builtin',
+      manifestHash: headlessHash,
+    });
   });
 
-  test('stays non-bridge even when the device authorization claims bridge execution', () => {
+  test('rejects an authorization that claims a different backend', () => {
     expect(classifyHeadless({
       authorizations: [{
         connectorKey: headless.key,
@@ -212,7 +222,7 @@ describe('device manifests served by connector-worker rather than a bridge', () 
         sourcePath: headlessSourcePath,
         runtimeExecution: 'bridge',
       }],
-    })).toEqual({ manifestBacked: true });
+    }).inconsistency).toContain('different execution backend');
   });
 });
 
@@ -221,13 +231,13 @@ describe('deviceExecutesConnectorNatively', () => {
     isUserScopedWorker: true,
     hasStoredCompiledCode: false,
     gatewayHasLocalSource: true,
-    isNativeBridgeRun: false,
+    isDeviceOwnedRun: false,
     manifestBacked: false,
     deviceAdvertisesRequiredCapability: false,
   };
 
   test('a native-bridge run needs no bundle', () => {
-    expect(deviceExecutesConnectorNatively({ ...base, isNativeBridgeRun: true })).toBe(true);
+    expect(deviceExecutesConnectorNatively({ ...base, isDeviceOwnedRun: true })).toBe(true);
   });
 
   test('manifest-backed alone does not mean native execution', () => {
@@ -280,7 +290,7 @@ describe('deviceExecutesConnectorNatively', () => {
     expect(
       deviceExecutesConnectorNatively({
         ...base,
-        isNativeBridgeRun: true,
+        isDeviceOwnedRun: true,
         hasStoredCompiledCode: true,
       })
     ).toBe(false);
@@ -291,7 +301,7 @@ describe('deviceExecutesConnectorNatively', () => {
       deviceExecutesConnectorNatively({
         ...base,
         isUserScopedWorker: false,
-        isNativeBridgeRun: true,
+        isDeviceOwnedRun: true,
       })
     ).toBe(false);
   });

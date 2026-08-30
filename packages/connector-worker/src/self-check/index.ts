@@ -25,6 +25,7 @@ import {
 	createConnectorCompiler,
 	EXTERNAL_RUNTIME_DEPS,
 } from "../compile/index.js";
+import { executeDaemonBuiltin } from "../daemon/builtins/index.js";
 import type { ExecutorJob } from "../executor/interface.js";
 import { executeCompiledConnector } from "../executor/runtime.js";
 
@@ -395,6 +396,26 @@ export async function runConnectorRuntimeSelfCheck(
 	await check("synthetic-connector-subprocess-execute", async () => {
 		await runSyntheticConnector(compileConnectorFromFile);
 		return "compiled + executed via default SubprocessExecutor; emitted >=1 event.";
+	});
+
+	// Recovery/control primitives must remain executable even when the dynamic
+	// connector compiler or its npm resolution graph is unhealthy. This call is
+	// intentionally direct and therefore proves the packaged dist contains the
+	// daemon-owned os.shell backend.
+	await check("daemon-builtin:os.shell/run", async () => {
+		const result = await executeDaemonBuiltin({
+			connectorKey: "os.shell",
+			actionKey: "run",
+			input: { command: "printf 'lobu-shell-self-check\\n'", cwd: process.cwd() },
+		});
+		if (!result.ok) throw new Error(`${result.code}: ${result.error}`);
+		if (result.output.stdout !== "lobu-shell-self-check\n") {
+			throw new Error(`Unexpected stdout: ${JSON.stringify(result.output.stdout)}.`);
+		}
+		if (result.output.stderr !== "" || result.output.exit_code !== 0) {
+			throw new Error(`Unexpected shell result: ${JSON.stringify(result.output)}.`);
+		}
+		return "executed from packaged worker code without connector compilation.";
 	});
 
 	return {

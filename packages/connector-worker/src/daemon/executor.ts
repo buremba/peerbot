@@ -12,6 +12,7 @@ import { batchGenerateEmbeddings } from '../embeddings.js';
 import { executeCompiledConnector } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
 import { executeAutomationRun } from './automation.js';
+import { executeDaemonBuiltin } from './builtins/index.js';
 import { executeDeviceChatRun } from './device-chat.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
@@ -145,6 +146,16 @@ export async function executeRun(
       await reportTerminalFailure(client, job, message, 'error_message');
     } catch (error) {
       log.info('[executor] Failed to reject native bridge run:', error);
+    }
+    return { itemsCollected: 0, error: message };
+  }
+  if (job.execution_backend === 'daemon_builtin' && job.run_type !== 'action') {
+    const message =
+      'operation_backend_unavailable: daemon_builtin currently supports action runs only';
+    try {
+      await reportTerminalFailure(client, job, message, 'error_message');
+    } catch (error) {
+      log.info('[executor] Failed to reject invalid daemon built-in run:', error);
     }
     return { itemsCollected: 0, error: message };
   }
@@ -459,6 +470,10 @@ async function executeActionRun(
     throw new Error('Invalid action run: missing run_id, connector_key, or action_key');
   }
 
+  if (job.execution_backend === 'daemon_builtin') {
+    return await executeDaemonBuiltinActionRun(client, job, cfg);
+  }
+
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) {
     const errorMessage = `Action run ${run_id} (${connector_key}): ${codeResult.error}`;
@@ -553,6 +568,64 @@ async function executeActionRun(
     });
 
     return { itemsCollected: 0, error: errorMessage };
+  } finally {
+    clearInterval(heartbeatInterval);
+  }
+}
+
+async function executeDaemonBuiltinActionRun(
+  client: ExecutorClient,
+  job: PollResponse,
+  cfg: ExecutorConfig
+): Promise<{ itemsCollected: number; error?: string }> {
+  const { run_id, connector_key, action_key, action_input } = job;
+  if (!run_id || !connector_key || !action_key) {
+    throw new Error('Invalid daemon built-in action: missing run_id, connector_key, or action_key');
+  }
+  if (job.compiled_code) {
+    const message =
+      'operation_backend_unavailable: daemon_builtin payload must not contain compiled_code';
+    await client.completeAction({
+      run_id,
+      worker_id: client.id,
+      status: 'failed',
+      error_message: message,
+    });
+    return { itemsCollected: 0, error: message };
+  }
+
+  const heartbeatInterval = setInterval(async () => {
+    try {
+      await client.heartbeat(run_id);
+    } catch (error) {
+      log.debug('[executor] Daemon built-in heartbeat failed:', error);
+    }
+  }, cfg.heartbeatIntervalMs);
+
+  try {
+    const result = await executeDaemonBuiltin({
+      connectorKey: connector_key,
+      actionKey: action_key,
+      input: (action_input ?? {}) as Record<string, unknown>,
+    });
+    if (!result.ok) {
+      const message = `${result.code}: ${result.error}`;
+      await client.completeAction({
+        run_id,
+        worker_id: client.id,
+        status: 'failed',
+        error_message: message,
+      });
+      return { itemsCollected: 0, error: message };
+    }
+
+    await client.completeAction({
+      run_id,
+      worker_id: client.id,
+      status: 'success',
+      action_output: result.output,
+    });
+    return { itemsCollected: 0 };
   } finally {
     clearInterval(heartbeatInterval);
   }

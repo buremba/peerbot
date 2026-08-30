@@ -101,7 +101,11 @@ export const OAuthCredentialsSchema = Type.Object({
 // ── poll ────────────────────────────────────────────────────────────────────
 
 /** Server-selected execution path for an exact pinned connector artifact. */
-export const ExecutionBackendSchema = Type.Literal("native_bridge");
+export const ExecutionBackendSchema = Type.Union([
+  Type.Literal("compiled_connector"),
+  Type.Literal("daemon_builtin"),
+  Type.Literal("native_bridge"),
+]);
 
 /** `POST /api/workers/poll` request body. */
 export const PollRequestSchema = Type.Object({

@@ -1185,7 +1185,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     });
     logger.error(
       { run_id: row.run_id, connector_key: row.connector_key, connector_version: row.connector_version },
-      '[poll] rejected inconsistent native bridge artifact'
+      '[poll] rejected inconsistent device-owned artifact'
     );
     return c.json({
       next_poll_seconds: 1,
@@ -1195,6 +1195,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     });
   }
   const isNativeBridgeRun = selectedExecution.backend === 'native_bridge';
+  const isDeviceOwnedRun =
+    isNativeBridgeRun || selectedExecution.backend === 'daemon_builtin';
 
   // Device chat reuses the ordinary messages/chat_message row. The poll
   // response is only an execution envelope: ownership/routing remain on the
@@ -1652,18 +1654,24 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const hasStoredCompiledCode = Boolean(row.compiled_code);
   const workerWillResolveLocally =
     !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
-  // Only a native-bridge run is implemented by the device itself. Manifest
+  // Only an explicitly selected device-owned backend is implemented by the
+  // device itself. Manifest
   // backing and the capability gate do not establish who executes the code.
   const deviceWillExecuteNativeConnector = deviceExecutesConnectorNatively({
     isUserScopedWorker,
     hasStoredCompiledCode,
     gatewayHasLocalSource,
-    isNativeBridgeRun,
+    isDeviceOwnedRun,
     manifestBacked: row.connector_manifest_backed,
     deviceAdvertisesRequiredCapability:
       row.connector_required_capability != null &&
       authorizedCapabilities.includes(row.connector_required_capability),
   });
+  const responseExecutionBackend =
+    selectedExecution.backend ??
+    (row.connector_key && !deviceWillExecuteNativeConnector
+      ? ('compiled_connector' as const)
+      : undefined);
   if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteNativeConnector) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, {
@@ -1702,7 +1710,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //    profile still can't leak secrets to an arbitrary capability-matched device.
   const connectionIsDevicePinned = row.connection_device_worker_id != null;
   const deliverConnectionAuth =
-    !isNativeBridgeRun && !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
+    !isDeviceOwnedRun && !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
   // `user_data_dir` and `cdp_url` for device-bound browser profiles flow to
   // the worker via `sessionState.user_data_dir` / `sessionState.cdp_url`
   // (set inside resolveExecutionAuth). No need to thread them as separate
@@ -1774,10 +1782,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_type: row.run_type,
     connector_key: row.connector_key,
     connector_version: row.connector_version ?? undefined,
-    ...(isNativeBridgeRun
+    ...(responseExecutionBackend
       ? {
-          execution_backend: 'native_bridge' as const,
-          connector_manifest_hash: selectedExecution.manifestHash,
+          execution_backend: responseExecutionBackend,
+          ...(selectedExecution.manifestHash
+            ? { connector_manifest_hash: selectedExecution.manifestHash }
+            : {}),
         }
       : {}),
     nix_packages: nixPackages.length > 0 ? nixPackages : undefined,

@@ -10,6 +10,11 @@ import {
   describeDeviceLastSeen,
 } from '../../../../utils/device-liveness';
 import {
+  describeDeviceConnectorBackendUnavailable,
+  findDeviceConnectorReadiness,
+  loadDeviceConnectorReadiness,
+} from '../../../../worker-api/device-connector-readiness';
+import {
   getAuthProfileById,
   getBrowserSessionReadiness,
   normalizeAuthValues,
@@ -182,13 +187,15 @@ export async function handleTest(
            c.status,
            c.device_worker_id,
            dw.label AS device_label,
+           dw.user_id AS device_owner_user_id,
            dw.last_seen_at AS device_last_seen_at,
            COALESCE(dw.last_seen_at > now() - make_interval(secs => ${DEVICE_ONLINE_WINDOW_SECONDS}), false) AS device_online,
-           cd.auth_schema
+           cd.auth_schema,
+           cd.version AS connector_version
     FROM connections c
     LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     LEFT JOIN LATERAL (
-      SELECT auth_schema
+      SELECT auth_schema, version
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -204,6 +211,29 @@ export async function handleTest(
   }
 
   const conn = rows[0] as any;
+  if (conn.device_worker_id && conn.device_owner_user_id && conn.connector_version) {
+    const readiness = findDeviceConnectorReadiness(
+      await loadDeviceConnectorReadiness({
+        sql,
+        targets: [{
+          ownerUserId: conn.device_owner_user_id,
+          connectorKey: conn.connector_key,
+          connectorVersion: conn.connector_version,
+          deviceWorkerId: conn.device_worker_id,
+        }],
+      }),
+      {
+        ownerUserId: conn.device_owner_user_id,
+        connectorKey: conn.connector_key,
+        connectorVersion: conn.connector_version,
+        deviceWorkerId: conn.device_worker_id,
+      }
+    );
+    if (readiness?.state === 'backend_unavailable') {
+      conn.device_backend_unavailable_reason =
+        describeDeviceConnectorBackendUnavailable(readiness);
+    }
+  }
   const withDeviceHealth = (result: ConnectionTestResult): ConnectionTestResult =>
     applySelectedDeviceHealth(conn, result);
 
@@ -379,6 +409,15 @@ export async function handleTest(
   // mask an offline device behind a generic "requires no auth profile" ok.
   if (conn.device_worker_id) {
     const deviceName = conn.device_label || 'paired device';
+    if (conn.device_backend_unavailable_reason) {
+      return {
+        action: 'test',
+        status: 'warning',
+        message: conn.device_backend_unavailable_reason,
+        device_online: true,
+        ...testErrorFields('UPSTREAM_UNAVAILABLE'),
+      };
+    }
     return conn.device_online
       ? {
           action: 'test',
@@ -433,10 +472,20 @@ function applySelectedDeviceHealth(
     device_online?: unknown;
     device_label?: unknown;
     device_last_seen_at?: Date | string | null;
+    device_backend_unavailable_reason?: unknown;
   },
   result: ConnectionTestResult
 ): ConnectionTestResult {
   if (!conn.device_worker_id) return result;
+  if (typeof conn.device_backend_unavailable_reason === 'string') {
+    return {
+      ...result,
+      status: result.status === 'error' ? 'error' : 'warning',
+      message: `${result.message}; ${conn.device_backend_unavailable_reason}`,
+      device_online: true,
+      ...(result.error_code ? {} : testErrorFields('UPSTREAM_UNAVAILABLE')),
+    };
+  }
   if (conn.device_online === true) {
     return { ...result, device_online: true };
   }

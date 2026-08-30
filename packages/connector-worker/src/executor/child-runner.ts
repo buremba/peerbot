@@ -11,6 +11,7 @@ import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { EventEnvelope, SyncResult } from '@lobu/connector-sdk';
+import { EXTERNAL_RUNTIME_DEPS } from '../runtime-deps.js';
 import { extractHttpStatus } from './http-status.js';
 import type { ExecutorJob, ExecutorResult } from './interface.js';
 
@@ -540,11 +541,20 @@ async function main() {
       if (error.code === 'ERR_MODULE_NOT_FOUND') {
         const pkgMatch = error.message.match(/Cannot find package '([^']+)'/);
         const pkg = pkgMatch?.[1] ?? 'unknown';
-        error.message =
-          `Connector requires '${pkg}' but it's not installed in the runtime image. ` +
-          `'${pkg}' is declared as an external dependency in EXTERNAL_RUNTIME_DEPS ` +
-          `(packages/connector-worker/src/runtime-deps.ts). ` +
-          `Add it to packages/connector-worker/package.json and rebuild the runtime image.`;
+        if (pkg === '@lobu/connector-sdk') {
+          error.message =
+            "The compiled-connector runtime cannot resolve '@lobu/connector-sdk'. " +
+            'The worker package declares it as a required workspace dependency; rebuild and redeploy ' +
+            'the packaged worker instead of modifying node_modules on the host.';
+        } else if ((EXTERNAL_RUNTIME_DEPS as readonly string[]).includes(pkg)) {
+          error.message =
+            `Connector requires '${pkg}' but it is not installed in the runtime image. ` +
+            `'${pkg}' is declared in EXTERNAL_RUNTIME_DEPS; rebuild the packaged runtime.`;
+        } else {
+          error.message =
+            `Compiled connector could not resolve '${pkg}'. ` +
+            'The artifact/runtime dependency contract is incompatible; rebuild the connector artifact and worker image.';
+        }
       }
       await sendIPC({
         type: 'error',

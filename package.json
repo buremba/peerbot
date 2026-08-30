@@ -39,7 +39,8 @@
     "lobu:connectors:install": "bun run scripts/lobu/install-connectors.ts",
     "lobu:connectors:dry-run": "bun run scripts/lobu/dry-run-connector.ts",
     "build:mac-device-daemon": "./scripts/build-mac-device-daemon.sh",
-    "test:mac-device-daemon": "./scripts/test-mac-device-daemon-package.sh"
+    "test:mac-device-daemon": "./scripts/test-mac-device-daemon-package.sh",
+    "test:headless-shell-package": "./scripts/test-headless-shell-package.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.2",

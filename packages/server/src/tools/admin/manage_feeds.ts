@@ -83,6 +83,7 @@ import {
   runStatusLiteral,
 } from '../../utils/run-statuses';
 import {
+  describeDeviceConnectorBackendUnavailable,
   describeDeviceConnectorSetupRequired,
   findDeviceConnectorReadiness,
   loadDeviceConnectorReadiness,
@@ -513,6 +514,8 @@ async function handleListFeeds(
       attention: semantics.attention,
       ...(connectorReadiness?.state === 'setup_required'
         ? { attention_reason: describeDeviceConnectorSetupRequired(connectorReadiness) }
+        : connectorReadiness?.state === 'backend_unavailable'
+          ? { attention_reason: describeDeviceConnectorBackendUnavailable(connectorReadiness) }
         : {}),
     };
   });

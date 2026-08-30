@@ -103,6 +103,7 @@ interface FeedHealthSemanticsInput {
   device_connector_readiness?:
     | "ready"
     | "setup_required"
+    | "backend_unavailable"
     | "device_offline"
     | null;
 }
@@ -153,7 +154,11 @@ function deviceOffline(input: FeedHealthSemanticsInput): boolean {
 }
 
 function setupRequired(input: FeedHealthSemanticsInput): boolean {
-  return !pinnedDeviceOffline(input) && input.device_connector_readiness === "setup_required";
+  return (
+    !pinnedDeviceOffline(input) &&
+    (input.device_connector_readiness === "setup_required" ||
+      input.device_connector_readiness === "backend_unavailable")
+  );
 }
 
 /** The most recent attempt failed, or a failure episode is underway. */

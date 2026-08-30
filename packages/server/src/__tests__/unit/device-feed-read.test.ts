@@ -96,6 +96,39 @@ describe('device manifest feed operations', () => {
   });
 });
 
+describe('headless device manifest backend contract', () => {
+  const manifest = {
+    key: 'os.shell',
+    version: '0.2.0',
+    name: 'Shell',
+    required_capability: 'os.shell',
+    runtime: { platforms: ['headless'], execution: 'daemon_builtin' },
+    feeds_schema: {},
+    actions_schema: { run: { key: 'run', name: 'Run' } },
+  };
+
+  it('accepts the explicit daemon built-in backend', () => {
+    expect(validateDeviceConnectorManifests({
+      platform: 'headless',
+      capabilities: ['os.shell'],
+      manifests: [manifest],
+    }).accepted).toBe(true);
+  });
+
+  it('rejects legacy or unknown headless execution before advertisement', () => {
+    expect(validateDeviceConnectorManifests({
+      platform: 'headless',
+      capabilities: ['os.shell'],
+      manifests: [{ ...manifest, runtime: { platforms: ['headless'] } }],
+    }).accepted).toBe(false);
+    expect(validateDeviceConnectorManifests({
+      platform: 'headless',
+      capabilities: ['os.shell'],
+      manifests: [{ ...manifest, runtime: { platforms: ['headless'], execution: 'mystery' } }],
+    }).accepted).toBe(false);
+  });
+});
+
 describe('WhatsApp Browser manifest capability', () => {
   const chromeManifest = {
     key: 'whatsapp.local',
@@ -173,6 +206,24 @@ describe('device connector readiness', () => {
     expect(classifyDeviceConnectorReadiness(source(['device-1'], ['device-1'])).state).toBe(
       'ready'
     );
+  });
+
+  it('does not report a legacy headless manifest ready without an explicit backend', () => {
+    const headless = {
+      ...source(['device-1'], ['device-1']),
+      sourcePath: 'device-manifest://headless/os.shell@0.1.0',
+      metadata: { name: 'Shell', runtime: { platforms: ['headless'] } },
+    } as DeviceConnectorSource;
+    expect(classifyDeviceConnectorReadiness(headless).state).toBe('backend_unavailable');
+    expect(
+      classifyDeviceConnectorReadiness({
+        ...headless,
+        metadata: {
+          name: 'Shell',
+          runtime: { platforms: ['headless'], execution: 'daemon_builtin' },
+        },
+      }).state
+    ).toBe('ready');
   });
 
   it('derives offline when the selected manifest has no online advertiser', () => {

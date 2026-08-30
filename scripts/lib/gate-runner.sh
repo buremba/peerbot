@@ -319,6 +319,7 @@ gate_connector_parity_smoke() {
   gate_require_docker || return 77
   docker build -f docker/worker/Dockerfile -t lobu-worker:parity-smoke .
   docker run --rm --network=none lobu-worker:parity-smoke bun src/bin.ts self-check --json
+  ./scripts/test-headless-shell-package.sh || return 1
   node packages/cli/bin/lobu.js connector runtime-self-check --json || return 1
 }
 

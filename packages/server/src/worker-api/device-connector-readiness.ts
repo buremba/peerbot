@@ -15,6 +15,7 @@ import {
 export type DeviceConnectorReadinessState =
   | 'ready'
   | 'setup_required'
+  | 'backend_unavailable'
   | 'device_offline';
 
 export interface DeviceConnectorReadiness {
@@ -51,9 +52,10 @@ export function classifyDeviceConnectorReadiness(
   source: DeviceConnectorSource,
   deviceWorkerId?: string | null
 ): DeviceConnectorReadiness {
+  const backendReady = deviceManifestBackendReady(source);
   if (deviceWorkerId) {
     if (source.onlineAdvertiserDeviceIds.includes(deviceWorkerId)) {
-      return { state: 'ready', source };
+      return { state: backendReady ? 'ready' : 'backend_unavailable', source };
     }
     if (source.onlineManifestDeviceIds.includes(deviceWorkerId)) {
       return { state: 'setup_required', source };
@@ -61,12 +63,24 @@ export function classifyDeviceConnectorReadiness(
     return { state: 'device_offline', source };
   }
   if (source.onlineAdvertiserDeviceIds.length > 0) {
-    return { state: 'ready', source };
+    return { state: backendReady ? 'ready' : 'backend_unavailable', source };
   }
   if (source.onlineManifestDeviceIds.length > 0) {
     return { state: 'setup_required', source };
   }
   return { state: 'device_offline', source };
+}
+
+/**
+ * Headless manifests execute inside connector-worker, so an online heartbeat
+ * is not sufficient proof. New headless artifacts must name the daemon-owned
+ * backend; legacy metadata-only artifacts are inventory, not executable
+ * readiness. Other platforms retain their compatibility policy while their
+ * bridge/extension clients migrate independently.
+ */
+function deviceManifestBackendReady(source: DeviceConnectorSource): boolean {
+  if (!source.sourcePath?.startsWith('device-manifest://headless/')) return true;
+  return source.metadata.runtime?.execution === 'daemon_builtin';
 }
 
 /** Load each owner's manifest inventory once, then index the requested targets. */
@@ -152,5 +166,14 @@ export function describeDeviceConnectorSetupRequired(
     `${readiness.source.metadata.name} is available on an online device, but setup is incomplete: ` +
     `'${readiness.source.requiredCapability}' has not been granted. ` +
     'Open the paired device app, finish setup, then retry.'
+  );
+}
+
+export function describeDeviceConnectorBackendUnavailable(
+  readiness: DeviceConnectorReadiness,
+): string {
+  return (
+    `${readiness.source.metadata.name} is advertised by an online device, but its exact ` +
+    'manifest does not declare a supported execution backend. Update/restart the device daemon.'
   );
 }

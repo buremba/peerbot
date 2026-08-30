@@ -1718,7 +1718,7 @@ jobs:
             echo "mac=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No paths affecting the Mac build changed — skipping mac-build-smoke."
           fi
-          if echo "$changed" | grep -E '^(docker/|packages/connector-worker/|packages/connector-sdk/|packages/connectors/|packages/core/|packages/embeddings/|packages/cli/|package\.json$|bun\.lock$|\.github/workflows/ci\.yml$|\.github/workflows/build-images\.yml$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(docker/|packages/connector-worker/|packages/connector-sdk/|packages/connectors/|packages/core/|packages/embeddings/|packages/cli/|scripts/test-headless-shell-package\.sh$|package\.json$|bun\.lock$|\.github/workflows/ci\.yml$|\.github/workflows/build-images\.yml$)' >/dev/null; then
             echo "connector=true" >> "$GITHUB_OUTPUT"
           else
             echo "connector=false" >> "$GITHUB_OUTPUT"
@@ -1909,6 +1909,9 @@ jobs:
       - name: Build workspace packages (CLI + deps)
         if: steps.dist-cache.outputs.cache-hit != 'true'
         run: make build-packages
+
+      - name: Published worker tarball shell smoke (including restart)
+        run: ./scripts/test-headless-shell-package.sh
 
       - name: CLI runtime self-check (host)
         run: node packages/cli/bin/lobu.js connector runtime-self-check --json

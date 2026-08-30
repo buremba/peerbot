@@ -29,6 +29,7 @@ import {
 import { buildConnectionsUrl } from "../../../../utils/url-builder";
 import {
 	describeDeviceConnectorSetupRequired,
+	describeDeviceConnectorBackendUnavailable,
 	findDeviceConnectorReadiness,
 	loadDeviceConnectorReadiness,
 	type DeviceConnectorReadiness,
@@ -119,6 +120,14 @@ function executionTargetFromRow(
 			reason: describeDeviceConnectorSetupRequired(deviceReadiness),
 		};
 	}
+	if (deviceReadiness?.state === "backend_unavailable") {
+		return {
+			...base,
+			status: "backend_unavailable",
+			executable: false,
+			reason: describeDeviceConnectorBackendUnavailable(deviceReadiness),
+		};
+	}
 	if (deviceReadiness?.state === "ready") {
 		return {
 			...base,
@@ -197,6 +206,9 @@ function operationReadinessReason(
 	}
 	if (readiness === "setup_required") {
 		return "Connector setup is incomplete on every otherwise-available device.";
+	}
+	if (readiness === "backend_unavailable") {
+		return "Every otherwise-available device is missing the connector's declared execution backend.";
 	}
 	if (readiness === "scope_upgrade_required") {
 		return "This operation needs OAuth scopes the connection has not granted. Reauthorize to grant them.";
@@ -416,7 +428,11 @@ function buildOperationNextAction(args: {
 	}
 	return {
 		action:
-			readiness === "device_offline" ? "bring_device_online" : "open_setup",
+			readiness === "device_offline"
+				? "bring_device_online"
+				: readiness === "backend_unavailable"
+					? "update_device_daemon"
+					: "open_setup",
 		manual: true,
 		...(viewUrl ? { view_url: viewUrl } : {}),
 	};

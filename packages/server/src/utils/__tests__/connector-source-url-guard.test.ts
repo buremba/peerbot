@@ -74,12 +74,19 @@ describe('connector source_url fetch: redirect validation + body cap', () => {
   });
 
   it('re-validates redirect hops: a redirect to http:// is rejected', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      new Response(null, { status: 302, headers: { location: 'http://host.invalid/y.ts' } })
+      new Response(body, { status: 302, headers: { location: 'http://host.invalid/y.ts' } })
     );
     await expect(
       resolveConnectorInstallSource({ sourceUrl: 'https://host.invalid/x.ts' })
     ).rejects.toThrow(/must use https/i);
+    expect(cancelled).toBe(true);
   });
 
   it('re-validates redirect hops: a redirect to an off-allowlist host is rejected', async () => {
@@ -92,17 +99,39 @@ describe('connector source_url fetch: redirect validation + body cap', () => {
   });
 
   it('rejects an oversized declared Content-Length', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      new Response('x', { status: 200, headers: { 'content-length': String(6 * 1024 * 1024) } })
+      new Response(body, { status: 200, headers: { 'content-length': String(6 * 1024 * 1024) } })
     );
     await expect(
       resolveConnectorInstallSource({ sourceUrl: 'https://host.invalid/x.ts' })
     ).rejects.toThrow(/too large/i);
+    expect(cancelled).toBe(true);
+  });
+
+  it('cancels a non-success response body before throwing', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(body, { status: 503 }));
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://host.invalid/x.ts' })
+    ).rejects.toThrow(/503/);
+    expect(cancelled).toBe(true);
   });
 
   it('aborts a streamed body that exceeds the cap (no/lying Content-Length)', async () => {
     const chunk = new Uint8Array(2 * 1024 * 1024); // 2 MiB per chunk; 3rd pushes past 5 MiB
     let sent = 0;
+    let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
         if (sent >= 4) {
@@ -112,10 +141,14 @@ describe('connector source_url fetch: redirect validation + body cap', () => {
         sent += 1;
         controller.enqueue(chunk);
       },
+      cancel() {
+        cancelled = true;
+      },
     });
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(stream, { status: 200 }));
     await expect(
       resolveConnectorInstallSource({ sourceUrl: 'https://host.invalid/x.ts' })
     ).rejects.toThrow(/too large/i);
+    expect(cancelled).toBe(true);
   });
 });

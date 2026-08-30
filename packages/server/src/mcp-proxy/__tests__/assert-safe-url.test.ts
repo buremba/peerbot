@@ -26,6 +26,16 @@ describe('assertSafeUrl — shared SSRF guard (F10)', () => {
     );
   });
 
+  it('rejects the RFC 8215 local-use NAT64 prefix even with a public IPv4 suffix', () => {
+    expect(() => assertSafeUrl('https://[64:ff9b:1::808:808]/')).toThrow(
+      /private\/internal/i
+    );
+  });
+
+  it('rejects deprecated IPv6 site-local unicast', () => {
+    expect(() => assertSafeUrl('https://[fec0::1]/')).toThrow(/private\/internal/i);
+  });
+
   it('rejects hex-form IPv4-mapped IPv6 loopback', () => {
     // ::ffff:7f00:1 → 127.0.0.1
     expect(() => assertSafeUrl('http://[::ffff:7f00:1]/')).toThrow(

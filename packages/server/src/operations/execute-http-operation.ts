@@ -1,10 +1,13 @@
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../db/client";
+import { fetchPublicUrl } from "../gateway/proxy/ssrf-guard";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
+import { readResponseTextWithLimit } from "../utils/bounded-response";
 import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import type { OperationDescriptor } from "./types";
 
 const DEFAULT_HTTP_OPERATION_FETCH_TIMEOUT_MS = 120_000;
+const MAX_HTTP_OPERATION_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 export type HttpOperationExecutionResult =
 	| {
@@ -119,6 +122,22 @@ function requestAbortSignal(parent?: AbortSignal): {
 	};
 }
 
+async function readHttpOperationResponse(response: Response): Promise<string> {
+	return stripNul(
+		await readResponseTextWithLimit(
+			response,
+			MAX_HTTP_OPERATION_RESPONSE_BYTES,
+			"HTTP operation response too large",
+		),
+	);
+}
+
+export const __httpOperationTestOnly = {
+	MAX_HTTP_OPERATION_RESPONSE_BYTES,
+	readHttpOperationResponse,
+	requestAbortSignal,
+};
+
 /** Execute one OpenAPI-derived HTTP operation and finalize its run row. */
 export async function executeHttpOperation(
 	runId: number,
@@ -196,7 +215,7 @@ export async function executeHttpOperation(
 		let response: Response;
 		let text: string;
 		try {
-			response = await fetch(url, {
+			response = await fetchPublicUrl(url, {
 				method: operation.backend_config.method,
 				headers,
 				body: ["GET", "HEAD"].includes(operation.backend_config.method)
@@ -205,7 +224,7 @@ export async function executeHttpOperation(
 				redirect: "manual",
 				signal: requestAbort.signal,
 			});
-			text = stripNul(await response.text());
+			text = await readHttpOperationResponse(response);
 		} finally {
 			requestAbort.cleanup();
 		}

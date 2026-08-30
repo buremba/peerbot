@@ -6,6 +6,12 @@
  */
 
 import logger from '../utils/logger';
+import { fetchPublicUrl } from '../gateway/proxy/ssrf-guard';
+import { cancelResponseBody } from '../utils/bounded-response';
+import {
+  readConnectorOAuthResponse,
+  withConnectorOAuthDeadline,
+} from '../utils/connector-oauth-http';
 
 type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
 
@@ -221,22 +227,30 @@ export async function exchangeCodeForTokens(params: {
   }
 
   try {
-    const response = await fetch(config.tokenUrl, {
-      method: 'POST',
-      headers,
-      body,
+    // Connector definitions can supply this endpoint. Do not use the generic
+    // first-party OAuth transport: pin public DNS and reject redirects so an
+    // authorization code or client_secret body cannot be replayed elsewhere.
+    const result = await withConnectorOAuthDeadline(async (signal) => {
+      const response = await fetchPublicUrl(config.tokenUrl!, {
+        method: 'POST',
+        headers,
+        body,
+        redirect: 'error',
+        signal,
+      });
+      const text = await readConnectorOAuthResponse(response);
+      return { response, text };
     });
 
-    if (!response.ok) {
-      const text = await response.text();
+    if (!result.response.ok) {
       logger.error(
-        { provider: params.provider, status: response.status, body: text },
+        { provider: params.provider, status: result.response.status, body: result.text },
         'OAuth token exchange failed'
       );
       return null;
     }
 
-    const data = (await response.json()) as Record<string, unknown>;
+    const data = JSON.parse(result.text) as Record<string, unknown>;
 
     // Some providers (notably GitHub) return HTTP 200 with an error body
     // (e.g. `{ error: "bad_verification_code" }`) instead of a non-2xx status.
@@ -289,11 +303,23 @@ async function fetchRawUserInfo(params: {
       headers['User-Agent'] = 'lobu:connector:v1.0 (by /u/lobu)';
     }
 
-    const response = await fetch(config.userinfoUrl, { headers });
+    // userinfoUrl may also come from a connector definition and this request
+    // carries a bearer token, so redirects are never credential-safe.
+    const rawData = await withConnectorOAuthDeadline(async (signal) => {
+      const response = await fetchPublicUrl(config.userinfoUrl!, {
+        headers,
+        redirect: 'error',
+        signal,
+      });
 
-    if (!response.ok) return null;
+      if (!response.ok) {
+        await cancelResponseBody(response);
+        return null;
+      }
 
-    const rawData = (await response.json()) as Record<string, unknown>;
+      return JSON.parse(await readConnectorOAuthResponse(response)) as Record<string, unknown>;
+    });
+    if (!rawData) return null;
     return rawData.data && typeof rawData.data === 'object'
       ? (rawData.data as Record<string, unknown>)
       : rawData;

@@ -7,7 +7,11 @@
  */
 
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
-import { isReservedIp, stripIpv6Brackets } from '../gateway/proxy/ssrf-guard';
+import {
+  fetchPublicUrl,
+  isReservedIp,
+  stripIpv6Brackets,
+} from '../gateway/proxy/ssrf-guard';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';
@@ -65,7 +69,7 @@ async function fetchMcpResponse(
   });
   try {
     if (typeof init.body === 'string') assertRequestBodySize(init.body);
-    const response = await fetch(url, { ...init, signal: scope.signal });
+    const response = await fetchPublicUrl(url, { ...init, signal: scope.signal });
     responseStatus = response.status;
     const responseHadBody = response.body !== null;
     const bounded = await readResponseBody(response, {
@@ -573,13 +577,10 @@ export async function callTool(
 /**
  * Validate that a URL is safe for server-side fetching (SSRF prevention).
  *
- * This is a syntactic literal check: the connector_definitions auth_schema
- * upstream URL is operator-supplied (org admin) so the threat model is
- * "stop a misconfigured / malicious upstream literal", not "defeat a
- * resolver that returns an internal address". Workers cannot edit these
- * rows. DNS-rebinding defence for outbound fetches lives in the gateway
- * HTTP egress proxy; this check just rejects the obvious cases at the
- * trust boundary so a private IP in the literal never reaches `fetch`.
+ * This is the early syntactic check for the operator-supplied upstream URL.
+ * `fetchPublicUrl` performs the load-bearing DNS validation and pins the socket
+ * to the validated address; this check rejects obvious literals at the trust
+ * boundary before any request setup begins.
  */
 export function assertSafeUrl(url: string): void {
   let parsed: URL;

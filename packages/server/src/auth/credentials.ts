@@ -6,6 +6,11 @@
  */
 
 import type { DbClient } from '../db/client';
+import { fetchPublicUrl } from '../gateway/proxy/ssrf-guard';
+import {
+  readConnectorOAuthResponse,
+  withConnectorOAuthDeadline,
+} from '../utils/connector-oauth-http';
 import { buildRefreshRequest, parseTokenRefreshResponse } from './oauth/token-refresh';
 
 /**
@@ -239,18 +244,27 @@ export class CredentialService {
     });
 
     try {
-      const response = await fetch(params.tokenUrl, {
-        method: 'POST',
-        headers,
-        body,
+      // This is the connector-account refresh path: tokenUrl is persisted from
+      // connector OAuth metadata, not the operator-trusted gateway login
+      // provider configuration. Pin its DNS and never redirect credentials.
+      const result = await withConnectorOAuthDeadline(async (signal) => {
+        const response = await fetchPublicUrl(params.tokenUrl, {
+          method: 'POST',
+          headers,
+          body,
+          redirect: 'error',
+          signal,
+        });
+        const text = await readConnectorOAuthResponse(response);
+        return { response, text };
       });
 
-      if (!response.ok) {
-        console.error('[Credentials] Generic token refresh failed:', await response.text());
+      if (!result.response.ok) {
+        console.error('[Credentials] Generic token refresh failed:', result.text);
         return null;
       }
 
-      const data = (await response.json()) as Record<string, unknown>;
+      const data = JSON.parse(result.text) as Record<string, unknown>;
       const parsed = parseTokenRefreshResponse(data);
       if (!parsed) {
         console.error('[Credentials] Generic token refresh returned no access_token');

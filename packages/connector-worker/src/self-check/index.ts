@@ -26,6 +26,7 @@ import {
 	EXTERNAL_RUNTIME_DEPS,
 } from "../compile/index.js";
 import type { ExecutorJob } from "../executor/interface.js";
+import { registerConnectorRuntimeDependencyLoader } from "../executor/runtime-dependency-loader.js";
 import { executeCompiledConnector } from "../executor/runtime.js";
 
 /**
@@ -288,6 +289,18 @@ async function runSyntheticConnector(
 }
 
 /**
+ * Fast boot gate for a worker that is about to advertise connector
+ * capabilities. It compiles and executes the synthetic connector through the
+ * real subprocess path, so a runtime that cannot load the SDK fails before its
+ * first poll can claim production work.
+ */
+export async function assertConnectorRuntimeLoadable(): Promise<void> {
+	registerConnectorRuntimeDependencyLoader();
+	const { compileConnectorFromFile } = createConnectorCompiler({ cacheMax: 1 });
+	await runSyntheticConnector(compileConnectorFromFile);
+}
+
+/**
  * Run the shared connector-runtime parity self-check. Each assertion is
  * recorded as a `{ ok }` entry rather than thrown; the top-level `ok` is the
  * AND of all of them.
@@ -295,6 +308,7 @@ async function runSyntheticConnector(
 export async function runConnectorRuntimeSelfCheck(
 	opts?: SelfCheckOptions,
 ): Promise<SelfCheckResult> {
+	registerConnectorRuntimeDependencyLoader();
 	const checks: SelfCheckEntry[] = [];
 	const require_ = createRequire(import.meta.url);
 
@@ -335,18 +349,12 @@ export async function runConnectorRuntimeSelfCheck(
 		() => import(pathToFileURL(sdkRequire().resolve("@lobu/core")).href),
 	);
 
-	// External runtime deps (native binaries + Playwright) must be installed
-	// wherever compiled connectors execute. `child-runner` stages the bundle UNDER cwd, so the
-	// bundle's bare imports of these externalized deps resolve from cwd's
-	// node_modules — not connector-worker's. Anchor the probe the same way (a
-	// require rooted at a cwd module path; the file need not exist for `.resolve`)
-	// so the check fails exactly where a real connector would, instead of falsely
-	// passing off connector-worker's hoisted dev tree.
-	const cwdRequire = createRequire(
-		pathToFileURL(join(process.cwd(), "self-check-resolver.mjs")).href,
-	);
+	// External runtime deps (native binaries + Playwright) are provided by the
+	// connector-worker package. Compiled modules may live under an unrelated cwd,
+	// but the registered loader deliberately resolves these imports from this
+	// package graph; probe the same anchor here.
 	for (const dep of EXTERNAL_RUNTIME_DEPS) {
-		await check(`resolve:${dep}`, () => cwdRequire.resolve(dep));
+		await check(`resolve:${dep}`, () => require_.resolve(dep));
 	}
 
 	const candidates =

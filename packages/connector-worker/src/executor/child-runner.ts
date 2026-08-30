@@ -12,7 +12,10 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { EventEnvelope, SyncResult } from '@lobu/connector-sdk';
 import { extractHttpStatus } from './http-status.js';
-import { registerConnectorRuntimeDependencyLoader } from './runtime-dependency-loader.js';
+import {
+  isConnectorRuntimeDependency,
+  registerConnectorRuntimeDependencyLoader,
+} from './runtime-dependency-loader.js';
 import type { ExecutorJob, ExecutorResult } from './interface.js';
 
 const EVENT_CHUNK_SIZE = 100;
@@ -499,7 +502,9 @@ async function main() {
     if (started) return;
     started = true;
 
-    // Keep temp module under cwd so bare imports (e.g. lobu) resolve via local node_modules.
+    // Keep the temp module under cwd so the runtime never writes into an
+    // installed package. The dependency loader below rebases runtime-provided
+    // bare imports to connector-worker's own package graph.
     // Use a cryptographically random suffix (not pid+Date.now()) so a co-tenant
     // can't pre-create or guess the path. Combined with the `wx` open flag below
     // this prevents both symlink-swap (pointing tmpFile at another file the
@@ -546,11 +551,12 @@ async function main() {
       if (error.code === 'ERR_MODULE_NOT_FOUND') {
         const pkgMatch = error.message.match(/Cannot find package '([^']+)'/);
         const pkg = pkgMatch?.[1] ?? 'unknown';
-        error.message =
-          `Connector requires '${pkg}' but it's not installed in the runtime image. ` +
-          `'${pkg}' is declared as an external dependency in EXTERNAL_RUNTIME_DEPS ` +
-          `(packages/connector-worker/src/runtime-deps.ts). ` +
-          `Add it to packages/connector-worker/package.json and rebuild the runtime image.`;
+        error.message = isConnectorRuntimeDependency(pkg)
+          ? `Connector runtime is missing required package '${pkg}'. ` +
+            `It must resolve from @lobu/connector-worker's installed dependency graph; ` +
+            `reinstall the matching runtime artifact before advertising connector capabilities.`
+          : `Connector requires '${pkg}' but it is not installed in the runtime image. ` +
+            `Add the connector's declared package to the runtime image and rebuild it.`;
       }
       await sendIPC({
         type: 'error',

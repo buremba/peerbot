@@ -853,6 +853,48 @@ describe("live steering classification", () => {
     expect(processSingleMessage).toHaveBeenNthCalledWith(2, second, ["second"]);
   });
 
+  test("continues an unattempted batch suffix exactly once after an earlier item fails", async () => {
+    const client = makeClient();
+    const attempts: string[] = [];
+    (client as any).processSingleMessage = mock(async (message: any) => {
+      const messageId = message.payload.messageId as string;
+      attempts.push(messageId);
+      if (messageId === "first-fails") throw new Error("turn failed");
+    });
+
+    const batcher = (client as any).messageBatcher;
+    batcher.batchWindowMs = 5;
+    await batcher.addMessage({
+      payload: { ...payload, messageId: "warmup" },
+      timestamp: 0,
+    });
+    await batcher.addMessage({
+      payload: {
+        ...payload,
+        messageId: "first-fails",
+        userId: "first-user",
+      },
+      timestamp: 1,
+    });
+    await batcher.addMessage({
+      payload: {
+        ...payload,
+        messageId: "suffix-must-run",
+        userId: "second-user",
+      },
+      timestamp: 2,
+    });
+
+    const deadline = Date.now() + 500;
+    while (!attempts.includes("suffix-must-run") && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(attempts).toEqual(["warmup", "first-fails", "suffix-must-run"]);
+    batcher.stop();
+  });
+
   test("keeps queue-policy Automation events as one turn per delivery", async () => {
     const client = makeClient();
     const processSingleMessage = mock(async () => undefined);

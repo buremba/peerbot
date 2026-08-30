@@ -6,7 +6,7 @@
  * gated on `DATABASE_URL`.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   backoffSeconds,
   classifyQueue,
@@ -151,7 +151,7 @@ describe("RunsQueue worker registration", () => {
       await firstStarted;
 
       // Worker SSE reconnects call work() again for the same deployment. The
-      // replacement may update future delivery behavior, but it must not start
+      // replacement may update future delivery handling, but it must not start
       // a second claim loop alongside the turn already in flight.
       await queue.work("same-conversation", replacementHandler);
       await new Promise((resolve) => setTimeout(resolve, 75));
@@ -167,6 +167,91 @@ describe("RunsQueue worker registration", () => {
       expect(maxActiveHandlers).toBe(1);
     } finally {
       releaseFirst?.();
+      for (const worker of (queue as any).workers.values()) {
+        worker.stopped = true;
+        worker.wakeup();
+      }
+      (queue as any).workers.clear();
+    }
+  });
+
+  test("stop fences and releases a claim that resolves during shutdown", async () => {
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://test:test@localhost:5432/test";
+    const queue = new RunsQueue();
+    if (previousDatabaseUrl !== undefined) {
+      process.env.DATABASE_URL = previousDatabaseUrl;
+    } else {
+      delete process.env.DATABASE_URL;
+    }
+
+    let signalClaimStarted: (() => void) | null = null;
+    let releaseClaimAttempt: (() => void) | null = null;
+    const claimStarted = new Promise<void>((resolve) => {
+      signalClaimStarted = resolve;
+    });
+    const claimMayFinish = new Promise<void>((resolve) => {
+      releaseClaimAttempt = resolve;
+    });
+    const claimedRows = new Set<number>();
+    const handler = mock(async () => undefined);
+    let signalReleasedAfterShutdown: (() => void) | null = null;
+    const releasedAfterShutdown = new Promise<void>((resolve) => {
+      signalReleasedAfterShutdown = resolve;
+    });
+    const releaseClaim = mock(async (runId: number) => {
+      claimedRows.delete(runId);
+      signalReleasedAfterShutdown?.();
+    });
+
+    (queue as any).isConnected = true;
+    // Exercise the hard-timeout path without waiting 30 seconds: stop returns
+    // while claimOne is still held, so its later continuation owns the release.
+    (queue as any).shutdownDrainMs = 0;
+    (queue as any).ensureChannelListened = async () => undefined;
+    (queue as any).claimOne = async () => {
+      signalClaimStarted?.();
+      await claimMayFinish;
+      claimedRows.add(41);
+      return {
+        runId: 41,
+        payload: { turn: 1 },
+        attempts: 0,
+        maxAttempts: 3,
+        retryDelaySeconds: null,
+      };
+    };
+    (queue as any).releaseClaim = releaseClaim;
+    (queue as any).releaseAllClaims = async () => {
+      const count = claimedRows.size;
+      claimedRows.clear();
+      return count;
+    };
+    (queue as any).heartbeatClaim = async () => undefined;
+    (queue as any).markCompleted = async () => undefined;
+
+    try {
+      await queue.work("shutdown-race", handler);
+      await claimStarted;
+      expect((queue as any).workers.get("shutdown-race").claiming).toBe(1);
+
+      await queue.stop();
+      releaseClaimAttempt?.();
+      await Promise.race([
+        releasedAfterShutdown,
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("late claim was not released")),
+            500,
+          )
+        ),
+      ]);
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(releaseClaim).toHaveBeenCalledWith(41);
+      expect(claimedRows.size).toBe(0);
+    } finally {
+      releaseClaimAttempt?.();
       for (const worker of (queue as any).workers.values()) {
         worker.stopped = true;
         worker.wakeup();

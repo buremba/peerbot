@@ -102,6 +102,7 @@ interface QueueWorker {
   concurrency: number;
   paused: boolean;
   stopped: boolean;
+  claiming: number;
   active: number;
   wakeup: () => void;
   pendingWakeup: boolean;
@@ -129,6 +130,7 @@ export class RunsQueue implements IMessageQueue {
   private isConnected = false;
   /** Set true on stop(); send/work check this and refuse new work. */
   private shuttingDown = false;
+  private readonly shutdownDrainMs = SHUTDOWN_DRAIN_MS;
 
   isShuttingDown(): boolean {
     return this.shuttingDown;
@@ -225,9 +227,9 @@ export class RunsQueue implements IMessageQueue {
     }
 
     const drainStart = Date.now();
-    while (Date.now() - drainStart < SHUTDOWN_DRAIN_MS) {
+    while (Date.now() - drainStart < this.shutdownDrainMs) {
       const inFlight = Array.from(this.workers.values()).reduce(
-        (sum, w) => sum + w.active,
+        (sum, w) => sum + w.claiming + w.active,
         0,
       );
       if (inFlight === 0) break;
@@ -239,18 +241,10 @@ export class RunsQueue implements IMessageQueue {
     // sweeper. Filter by our per-process claim identity so a sibling pod's
     // in-flight claims aren't released out from under it.
     try {
-      const sql = getDb();
-      const result = await sql`
-        UPDATE public.runs
-        SET status = 'pending',
-            claimed_at = NULL,
-            claimed_by = NULL
-        WHERE claimed_by = ${this.claimedBy}
-          AND status = 'claimed'
-      `;
-      if (result.count > 0) {
+      const released = await this.releaseAllClaims();
+      if (released > 0) {
         logger.info(
-          `Released ${result.count} claimed run(s) on shutdown`,
+          `Released ${released} claimed run(s) on shutdown`,
         );
       }
     } catch (err) {
@@ -469,6 +463,7 @@ export class RunsQueue implements IMessageQueue {
       concurrency: DEFAULT_WORKER_CONCURRENCY,
       paused: options?.startPaused ?? false,
       stopped: false,
+      claiming: 0,
       active: 0,
       pendingWakeup: false,
       wakeup: () => {
@@ -513,7 +508,25 @@ export class RunsQueue implements IMessageQueue {
           continue;
         }
         try {
-          const claimed = await this.claimOne(worker);
+          let claimed: Awaited<ReturnType<RunsQueue["claimOne"]>> = null;
+          worker.claiming += 1;
+          try {
+            claimed = await this.claimOne(worker);
+            if (claimed && (worker.stopped || this.shuttingDown)) {
+              await this.releaseClaim(claimed.runId);
+              claimed = null;
+            }
+          } finally {
+            worker.claiming -= 1;
+          }
+
+          // stop() can begin after claimOne's promise settles but before this
+          // continuation runs. Recheck before crossing the handler boundary;
+          // there is no await between this fence and active++/runHandler().
+          if (worker.stopped || this.shuttingDown) {
+            if (claimed) await this.releaseClaim(claimed.runId);
+            continue;
+          }
           if (!claimed) {
             await this.sleep(intervals.runsPollIntervalMs, worker, () => {
               resolveWake = null;
@@ -717,6 +730,34 @@ export class RunsQueue implements IMessageQueue {
     } catch (err) {
       logger.warn({ runId, err }, "runs-queue heartbeat failed");
     }
+  }
+
+  /** Release one row acquired after shutdown began. Ownership fencing keeps a
+   *  stale continuation from releasing a row since reclaimed by another pod. */
+  private async releaseClaim(runId: number): Promise<void> {
+    const sql = getDb();
+    await sql`
+      UPDATE public.runs
+      SET status = 'pending',
+          claimed_at = NULL,
+          claimed_by = NULL
+      WHERE id = ${runId}
+        AND status = 'claimed'
+        AND claimed_by = ${this.claimedBy}
+    `;
+  }
+
+  private async releaseAllClaims(): Promise<number> {
+    const sql = getDb();
+    const result = await sql`
+      UPDATE public.runs
+      SET status = 'pending',
+          claimed_at = NULL,
+          claimed_by = NULL
+      WHERE claimed_by = ${this.claimedBy}
+        AND status = 'claimed'
+    `;
+    return result.count;
   }
 
   private async markCompleted(runId: number): Promise<void> {

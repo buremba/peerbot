@@ -124,6 +124,29 @@ export class MessageBatcher {
     }
   }
 
+  /**
+   * Restore the never-attempted suffix of a batch whose callback failed.
+   * These IDs were reserved before the original batch was captured, so this
+   * deliberately bypasses claimMessageId(). Prepend them ahead of messages
+   * that arrived while the failed callback was running to preserve delivery
+   * order without replaying the already-attempted prefix.
+   */
+  requeueClaimedMessages(messages: QueuedMessage[]): void {
+    if (messages.length === 0) return;
+    this.messageQueue = [...messages, ...this.messageQueue];
+
+    // Production calls this from onBatchReady while isProcessing is true, and
+    // processBatch() schedules the restored suffix in its finally block. Keep
+    // the method safe for direct callers too.
+    if (!this.isProcessing && !this.batchTimer) {
+      this.batchTimer = setTimeout(() => {
+        void this.processBatch().catch((error) => {
+          logger.error("Error during requeued batch processing:", error);
+        });
+      }, this.batchWindowMs);
+    }
+  }
+
   private async processBatch(): Promise<void> {
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);

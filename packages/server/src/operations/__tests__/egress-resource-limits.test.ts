@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "vitest";
 import { __connectorOperationsTestOnly } from "../connector-operations";
 import { __httpOperationTestOnly } from "../execute-http-operation";
 

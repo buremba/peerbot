@@ -15,7 +15,7 @@
  *  - `block-private`  (untrusted cloud): block every non-public address.
  *
  * The IP classifier is ported from the gateway's HTTP egress guard
- * (`packages/server/src/gateway/proxy/http-proxy.ts`) — that package isn't
+ * (`packages/server/src/gateway/proxy/ssrf-guard.ts`) — that package isn't
  * reachable from the bundled connector, so the logic is duplicated, not imported.
  * It collapses the forms an attacker can use to dress up an internal address
  * (IPv4-mapped IPv6, NAT64 `64:ff9b::/96`, zone IDs) and FAILS CLOSED on any
@@ -42,24 +42,76 @@ import net from 'node:net';
 
 export type DbEgressPolicy = 'allow-private' | 'block-private';
 
-/** IPv4 CIDRs blocked under `block-private` (the full non-public set). */
-const BLOCK_PRIVATE_V4: ReadonlyArray<readonly [string, number]> = [
-  ['0.0.0.0', 8], // unspecified / "this network"
-  ['10.0.0.0', 8], // RFC1918
-  ['100.64.0.0', 10], // CGNAT
-  ['127.0.0.0', 8], // loopback
-  ['169.254.0.0', 16], // link-local + cloud metadata
-  ['172.16.0.0', 12], // RFC1918
-  ['192.168.0.0', 16], // RFC1918
-  ['198.18.0.0', 15], // benchmarking
-  ['224.0.0.0', 4], // multicast
-  ['240.0.0.0', 4], // reserved + 255.255.255.255 broadcast
+type ReachabilityRule = readonly [base: string, prefix: number, globallyReachable: boolean];
+
+/**
+ * IANA IPv4 Special-Purpose Address Registry, last reviewed 2025-10-09.
+ * Longest-prefix evaluation preserves the globally reachable exceptions nested
+ * inside otherwise non-global special-purpose ranges.
+ */
+const IPV4_REACHABILITY_RULES: readonly ReachabilityRule[] = [
+  ['0.0.0.0', 8, false],
+  ['10.0.0.0', 8, false],
+  ['100.64.0.0', 10, false],
+  ['127.0.0.0', 8, false],
+  ['169.254.0.0', 16, false],
+  ['172.16.0.0', 12, false],
+  ['192.0.0.0', 24, false],
+  ['192.0.0.0', 29, false],
+  ['192.0.0.8', 32, false],
+  ['192.0.0.9', 32, true],
+  ['192.0.0.10', 32, true],
+  ['192.0.0.170', 32, false],
+  ['192.0.0.171', 32, false],
+  ['192.0.2.0', 24, false],
+  ['192.31.196.0', 24, true],
+  ['192.52.193.0', 24, true],
+  ['192.88.99.0', 24, false],
+  ['192.88.99.2', 32, false],
+  ['192.168.0.0', 16, false],
+  ['192.175.48.0', 24, true],
+  ['198.18.0.0', 15, false],
+  ['198.51.100.0', 24, false],
+  ['203.0.113.0', 24, false],
+  ['224.0.0.0', 4, false],
+  ['240.0.0.0', 4, false],
+  ['255.255.255.255', 32, false],
 ];
 
-const BLOCK_PRIVATE_V6: ReadonlyArray<readonly [string, number]> = [
-  ['fc00::', 7], // unique local (ULA)
-  ['fe80::', 10], // link-local
-  ['ff00::', 8], // multicast
+/**
+ * IANA IPv6 Special-Purpose Address Registry, last reviewed 2025-10-09.
+ * `2000::/3` is the global-unicast envelope; everything else fails closed
+ * unless a more-specific registry allocation is explicitly global.
+ */
+const IPV6_REACHABILITY_RULES: readonly ReachabilityRule[] = [
+  ['::', 128, false],
+  ['::1', 128, false],
+  ['::ffff:0:0', 96, false],
+  ['64:ff9b::', 96, true],
+  ['64:ff9b:1::', 48, false],
+  ['100::', 64, false],
+  ['100:0:0:1::', 64, false],
+  ['2000::', 3, true],
+  ['2001::', 23, false],
+  ['2001::', 32, false], // TEREDO is N/A; fail closed.
+  ['2001:1::1', 128, true],
+  ['2001:1::2', 128, true],
+  ['2001:1::3', 128, true],
+  ['2001:2::', 48, false],
+  ['2001:3::', 32, true],
+  ['2001:4:112::', 48, true],
+  ['2001:10::', 28, false],
+  ['2001:20::', 28, true],
+  ['2001:30::', 28, true],
+  ['2001:db8::', 32, false],
+  ['2002::', 16, false], // 6to4 is N/A; fail closed.
+  ['2620:4f:8000::', 48, true],
+  ['3fff::', 20, false],
+  ['5f00::', 16, false],
+  ['fc00::', 7, false],
+  ['fec0::', 10, false],
+  ['fe80::', 10, false],
+  ['ff00::', 8, false],
 ];
 
 /**
@@ -181,22 +233,40 @@ function matchesIpv6Prefix(address: string, base: string, prefix: number): boole
   return ipv6ToBigInt(address) >> shift === ipv6ToBigInt(base) >> shift;
 }
 
+function ipv4IsGloballyReachable(address: string): boolean {
+  let decision = true;
+  let longestPrefix = -1;
+  for (const [base, prefix, globallyReachable] of IPV4_REACHABILITY_RULES) {
+    if (prefix > longestPrefix && matchesIpv4Prefix(address, base, prefix)) {
+      decision = globallyReachable;
+      longestPrefix = prefix;
+    }
+  }
+  return decision;
+}
+
+function ipv6IsGloballyReachable(address: string): boolean {
+  let decision = false;
+  let longestPrefix = -1;
+  for (const [base, prefix, globallyReachable] of IPV6_REACHABILITY_RULES) {
+    if (prefix > longestPrefix && matchesIpv6Prefix(address, base, prefix)) {
+      decision = globallyReachable;
+      longestPrefix = prefix;
+    }
+  }
+  return decision;
+}
+
 function isBlockedV4(address: string, policy: DbEgressPolicy): boolean {
-  const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V4 : ALLOW_PRIVATE_V4;
-  return (
-    isMetadataV4(address) ||
-    ranges.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix))
-  );
+  if (isMetadataV4(address)) return true;
+  if (policy === 'block-private') return !ipv4IsGloballyReachable(address);
+  return ALLOW_PRIVATE_V4.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix));
 }
 
 function isBlockedV6(address: string, policy: DbEgressPolicy): boolean {
-  const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V6 : ALLOW_PRIVATE_V6;
-  return (
-    isMetadataV6(address) ||
-    matchesIpv6Prefix(address, '::', 128) ||
-    (policy === 'block-private' && matchesIpv6Prefix(address, '::1', 128)) ||
-    ranges.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix))
-  );
+  if (isMetadataV6(address) || matchesIpv6Prefix(address, '::', 128)) return true;
+  if (policy === 'block-private') return !ipv6IsGloballyReachable(address);
+  return ALLOW_PRIVATE_V6.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix));
 }
 
 /**

@@ -6,15 +6,13 @@
  * oauth_account profile exists yet). The OAuth callback then CREATES the
  * oauth_account profile, attaches it, and DOWNGRADES the connection to 'private'.
  * This drives the REAL callback route (connectRoutes GET /oauth/callback) against
- * a LOCAL fake OAuth provider (real HTTP round-trip for /token + /userinfo) — no
- * module mocking, so it is safe under this suite's shared module graph
+ * scoped fake public provider responses for /token + /userinfo — no module
+ * mocking, so it is safe under this suite's shared module graph
  * (vitest `isolate: false`). It covers the route wiring the SQL-invariant test in
  * connection-visibility-default.test.ts could not.
  */
 
-import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { connectRoutes } from '../../../connect/routes';
 import type { Env } from '../../../index';
 import { createConnectToken } from '../../../utils/connect-tokens';
@@ -29,48 +27,42 @@ import {
 
 const TEST_ENV = {} as Env;
 
-// biome-ignore lint/suspicious/noExplicitAny: node-server handle
-let providerServer: any;
-let providerTokenUrl = '';
-let providerUserinfoUrl = '';
+const PROVIDER_TOKEN_URL = 'https://oauth-provider.example.com/token';
+const PROVIDER_USERINFO_URL = 'https://oauth-provider.example.com/userinfo';
+const originalFetch = globalThis.fetch;
 
 describe('OAuth callback downgrades a fresh personal connection to private (e2e)', () => {
   beforeAll(async () => {
     await initWorkspaceProvider();
-    // Local fake OAuth provider: real HTTP endpoints the callback exchanges
-    // against (no module mocking — safe under isolate:false).
-    const provider = new Hono();
-    provider.post('/token', async (c) => {
-      const body = await c.req.parseBody();
-      const code = String(body.code ?? '');
-      const calendar = code === 'calendar-code';
-      return c.json({
-        access_token: 'fake-access-token-' + code,
-        refresh_token: 'fake-refresh-token-' + code,
-        expires_in: 3600,
-        scope: calendar
-          ? 'https://www.googleapis.com/auth/calendar.readonly'
-          : 'https://www.googleapis.com/auth/gmail.readonly',
-      });
-    });
-    provider.get('/userinfo', (c) =>
-      c.json({ email: 'owner@example.com', name: 'Owner D', id: 'acct-123' })
-    );
-    providerServer = await new Promise((resolve) => {
-      const s = serve({ fetch: provider.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
-        providerTokenUrl = `http://127.0.0.1:${info.port}/token`;
-        providerUserinfoUrl = `http://127.0.0.1:${info.port}/userinfo`;
-        resolve(s);
-      });
-    });
-  });
-
-  afterAll(() => {
-    providerServer?.close?.();
   });
 
   beforeEach(async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === PROVIDER_TOKEN_URL) {
+        const body = new URLSearchParams(typeof init?.body === 'string' ? init.body : '');
+        const code = body.get('code') ?? '';
+        const calendar = code === 'calendar-code';
+        return Response.json({
+          access_token: 'fake-access-token-' + code,
+          refresh_token: 'fake-refresh-token-' + code,
+          expires_in: 3600,
+          scope: calendar
+            ? 'https://www.googleapis.com/auth/calendar.readonly'
+            : 'https://www.googleapis.com/auth/gmail.readonly',
+        });
+      }
+      if (url === PROVIDER_USERINFO_URL) {
+        return Response.json({ email: 'owner@example.com', name: 'Owner D', id: 'acct-123' });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
     await cleanupTestDatabase();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
   });
 
   it('a fresh Gmail-style OAuth connect ends up private after the callback', async () => {
@@ -93,8 +85,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
             requiredScopes: ['read'],
             clientIdKey: 'CBOAUTH_CLIENT_ID',
             clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
-            tokenUrl: providerTokenUrl,
-            userinfoUrl: providerUserinfoUrl,
+            tokenUrl: PROVIDER_TOKEN_URL,
+            userinfoUrl: PROVIDER_USERINFO_URL,
           },
         ],
       },
@@ -111,7 +103,7 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
 
     // Connect token carrying pendingProfileMeta → the callback creates the
     // oauth_account profile and attaches it. tokenUrl/userinfoUrl point at the
-    // local fake so the real exchange succeeds.
+    // scoped public-provider stub so the real exchange succeeds.
     const tokenRow = await createConnectToken({
       connectionId: conn.id,
       organizationId: org.id,
@@ -122,8 +114,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
         provider: 'cboauth',
         clientIdKey: 'CBOAUTH_CLIENT_ID',
         clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
-        tokenUrl: providerTokenUrl,
-        userinfoUrl: providerUserinfoUrl,
+        tokenUrl: PROVIDER_TOKEN_URL,
+        userinfoUrl: PROVIDER_USERINFO_URL,
         requestedScopes: ['https://www.googleapis.com/auth/gmail.readonly'],
         pendingProfileMeta: {
           displayName: 'CB Account',
@@ -194,8 +186,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
               requiredScopes: [grant.scope],
               clientIdKey: 'CBOAUTH_CLIENT_ID',
               clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
-              tokenUrl: providerTokenUrl,
-              userinfoUrl: providerUserinfoUrl,
+              tokenUrl: PROVIDER_TOKEN_URL,
+              userinfoUrl: PROVIDER_USERINFO_URL,
             },
           ],
         },
@@ -223,8 +215,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
           provider: 'cboauth',
           clientIdKey: 'CBOAUTH_CLIENT_ID',
           clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
-          tokenUrl: providerTokenUrl,
-          userinfoUrl: providerUserinfoUrl,
+          tokenUrl: PROVIDER_TOKEN_URL,
+          userinfoUrl: PROVIDER_USERINFO_URL,
           requestedScopes: [grant.scope],
           pendingProfileMeta: {
             displayName: grant.connectorKey,
@@ -304,8 +296,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
             requiredScopes: [calendarScope],
             clientIdKey: 'CBOAUTH_CLIENT_ID',
             clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
-            tokenUrl: providerTokenUrl,
-            userinfoUrl: providerUserinfoUrl,
+            tokenUrl: PROVIDER_TOKEN_URL,
+            userinfoUrl: PROVIDER_USERINFO_URL,
           },
         ],
       },
@@ -365,8 +357,8 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
         provider: 'cboauth',
         clientIdKey: 'CBOAUTH_CLIENT_ID',
         clientSecretKey: 'CBOAUTH_CLIENT_SECRET',
-        tokenUrl: providerTokenUrl,
-        userinfoUrl: providerUserinfoUrl,
+        tokenUrl: PROVIDER_TOKEN_URL,
+        userinfoUrl: PROVIDER_USERINFO_URL,
         requestedScopes: [calendarScope],
       },
     });

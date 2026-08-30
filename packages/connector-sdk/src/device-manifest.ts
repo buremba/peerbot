@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 
 export type DeviceManifestSchema = Record<string, unknown>;
 
+/** Execution owner declared by a device-manifest wire artifact. */
+export type DeviceManifestExecution = 'bridge' | 'daemon_builtin';
+
 export interface DeviceConnectorManifest {
   key: string;
   version: string;
@@ -11,7 +14,7 @@ export interface DeviceConnectorManifest {
   required_capability: string;
   runtime: {
     platforms: string[];
-    execution?: 'bridge';
+    execution?: DeviceManifestExecution;
     scopes?: string[];
     nix?: { packages?: string[] } | null;
   };

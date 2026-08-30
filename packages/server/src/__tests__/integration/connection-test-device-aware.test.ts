@@ -15,6 +15,7 @@ import { manageConnections } from "../../tools/admin/manage_connections";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
 import { createAuthProfile } from "../../utils/auth-profiles";
+import { deviceManifestHash, type DeviceConnectorManifest } from "../../worker-api/device-manifests";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestConnection,
@@ -107,6 +108,62 @@ describe("connections.test device availability", () => {
 		expect(result.device_online).toBe(false);
 		expect(result.retryable).toBe(true);
 		expect(String(result.message)).toMatch(/offline/i);
+	});
+
+	it("reports an online legacy headless shell as backend unavailable", async () => {
+		const sql = getTestDb();
+		const key = "os.shell";
+		const version = "0.1.0";
+		await createTestConnectorDefinition({
+			key,
+			name: "Shell",
+			version,
+			organization_id: orgId,
+			auth_schema: { methods: [{ type: "none" }] },
+		});
+		await sql`
+			UPDATE connector_definitions
+			SET runtime = ${sql.json({ platforms: ["headless"] })},
+			    required_capability = 'os.shell'
+			WHERE organization_id = ${orgId} AND key = ${key}
+		`;
+		const manifest = {
+			key,
+			version,
+			name: "Shell",
+			required_capability: "os.shell",
+			runtime: { platforms: ["headless"] },
+			auth_schema: { methods: [{ type: "none" }] },
+			feeds_schema: {},
+			actions_schema: { run: { key: "run", name: "Run" } },
+		};
+		const manifestHash = deviceManifestHash(manifest as DeviceConnectorManifest);
+		const [device] = (await sql`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, capabilities, connector_manifests,
+				label, organization_id, last_seen_at
+			) VALUES (
+				${userId}, ${`headless-${Date.now()}`}, 'headless', ${sql.json(["os.shell"])},
+				${sql.json({
+					[key]: { manifest, manifest_hash: manifestHash, received_at: new Date().toISOString() },
+				})},
+				'Legacy Headless', ${orgId}, NOW()
+			)
+			RETURNING id
+		`) as unknown as Array<{ id: string }>;
+		const conn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: key,
+			created_by: userId,
+			createDefaultFeed: false,
+		});
+		await sql`UPDATE connections SET device_worker_id = ${device.id}::uuid WHERE id = ${conn.id}`;
+
+		const result = await test(conn.id);
+		expect(result.status).toBe("warning");
+		expect(result.device_online).toBe(true);
+		expect(result.error_code).toBe("UPSTREAM_UNAVAILABLE");
+		expect(String(result.message)).toMatch(/does not declare a supported execution backend/i);
 	});
 
 	it("does not let valid OAuth credentials mask an offline selected device", async () => {

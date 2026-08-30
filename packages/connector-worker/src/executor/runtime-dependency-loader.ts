@@ -37,7 +37,7 @@ type NextResolve = (
 let runtimeAnchorUrl: string | undefined;
 let registered = false;
 
-function isRuntimeDependency(specifier: string): boolean {
+export function isConnectorRuntimeDependency(specifier: string): boolean {
   return RUNTIME_DEPENDENCY_ROOTS.some(
     (root) => specifier === root || specifier.startsWith(`${root}/`)
   );
@@ -65,7 +65,7 @@ export async function resolve(
   context: ResolveContext,
   nextResolve: NextResolve
 ): Promise<ResolveResult> {
-  if (!runtimeAnchorUrl || !isRuntimeDependency(specifier)) {
+  if (!runtimeAnchorUrl || !isConnectorRuntimeDependency(specifier)) {
     return nextResolve(specifier, context);
   }
   return nextResolve(specifier, {

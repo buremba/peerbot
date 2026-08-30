@@ -101,7 +101,6 @@ describe('SubprocessExecutor (source-mode, Bun runtime)', () => {
   test('uses Bun for child-runner.ts inside a nix-shell wrapper', async () => {
     const fakeBin = await mkdtemp(join(tmpdir(), 'lobu-fake-nix-shell-'));
     const fakeNixShell = join(fakeBin, 'nix-shell');
-    const originalPath = process.env.PATH;
     await writeFile(
       fakeNixShell,
       `#!/bin/sh
@@ -118,19 +117,47 @@ exit 2
       { mode: 0o755 }
     );
     await chmod(fakeNixShell, 0o755);
-    process.env.PATH = `${fakeBin}:${originalPath ?? ''}`;
+
+    // Run in a clean process whose PATH is fixed before subprocess.ts is
+    // imported. hasNixShell() deliberately memoizes its production probe;
+    // mutating this test runner's process-global PATH could otherwise inherit a
+    // cached "missing" result from another test file on a Nix-less CI host.
+    const subprocessUrl = new URL('../src/executor/subprocess.ts', import.meta.url).href;
+    const probe = `
+      const { SubprocessExecutor } = await import(${JSON.stringify(subprocessUrl)});
+      try {
+        const result = await new SubprocessExecutor({
+          timeoutMs: 30_000,
+          maxOldSpaceSize: 256
+        }).execute(
+          ${JSON.stringify(compiled(`return { events: [], checkpoint: null };`))},
+          ${JSON.stringify(BASE_JOB)},
+          undefined,
+          { nixPackages: ['curl'] }
+        );
+        process.exit(result.mode === 'sync' ? 0 : 2);
+      } catch (error) {
+        console.error(error instanceof Error ? error.stack : String(error));
+        process.exit(1);
+      }
+    `;
 
     try {
-      const executor = new SubprocessExecutor({ timeoutMs: 30_000, maxOldSpaceSize: 256 });
-      const result = await executor.execute(
-        compiled(`return { events: [], checkpoint: null };`),
-        BASE_JOB,
-        undefined,
-        { nixPackages: ['curl'] }
-      );
-      expect(result.mode).toBe('sync');
+      const probeProcess = Bun.spawn([process.execPath, '--eval', probe], {
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const [exitCode, stdout, stderr] = await Promise.all([
+        probeProcess.exited,
+        new Response(probeProcess.stdout).text(),
+        new Response(probeProcess.stderr).text(),
+      ]);
+      expect(exitCode, `${stdout}\n${stderr}`).toBe(0);
     } finally {
-      process.env.PATH = originalPath;
       await rm(fakeBin, { recursive: true, force: true });
     }
   });

@@ -6,11 +6,13 @@
  * authenticate() using the V1 SDK shapes directly — no magic-key adapter.
  */
 
-import { randomBytes } from 'node:crypto';
-import { rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { mkdir, symlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { EventEnvelope, SyncResult } from '@lobu/connector-sdk';
+import { RUNTIME_PROVIDED_PACKAGES } from '../runtime-deps.js';
 import { extractHttpStatus } from './http-status.js';
 import type { ExecutorJob, ExecutorResult } from './interface.js';
 
@@ -19,6 +21,69 @@ const EVENT_CHUNK_SIZE = 100;
 interface ChildMessage {
   compiledCode: string;
   job: ExecutorJob;
+}
+
+const requireFromRunner = createRequire(import.meta.url);
+
+/**
+ * Find a package root from the worker installation, not from process.cwd().
+ * Workspace packages resolve through symlinks outside node_modules, while npm
+ * aliases such as `playwright` -> `patchright` have a different package name,
+ * so accept either the declared name or a node_modules directory boundary.
+ */
+function resolveRuntimePackageRoot(packageName: string): string | null {
+  let entry: string;
+  try {
+    entry = requireFromRunner.resolve(packageName);
+  } catch {
+    return null;
+  }
+
+  let dir = dirname(entry);
+  for (let depth = 0; depth < 30; depth++) {
+    const packageJsonPath = join(dir, 'package.json');
+    if (existsSync(packageJsonPath)) {
+      const parent = dirname(dir);
+      const underNodeModules =
+        basename(parent) === 'node_modules' ||
+        (basename(parent).startsWith('@') && basename(dirname(parent)) === 'node_modules');
+      if (underNodeModules) return dir;
+      try {
+        const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as {
+          name?: string;
+        };
+        if (packageJson.name === packageName) return dir;
+      } catch {
+        // Keep walking; the package may have another package.json above it.
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * Bare ESM imports resolve from the compiled module's directory. Connector
+ * bundles run under a daemon-controlled temp directory, which may be nowhere
+ * near the worker installation (for example a device daemon launched from
+ * /device). Stage links to the worker-owned runtime packages so resolution is
+ * independent of the daemon's cwd. ESM ignores NODE_PATH, hence filesystem
+ * links rather than an environment override.
+ */
+async function stageRuntimeProvidedPackages(runtimeDir: string): Promise<void> {
+  for (const packageName of RUNTIME_PROVIDED_PACKAGES) {
+    const packageRoot = resolveRuntimePackageRoot(packageName);
+    if (!packageRoot) {
+      throw new Error(
+        `Connector runtime dependency '${packageName}' is not installed with @lobu/connector-worker.`
+      );
+    }
+    const linkPath = join(runtimeDir, 'node_modules', packageName);
+    await mkdir(dirname(linkPath), { recursive: true });
+    await symlink(packageRoot, linkPath, 'junction');
+  }
 }
 
 /**
@@ -441,21 +506,70 @@ function installUncaughtHandlers(): void {
   });
 }
 
+/** Resolve only the exact private directory shape created by SubprocessExecutor. */
+function parentOwnedRuntimeDir(): string | null {
+  const rawRuntimeDir = process.argv[2];
+  if (!rawRuntimeDir) return null;
+  const runtimeDir = resolve(rawRuntimeDir);
+  const runtimeDirName = basename(runtimeDir);
+  if (
+    dirname(runtimeDir) !== resolve(process.cwd()) ||
+    !/^\.connector-child-\d+-[A-Za-z0-9]+$/.test(runtimeDirName)
+  ) {
+    return null;
+  }
+  return runtimeDir;
+}
+
 /**
- * If the parent dies without sending SIGKILL, the IPC channel disconnects
- * but the child keeps running connector code (especially a chatty HTTP loop
- * or a Playwright session) — leaving zombie subprocesses behind that nothing
- * cleans up until OOM. Exit promptly on parent disconnect so the OS reaps us.
+ * Build one best-effort, idempotent cleanup operation for every child exit
+ * path we can observe. The parent remains authoritative for SIGKILL and
+ * connector code that calls process.exit() before our finally block runs.
  */
-function installParentDeathHandlers(): void {
-  // Best-effort: don't bother flushing IPC, the channel is already gone.
-  // Exit code 143 = 128 + SIGTERM, conventional for "killed externally".
-  process.on('disconnect', () => process.exit(143));
+function createRuntimeDirCleanup(): () => void {
+  // Capture the validated path before connector code can call process.chdir()
+  // or mutate argv. The strict basename + original-cwd boundary prevents this
+  // emergency cleanup path from becoming a general recursive-delete primitive.
+  const runtimeDir = parentOwnedRuntimeDir();
+  let removed = false;
+  return () => {
+    if (!runtimeDir || removed) return;
+    try {
+      rmSync(runtimeDir, { recursive: true, force: true });
+      removed = true;
+    } catch {
+      // Parent cleanup may be racing us, or the filesystem may already be
+      // unavailable during shutdown. This path is deliberately best-effort.
+    }
+  };
+}
+
+/**
+ * If the parent dies, or a supervisor signals the whole process group, clean
+ * before exiting. A group SIGTERM/SIGINT can reach parent and child before IPC
+ * disconnect is delivered, so disconnect handling alone is insufficient.
+ */
+function installLifecycleHandlers(cleanupRuntimeDir: () => void): void {
+  process.on('disconnect', () => {
+    cleanupRuntimeDir();
+    // 143 = 128 + SIGTERM, conventional for "parent disappeared".
+    process.exit(143);
+  });
+
+  process.once('SIGTERM', () => {
+    cleanupRuntimeDir();
+    process.exit(143);
+  });
+  process.once('SIGINT', () => {
+    cleanupRuntimeDir();
+    process.exit(130);
+  });
 }
 
 async function main() {
+  const cleanupRuntimeDir = createRuntimeDirCleanup();
   installUncaughtHandlers();
-  installParentDeathHandlers();
+  installLifecycleHandlers(cleanupRuntimeDir);
   let started = false;
   // Wait for message from parent
   process.on('message', async (msg: any) => {
@@ -498,19 +612,15 @@ async function main() {
     if (started) return;
     started = true;
 
-    // Keep temp module under cwd so bare imports (e.g. lobu) resolve via local node_modules.
-    // Use a cryptographically random suffix (not pid+Date.now()) so a co-tenant
-    // can't pre-create or guess the path. Combined with the `wx` open flag below
-    // this prevents both symlink-swap (pointing tmpFile at another file the
-    // worker can write) and pre-creation of a malicious .mjs that the worker
-    // would otherwise overwrite then import.
-    const tmpFile = join(
-      process.cwd(),
-      `.connector-child-${process.pid}-${randomBytes(16).toString('hex')}.mjs`
-    );
-
     try {
       const { compiledCode, job } = msg as ChildMessage;
+      // The parent creates and owns cleanup for this private directory. Parent
+      // ownership is load-bearing: connector code can call process.exit(), so a
+      // child finally block cannot guarantee artifact cleanup.
+      const runtimeDir = process.argv[2];
+      if (!runtimeDir) throw new Error('Connector child started without a runtime directory.');
+      await stageRuntimeProvidedPackages(runtimeDir);
+      const tmpFile = join(runtimeDir, 'connector.mjs');
 
       // Write compiled code to temp file for dynamic import.
       // - `flag: 'wx'` fails if the file already exists (no symlink follow,
@@ -542,7 +652,7 @@ async function main() {
         const pkg = pkgMatch?.[1] ?? 'unknown';
         error.message =
           `Connector requires '${pkg}' but it's not installed in the runtime image. ` +
-          `'${pkg}' is declared as an external dependency in EXTERNAL_RUNTIME_DEPS ` +
+          `'${pkg}' is declared as a runtime-provided dependency in RUNTIME_PROVIDED_PACKAGES ` +
           `(packages/connector-worker/src/runtime-deps.ts). ` +
           `Add it to packages/connector-worker/package.json and rebuild the runtime image.`;
       }
@@ -558,14 +668,9 @@ async function main() {
         },
       });
     } finally {
-      // Clean up temp file
-      try {
-        await rm(tmpFile, { force: true });
-      } catch {
-        // Ignore cleanup errors
-      }
-
-      // Exit after sending result
+      // Normal completion is child-cleanable. The parent still owns the same
+      // idempotent cleanup for process.exit(), SIGKILL, and native crashes.
+      cleanupRuntimeDir();
       process.exit(0);
     }
   });

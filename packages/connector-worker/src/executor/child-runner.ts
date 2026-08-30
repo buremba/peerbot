@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { EventEnvelope, SyncResult } from '@lobu/connector-sdk';
 import { extractHttpStatus } from './http-status.js';
+import { registerConnectorRuntimeDependencyLoader } from './runtime-dependency-loader.js';
 import type { ExecutorJob, ExecutorResult } from './interface.js';
 
 const EVENT_CHUNK_SIZE = 100;
@@ -520,6 +521,11 @@ async function main() {
       //   process memory referenced by the bundle) unreadable by other
       //   local users on shared hosts. Umask cannot widen this.
       await writeFile(tmpFile, compiledCode, { encoding: 'utf-8', flag: 'wx', mode: 0o600 });
+
+      // Rebase runtime-provided bare imports (SDK, native deps, Playwright)
+      // to connector-worker's installation before loading code staged under
+      // an arbitrary operator cwd.
+      registerConnectorRuntimeDependencyLoader();
 
       // Import the compiled module
       const mod = await import(pathToFileURL(tmpFile).href);

@@ -2,7 +2,7 @@ import type { Context, Next } from "hono";
 import { getDb } from "../db/client.js";
 import { verifySettingsToken } from "../gateway/routes/public/settings-auth.js";
 import { mcpAuth } from "../auth/middleware.js";
-import { getCachedOrgBySlug } from "../workspace/multi-tenant.js";
+import { getOrgBySlug } from "../workspace/multi-tenant.js";
 
 /**
  * Auth for the SSE invalidation stream (`GET /api/:orgSlug/events`).
@@ -24,7 +24,7 @@ export async function invalidationSseAuth(c: Context, next: Next) {
     const session = await verifySettingsToken(ticket);
     const orgSlug = c.req.param("orgSlug");
     if (session?.userId && orgSlug) {
-      const org = await getCachedOrgBySlug(orgSlug);
+      const org = await getOrgBySlug(orgSlug);
       if (org) {
         const rows = await getDb()`
           SELECT role FROM "member"

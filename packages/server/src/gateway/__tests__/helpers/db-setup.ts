@@ -24,7 +24,6 @@ import {
   closeTestDb,
   setupTestDatabase,
 } from "../../../__tests__/setup/test-db.js";
-import { invalidateMembershipRoleCache } from "../../../workspace/multi-tenant.js";
 
 let initPromise: Promise<void> | null = null;
 let backend: EmbeddedBackend | null = null;
@@ -142,11 +141,7 @@ export async function seedAgentRow(
   return orgId;
 }
 
-/**
- * Seed a `member` row (and the `user` it references) for an org, then drop the
- * membership-role cache entry so the next `getCachedMembershipRole` reads it.
- * Without that invalidation a role seeded after a prior lookup stays invisible.
- */
+/** Seed a `member` row (and the `user` it references) for an org. */
 export async function seedOrgMembership(
   organizationId: string,
   userId: string,
@@ -163,7 +158,6 @@ export async function seedOrgMembership(
     VALUES (${`m-${organizationId}-${userId}`}, ${organizationId}, ${userId}, ${role}, now())
     ON CONFLICT (id) DO NOTHING
   `;
-  invalidateMembershipRoleCache(organizationId, userId);
 }
 
 /**

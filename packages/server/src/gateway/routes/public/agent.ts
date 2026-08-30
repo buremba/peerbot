@@ -23,8 +23,8 @@ import {
 } from "../shared/define-route.js";
 import { getDb, parsePgTextArray } from "../../../db/client.js";
 import {
-  getCachedMembershipRole,
-  getCachedOrgBySlug,
+  getMembershipRole,
+  getOrgBySlug,
 } from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
@@ -843,7 +843,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // ownership checks against this org (a non-member is denied).
     const workspaceOrgSlug = c.req.header("x-lobu-org");
     const workspaceScopedOrgId = workspaceOrgSlug
-      ? (await getCachedOrgBySlug(workspaceOrgSlug))?.id
+      ? (await getOrgBySlug(workspaceOrgSlug))?.id
       : undefined;
 
     // Authorize via the shared helper (per-user ownership + auth-method
@@ -1010,7 +1010,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       access.kind === "membership"
         ? access.memberRole
         : access.callerUserId && tokenOrganizationId
-          ? await getCachedMembershipRole(
+          ? await getMembershipRole(
               tokenOrganizationId,
               access.callerUserId,
             )

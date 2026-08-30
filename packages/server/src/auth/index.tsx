@@ -381,10 +381,6 @@ export async function createAuth(
 								image: user.image ?? undefined,
 								role: member.role,
 							});
-							const { invalidateMembershipRoleCache } = await import(
-								"../workspace/multi-tenant"
-							);
-							invalidateMembershipRoleCache(org.id, user.id);
 							recordLifecycleEvent({
 								organizationId: org.id,
 								entityType: "member",
@@ -465,10 +461,6 @@ export async function createAuth(
 								role: member.role,
 								status: "active",
 							});
-							const { invalidateMembershipRoleCache } = await import(
-								"../workspace/multi-tenant"
-							);
-							invalidateMembershipRoleCache(org.id, user.id);
 						} catch (err) {
 							// See afterAddMember: a swallow here leaves the accepted
 							// member without a resolvable claim → enforced channels
@@ -507,10 +499,6 @@ export async function createAuth(
 								entityId: user.id,
 								summary: `Member "${user.name || 'a member'}" removed`,
 							});
-							const { invalidateMembershipRoleCache } = await import(
-								"../workspace/multi-tenant"
-							);
-							invalidateMembershipRoleCache(org.id, user.id);
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to clean up $member entity after removeMember:",
@@ -544,10 +532,6 @@ export async function createAuth(
 								role: member.role,
 								status: "active",
 							});
-							const { invalidateMembershipRoleCache } = await import(
-								"../workspace/multi-tenant"
-							);
-							invalidateMembershipRoleCache(org.id, user.id);
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to update $member entity after updateMemberRole:",

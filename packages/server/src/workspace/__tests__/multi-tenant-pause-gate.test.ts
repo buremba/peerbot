@@ -82,11 +82,6 @@ beforeEach(async () => {
     ON CONFLICT (id) DO NOTHING
   `;
 
-  // Both caches are module-level and survive resetTestDatabase, so a prior
-  // test's slug→id and org:user→role entries would outlive the rows.
-  const { clearMultiTenantCachesForTests } = await import('../multi-tenant-caches.js');
-  clearMultiTenantCachesForTests();
-
   const { PersonalAccessTokenService } = await import('../../auth/tokens.js');
   token = (await new PersonalAccessTokenService(sql).create(USER, ORG, 'pause-wiring')).token;
 
@@ -194,9 +189,9 @@ async function request(opts: {
 }
 
 describe('promotions pause is enforced in the auth funnel', () => {
-  test('org slug lookups cache both directions and invalidate together', async () => {
+  test('org slug lookups read renamed workspace state immediately', async () => {
     const { getDb } = await import('../../db/client.js');
-    const { invalidateOrgSlugCache, MultiTenantProvider } = await import('../multi-tenant.js');
+    const { MultiTenantProvider } = await import('../multi-tenant.js');
     const sql = getDb();
     const provider = new MultiTenantProvider();
 
@@ -210,9 +205,46 @@ describe('promotions pause is enforced in the auth funnel', () => {
 
     const renamed = `${ORG}-renamed`;
     await sql`UPDATE organization SET slug = ${renamed} WHERE id = ${ORG}`;
-    expect(await provider.getOrgSlug(ORG)).toBe(ORG);
-    invalidateOrgSlugCache(ORG);
     expect(await provider.getOrgSlug(ORG)).toBe(renamed);
+    expect(await provider.getOrgSlugs([ORG, OTHER_ORG])).toEqual(
+      new Map([
+        [ORG, renamed],
+        [OTHER_ORG, OTHER_ORG],
+      ])
+    );
+  });
+
+  test('session membership revocation takes effect on the next request', async () => {
+    expect(await request({ method: 'GET', auth: 'session' })).toMatchObject({
+      status: 200,
+      reached: true,
+    });
+
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`
+      DELETE FROM "member"
+      WHERE "organizationId" = ${ORG} AND "userId" = ${USER}
+    `;
+
+    expect(await request({ method: 'GET', auth: 'session' })).toMatchObject({
+      status: 403,
+      reached: false,
+    });
+  });
+
+  test('session revocation takes effect on the next request', async () => {
+    expect(await request({ method: 'GET', auth: 'session' })).toMatchObject({
+      status: 200,
+      reached: true,
+    });
+
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`DELETE FROM "session" WHERE id = 'pause-wiring-session'`;
+
+    expect(await request({ method: 'GET', auth: 'session' })).toMatchObject({
+      status: 401,
+      reached: false,
+    });
   });
 
   test('a paused org refuses an apply-run mutation before the handler runs', async () => {

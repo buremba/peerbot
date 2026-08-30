@@ -62,6 +62,11 @@ function runShellCommand(
     const child = spawn('bash', ['-lc', command], {
       cwd: opts.cwd || undefined,
       env: { ...process.env, LC_ALL: 'C' },
+      // Give the command its own process group. Killing only the `bash`
+      // process leaves background descendants alive with stdout/stderr open,
+      // so a timed-out run can otherwise stay pending until those descendants
+      // eventually exit.
+      detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -69,9 +74,48 @@ function runShellCommand(
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let timedOut = false;
+    let settled = false;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
-    if (opts.stdin) child.stdin.write(opts.stdin);
-    child.stdin.end();
+    const killProcessGroup = (signal: NodeJS.Signals): void => {
+      try {
+        if (child.pid != null) {
+          process.kill(-child.pid, signal);
+          return;
+        }
+      } catch {
+        // The group may already be gone, or the host may not support negative
+        // process ids. `child.kill` is the safe best-effort fallback.
+      }
+      try {
+        child.kill(signal);
+      } catch {
+        // Exit raced the timeout. `close` still owns final settlement.
+      }
+    };
+
+    const finish = (output: RunOutput): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      resolve(output);
+    };
+
+    // A command is allowed to exit without reading stdin. Node reports that
+    // normal pipe race as EPIPE; without an error listener it becomes an
+    // uncaught exception and takes down the long-lived connector daemon.
+    child.stdin.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EPIPE') {
+        stderr = appendCapped(
+          stderr,
+          `${stderr ? '\n' : ''}stdin error: ${err.message}`,
+          stderrTruncated
+        );
+        if (stderr.includes(TRUNCATED_MARKER)) stderrTruncated = true;
+      }
+    });
+    child.stdin.end(opts.stdin);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -85,17 +129,16 @@ function runShellCommand(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      killProcessGroup('SIGTERM');
+      forceKillTimer = setTimeout(() => {
+        if (!settled) killProcessGroup('SIGKILL');
       }, SIGTERM_GRACE_MS);
     }, opts.timeoutMs);
 
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
       const durationMs = Date.now() - started;
       const exitCode = code ?? (signal ? -1 : 0);
-      resolve({
+      finish({
         stdout,
         stderr,
         exit_code: exitCode,
@@ -106,8 +149,7 @@ function runShellCommand(
     });
 
     child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({
+      finish({
         stdout,
         stderr: `${stderr}${stderr ? '\n' : ''}spawn error: ${err.message}`,
         exit_code: -1,

@@ -2,8 +2,12 @@
  * os.shell connector - runs commands and returns structured output.
  */
 
-import { describe, expect, it } from 'bun:test';
-import OsShellConnector from '../os_shell.js';
+import { describe, expect, it, mock } from 'bun:test';
+import { connectorSdkMock } from './connector-sdk.mock';
+
+mock.module('@lobu/connector-sdk', () => connectorSdkMock());
+
+const { default: OsShellConnector } = await import('../os_shell.js');
 
 function runContext(actionKey: string, input: Record<string, unknown>) {
   return {
@@ -40,12 +44,31 @@ describe('os.shell connector', () => {
   });
 
   it('respects timeout_ms and reports timed_out', async () => {
+    const started = Date.now();
     const result = await connector.execute(
-      runContext('run', { command: 'sleep 10', timeout_ms: 300 })
+      runContext('run', {
+        // The background child keeps the shell's output pipes open. Killing
+        // only bash would make this call take the full five seconds.
+        command: 'sleep 5 & wait',
+        timeout_ms: 300,
+      })
     );
     expect(result.success).toBe(false);
     const output = result.output as Record<string, unknown>;
     expect(output.timed_out).toBe(true);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  it('does not crash when a command exits without consuming stdin', async () => {
+    const result = await connector.execute(
+      runContext('run', {
+        command: 'exit 0',
+        stdin: 'x'.repeat(1000000),
+      })
+    );
+    expect(result.success).toBe(true);
+    const output = result.output as Record<string, unknown>;
+    expect(output.exit_code).toBe(0);
   });
 
   it('rejects an unknown action', async () => {

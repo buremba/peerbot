@@ -29,6 +29,8 @@ import { loginCommand } from "./login.js";
 
 export interface DaemonOptions {
   apiUrl?: string;
+  /** Exact installed CLI version advertised to the gateway. */
+  cliVersion?: string;
   workerId?: string;
   platform?: string;
   capabilities?: string;
@@ -257,6 +259,7 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
 
   await startDaemonCommand({
     apiUrl: target.gatewayOrigin,
+    version: options.cliVersion,
     platform: sessionLane ? "headless" : requestedPlatform,
     defaultPlatform,
     workerId,

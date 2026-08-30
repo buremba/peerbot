@@ -357,8 +357,8 @@ function assertPublicDnsAnswers(
 
 /**
  * Resolve the complete answer set before selecting an address. Selecting a
- * public answer while silently ignoring a private sibling would make behavior
- * depend on resolver ordering and leave a rebinding path open.
+ * public answer while silently ignoring a private sibling would let resolver
+ * ordering determine the result and leave a rebinding path open.
  */
 type ResolveAllAddresses = (hostname: string) => Promise<LookupAddress[]>;
 

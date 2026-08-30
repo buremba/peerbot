@@ -41,7 +41,11 @@ describe('OAuth callback downgrades a fresh personal connection to private (e2e)
       const url =
         typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       if (url === PROVIDER_TOKEN_URL) {
-        const body = new URLSearchParams(typeof init?.body === 'string' ? init.body : '');
+        const rawBody = init?.body;
+        if (!(typeof rawBody === 'string' || rawBody instanceof URLSearchParams)) {
+          throw new TypeError('Expected an OAuth form body');
+        }
+        const body = new URLSearchParams(rawBody);
         const code = body.get('code') ?? '';
         const calendar = code === 'calendar-code';
         return Response.json({

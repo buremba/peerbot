@@ -1,6 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { LookupAddress } from "node:dns";
-import { __ssrfGuardTestOnly } from "../proxy/ssrf-guard.js";
+import {
+  __ssrfGuardTestOnly,
+  fetchCredentialedPublicUrl,
+  parseCredentialedHttpsUrl,
+} from "../proxy/ssrf-guard.js";
+
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 describe("public URL transport boundary", () => {
   test("returns the exact validated DNS answer to the socket lookup", async () => {
@@ -71,5 +81,62 @@ describe("public URL transport boundary", () => {
     expect(forwarded).toBe(options);
     expect(forwarded?.hostname).toBe("api.example.com");
     expect(forwarded?.servername).toBe("api.example.com");
+  });
+
+  test("parses HTTPS credential destinations without changing their components", () => {
+    const parsed = parseCredentialedHttpsUrl(
+      "HTTPS://api.example.com:8443/token?audience=mcp#ignored"
+    );
+    expect(parsed.protocol).toBe("https:");
+    expect(parsed.hostname).toBe("api.example.com");
+    expect(parsed.port).toBe("8443");
+    expect(parsed.pathname).toBe("/token");
+    expect(parsed.search).toBe("?audience=mcp");
+    expect(
+      parseCredentialedHttpsUrl(new URL("https://api.example.com/refresh")).href
+    ).toBe("https://api.example.com/refresh");
+  });
+
+  test("rejects invalid, relative, plaintext, and non-HTTP credential destinations", () => {
+    for (const value of [
+      "not a URL",
+      "/relative/token",
+      "http://api.example.com/token",
+      "ftp://api.example.com/token",
+      "javascript:alert(1)",
+    ]) {
+      expect(() => parseCredentialedHttpsUrl(value)).toThrow();
+    }
+  });
+
+  test("rejects plaintext credentials before global fetch", async () => {
+    let fetched = false;
+    globalThis.fetch = (async () => {
+      fetched = true;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    await expect(
+      fetchCredentialedPublicUrl("http://api.example.com/token", {
+        headers: { Authorization: "Bearer secret" },
+      })
+    ).rejects.toThrow(/require HTTPS/i);
+    expect(fetched).toBe(false);
+  });
+
+  test("disables automatic redirects for credential-bearing requests", async () => {
+    let redirectMode: RequestRedirect | undefined;
+    globalThis.fetch = (async (_input, init) => {
+      redirectMode = init?.redirect;
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    await fetchCredentialedPublicUrl("https://api.example.com/token");
+    expect(redirectMode).toBe("error");
+    await expect(
+      fetchCredentialedPublicUrl("https://api.example.com/token", {
+        redirect: "follow",
+      })
+    ).rejects.toThrow(/cannot automatically follow redirects/i);
   });
 });

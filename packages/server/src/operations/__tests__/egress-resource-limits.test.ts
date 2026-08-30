@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { __connectorOperationsTestOnly } from "../connector-operations";
 import { __httpOperationTestOnly } from "../execute-http-operation";
 
@@ -89,6 +89,21 @@ describe("OpenAPI discovery resource limits", () => {
 });
 
 describe("HTTP operation response limits", () => {
+	test("refuses HTTP before an action bearer token reaches fetch", async () => {
+		const networkFetch = vi.fn(
+			async () => new Response(null, { status: 204 })
+		);
+		globalThis.fetch = networkFetch as typeof fetch;
+
+		await expect(
+			__httpOperationTestOnly.fetchAuthenticatedHttpOperation(
+				"http://actions.example.com/run",
+				{ headers: { Authorization: "Bearer secret" } }
+			)
+		).rejects.toThrow(/require HTTPS/i);
+		expect(networkFetch).not.toHaveBeenCalled();
+	});
+
 	test("rejects and cancels a declared oversized action response", async () => {
 		const tracked = cancellableBody();
 		const response = new Response(tracked.body, {

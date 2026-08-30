@@ -1,6 +1,6 @@
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../db/client";
-import { fetchPublicUrl } from "../gateway/proxy/ssrf-guard";
+import { fetchCredentialedPublicUrl } from "../gateway/proxy/ssrf-guard";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
 import { readResponseTextWithLimit } from "../utils/bounded-response";
 import { stripNul, stripNulDeep } from "../utils/strip-nul";
@@ -132,7 +132,15 @@ async function readHttpOperationResponse(response: Response): Promise<string> {
 	);
 }
 
+function fetchAuthenticatedHttpOperation(
+	url: string | URL,
+	init: RequestInit,
+): Promise<Response> {
+	return fetchCredentialedPublicUrl(url, init);
+}
+
 export const __httpOperationTestOnly = {
+	fetchAuthenticatedHttpOperation,
 	MAX_HTTP_OPERATION_RESPONSE_BYTES,
 	readHttpOperationResponse,
 	requestAbortSignal,
@@ -215,7 +223,7 @@ export async function executeHttpOperation(
 		let response: Response;
 		let text: string;
 		try {
-			response = await fetchPublicUrl(url, {
+			response = await fetchAuthenticatedHttpOperation(url, {
 				method: operation.backend_config.method,
 				headers,
 				body: ["GET", "HEAD"].includes(operation.backend_config.method)

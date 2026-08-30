@@ -6,7 +6,7 @@
  */
 
 import logger from '../utils/logger';
-import { fetchPublicUrl } from '../gateway/proxy/ssrf-guard';
+import { fetchCredentialedPublicUrl } from '../gateway/proxy/ssrf-guard';
 import { cancelResponseBody } from '../utils/bounded-response';
 import {
   readConnectorOAuthResponse,
@@ -231,7 +231,7 @@ export async function exchangeCodeForTokens(params: {
     // first-party OAuth transport: pin public DNS and reject redirects so an
     // authorization code or client_secret body cannot be replayed elsewhere.
     const result = await withConnectorOAuthDeadline(async (signal) => {
-      const response = await fetchPublicUrl(config.tokenUrl!, {
+      const response = await fetchCredentialedPublicUrl(config.tokenUrl!, {
         method: 'POST',
         headers,
         body,
@@ -306,7 +306,7 @@ async function fetchRawUserInfo(params: {
     // userinfoUrl may also come from a connector definition and this request
     // carries a bearer token, so redirects are never credential-safe.
     const rawData = await withConnectorOAuthDeadline(async (signal) => {
-      const response = await fetchPublicUrl(config.userinfoUrl!, {
+      const response = await fetchCredentialedPublicUrl(config.userinfoUrl!, {
         headers,
         redirect: 'error',
         signal,

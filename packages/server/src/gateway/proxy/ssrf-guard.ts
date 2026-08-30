@@ -497,6 +497,39 @@ export async function fetchPublicUrl(
 }
 
 /**
+ * Parse a credential-bearing destination and require transport encryption.
+ * This is intentionally narrower than {@link fetchPublicUrl}: unauthenticated
+ * public HTTP remains supported, but authorization codes, client secrets,
+ * refresh tokens, and bearer tokens must never be sent over plaintext HTTP.
+ */
+export function parseCredentialedHttpsUrl(input: string | URL): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(input instanceof URL ? input.href : input);
+  } catch {
+    throw new Error("Credential-bearing request URL is invalid");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("Credential-bearing requests require HTTPS");
+  }
+  return parsed;
+}
+
+/** Apply the HTTPS credential policy before entering the public URL transport. */
+export async function fetchCredentialedPublicUrl(
+  input: string | URL,
+  init: RequestInit = {}
+): Promise<Response> {
+  if (init.redirect === "follow") {
+    throw new Error("Credential-bearing requests cannot automatically follow redirects");
+  }
+  return fetchPublicUrl(parseCredentialedHttpsUrl(input), {
+    ...init,
+    redirect: init.redirect ?? "error",
+  });
+}
+
+/**
  * Resolve a URL's hostname and check whether it points to an internal/reserved
  * network. Returns true (blocked) when URL parsing fails.
  */

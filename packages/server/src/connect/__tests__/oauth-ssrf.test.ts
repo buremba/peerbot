@@ -69,6 +69,34 @@ describe('connector OAuth credential-request egress', () => {
     expect(networkFetch).not.toHaveBeenCalled();
   });
 
+  it('refuses plaintext HTTP before token, refresh, or userinfo credentials reach fetch', async () => {
+    const networkFetch = vi.fn(async () => {
+      throw new Error('plaintext credential request reached global fetch');
+    });
+    globalThis.fetch = networkFetch as typeof fetch;
+
+    await expect(exchange('http://oauth.example.com/token')).resolves.toBeNull();
+
+    const credentials = new CredentialService({} as never);
+    await expect(
+      credentials.refreshTokenGeneric({
+        tokenUrl: 'http://oauth.example.com/refresh',
+        clientId: 'client-id',
+        clientSecret: 'client-secret',
+        refreshToken: 'refresh-token',
+      })
+    ).resolves.toBeNull();
+
+    await expect(
+      fetchUserInfoWithRaw({
+        provider: 'connector-oauth',
+        accessToken: 'access-token',
+        userinfoUrl: 'http://oauth.example.com/userinfo',
+      })
+    ).resolves.toEqual({ raw: null, normalized: null });
+    expect(networkFetch).not.toHaveBeenCalled();
+  });
+
   it('fails closed when a token hostname has mixed public/private DNS answers', async () => {
     vi.spyOn(dns, 'lookup').mockResolvedValue([
       { address: '8.8.8.8', family: 4 },

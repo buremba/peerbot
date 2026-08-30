@@ -6,7 +6,7 @@
  */
 
 import type { DbClient } from '../db/client';
-import { fetchPublicUrl } from '../gateway/proxy/ssrf-guard';
+import { fetchCredentialedPublicUrl } from '../gateway/proxy/ssrf-guard';
 import {
   readConnectorOAuthResponse,
   withConnectorOAuthDeadline,
@@ -248,7 +248,7 @@ export class CredentialService {
       // connector OAuth metadata, not the operator-trusted gateway login
       // provider configuration. Pin its DNS and never redirect credentials.
       const result = await withConnectorOAuthDeadline(async (signal) => {
-        const response = await fetchPublicUrl(params.tokenUrl, {
+        const response = await fetchCredentialedPublicUrl(params.tokenUrl, {
           method: 'POST',
           headers,
           body,

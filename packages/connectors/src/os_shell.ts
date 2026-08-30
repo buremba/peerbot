@@ -38,6 +38,13 @@ interface RunOutput {
 const MAX_TIMEOUT_MS = 300000;
 const DEFAULT_TIMEOUT_MS = 60000;
 const SIGTERM_GRACE_MS = 3000;
+// The outer shell remains the live process-group owner until Node's grace
+// timer fires, so its numeric pgid cannot be recycled before SIGKILL. The
+// inner login shell and command still receive SIGTERM normally.
+const SHELL_GROUP_ANCHOR = `trap 'sleep 4' TERM
+bash -lc "$1"
+status=$?
+exit "$status"`;
 // Cap captured output so a chatty command cannot balloon daemon memory.
 // Streams keep draining (the child must not block on a full pipe), but
 // anything past the cap is dropped with a truncation marker.
@@ -59,7 +66,7 @@ function runShellCommand(
 ): Promise<RunOutput> {
   const started = Date.now();
   return new Promise((resolve) => {
-    const child = spawn('bash', ['-lc', command], {
+    const child = spawn('bash', ['-c', SHELL_GROUP_ANCHOR, 'lobu-os-shell', command], {
       cwd: opts.cwd || undefined,
       env: { ...process.env, LC_ALL: 'C' },
       // Give the command its own process group. Killing only the `bash`
@@ -76,16 +83,6 @@ function runShellCommand(
     let timedOut = false;
     let settled = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const processGroupExists = (): boolean => {
-      if (child.pid == null) return false;
-      try {
-        process.kill(-child.pid, 0);
-        return true;
-      } catch (err) {
-        return (err as NodeJS.ErrnoException).code !== 'ESRCH';
-      }
-    };
 
     const killProcessGroup = (signal: NodeJS.Signals): void => {
       try {
@@ -108,13 +105,7 @@ function runShellCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      // A redirected descendant can keep running after the shell leader closes,
-      // so preserve the grace timer while that detached process group exists.
-      // If SIGTERM already emptied the group, cancel it to avoid holding the
-      // daemon event loop open for an unnecessary three seconds.
-      if (forceKillTimer && (!timedOut || !processGroupExists())) {
-        clearTimeout(forceKillTimer);
-      }
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       resolve(output);
     };
 
@@ -147,9 +138,7 @@ function runShellCommand(
       timedOut = true;
       killProcessGroup('SIGTERM');
       forceKillTimer = setTimeout(() => {
-        // `close` only proves the shell leader and its owned pipes closed. A
-        // redirected descendant may still exist in the detached group.
-        killProcessGroup('SIGKILL');
+        if (!settled) killProcessGroup('SIGKILL');
       }, SIGTERM_GRACE_MS);
     }, opts.timeoutMs);
 

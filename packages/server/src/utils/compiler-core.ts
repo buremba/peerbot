@@ -291,30 +291,40 @@ export async function extractMetadata<TMetadata>(
 
       let resolved = false;
       let stderrOutput = '';
+      let deadline: ReturnType<typeof setTimeout> | null = null;
+
+      const settle = (fn: () => void): void => {
+        if (resolved) return;
+        resolved = true;
+        if (deadline) {
+          clearTimeout(deadline);
+          deadline = null;
+        }
+        fn();
+      };
 
       child.stderr?.on('data', (chunk: Buffer) => {
         stderrOutput += chunk.toString();
       });
 
       child.on('message', (msg: any) => {
-        resolved = true;
-        if (msg.success) {
-          resolve(msg.metadata);
-        } else {
-          reject(new Error(formatMetadataExtractionError(String(msg.error))));
-        }
+        settle(() => {
+          if (msg.success) {
+            resolve(msg.metadata);
+          } else {
+            reject(new Error(formatMetadataExtractionError(String(msg.error))));
+          }
+        });
       });
 
       child.on('error', (err) => {
-        if (!resolved) {
-          resolved = true;
+        settle(() => {
           reject(new Error(`Metadata extraction subprocess error: ${err.message}`));
-        }
+        });
       });
 
       child.on('exit', (code) => {
-        if (!resolved) {
-          resolved = true;
+        settle(() => {
           const stderr = stderrOutput.trim();
           reject(
             new Error(
@@ -323,15 +333,14 @@ export async function extractMetadata<TMetadata>(
                 : `Metadata extraction subprocess exited with code ${code}`
             )
           );
-        }
+        });
       });
 
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
+      deadline = setTimeout(() => {
+        settle(() => {
           child.kill('SIGKILL');
           reject(new Error('Metadata extraction timed out after 30s'));
-        }
+        });
       }, 30000);
     });
 

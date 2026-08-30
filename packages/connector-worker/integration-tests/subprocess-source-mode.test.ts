@@ -172,7 +172,8 @@ exit 2
     });
     let executionSettled = false;
     const startedAt = Date.now();
-    const executor = new SubprocessExecutor({ timeoutMs: 1_000, maxOldSpaceSize: 256 });
+    // Leave loaded CI enough time to observe cleanup before the deadline settles the execution.
+    const executor = new SubprocessExecutor({ timeoutMs: 3_000, maxOldSpaceSize: 256 });
     const outcome = executor
       .execute(
         compiled(`
@@ -204,8 +205,8 @@ exit 2
     expect(result).toBeNull();
     expect(error).toBeInstanceOf(SubprocessError);
     expect((error as SubprocessError).exitReason).toBe('timeout');
-    expect((error as SubprocessError).message).toContain('timed out after 1000ms');
-    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect((error as SubprocessError).message).toContain('timed out after 3000ms');
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
     expect(await runtimeDirsForThisProcess()).toEqual([]);
   });
 

@@ -3,7 +3,6 @@ import { getDb } from '../db/client';
 import { ensureMemberEntity } from '../utils/member-entity';
 import { recordWorkspaceChangeEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
-import { invalidateMembershipRoleCache } from './multi-tenant';
 
 type JoinPublicResult =
   | { status: 'joined' | 'already_member'; organizationId: string; role: string }
@@ -19,9 +18,9 @@ interface JoinPublicParams {
  * Self-serve join for a public organization. Used by the REST /join endpoint.
  * Idempotent.
  *
- * Replicates the side effects of Better Auth's afterAddMember hook
- * (ensureMemberEntity + invalidateMembershipRoleCache) since Better Auth's
- * addMember API is admin-gated and can't be used for self-service.
+ * Replicates the durable member-entity side effect of Better Auth's
+ * afterAddMember hook since Better Auth's addMember API is admin-gated and
+ * can't be used for self-service.
  */
 export async function joinPublicOrganization({
   userId,
@@ -80,7 +79,6 @@ export async function joinPublicOrganization({
         '[joinPublicOrganization] Failed to create $member entity',
       );
     }
-    invalidateMembershipRoleCache(organizationId, userId);
   }
 
   const existing = await sql<{ id: string; role: string }>`

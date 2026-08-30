@@ -34,7 +34,6 @@ import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { getDb } from "../../db/client.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import { invalidateMembershipRoleCache } from "../../workspace/multi-tenant.js";
 import { buildApiConversationId } from "../services/api-conversation-id.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
@@ -185,8 +184,6 @@ describe("POST /api/v1/agents — org member using an agent they don't own", () 
     await seedOrgMembership(AGENT_ORG, ADMIN_ID, "admin");
     await seedOrgMembership(OUTSIDER_ORG, OUTSIDER_ID, "owner");
     await seedOrgMembership(OUTSIDER_ORG, MEMBER_ID, "member");
-    // The outsider must not be a member of the agent's org.
-    invalidateMembershipRoleCache(AGENT_ORG, OUTSIDER_ID);
   }, 60_000);
 
   afterEach(() => {

@@ -144,7 +144,6 @@ import {
 import { getRuntimeInfo } from "./utils/runtime-info";
 import { getWorkspaceProvider } from "./workspace";
 import { joinPublicOrganization } from "./workspace/join-public";
-import { invalidateOrgSlugCache } from "./workspace/multi-tenant";
 
 export type { Env };
 
@@ -2244,8 +2243,6 @@ app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {
 		return c.json({ error: "not_found", message: "Workspace not found." }, 404);
 	}
 
-	invalidateOrgSlugCache(c.req.param("orgSlug"));
-	invalidateOrgSlugCache(org.slug);
 	invalidationEmitter.emit(org.id, {
 		keys: ["organizations", "resolve-path"],
 	});

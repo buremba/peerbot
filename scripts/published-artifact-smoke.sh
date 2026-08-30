@@ -69,7 +69,11 @@ note() { echo ""; echo "== $* =="; }
 MOCK_PID=""
 RUN_PID=""
 cleanup() {
-  [ -n "$RUN_PID" ] && kill -9 "$RUN_PID" 2>/dev/null || true
+  if [ -n "$RUN_PID" ]; then
+    # Let `lobu run` forward SIGTERM and stop its embedded Postgres before
+    # forcing and reaping the exact tracked process down.
+    lobu_terminate_child "$RUN_PID"
+  fi
   [ -n "$MOCK_PID" ] && kill -9 "$MOCK_PID" 2>/dev/null || true
   lobu_kill_listening_port "$GW_PORT"
   lobu_kill_listening_port "$MOCK_PORT"
@@ -197,7 +201,7 @@ if grep -qi "is valid" "$WORK/validate.log"; then pass "lobu validate"; else fai
 
 note "lobu run (embedded Postgres + pgvector on THIS glibc, as THIS uid)"
 RUN_LOG="$WORK/run.log"
-( cd "$PROJ" && "$LOBU_BIN" run --port "$GW_PORT" > "$RUN_LOG" 2>&1 ) &
+( cd "$PROJ" && exec "$LOBU_BIN" run --port "$GW_PORT" > "$RUN_LOG" 2>&1 ) &
 RUN_PID=$!
 for _ in $(seq 1 180); do
   grep -qiE "Apply complete|auto-apply skipped|Apply halted" "$RUN_LOG" 2>/dev/null && break

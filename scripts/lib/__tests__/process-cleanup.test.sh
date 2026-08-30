@@ -59,4 +59,45 @@ if kill -0 "$listener_pid" 2>/dev/null; then
 fi
 listener_pid=""
 
+grep -Fq '&& exec "$LOBU_BIN" run --port "$GW_PORT"' \
+  "$ROOT/scripts/published-artifact-smoke.sh" || \
+  fail "published smoke does not track the actual lobu run process"
+
+saw_force_kill=false
+kill() {
+  [[ "${1:-}" = "-9" ]] && saw_force_kill=true
+  builtin kill "$@"
+}
+
+ready_fifo="$fake_bin/term-responsive-ready"
+term_marker="$fake_bin/term-responsive-seen"
+mkfifo "$ready_fifo"
+bash -c 'trap '\''printf "TERM\n" > "$2"; exit 0'\'' TERM; printf "ready\n" > "$1"; while :; do sleep 0.05; done' _ "$ready_fifo" "$term_marker" &
+listener_pid=$!
+IFS= read -r ready < "$ready_fifo"
+[[ "$ready" = "ready" ]] || fail "TERM-responsive child did not become ready"
+lobu_terminate_child "$listener_pid"
+if kill -0 "$listener_pid" 2>/dev/null; then
+  fail "TERM-responsive child survived cleanup"
+fi
+[[ -f "$term_marker" ]] || fail "TERM-responsive child did not observe SIGTERM"
+$saw_force_kill && fail "TERM-responsive child received unnecessary SIGKILL"
+listener_pid=""
+
+# Confirm the bounded SIGKILL fallback too. The FIFO handshake guarantees its
+# ignored-SIGTERM disposition is installed before cleanup starts.
+ready_fifo="$fake_bin/term-ignorer-ready"
+mkfifo "$ready_fifo"
+bash -c 'trap "" TERM; printf "ready\n" > "$1"; exec sleep 30' _ "$ready_fifo" &
+listener_pid=$!
+IFS= read -r ready < "$ready_fifo"
+[[ "$ready" = "ready" ]] || fail "TERM-ignoring child did not become ready"
+saw_force_kill=false
+lobu_terminate_child "$listener_pid" 1
+if kill -0 "$listener_pid" 2>/dev/null; then
+  fail "TERM-ignoring child survived forced cleanup"
+fi
+$saw_force_kill || fail "TERM-ignoring child did not receive SIGKILL fallback"
+listener_pid=""
+
 echo "OK process cleanup tests"

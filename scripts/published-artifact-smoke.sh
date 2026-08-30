@@ -50,6 +50,8 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HARNESS="$REPO_ROOT/scripts/sdk-e2e"
+# shellcheck source=scripts/lib/process-cleanup.sh
+. "$REPO_ROOT/scripts/lib/process-cleanup.sh"
 LOBU_VERSION="${1:-${LOBU_VERSION:-latest}}"
 GW_PORT="${GW_PORT:-8799}"
 MOCK_PORT="${MOCK_PORT:-11439}"
@@ -65,9 +67,12 @@ fail() { echo "  [FAIL] $*" >&2; FAILS=$((FAILS + 1)); }
 note() { echo ""; echo "== $* =="; }
 
 MOCK_PID=""
+RUN_PID=""
 cleanup() {
-  [ -n "$MOCK_PID" ] && kill -9 "$MOCK_PID" 2>/dev/null
-  pkill -f "lobu-artifact-smoke.*run" 2>/dev/null
+  [ -n "$RUN_PID" ] && kill -9 "$RUN_PID" 2>/dev/null || true
+  [ -n "$MOCK_PID" ] && kill -9 "$MOCK_PID" 2>/dev/null || true
+  lobu_kill_listening_port "$GW_PORT"
+  lobu_kill_listening_port "$MOCK_PORT"
   return 0
 }
 trap cleanup EXIT
@@ -193,6 +198,7 @@ if grep -qi "is valid" "$WORK/validate.log"; then pass "lobu validate"; else fai
 note "lobu run (embedded Postgres + pgvector on THIS glibc, as THIS uid)"
 RUN_LOG="$WORK/run.log"
 ( cd "$PROJ" && "$LOBU_BIN" run --port "$GW_PORT" > "$RUN_LOG" 2>&1 ) &
+RUN_PID=$!
 for _ in $(seq 1 180); do
   grep -qiE "Apply complete|auto-apply skipped|Apply halted" "$RUN_LOG" 2>/dev/null && break
   sleep 1

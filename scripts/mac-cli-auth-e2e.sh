@@ -7,6 +7,8 @@ set -uo pipefail
 WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOBU_BIN="$WT/packages/cli/bin/lobu.js"
 HARNESS="$WT/scripts/sdk-e2e"
+# shellcheck source=scripts/lib/process-cleanup.sh
+. "$WT/scripts/lib/process-cleanup.sh"
 GW_PORT="${GW_PORT:-8798}"
 MOCK_PORT="${MOCK_PORT:-11438}"
 MOCK_REPLY="MAC_CLI_AUTH_E2E_OK"
@@ -24,8 +26,8 @@ export HOME="$RUN_DIR/home"
 MOCK_PID=""
 cleanup() {
   [ -n "$MOCK_PID" ] && kill -9 "$MOCK_PID" 2>/dev/null || true
-  lsof -nP -iTCP:"$GW_PORT" -sTCP:LISTEN -t 2>/dev/null | xargs kill -9 2>/dev/null || true
-  lsof -nP -iTCP:"$MOCK_PORT" -sTCP:LISTEN -t 2>/dev/null | xargs kill -9 2>/dev/null || true
+  lobu_kill_listening_port "$GW_PORT"
+  lobu_kill_listening_port "$MOCK_PORT"
 }
 trap cleanup EXIT
 

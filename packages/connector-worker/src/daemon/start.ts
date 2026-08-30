@@ -10,6 +10,7 @@ import { hostname } from 'node:os';
 import { isKnownPlatform } from '@lobu/core';
 import { assertExternalDepsResolvable } from '../compile/index.js';
 import { buildConnectorWorkerEnv } from '../env.js';
+import { assertConnectorRuntimeLoadable } from '../self-check/index.js';
 import { DEVICE_MANIFESTS_BY_PLATFORM } from './device-manifests.js';
 import { startDaemon, type WorkerDaemon } from './index.js';
 import { log, setDebug } from './log.js';
@@ -153,8 +154,10 @@ export async function startDaemonCommand(
   const workerId = resolveDaemonWorkerId(opts, platform, shortHostname, detected);
   const label = opts.label ?? (platform ? shortHostname : undefined);
 
-  // Crash loud at boot if the runtime image is missing a connector dep.
+  // Crash loud before the first poll if the installed runtime cannot resolve
+  // or execute the same connector graph this worker is about to advertise.
   assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
+  await assertConnectorRuntimeLoadable();
   log.info(`[cli] Starting worker daemon (ID: ${workerId}, API: ${opts.apiUrl})`);
   const env = buildConnectorWorkerEnv();
   const maxConcurrentJobs = process.env.WORKER_MAX_CONCURRENT_JOBS

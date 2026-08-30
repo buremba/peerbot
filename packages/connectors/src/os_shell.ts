@@ -77,6 +77,16 @@ function runShellCommand(
     let settled = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
+    const processGroupExists = (): boolean => {
+      if (child.pid == null) return false;
+      try {
+        process.kill(-child.pid, 0);
+        return true;
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+      }
+    };
+
     const killProcessGroup = (signal: NodeJS.Signals): void => {
       try {
         if (child.pid != null) {
@@ -98,7 +108,13 @@ function runShellCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
+      // A redirected descendant can keep running after the shell leader closes,
+      // so preserve the grace timer while that detached process group exists.
+      // If SIGTERM already emptied the group, cancel it to avoid holding the
+      // daemon event loop open for an unnecessary three seconds.
+      if (forceKillTimer && (!timedOut || !processGroupExists())) {
+        clearTimeout(forceKillTimer);
+      }
       resolve(output);
     };
 
@@ -131,7 +147,9 @@ function runShellCommand(
       timedOut = true;
       killProcessGroup('SIGTERM');
       forceKillTimer = setTimeout(() => {
-        if (!settled) killProcessGroup('SIGKILL');
+        // `close` only proves the shell leader and its owned pipes closed. A
+        // redirected descendant may still exist in the detached group.
+        killProcessGroup('SIGKILL');
       }, SIGTERM_GRACE_MS);
     }, opts.timeoutMs);
 

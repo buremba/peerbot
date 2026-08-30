@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, it, mock } from 'bun:test';
+import { kill } from 'node:process';
 import { connectorSdkMock } from './connector-sdk.mock';
 
 mock.module('@lobu/connector-sdk', () => connectorSdkMock());
@@ -69,6 +70,31 @@ describe('os.shell connector', () => {
     expect(result.success).toBe(true);
     const output = result.output as Record<string, unknown>;
     expect(output.exit_code).toBe(0);
+  });
+
+  it('force-kills redirected descendants after the shell leader closes', async () => {
+    const result = await connector.execute(
+      runContext('run', {
+        // Print the detached process-group id, then leave a descendant that
+        // ignores SIGTERM and owns no shell pipes. The shell leader can close
+        // immediately, but the grace timer must still SIGKILL this group.
+        command: `echo $$; bash -c 'trap "" TERM; sleep 10' >/dev/null 2>&1 & wait`,
+        timeout_ms: 300,
+      })
+    );
+    const output = result.output as Record<string, unknown>;
+    const processGroupId = Number(String(output.stdout).trim());
+    expect(output.timed_out).toBe(true);
+    expect(Number.isInteger(processGroupId)).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 3300));
+    let exists = true;
+    try {
+      kill(-processGroupId, 0);
+    } catch (err) {
+      exists = (err as NodeJS.ErrnoException).code !== 'ESRCH';
+    }
+    expect(exists).toBe(false);
   });
 
   it('rejects an unknown action', async () => {

@@ -82,3 +82,96 @@ describe("RunsQueue construction", () => {
     }
   });
 });
+
+describe("RunsQueue worker registration", () => {
+  test("re-registering a queue preserves its single active handler", async () => {
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://test:test@localhost:5432/test";
+    const queue = new RunsQueue();
+    if (previousDatabaseUrl !== undefined) {
+      process.env.DATABASE_URL = previousDatabaseUrl;
+    } else {
+      delete process.env.DATABASE_URL;
+    }
+
+    const claimed = [
+      {
+        runId: 1,
+        payload: { turn: 1 },
+        attempts: 0,
+        maxAttempts: 3,
+        retryDelaySeconds: null,
+      },
+      {
+        runId: 2,
+        payload: { turn: 2 },
+        attempts: 0,
+        maxAttempts: 3,
+        retryDelaySeconds: null,
+      },
+    ];
+    let releaseFirst: (() => void) | null = null;
+    let signalFirstStarted: (() => void) | null = null;
+    let signalSecondStarted: (() => void) | null = null;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirstStarted = resolve;
+    });
+    const secondStarted = new Promise<void>((resolve) => {
+      signalSecondStarted = resolve;
+    });
+    let activeHandlers = 0;
+    let maxActiveHandlers = 0;
+
+    // Keep this a unit test: drive the production worker loop with deterministic
+    // claims while replacing only the database-facing seams.
+    (queue as any).isConnected = true;
+    (queue as any).ensureChannelListened = async () => undefined;
+    (queue as any).claimOne = async () => claimed.shift() ?? null;
+    (queue as any).heartbeatClaim = async () => undefined;
+    (queue as any).markCompleted = async () => undefined;
+
+    const firstHandler = async () => {
+      activeHandlers += 1;
+      maxActiveHandlers = Math.max(maxActiveHandlers, activeHandlers);
+      signalFirstStarted?.();
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      activeHandlers -= 1;
+    };
+    const replacementHandler = async () => {
+      activeHandlers += 1;
+      maxActiveHandlers = Math.max(maxActiveHandlers, activeHandlers);
+      signalSecondStarted?.();
+      activeHandlers -= 1;
+    };
+
+    try {
+      await queue.work("same-conversation", firstHandler);
+      await firstStarted;
+
+      // Worker SSE reconnects call work() again for the same deployment. The
+      // replacement may update future delivery behavior, but it must not start
+      // a second claim loop alongside the turn already in flight.
+      await queue.work("same-conversation", replacementHandler);
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(maxActiveHandlers).toBe(1);
+
+      releaseFirst?.();
+      await Promise.race([
+        secondStarted,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("second turn was not processed")), 500)
+        ),
+      ]);
+      expect(maxActiveHandlers).toBe(1);
+    } finally {
+      releaseFirst?.();
+      for (const worker of (queue as any).workers.values()) {
+        worker.stopped = true;
+        worker.wakeup();
+      }
+      (queue as any).workers.clear();
+    }
+  });
+});

@@ -443,13 +443,21 @@ export class RunsQueue implements IMessageQueue {
       throw new Error("RunsQueue is shutting down; refusing new work");
     }
 
-    // Replace any existing worker for this queue.
+    // Re-register in place. Worker SSE reconnects call work() again for the
+    // same deployment queue; replacing the QueueWorker used to stop its poll
+    // loop but left an already-running handler alive, then immediately started
+    // a second loop with active=0. That let the next conversation turn run
+    // concurrently and out of order with the first. Updating the single
+    // worker preserves its active count and serialization boundary while
+    // swapping the handler used by future claims.
     const existing = this.workers.get(queueName);
     if (existing) {
-      existing.stopped = true;
-      this.removeFromChannelIndex(existing);
+      existing.handler = handler as JobHandler<unknown>;
+      existing.concurrency = DEFAULT_WORKER_CONCURRENCY;
+      existing.paused = options?.startPaused ?? false;
       existing.wakeup();
-      this.workers.delete(queueName);
+      await this.ensureChannelListened(notifyChannelFor(queueName));
+      return;
     }
 
     const runType = classifyQueue(queueName);
@@ -784,14 +792,6 @@ export class RunsQueue implements IMessageQueue {
       attempt,
       delaySeconds: delay,
     });
-  }
-
-  private removeFromChannelIndex(worker: QueueWorker): void {
-    const channel = notifyChannelFor(worker.queueName);
-    const set = this.subscribersByChannel.get(channel);
-    if (!set) return;
-    set.delete(worker);
-    if (set.size === 0) this.subscribersByChannel.delete(channel);
   }
 
   /**

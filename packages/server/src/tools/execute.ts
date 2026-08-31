@@ -93,8 +93,9 @@ export interface AuthContext {
   /**
    * Per-turn LIMIT on which tools may execute admin-tier actions. Carried on
    * the worker token (see
-   * WorkerTokenData.adminTools); empty/null for everyone else (no limit —
-   * role × scope decide). Non-admin-tier actions are unaffected.
+   * WorkerTokenData.adminTools); worker/agent/Automation identities must carry
+   * a non-empty allowlist, while human callers remain governed by role × scope.
+   * Non-admin-tier actions are unaffected.
    */
   adminTools?: string[] | null;
   /**
@@ -250,18 +251,19 @@ export function checkToolAccess(
     : authCtx.memberRole;
   const requiredAccess = getRequiredAccessLevel(toolName, args, isReadOnly);
 
-  // Admin-tools run: the per-turn allowlist is a LIMIT on which
-  // tools may exercise ADMIN-tier actions. Read/write-tier actions follow the
-  // uniform role × scope model like every other caller.
+  // Worker/agent/Automation runs must carry a non-empty signed allowlist for
+  // ADMIN-tier actions. Read/write-tier actions follow the uniform role ×
+  // scope model like every other caller; human callers remain role × scope
+  // governed even when they have no allowlist.
+  const isNonHumanIdentity = Boolean(authCtx.agentId || authCtx.actingAutomationId);
   const adminAllowlist = authCtx.adminTools;
   if (
     requiredAccess === 'admin' &&
-    adminAllowlist &&
-    adminAllowlist.length > 0 &&
-    !adminAllowlist.includes(toolName)
+    isNonHumanIdentity &&
+    (!adminAllowlist || adminAllowlist.length === 0 || !adminAllowlist.includes(toolName))
   ) {
     throw new Error(
-      `This agent run may not perform admin actions with ${toolName}. Allowed admin tools: ${adminAllowlist.join(', ')}.`
+      `This agent run may not perform admin actions with ${toolName}. Allowed admin tools: ${(adminAllowlist ?? []).join(', ')}.`
     );
   }
 

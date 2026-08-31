@@ -583,6 +583,7 @@ describe('checkToolAccess', () => {
   it('adminTools allowlist limits ADMIN-tier actions to listed tools only', () => {
     const adminToolsAuth = {
       ...baseAuth,
+      agentId: 'agent_123',
       memberRole: 'owner',
       scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
       adminTools: ['manage_agents'],
@@ -596,6 +597,63 @@ describe('checkToolAccess', () => {
     // Read/write-tier actions on unlisted tools follow the uniform model.
     expect(() =>
       checkToolAccess('manage_classifiers', { action: 'list' }, adminToolsAuth)
+    ).not.toThrow();
+  });
+
+  it('requires a non-empty exact adminTools allowlist for agent identities', () => {
+    const agentAuth = {
+      ...baseAuth,
+      agentId: 'agent_123',
+      memberRole: 'owner',
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+    };
+
+    expect(() => checkToolAccess('manage_agents', { action: 'update' }, agentAuth)).toThrow(
+      /may not perform admin actions/
+    );
+    expect(() =>
+      checkToolAccess('manage_agents', { action: 'update' }, { ...agentAuth, adminTools: [] })
+    ).toThrow(/may not perform admin actions/);
+    expect(() =>
+      checkToolAccess('manage_agents', { action: 'update' }, {
+        ...agentAuth,
+        adminTools: ['manage_agents'],
+      })
+    ).not.toThrow();
+    expect(() =>
+      checkToolAccess('manage_classifiers', { action: 'delete' }, {
+        ...agentAuth,
+        adminTools: ['manage_agents'],
+      })
+    ).toThrow(/may not perform admin actions/);
+  });
+
+  it('keeps agent read/write access unchanged and does not let Automation identity bypass the allowlist', () => {
+    const agentAuth = {
+      ...baseAuth,
+      agentId: 'agent_123',
+      memberRole: 'owner',
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+    };
+    expect(() => checkToolAccess('manage_entity', { action: 'list' }, agentAuth)).not.toThrow();
+    expect(() => checkToolAccess('manage_entity', { action: 'create' }, agentAuth)).not.toThrow();
+    expect(() =>
+      checkToolAccess('manage_entity', { action: 'delete' }, {
+        ...agentAuth,
+        agentId: null,
+        actingAutomationId: 157,
+      })
+    ).toThrow(/may not perform admin actions/);
+  });
+
+  it('keeps human owner/admin callers without agent identity governed by role and scope', () => {
+    expect(() =>
+      checkToolAccess('manage_entity', { action: 'delete' }, {
+        ...baseAuth,
+        memberRole: 'owner',
+        scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+        adminTools: null,
+      })
     ).not.toThrow();
   });
 

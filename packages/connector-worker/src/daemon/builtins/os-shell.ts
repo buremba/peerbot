@@ -40,7 +40,21 @@ function readTimeout(value: unknown): number {
   return Number(value);
 }
 
-export async function runShellBuiltin(input: Record<string, unknown>): Promise<ShellRunOutput> {
+function shellEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: process.env.HOME ?? homedir(),
+    TMPDIR: process.env.TMPDIR ?? '/tmp',
+    LANG: 'C',
+    LC_ALL: 'C',
+  };
+  return env;
+}
+
+export async function runShellBuiltin(
+  input: Record<string, unknown>,
+  shutdownSignal?: AbortSignal
+): Promise<ShellRunOutput> {
   const command = typeof input.command === 'string' ? input.command.trim() : '';
   if (!command) throw new Error('command is required');
   if (command.length > 20_000) throw new Error('command must contain at most 20000 characters');
@@ -61,7 +75,7 @@ export async function runShellBuiltin(input: Record<string, unknown>): Promise<S
   return await new Promise<ShellRunOutput>((resolve) => {
     const child = spawn('bash', ['-c', SHELL_GROUP_ANCHOR, 'lobu-os-shell', command], {
       cwd,
-      env: { ...process.env, LC_ALL: 'C' },
+      env: shellEnvironment(),
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -89,11 +103,26 @@ export async function runShellBuiltin(input: Record<string, unknown>): Promise<S
       }
     };
 
+    const abortHandler = () => {
+      killOwnedProcessGroup('SIGTERM');
+      forceKillTimer = setTimeout(() => {
+        if (settled) return;
+        killOwnedProcessGroup('SIGKILL');
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish(child.exitCode ?? -1);
+      }, TERMINATION_GRACE_MS);
+    };
+    if (shutdownSignal?.aborted) abortHandler();
+    else shutdownSignal?.addEventListener('abort', abortHandler, { once: true });
+
     const finish = (exitCode: number): void => {
       if (settled) return;
       settled = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (forceKillTimer) clearTimeout(forceKillTimer);
+      shutdownSignal?.removeEventListener('abort', abortHandler);
       resolve({
         stdout,
         stderr,

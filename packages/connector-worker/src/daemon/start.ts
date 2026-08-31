@@ -154,10 +154,13 @@ export async function startDaemonCommand(
   const workerId = resolveDaemonWorkerId(opts, platform, shortHostname, detected);
   const label = opts.label ?? (platform ? shortHostname : undefined);
 
-  // Crash loud before the first poll if the installed runtime cannot resolve
-  // or execute the same connector graph this worker is about to advertise.
-  assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
-  await assertConnectorRuntimeLoadable();
+  // Recovery daemons own their built-in control plane. They must still boot and
+  // advertise os.shell when the optional connector SDK/compiler graph is broken;
+  // compiled connector capacity remains closed by the poll/executor backend gate.
+  if (platform !== 'headless') {
+    assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
+    await assertConnectorRuntimeLoadable();
+  }
   log.info(`[cli] Starting worker daemon (ID: ${workerId}, API: ${opts.apiUrl})`);
   const env = buildConnectorWorkerEnv();
   const maxConcurrentJobs = process.env.WORKER_MAX_CONCURRENT_JOBS

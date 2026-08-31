@@ -68,15 +68,11 @@ export class WorkerDaemon {
     });
 
     this.env = env;
-    this.shutdownController = interactiveSession
-      ? new AbortController()
-      : undefined;
+    this.shutdownController = new AbortController();
     const executor = {
       timeoutMs: DEFAULT_EXECUTOR_TIMEOUT_MS,
       ...(daemonConfig.executor ?? {}),
-      ...(this.shutdownController
-        ? { shutdownSignal: this.shutdownController.signal }
-        : {}),
+      shutdownSignal: this.shutdownController.signal,
     };
     if (interactiveSession) attachInteractiveSession(executor, interactiveSession);
     this.config = {

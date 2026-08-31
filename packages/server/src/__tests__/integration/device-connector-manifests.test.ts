@@ -656,7 +656,7 @@ describe('device connector manifests', () => {
     );
   });
 
-  it('keeps a persisted pre-operations bridge manifest authorized and scheduled', async () => {
+  it('keeps a persisted pre-operations bridge manifest as inventory but not claim authority', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const sql = getTestDb();
     const currentManifest = manifest({
@@ -731,10 +731,9 @@ describe('device connector manifests', () => {
     const claimResponse = await pollPersistedInventory(1);
     expect(claimResponse.status).toBe(200);
     const body = (await claimResponse.json()) as Record<string, unknown>;
-    expect(body.connector_key).toBe(CONNECTOR_KEY);
-    expect(body.feed_key).toBe('snapshots');
-    expect(body.execution_backend).toBe('native_bridge');
-    expect(body.connector_manifest_hash).toBe(legacyHash);
+    expect(body.connector_key).toBeUndefined();
+    expect(body.execution_backend).toBeUndefined();
+    expect(body.error).toContain('not authorized');
   });
 
   it('reconciles a same-version compiled artifact back to manifest-only poll payload', async () => {

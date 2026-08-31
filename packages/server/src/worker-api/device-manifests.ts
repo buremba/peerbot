@@ -376,7 +376,7 @@ export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
         capabilities,
         manifests: [stored.manifest],
       },
-      true
+      false
     );
     const validated = validation.manifests[0];
     if (!validation.accepted || !validated || validated.manifest_hash !== stored.manifest_hash) {

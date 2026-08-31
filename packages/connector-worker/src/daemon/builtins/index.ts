@@ -13,6 +13,7 @@ export async function executeDaemonBuiltin(params: {
   connectorKey: string;
   actionKey: string;
   input: Record<string, unknown>;
+  shutdownSignal?: AbortSignal;
 }): Promise<DaemonBuiltinResult> {
   if (params.connectorKey !== 'os.shell' || params.actionKey !== 'run') {
     return {
@@ -23,7 +24,7 @@ export async function executeDaemonBuiltin(params: {
   }
 
   try {
-    const output = await runShellBuiltin(params.input);
+    const output = await runShellBuiltin(params.input, params.shutdownSignal);
     if (!output.success) {
       return {
         ok: false,

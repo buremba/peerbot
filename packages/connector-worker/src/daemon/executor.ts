@@ -607,6 +607,7 @@ async function executeDaemonBuiltinActionRun(
       connectorKey: connector_key,
       actionKey: action_key,
       input: (action_input ?? {}) as Record<string, unknown>,
+      shutdownSignal: cfg.shutdownSignal,
     });
     if (!result.ok) {
       const message = `${result.code}: ${result.error}`;

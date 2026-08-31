@@ -28,6 +28,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createAuthorizationIntent } from '../../../auth/oauth/authorization-intent';
 import { hashToken } from '../../../auth/oauth/utils';
 import type { Env } from '../../../index';
 import { oauthRoutes } from '../../../auth/oauth/routes';
@@ -222,6 +223,18 @@ describe('Stage 1 — login token carries connections:token', () => {
         code_challenge: challenge,
         code_challenge_method: 'S256',
         resource: `${ORIGIN}/mcp/${org.slug}`,
+        authorization_intent: createAuthorizationIntent(
+          {
+            client_id: client.client_id,
+            redirect_uri: redirectUri,
+            response_type: 'code',
+            scope: fullScope,
+            code_challenge: challenge,
+            code_challenge_method: 'S256',
+            resource: `${ORIGIN}/mcp/${org.slug}`,
+          },
+          TEST_ENV.JWT_SECRET as string
+        ),
         approved: true,
       },
       headers: { Cookie: session.cookieHeader },

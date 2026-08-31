@@ -19,6 +19,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
+import { createAuthorizationIntent } from '../../../auth/oauth/authorization-intent';
 import { OAuthProvider } from '../../../auth/oauth/provider';
 import { oauthRoutes } from '../../../auth/oauth/routes';
 import { hashToken } from '../../../auth/oauth/utils';
@@ -46,6 +47,21 @@ const TEST_ENV = {
 // an Origin matching the app's own base URL. The test app is served at
 // http://localhost, so send that as Origin.
 const ORIGIN = 'http://localhost';
+
+function signAuthorizationRequest(params: {
+  client_id: string;
+  redirect_uri: string;
+  scope: string;
+  code_challenge: string;
+  code_challenge_method: 'S256';
+  state?: string;
+  resource?: string;
+}): string {
+  return createAuthorizationIntent(
+    { ...params, response_type: 'code' },
+    TEST_ENV.JWT_SECRET as string
+  );
+}
 
 function buildApp(): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
@@ -96,6 +112,14 @@ async function authorizeCodeGrant(params: {
       code_challenge: challenge,
       code_challenge_method: 'S256',
       resource: params.resource,
+      authorization_intent: signAuthorizationRequest({
+        client_id: params.clientId,
+        redirect_uri: params.redirectUri,
+        scope: params.scope,
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        resource: params.resource,
+      }),
       ...(params.organizationId ? { organization_id: params.organizationId } : {}),
       ...(params.organizationIds ? { organization_ids: params.organizationIds } : {}),
       ...(params.workspaceAccess ? { workspace_access: params.workspaceAccess } : {}),
@@ -226,6 +250,13 @@ describe('Progressive mcp:admin consent', () => {
         scope: 'connections:token device_worker:run',
         code_challenge: challenge,
         code_challenge_method: 'S256',
+        authorization_intent: signAuthorizationRequest({
+          client_id: client.client_id,
+          redirect_uri: redirectUri,
+          scope: 'connections:token device_worker:run',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
         approved: true,
       },
       headers: { Cookie: session.cookieHeader },
@@ -240,12 +271,42 @@ describe('Progressive mcp:admin consent', () => {
         scope: '',
         code_challenge: challenge,
         code_challenge_method: 'S256',
+        authorization_intent: signAuthorizationRequest({
+          client_id: client.client_id,
+          redirect_uri: redirectUri,
+          scope: 'mcp:read',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        }),
         approved: true,
       },
       headers: { Cookie: session.cookieHeader },
     });
     expect(empty.status).toBe(400);
     expect(await empty.json()).toMatchObject({ error: 'invalid_scope' });
+
+    const elevated = await call(app, 'POST', '/oauth/authorize/consent', {
+      body: {
+        client_id: client.client_id,
+        redirect_uri: redirectUri,
+        scope: 'mcp:read mcp:write mcp:admin',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        resource,
+        authorization_intent: signAuthorizationRequest({
+          client_id: client.client_id,
+          redirect_uri: redirectUri,
+          scope: 'mcp:read',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          resource,
+        }),
+        approved: true,
+      },
+      headers: { Cookie: session.cookieHeader },
+    });
+    expect(elevated.status).toBe(400);
+    expect(await elevated.json()).toMatchObject({ error: 'invalid_scope' });
 
     // Codes minted before the consent-path fix must be narrowed again at
     // exchange time so a rolling deploy cannot preserve a private scope.
@@ -459,6 +520,14 @@ describe('Progressive mcp:admin consent', () => {
       organization_id: primary.id,
       organization_ids: [primary.id, secondary.id],
       workspace_access: 'selected' as const,
+      authorization_intent: signAuthorizationRequest({
+        client_id: client.client_id,
+        redirect_uri: redirectUri,
+        scope: 'mcp:read',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        resource: `${ORIGIN}/mcp`,
+      }),
       approved: true,
     };
 
@@ -539,15 +608,63 @@ describe('Progressive mcp:admin consent', () => {
       resource: `${ORIGIN}/mcp`,
     });
     const disabledUi = await call(app, 'GET', `/oauth/authorize?${authorizeQuery}`);
-    expect(new URL(disabledUi.headers.get('location')!).searchParams.has('workspace_grants')).toBe(
-      false,
-    );
+    const disabledLocation = disabledUi.headers.get('location');
+    expect(disabledLocation).toBeTruthy();
+    if (!disabledLocation) throw new Error('Expected consent redirect');
+    expect(new URL(disabledLocation).searchParams.has('workspace_grants')).toBe(false);
     const enabledUi = await call(app, 'GET', `/oauth/authorize?${authorizeQuery}`, {
       env: { LOBU_OAUTH_MULTI_WORKSPACE_GRANTS: '1' },
     });
-    expect(new URL(enabledUi.headers.get('location')!).searchParams.get('workspace_grants')).toBe(
-      '1',
-    );
+    const enabledLocation = enabledUi.headers.get('location');
+    expect(enabledLocation).toBeTruthy();
+    if (!enabledLocation) throw new Error('Expected consent redirect');
+    const enabledSearch = new URL(enabledLocation).searchParams;
+    expect(enabledSearch.get('workspace_grants')).toBe('1');
+    expect(enabledSearch.get('authorization_intent')).toBeTruthy();
+
+    const displayedConsentBody = {
+      client_id: enabledSearch.get('client_id'),
+      redirect_uri: enabledSearch.get('redirect_uri'),
+      scope: enabledSearch.get('scope'),
+      state: enabledSearch.get('state'),
+      code_challenge: enabledSearch.get('code_challenge'),
+      code_challenge_method: enabledSearch.get('code_challenge_method'),
+      resource: enabledSearch.get('resource'),
+      client_name: enabledSearch.get('client_name'),
+      authorization_intent: enabledSearch.get('authorization_intent'),
+      organization_id: primary.id,
+      organization_ids: [primary.id],
+      workspace_access: 'selected',
+      approved: true,
+    };
+    const changedDisplay = await call(app, 'POST', '/oauth/authorize/consent', {
+      body: { ...displayedConsentBody, resource: `${ORIGIN}/mcp/not-the-displayed-request` },
+      headers: { Cookie: session.cookieHeader },
+      env: { LOBU_OAUTH_MULTI_WORKSPACE_GRANTS: '1' },
+    });
+    expect(changedDisplay.status).toBe(400);
+    expect(await changedDisplay.json()).toMatchObject({
+      error: 'invalid_request',
+      error_description: 'The displayed authorization request was changed',
+    });
+
+    const changedIdentity = await call(app, 'POST', '/oauth/authorize/consent', {
+      body: { ...displayedConsentBody, client_name: 'Trusted Finance App' },
+      headers: { Cookie: session.cookieHeader },
+      env: { LOBU_OAUTH_MULTI_WORKSPACE_GRANTS: '1' },
+    });
+    expect(changedIdentity.status).toBe(400);
+    expect(await changedIdentity.json()).toMatchObject({
+      error: 'invalid_request',
+      error_description: 'The displayed application identity was changed',
+    });
+
+    const submittedFromGet = await call(app, 'POST', '/oauth/authorize/consent', {
+      body: displayedConsentBody,
+      headers: { Cookie: session.cookieHeader },
+      env: { LOBU_OAUTH_MULTI_WORKSPACE_GRANTS: '1' },
+    });
+    expect(submittedFromGet.status).toBe(200);
   });
 
   it('rejects an empty workspace selection without issuing an authorization code', async () => {
@@ -582,6 +699,14 @@ describe('Progressive mcp:admin consent', () => {
         organization_id: organization.id,
         organization_ids: [],
         workspace_access: 'selected',
+        authorization_intent: signAuthorizationRequest({
+          client_id: client.client_id,
+          redirect_uri: redirectUri,
+          scope: 'mcp:read',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          resource: `${ORIGIN}/mcp`,
+        }),
         approved: true,
       },
       headers: { Cookie: session.cookieHeader },
@@ -743,6 +868,14 @@ describe('Progressive mcp:admin consent', () => {
         organization_id: owned.id,
         organization_ids: [owned.id, foreign.id],
         workspace_access: 'selected',
+        authorization_intent: signAuthorizationRequest({
+          client_id: client.client_id,
+          redirect_uri: redirectUri,
+          scope: 'mcp:read',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+          resource: `${ORIGIN}/mcp`,
+        }),
         approved: true,
       },
       headers: { Cookie: session.cookieHeader },

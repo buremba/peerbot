@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  canonicalizeOAuthScopeGrant,
   DISCOVERY_SCOPES,
   filterScopeByRole,
+  isOAuthScopeGrantWithinRequest,
   NON_PUBLIC_OAUTH_SCOPES,
+  normalizeOAuthScopeRequest,
   stripNonPublicOAuthScopes,
 } from '../../auth/oauth/scopes';
 
@@ -33,6 +36,34 @@ describe('stripNonPublicOAuthScopes', () => {
   it('passes public scopes through unchanged', () => {
     expect(stripNonPublicOAuthScopes('mcp:read mcp:write profile:read')).toBe(
       'mcp:read mcp:write profile:read'
+    );
+  });
+});
+
+describe('OAuth scope grant normalization', () => {
+  it('rejects unknown requested scopes at the OAuth boundary', () => {
+    expect(normalizeOAuthScopeRequest('mcp:read invented:scope')).toBeNull();
+    expect(normalizeOAuthScopeRequest('mcp:read profile:read')).toBe(
+      'mcp:read profile:read'
+    );
+  });
+
+  it('treats MCP access as a hierarchy when reducing consent', () => {
+    expect(isOAuthScopeGrantWithinRequest('mcp:read mcp:write', 'mcp:read')).toBe(true);
+    expect(isOAuthScopeGrantWithinRequest('mcp:write', 'mcp:read')).toBe(true);
+    expect(isOAuthScopeGrantWithinRequest('mcp:read', 'mcp:write')).toBe(false);
+    expect(isOAuthScopeGrantWithinRequest('mcp:admin profile:read', 'mcp:write')).toBe(true);
+    expect(
+      isOAuthScopeGrantWithinRequest('mcp:admin', 'mcp:read connections:token')
+    ).toBe(false);
+  });
+
+  it('persists the hierarchy explicitly', () => {
+    expect(canonicalizeOAuthScopeGrant('mcp:write profile:read')).toBe(
+      'mcp:read mcp:write profile:read'
+    );
+    expect(canonicalizeOAuthScopeGrant('mcp:admin connections:token')).toBe(
+      'mcp:read mcp:write mcp:admin connections:token'
     );
   });
 });

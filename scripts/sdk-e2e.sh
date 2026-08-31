@@ -661,18 +661,22 @@ api manage_automations "{\"action\":\"trigger\",\"automation_id\":\"$AUTOMATION_
 TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
 [ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "automation trigger did not dispatch a run (no run_id)"; }
 
+# Prove the queued turn reached a worker before completing the run out-of-band.
+# Terminal completion now removes still-pending queue records by design, so
+# completing first can correctly cancel the message before a worker claims it.
+for _ in $(seq 1 30); do
+  grep -qi "Failed to generate an embedded Lobu service token" "$RUN_LOG" \
+    && fail "automation dispatch failed on the service token (lobu-internal oauth_client missing)"
+  grep -qiE "Lobu worker for session: session-[^ ]*automation_${AUTOMATION_ID}_run_${TRIG_RUN_ID}([^0-9]|$)" "$RUN_LOG" && break
+  sleep 1
+done
+grep -qiE "Lobu worker for session: session-[^ ]*automation_${AUTOMATION_ID}_run_${TRIG_RUN_ID}([^0-9]|$)" "$RUN_LOG" \
+  || fail "automation run ${TRIG_RUN_ID} did not dispatch to a worker"
+
 CW="$RUN_DIR/complete-window.json"
 api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2],r=Number(process.argv[3]);process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,run_id:r,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$AUTOMATION_ID" "$TRIG_RUN_ID")" > "$CW" 2>/dev/null \
   || { cat "$CW" >&2; fail "complete_window failed"; }
 grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
-grep -qi "Failed to generate an embedded Lobu service token" "$RUN_LOG" \
-  && fail "automation dispatch failed on the service token (lobu-internal oauth_client missing)"
-for _ in $(seq 1 30); do
-  grep -qiE "Lobu worker for session: session-[^ ]*automation_${AUTOMATION_ID}_run" "$RUN_LOG" && break
-  sleep 1
-done
-grep -qiE "Lobu worker for session: session-[^ ]*automation_${AUTOMATION_ID}_run" "$RUN_LOG" \
-  || fail "automation run ${TRIG_RUN_ID} did not dispatch to a worker"
 echo "✓ automation trigger dispatched and completed one run (run_id=$TRIG_RUN_ID)"
 
 # Assert the reaction's side effect: a SDKE2E_REACTION_OK knowledge event exists.

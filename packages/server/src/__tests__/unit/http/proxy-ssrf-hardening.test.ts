@@ -137,7 +137,7 @@ describe("IP normalization (isBlockedIpAddress)", () => {
 
   it("blocks IPv4-mapped IPv6 loopback — hex form", () => {
     expect(__testOnly.isBlockedIpAddress("::ffff:7f00:1")).toBe(true);
-    // c000:0201 == 192.0.2.1 is public; 7f00:0001 == 127.0.0.1 is loopback.
+    // 7f00:0001 is another spelling of 127.0.0.1 loopback.
     expect(__testOnly.isBlockedIpAddress("::ffff:7f00:0001")).toBe(true);
   });
 
@@ -218,7 +218,7 @@ describe("HTTP proxy SSRF guards", () => {
     // open the upstream socket (502). That's the "permitted" outcome.
     __testOnly.setDnsLookup(
       async (): Promise<LookupAddress[]> => [
-        { address: "203.0.113.10", family: 4 },
+        { address: "8.8.8.8", family: 4 },
       ]
     );
     __testOnly.setUpstreamRequestTimeoutMs(250);
@@ -261,7 +261,7 @@ describe("HTTP proxy SSRF guards", () => {
     __testOnly.setDnsLookup(async (): Promise<LookupAddress[]> => {
       calls += 1;
       return calls === 1
-        ? [{ address: "203.0.113.7", family: 4 }]
+        ? [{ address: "8.8.8.8", family: 4 }]
         : [{ address: "127.0.0.1", family: 4 }];
     });
     __testOnly.setUpstreamRequestTimeoutMs(250);

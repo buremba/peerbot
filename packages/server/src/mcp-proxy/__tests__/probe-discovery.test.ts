@@ -1,4 +1,5 @@
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
+import dns from 'node:dns/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createTestConnection,
@@ -54,6 +55,27 @@ async function createMcpTestConnection(connectorKey: string): Promise<{
 }
 
 describe('probeMcpServer capability discovery', () => {
+  it('blocks a hostname that resolves to loopback before opening an upstream socket', async () => {
+    vi.spyOn(dns, 'lookup').mockResolvedValue([
+      { address: '127.0.0.1', family: 4 },
+    ] as Awaited<ReturnType<typeof dns.lookup>>);
+
+    await expect(probeMcpServer('https://rebind.example/rpc')).rejects.toThrow(
+      /private\/internal address/i
+    );
+  });
+
+  it('fails closed when any address in a DNS answer set is private', async () => {
+    vi.spyOn(dns, 'lookup').mockResolvedValue([
+      { address: '8.8.8.8', family: 4 },
+      { address: '169.254.169.254', family: 4 },
+    ] as Awaited<ReturnType<typeof dns.lookup>>);
+
+    await expect(probeMcpServer('https://mixed-dns.example/rpc')).rejects.toThrow(
+      /private\/internal address/i
+    );
+  });
+
   it('discovers OAuth metadata when initialize returns a protected-resource challenge', async () => {
     const upstreamUrl = 'https://mcp.example.com/rpc';
     const resourceMetadataUrl =

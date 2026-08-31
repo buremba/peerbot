@@ -16,7 +16,14 @@ const SECRET_QUERY_PARAMS = new Set(['state', 'code', 'key']);
  * never appear in connector config, and that denylist also feeds the CLI's
  * deployment manifest hash — widening it there would change hashes.
  */
-const EXTRA_SECRET_KEYS = new Set(['signature', 'sig']);
+const SECRET_KEY_SEGMENTS = new Set(['signature', 'sig']);
+/**
+ * Whole (squashed) key names the shared denylist does not classify. Carried
+ * over from the bespoke sanitizer this module replaced: `verifier` and `state`
+ * are far too broad as segments (`freshness_state`, `run_state`), so these two
+ * are matched only as complete names.
+ */
+const SECRET_KEY_EXACT = new Set(['codeverifier', 'sessionstate']);
 
 /** Deep enough to outlive Sentry's own normalize(); short of unbounded work. */
 const MAX_DEPTH = 8;
@@ -38,11 +45,12 @@ function isSecretObjectKey(key: string): boolean {
 	// Matched per separated segment, not against the squashed whole:
 	// `X-Hub-Signature-256` squashes to `xhubsignature256`, which no exact set
 	// can ever hold, so every real signature header would slip through.
+	if (SECRET_KEY_EXACT.has(squashKey(key))) return true;
 	return key
 		.replace(/[^a-z0-9]+/gi, '_')
 		.toLowerCase()
 		.split('_')
-		.some((segment) => EXTRA_SECRET_KEYS.has(segment));
+		.some((segment) => SECRET_KEY_SEGMENTS.has(segment));
 }
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
 /**
@@ -104,8 +112,18 @@ export function scrubSentryValue(value: unknown): unknown {
 		// a single console breadcrumb carrying a huge or deeply nested object is
 		// fully deep-cloned on the hot path only to be truncated moments later.
 		if (depth >= MAX_DEPTH) return '[TRUNCATED]';
+		// Tracks the current PATH, not every node ever visited. Two siblings may
+		// legitimately hold the same reference, and reporting the second one as
+		// [CIRCULAR] would corrupt the event; only an ancestor is a real cycle.
 		seen.add(current);
+		try {
+			return walk(current, depth);
+		} finally {
+			seen.delete(current);
+		}
+	}
 
+	function walk(current: object, depth: number): unknown {
 		// An Error carries name/message/stack on its prototype, so Object.keys
 		// returns nothing and a plain walk would flatten it to `{}` — discarding
 		// the only part of the event worth reading.

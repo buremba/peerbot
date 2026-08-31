@@ -144,6 +144,40 @@ describe('Sentry credential scrubber', () => {
 		);
 	});
 
+	it('keeps the code_verifier and session_state coverage of the sanitizer it replaced', () => {
+		// The shared denylist classifies neither: `verifier` and `state` are not
+		// suffixes it knows, and both are far too broad to add as segments.
+		const result = scrubSentryValue({
+			code_verifier: SECRET,
+			session_state: SECRET,
+			codeVerifier: SECRET,
+			freshness_state: 'fresh',
+			url: `/cb?code_verifier=${SECRET}`,
+		}) as Record<string, string>;
+		expect(result.code_verifier).toBe('[REDACTED]');
+		expect(result.session_state).toBe('[REDACTED]');
+		expect(result.codeVerifier).toBe('[REDACTED]');
+		expect(result.freshness_state).toBe('fresh');
+		expect(result.url).not.toContain(SECRET);
+	});
+
+	it('does not report a shared sibling reference as circular', () => {
+		// `seen` tracks the current path; a repeated non-ancestor reference is
+		// ordinary structure sharing, not a cycle.
+		const shared = { api_key: SECRET, note: 'kept' };
+		const result = scrubSentryValue({ x: shared, y: shared }) as Record<
+			string,
+			Record<string, string>
+		>;
+		expect(result.y).not.toBe('[CIRCULAR]');
+		expect(result.y.note).toBe('kept');
+		expect(result.y.api_key).toBe('[REDACTED]');
+
+		const cycle: Record<string, unknown> = { name: 'root' };
+		cycle.self = cycle;
+		expect((scrubSentryValue(cycle) as Record<string, unknown>).self).toBe('[CIRCULAR]');
+	});
+
 	it('keeps trailing sentence punctuation outside the URL it strips', () => {
 		const result = scrubSentryValue(
 			`see https://example.test/a?token=${SECRET}, then retry.`,

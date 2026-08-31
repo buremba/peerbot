@@ -24,6 +24,24 @@ escape hatch by declaring SQL. Persisted changes go through declared outputs,
 the ClientSDK, reactions, connector actions, and their existing ACL or approval
 rails.
 
+## Scheduling and admission
+
+Feeds and scheduled Automations share cron parsing, due-item materialization,
+the durable `runs` table, dedupe, claiming, status, and observability. They do
+not share one admission clock:
+
+| Work | Due work is admitted by | Why |
+|---|---|---|
+| Scheduled Automation | The per-minute `automation` TaskScheduler tick | Execution is server-dispatched and the tick also reconciles stranded runs. |
+| Connector feed | An eligible idle worker poll | Capability, placement, and worker liveness are known before a run is created, avoiding durable but unclaimable syncs. |
+
+The consolidation boundary is therefore the durable run and event lifecycle,
+not a universal scheduler. Connector events, generic webhook deliveries,
+workspace-output events, and schedules all create the same Automation run shape;
+the periodic Automation tick is the recovery path when immediate event dispatch
+fails. Moving feed admission into the global clock would add a second placement
+queue without removing any existing mechanism.
+
 ## Window recovery and external processors
 
 Scheduled windows have a durable expected-period cursor. It advances by exactly
@@ -113,6 +131,13 @@ declared kind becomes a subscribable event type. A feed's first successful
 non-dry sync establishes its baseline without activation; later inserts of a
 matching kind activate subscribers. Entity-type `eventKinds` describe durable
 workspace semantics and are the catalog for workspace-sourced events.
+
+The generic `webhook` connector exposes `delivery.received`. Its authenticated
+JSON row and matching Automation run commit together, so low-latency webhook
+processing uses the same connector-event lifecycle as a polled feed rather than
+a second webhook scheduler. It defaults to turn/queue so every delivery carries
+its bounded input directly. Choose window/coalesce explicitly for batch-style
+analysis over a configured source.
 
 Sources never activate an Automation. A subscription is the trigger declaration
 that gives an event immediate activation semantics; it is not a second mutable

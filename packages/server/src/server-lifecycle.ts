@@ -245,10 +245,10 @@ export function buildWrapperApp(
 					source: "http_response",
 					http_method: c.req.method,
 					http_status: String(c.res.status),
+					host: c.req.header("host") ?? "unknown",
 				},
 				extra: {
 					path: c.req.path,
-					url: c.req.url,
 					response_body: body,
 				},
 			});
@@ -264,10 +264,10 @@ export function buildWrapperApp(
 				tags: {
 					source: "app_onError",
 					http_method: c.req.method,
+					host: c.req.header("host") ?? "unknown",
 				},
 				extra: {
 					path: c.req.path,
-					url: c.req.url,
 				},
 			});
 			markSentryReported(c);

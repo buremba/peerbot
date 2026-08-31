@@ -9,6 +9,7 @@ import type { Context } from 'hono';
 import * as Sentry from '@sentry/node';
 import { ToolUserError } from './utils/errors';
 import { getErrorMessage } from "@lobu/core";
+import { scrubSentryValue } from './utils/sentry-scrubber';
 
 const SENTRY_CAPTURED_FLAG = 'sentryErrorCaptured';
 
@@ -44,10 +45,11 @@ export function captureServerError(
     tags: {
       source,
       http_method: c.req.method,
+      http_status: String(c.res.status),
+      host: c.req.header('host') ?? 'unknown',
     },
     extra: {
       path: c.req.path,
-      url: c.req.url,
     },
   });
   markSentryReported(c);
@@ -78,7 +80,7 @@ export async function trackMCPToolCall<T>(
         // Set success attributes on span
         span?.setAttributes({
           'mcp.tool.status': 'success',
-          'mcp.tool.arguments': JSON.stringify(sanitizeArguments(args)),
+          'mcp.tool.arguments': JSON.stringify(scrubSentryValue(args)),
         });
 
         return result;
@@ -97,7 +99,7 @@ export async function trackMCPToolCall<T>(
               status: 'error',
             },
             extra: {
-              arguments: sanitizeArguments(args),
+              arguments: scrubSentryValue(args),
               error_message: errorMessage,
             },
           });
@@ -112,58 +114,4 @@ export async function trackMCPToolCall<T>(
       }
     }
   );
-}
-
-/**
- * Sanitize arguments to avoid sending sensitive data to Sentry
- * Redacts common sensitive field names
- */
-function sanitizeArguments(args: unknown): unknown {
-  const sensitiveFieldTokens = [
-    'password',
-    'token',
-    'api_key',
-    'apikey',
-    'secret',
-    'authorization',
-    'refresh_token',
-    'access_token',
-    'client_secret',
-    'code_verifier',
-    'session_state',
-    'cookie',
-    'credential',
-  ];
-
-  const seen = new WeakSet<object>();
-
-  function isSensitiveKey(key: string): boolean {
-    const normalized = key.toLowerCase().replace(/[^a-z0-9_]/g, '');
-    return sensitiveFieldTokens.some((token) =>
-      normalized.includes(token.replace(/[^a-z0-9_]/g, ''))
-    );
-  }
-
-  function sanitize(value: unknown): unknown {
-    if (value === null || value === undefined || typeof value !== 'object') {
-      return value;
-    }
-
-    if (seen.has(value as object)) {
-      return '[CIRCULAR]';
-    }
-    seen.add(value as object);
-
-    if (Array.isArray(value)) {
-      return value.map((item) => sanitize(item));
-    }
-
-    const sanitized: Record<string, unknown> = {};
-    for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
-      sanitized[key] = isSensitiveKey(key) ? '[REDACTED]' : sanitize(nestedValue);
-    }
-    return sanitized;
-  }
-
-  return sanitize(args);
 }

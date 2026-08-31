@@ -13,6 +13,10 @@ import dotenv from 'dotenv';
 import * as Sentry from '@sentry/node';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resolveSentryRuntime } from './utils/runtime-info';
+import {
+  scrubSentryBreadcrumb,
+  scrubSentryErrorEvent,
+} from './utils/sentry-scrubber';
 
 // .env is the single source of truth for secrets. This module reads SENTRY_DSN
 // (and ENVIRONMENT / SENTRY_RELEASE) at load time and is imported before any
@@ -64,6 +68,8 @@ if (dsn) {
     // keeps run/provider/worker errors at 100% and samples only high-volume
     // validation noise.
     sampleRate: 1.0,
+    beforeSend: scrubSentryErrorEvent,
+    beforeBreadcrumb: scrubSentryBreadcrumb,
     // The NodeSystemError integration calls util.getSystemErrorMap(), which
     // some Node builds we run under (notably v24.x in our app image) don't
     // expose. The integration itself then throws inside the event processor

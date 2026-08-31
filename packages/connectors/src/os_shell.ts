@@ -37,7 +37,9 @@ interface RunOutput {
   duration_ms: number;
 }
 
-const MAX_TIMEOUT_MS = 300000;
+// Keep execution inside run_sdk's 180s outer ceiling after cleanup and
+// terminal-delivery grace.
+const MAX_TIMEOUT_MS = 170000;
 const DEFAULT_TIMEOUT_MS = 60000;
 const SIGTERM_GRACE_MS = 3000;
 // The outer shell remains the live process-group owner until Node's grace
@@ -227,7 +229,7 @@ export default class OsShellConnector extends ConnectorRuntime {
             timeout_ms: {
               type: 'integer',
               minimum: 100,
-              maximum: 300000,
+              maximum: 170000,
               default: 60000,
               description:
                 'Wall-clock budget in milliseconds. On timeout the owned process group gets SIGTERM (3s grace) then SIGKILL. Session-detached or daemonized commands may outlive the call; this is not sandbox containment.',
@@ -265,10 +267,17 @@ export default class OsShellConnector extends ConnectorRuntime {
     if (!command) {
       return { success: false, error: 'command is required' };
     }
-    const timeoutMs = Math.min(
-      typeof input.timeout_ms === 'number' ? input.timeout_ms : DEFAULT_TIMEOUT_MS,
-      MAX_TIMEOUT_MS
-    );
+    const timeoutMs = input.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+    if (
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs < 100 ||
+      timeoutMs > MAX_TIMEOUT_MS
+    ) {
+      return {
+        success: false,
+        error: `timeout_ms must be an integer between 100 and ${MAX_TIMEOUT_MS}`,
+      };
+    }
     // cwd must be an existing absolute path (the declared contract); default
     // to the device home. Reject rather than let bash guess at a relative cwd.
     let cwd: string | undefined;

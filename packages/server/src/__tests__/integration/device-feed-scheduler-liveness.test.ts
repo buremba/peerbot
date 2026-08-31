@@ -368,7 +368,9 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [org.id],
       baseOrgScopeIds: [org.id],
       workerHardensDbEgress: false,
-      backendCapacity: { daemon_builtin: 1 },
+      // Chrome is a bridge-only worker in this fixture; it must not advertise
+      // compiled connector capacity merely because it polls successfully.
+      backendCapacity: { compiled_connector: 0 },
     };
 
     // Production incident shape: the Mac is recently seen but busy, so it is not

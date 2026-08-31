@@ -64,6 +64,7 @@ import {
 } from '../../utils/connection-config-redaction';
 import {
   isChromeNamespaceConnectorKey,
+  isHeadlessConnectorRuntime,
   selectedConnectorVersionArtifactSql,
 } from '../../utils/connector-execution-placement';
 import {
@@ -386,6 +387,7 @@ async function handleListFeeds(
            COALESCE(p.pinned_version, cd.version) AS connector_version,
            COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
            cv.artifact_hash AS connector_manifest_hash,
+           cv.artifact_runtime AS connector_runtime,
            ap.profile_kind AS auth_profile_kind,
            ap.status AS auth_profile_status,
            (
@@ -463,7 +465,8 @@ async function handleListFeeds(
       typeof feed.connector_version === 'string' &&
       feed.connector_version.length > 0 &&
       (feed.connector_manifest_backed === true ||
-        isChromeNamespaceConnectorKey(feed.connector_key as string))
+        isChromeNamespaceConnectorKey(feed.connector_key as string) ||
+        isHeadlessConnectorRuntime(feed.connector_runtime))
         ? [{
             ownerUserId: feed.device_owner_user_id as string | null,
             connectorKey: feed.connector_key as string,
@@ -506,6 +509,7 @@ async function handleListFeeds(
       connector_version: _connectorVersion,
       connector_manifest_backed: _connectorManifestBacked,
       connector_manifest_hash: _connectorManifestHash,
+      connector_runtime: _connectorRuntime,
       ...publicFeed
     } = feed;
     return {

@@ -22,7 +22,9 @@ export interface ShellRunOutput {
 // their creator; never signal a detached numeric PGID after ownership ends.
 
 const DEFAULT_TIMEOUT_MS = 60_000;
-const MAX_TIMEOUT_MS = 300_000;
+// Leave 10s inside run_sdk's 180s ceiling for process-group cleanup and the
+// completion request/response grace period.
+const MAX_TIMEOUT_MS = 170_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TRUNCATED_MARKER = '\n... (output truncated)';
 function appendCapped(current: string, chunk: string): string {

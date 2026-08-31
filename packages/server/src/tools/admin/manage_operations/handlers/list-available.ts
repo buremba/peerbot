@@ -21,7 +21,10 @@ import {
 import { listOperations } from "../../../../operations/connector-operations";
 import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
 import type { AvailableOperation, OperationDescriptor } from "../../../../operations/types";
-import { isChromeNamespaceConnectorKey } from "../../../../utils/connector-execution-placement";
+import {
+	isChromeNamespaceConnectorKey,
+	isHeadlessConnectorRuntime,
+} from "../../../../utils/connector-execution-placement";
 import {
 	DEVICE_ONLINE_WINDOW_SECONDS,
 	describeDeviceLastSeen,
@@ -704,8 +707,7 @@ export async function handleListAvailable(
 		targets: targetRows.flatMap((row) =>
 			(row.connector_manifest_backed ||
 				isChromeNamespaceConnectorKey(row.connector_key) ||
-				(Array.isArray(row.connector_runtime?.platforms) &&
-					row.connector_runtime.platforms.includes("headless")))
+				isHeadlessConnectorRuntime(row.connector_runtime))
 				? [{
 						ownerUserId: row.device_owner_user_id,
 						connectorKey: row.connector_key,

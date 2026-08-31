@@ -52,19 +52,69 @@ if (
 process.stdout.write('packaged os.shell dependency-isolation check: ok\n');
 NODE
 
+# Exercise the customer path too: apply the repository's publish transform to
+# isolated copies, pack the public CLI and its worker dependency, install into
+# an empty npm prefix, and invoke the installed `lobu daemon` bin. No workspace
+# node_modules link is present in this phase.
+published_dir="$smoke_dir/published"
+mkdir -p "$published_dir/connector-worker" "$published_dir/cli" "$smoke_dir/prefix"
+cp -R "$package_root/." "$published_dir/connector-worker/"
+cp -R "$repo_root/packages/cli/." "$published_dir/cli/"
+PUBLISH_REPO_ROOT="$repo_root" PUBLISH_WORKER_ROOT="$published_dir/connector-worker" PUBLISH_CLI_ROOT="$published_dir/cli" node --input-type=module <<'NODE'
+import { readFile, writeFile } from 'node:fs/promises';
+import { rewriteWorkspaceRefs } from './scripts/publish-packages.mjs';
+
+for (const root of [process.env.PUBLISH_WORKER_ROOT, process.env.PUBLISH_CLI_ROOT]) {
+  const path = `${root}/package.json`;
+  const pkg = JSON.parse(await readFile(path, 'utf8'));
+  await writeFile(path, `${JSON.stringify(rewriteWorkspaceRefs(pkg), null, 2)}\n`);
+}
+NODE
+(cd "$published_dir/connector-worker" && bun pm pack --destination "$published_dir" --quiet) >/dev/null
+(cd "$published_dir/cli" && bun pm pack --destination "$published_dir" --quiet) >/dev/null
+published_archives=("$published_dir"/*.tgz)
+test "${#published_archives[@]}" -eq 2 || {
+  echo "expected transformed CLI and connector-worker tarballs" >&2
+  exit 1
+}
+npm install --prefix "$smoke_dir/prefix" --no-audit --no-fund \
+  "${published_archives[0]}" "${published_archives[1]}" >/dev/null
+test ! -L "$smoke_dir/prefix/node_modules" || {
+  echo "published install unexpectedly uses a node_modules symlink" >&2
+  exit 1
+}
+PUBLISHED_PREFIX="$smoke_dir/prefix" node --input-type=module <<'NODE'
+import { access, readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
+const prefix = process.env.PUBLISHED_PREFIX;
+const bin = resolve(prefix, 'node_modules/@lobu/cli/bin/lobu.js');
+await access(bin);
+const workerBuiltins = resolve(prefix, 'node_modules/@lobu/connector-worker/dist/daemon/builtins/index.js');
+await access(workerBuiltins);
+const builtinsSource = await readFile(workerBuiltins, 'utf8');
+for (const forbidden of ['@lobu/connector-sdk', '/compile/index']) {
+  if (builtinsSource.includes(forbidden)) {
+    throw new Error(`published daemon built-ins retain compiler/SDK dependency: ${forbidden}`);
+  }
+}
+process.stdout.write('published install dependency boundary: ok\n');
+NODE
+
 # The full daemon has ordinary package dependencies. Reuse the repository's
 # already-installed dependency graph without copying it into the artifact; ESM
 # resolution still starts from the extracted package and the direct check above
 # has already proven the built-in itself is dependency-isolated.
 ln -s "$repo_root/node_modules" "$smoke_dir/node_modules"
 
-PACKAGE_ROOT="$smoke_dir/package" DAEMON_CWD="$daemon_cwd" node --input-type=module <<'NODE'
+PACKAGE_ROOT="$smoke_dir/package" PUBLISHED_ENTRY="$smoke_dir/prefix/node_modules/@lobu/cli/bin/lobu.js" DAEMON_CWD="$daemon_cwd" node --input-type=module <<'NODE'
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const packageRoot = process.env.PACKAGE_ROOT;
+const publishedEntry = process.env.PUBLISHED_ENTRY;
 const daemonCwd = process.env.DAEMON_CWD;
 const entry = resolve(packageRoot, 'dist/bin.js');
 const token = 'owl_pat_packaged_shell_smoke';
@@ -172,7 +222,7 @@ const address = server.address();
 if (!address || typeof address === 'string') throw new Error('mock worker API did not bind TCP');
 const apiUrl = `http://127.0.0.1:${address.port}`;
 
-async function runAttempt(attempt) {
+async function runAttempt(attempt, daemonEntry = entry) {
   const runId = 463 + attempt;
   let resolveCompletion;
   let rejectCompletion;
@@ -189,13 +239,13 @@ async function runAttempt(attempt) {
   const child = spawn(
     process.execPath,
     [
-      entry,
+      daemonEntry,
       'daemon',
       '--api-url', apiUrl,
       '--platform', 'headless',
       '--worker-id', 'headless:package-smoke',
       '--capabilities', 'os.shell',
-      '--version', 'package-smoke',
+      ...(daemonEntry === entry ? ['--version', 'package-smoke'] : []),
     ],
     {
       cwd: daemonCwd,
@@ -326,6 +376,7 @@ try {
   await runAttempt(1);
   await runMidCommandCrashAttempt();
   await runAttempt(2);
+  await runAttempt(3, publishedEntry);
 } finally {
   activeAttempt = null;
   await new Promise((resolveClose) => server.close(resolveClose));

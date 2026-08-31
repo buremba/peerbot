@@ -361,12 +361,20 @@ describe('daemon-builtin os.shell', () => {
     const pending = runShellBuiltin({
       command: 'sleep 30 & child=$!; sleep 30 & grandchild=$!; wait "$child" "$grandchild"',
       cwd: process.cwd(),
-      timeout_ms: 300_000,
+      timeout_ms: 170_000,
     }, shutdown.signal);
     setTimeout(() => shutdown.abort(), 100);
     const result = await pending;
     expect(result.success).toBe(false);
     expect(result.timed_out).toBe(false);
     expect(Date.now() - started).toBeLessThan(4_000);
+  });
+
+  test('rejects a timeout that exceeds the caller truth budget', async () => {
+    await expect(runShellBuiltin({
+      command: 'printf nope',
+      cwd: process.cwd(),
+      timeout_ms: 170_001,
+    })).rejects.toThrow('between 100 and 170000');
   });
 });

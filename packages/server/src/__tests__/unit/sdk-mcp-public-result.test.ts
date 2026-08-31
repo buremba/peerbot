@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { SdkScriptResultSchema, toMcpPublicSdkScriptResult } from "../../tools/sdk_run";
+import { boundScriptErrorText } from "../../sandbox/run-script";
+import {
+	classifySdkScriptError,
+	SdkScriptResultSchema,
+	toMcpPublicSdkScriptResult,
+} from "../../tools/sdk_run";
 import { validateToolResult } from "../../tools/validate-args";
 
 describe("SDK MCP public result", () => {
@@ -155,6 +160,95 @@ describe("SDK MCP public result", () => {
 				}) as Record<string, unknown>
 			).title,
 		).toBeUndefined();
+	});
+
+	test("defensively bounds public error fields", () => {
+		const publicResult = toMcpPublicSdkScriptResult({
+			success: false,
+			skipped_calls: 0,
+			side_effect_preview: [],
+			dry_run: false,
+			error: {
+				name: "N".repeat(2_000),
+				message: "💥".repeat(100_000),
+			},
+		}) as Record<string, unknown>;
+
+		expect(validateToolResult(SdkScriptResultSchema, publicResult)).not.toBeNull();
+		const error = publicResult.error as { name: string; message: string };
+		expect(Buffer.byteLength(error.name, "utf8")).toBeLessThanOrEqual(256);
+		expect(Buffer.byteLength(error.message, "utf8")).toBeLessThanOrEqual(16_384);
+		expect(error.name).toEndWith("… [truncated]");
+		expect(error.message).toEndWith("… [truncated]");
+	});
+
+	test("honors error bounds smaller than the truncation suffix", () => {
+		const bounded = boundScriptErrorText("💥abcdef", 5);
+		expect(Buffer.byteLength(bounded, "utf8")).toBeLessThanOrEqual(5);
+		expect(bounded).toBe("💥a");
+	});
+
+	test("classifies deterministic caller failures as validation errors", () => {
+		expect(
+			classifySdkScriptError({
+				name: "ValidationError",
+				message: "Invalid arguments for client.agents.list: unknown argument(s): limit",
+			}),
+		).toEqual({ code: "VALIDATION", retryable: false });
+		// The compiler block also owns filesystem/module-loading failures, so its
+		// generic name alone is not proof the caller supplied invalid source.
+		expect(
+			classifySdkScriptError({
+				name: "CompileError",
+				message: "ENOSPC while loading compiler infrastructure",
+			}),
+		).toEqual({ code: "INTERNAL", retryable: false });
+		expect(
+			classifySdkScriptError({
+				name: "ScriptError",
+				message: "unexpected application failure",
+			}),
+		).toEqual({ code: "INTERNAL", retryable: false });
+	});
+
+	test("prefers structured classifications and ignores script-controlled markers", () => {
+		expect(
+			classifySdkScriptError({
+				name: "ToolUserError",
+				message: "temporary provider failure",
+				code: "NETWORK",
+			}),
+		).toEqual({ code: "NETWORK", retryable: true });
+		expect(
+			classifySdkScriptError({
+				name: "ToolUserError",
+				message: "provider unavailable",
+			}),
+		).toEqual({ code: "INTERNAL", retryable: false });
+		expect(
+			classifySdkScriptError({
+				name: "ClientSdkActionError",
+				message: "rate limit",
+			}),
+		).toEqual({ code: "INTERNAL", retryable: false });
+		expect(
+			classifySdkScriptError({
+				name: "TimeoutError",
+				message: "script exceeded its wall-clock budget",
+			}),
+		).toEqual({ code: "INTERNAL", retryable: false });
+		expect(
+			classifySdkScriptError({
+				name: "McpScopeRequiredError",
+				message: "mcp:admin is required",
+			}),
+		).toEqual({ code: "PERMISSION", retryable: false });
+		expect(
+			classifySdkScriptError({
+				name: "ScriptError",
+				message: "user text says 429 and rate limit",
+			}),
+		).toEqual({ code: "INTERNAL", retryable: false });
 	});
 
 	test("summarizes change-capable calls a failed live run already dispatched", () => {

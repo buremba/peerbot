@@ -31,6 +31,7 @@ import {
 } from "./tools/execute";
 import { getContent } from "./tools/get_content";
 import { getAutomation } from "./tools/get_automation";
+import { toMcpPublicSdkScriptResult } from "./tools/sdk_run";
 import {
 	getAllTools,
 	getTool,
@@ -302,6 +303,16 @@ export async function restToolAction(
 	return restToolProxy(c, toolName, fixedActionArgs(action, callerArgs));
 }
 
+/** Match the concise SDK result contract exposed by MCP and OpenAPI. */
+export function toRestPublicToolResult(
+	toolName: string,
+	result: unknown,
+): unknown {
+	return toolName === "run_sdk" || toolName === "query_sdk"
+		? toMcpPublicSdkScriptResult(result)
+		: result;
+}
+
 /**
  * POST /api/:orgSlug/:toolName
  * Generic proxy endpoint for the REST dispatch tool surface.
@@ -325,7 +336,7 @@ export async function restToolProxy(
 		const args: Record<string, unknown> = explicitArgs ?? (await c.req.json());
 		const authCtx = extractAuthContext(c);
 		const result = await executeTool(toolName, args, c.env, authCtx);
-		return c.json(toJsonSafe(result));
+		return c.json(toJsonSafe(toRestPublicToolResult(toolName, result)));
 	} catch (error) {
 		if (error instanceof ToolNotRegisteredError) {
 			// Registry/frontend drift — surface to Sentry so the next "Tool not

@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { EXTERNAL_RUNTIME_DEPS, createNpmSpecifierPlugin } from '@lobu/connector-worker/compile';
 import { type BuildOptions, type Plugin, build } from 'esbuild';
 import logger from './logger';
@@ -31,6 +31,23 @@ const SDK_ENTRY = require.resolve('@lobu/connector-sdk');
 export interface CompileResult {
   compiledCode: string;
   compiledCodeHash: string;
+}
+
+export interface SourceCompileDiagnostic {
+  location?: { file?: string; line?: number; column?: number } | null;
+}
+
+/** A compiler failure tied to a location in the caller's source text. */
+export class SourceCompileError extends Error {
+  readonly name = 'SourceCompileError';
+
+  constructor(
+    message: string,
+    readonly diagnostics: SourceCompileDiagnostic[],
+    cause: Error
+  ) {
+    super(message, { cause });
+  }
 }
 
 interface CompileConfig {
@@ -143,10 +160,26 @@ export async function compileSource(
       }
     } catch (error) {
       if (error instanceof Error) {
-        throw new Error(
+        const message =
           `${config.label} compilation failed: ${error.message}. ` +
-            'If this source imports local project modules, replace them with lobu or npm: imports.'
-        );
+          'If this source imports local project modules, replace them with lobu or npm: imports.';
+        const buildErrors = (error as { errors?: unknown }).errors;
+        const sourceDiagnostics = Array.isArray(buildErrors)
+          ? buildErrors.filter(
+              (diagnostic): diagnostic is SourceCompileDiagnostic =>
+                diagnostic !== null &&
+                typeof diagnostic === 'object' &&
+                typeof (diagnostic as SourceCompileDiagnostic).location?.file === 'string' &&
+                resolve(
+                  process.cwd(),
+                  (diagnostic as SourceCompileDiagnostic).location?.file ?? ''
+                ) === inputPath
+            )
+          : [];
+        if (sourceDiagnostics.length > 0) {
+          throw new SourceCompileError(message, sourceDiagnostics, error);
+        }
+        throw new Error(message, { cause: error });
       }
       throw error;
     }

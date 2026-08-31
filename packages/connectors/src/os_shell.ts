@@ -5,7 +5,9 @@
  * devices (servers, VMs, k8s pods). Executes through `bash -lc` and returns
  * structured stdout/stderr/exit_code - the same contract as the macOS
  * os.shell manifest, but for boxes without a UI. Commands run in the device's
- * real environment (host PATH, files), so the action is approval-gated.
+ * real environment (host PATH, files), so the action is approval-gated. The
+ * timeout bounds this call and cleans up its process group; it is not sandbox
+ * containment, and deliberately daemonized/session-detached work may outlive it.
  */
 
 import { spawn } from 'node:child_process';
@@ -38,6 +40,13 @@ interface RunOutput {
 const MAX_TIMEOUT_MS = 300000;
 const DEFAULT_TIMEOUT_MS = 60000;
 const SIGTERM_GRACE_MS = 3000;
+// The outer shell remains the live process-group owner until Node's grace
+// timer fires, so its numeric pgid cannot be recycled before SIGKILL. The
+// inner login shell and command still receive SIGTERM normally.
+const SHELL_GROUP_ANCHOR = `trap 'sleep 4' TERM
+bash -lc "$1"
+status=$?
+exit "$status"`;
 // Cap captured output so a chatty command cannot balloon daemon memory.
 // Streams keep draining (the child must not block on a full pipe), but
 // anything past the cap is dropped with a truncation marker.
@@ -59,9 +68,14 @@ function runShellCommand(
 ): Promise<RunOutput> {
   const started = Date.now();
   return new Promise((resolve) => {
-    const child = spawn('bash', ['-lc', command], {
+    const child = spawn('bash', ['-c', SHELL_GROUP_ANCHOR, 'lobu-os-shell', command], {
       cwd: opts.cwd || undefined,
       env: { ...process.env, LC_ALL: 'C' },
+      // Give the command its own process group. Killing only the `bash`
+      // process leaves same-group background work alive with stdout/stderr
+      // open. A command can deliberately escape with setsid/daemonization;
+      // this timeout is bounded cleanup, not an OS containment boundary.
+      detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -69,9 +83,48 @@ function runShellCommand(
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let timedOut = false;
+    let settled = false;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
-    if (opts.stdin) child.stdin.write(opts.stdin);
-    child.stdin.end();
+    const killProcessGroup = (signal: NodeJS.Signals): void => {
+      try {
+        if (child.pid != null) {
+          process.kill(-child.pid, signal);
+          return;
+        }
+      } catch {
+        // The group may already be gone, or the host may not support negative
+        // process ids. `child.kill` is the safe best-effort fallback.
+      }
+      try {
+        child.kill(signal);
+      } catch {
+        // Exit raced the timeout. `close` still owns final settlement.
+      }
+    };
+
+    const finish = (output: RunOutput): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+      resolve(output);
+    };
+
+    // A command is allowed to exit without reading stdin. Node reports that
+    // normal pipe race as EPIPE; without an error listener it becomes an
+    // uncaught exception and takes down the long-lived connector daemon.
+    child.stdin.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EPIPE') {
+        stderr = appendCapped(
+          stderr,
+          `${stderr ? '\n' : ''}stdin error: ${err.message}`,
+          stderrTruncated
+        );
+        if (stderr.includes(TRUNCATED_MARKER)) stderrTruncated = true;
+      }
+    });
+    child.stdin.end(opts.stdin);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -85,17 +138,33 @@ function runShellCommand(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      killProcessGroup('SIGTERM');
+      forceKillTimer = setTimeout(() => {
+        if (settled) return;
+        killProcessGroup('SIGKILL');
+        // A setsid/daemonized descendant can escape the owned group while
+        // retaining inherited pipe descriptors. Destroy our pipe ends and
+        // settle explicitly so such a process cannot extend the caller's
+        // timeout. The escaped process is outside this connector's cleanup
+        // contract and may continue running.
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        finish({
+          stdout,
+          stderr,
+          exit_code: child.exitCode ?? -1,
+          success: false,
+          timed_out: true,
+          duration_ms: Date.now() - started,
+        });
       }, SIGTERM_GRACE_MS);
     }, opts.timeoutMs);
 
     child.on('close', (code, signal) => {
-      clearTimeout(timer);
       const durationMs = Date.now() - started;
       const exitCode = code ?? (signal ? -1 : 0);
-      resolve({
+      finish({
         stdout,
         stderr,
         exit_code: exitCode,
@@ -106,8 +175,7 @@ function runShellCommand(
     });
 
     child.on('error', (err) => {
-      clearTimeout(timer);
-      resolve({
+      finish({
         stdout,
         stderr: `${stderr}${stderr ? '\n' : ''}spawn error: ${err.message}`,
         exit_code: -1,
@@ -161,7 +229,8 @@ export default class OsShellConnector extends ConnectorRuntime {
               minimum: 100,
               maximum: 300000,
               default: 60000,
-              description: 'Wall-clock budget in milliseconds. On timeout the process gets SIGTERM (3s grace) then SIGKILL.',
+              description:
+                'Wall-clock budget in milliseconds. On timeout the owned process group gets SIGTERM (3s grace) then SIGKILL. Session-detached or daemonized commands may outlive the call; this is not sandbox containment.',
             },
             stdin: {
               type: 'string',

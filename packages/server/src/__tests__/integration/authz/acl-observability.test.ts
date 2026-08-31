@@ -17,6 +17,7 @@ import {
 	clearConnectionAclError,
 	formatAclErrorMessage,
 	isAclErrorMessage,
+	markConnectionAclFailed,
 } from "../../../authz/acl-observability";
 import {
 	runGithubAclSyncTick,
@@ -425,6 +426,66 @@ describe("acl observability", () => {
 					"GitHub ACL sync unavailable: no repository feeds configured",
 				),
 			);
+		});
+
+		it("releases ACL residue a consent-only grant-holder can no longer clear", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Residue Org" });
+			const conn = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				config: { consent_only: true },
+				createDefaultFeed: false,
+			});
+			// Residue from a tick that ran BEFORE the exclusion existed. The row can
+			// never sync to `fresh`, so `clearConnectionAclError` would never fire —
+			// without an explicit release this is permanent.
+			await markConnectionAclFailed(
+				org.id,
+				String(conn.id),
+				"GitHub ACL sync unavailable: no repository feeds configured",
+			);
+			const [seeded] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(seeded?.error_message).not.toBeNull();
+
+			await runGithubAclSyncTick({
+				getAppInstallationStore: () => ({}),
+			} as unknown as Parameters<typeof runGithubAclSyncTick>[0]);
+
+			const [row] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(row?.error_message).toBeNull();
+			const state = await sql`
+        SELECT 1 FROM authz_source_acl_state
+        WHERE organization_id = ${org.id} AND connection_id = ${String(conn.id)}
+      `;
+			expect(state).toHaveLength(0);
+		});
+
+		it("leaves a NON-acl error on a consent-only row untouched", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Residue Foreign Org" });
+			const conn = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				config: { consent_only: true },
+				createDefaultFeed: false,
+			});
+			await sql`
+        UPDATE connections SET error_message = 'oauth: token expired' WHERE id = ${conn.id}
+      `;
+
+			await runGithubAclSyncTick({
+				getAppInstallationStore: () => ({}),
+			} as unknown as Parameters<typeof runGithubAclSyncTick>[0]);
+
+			const [row] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(row?.error_message).toBe("oauth: token expired");
 		});
 	});
 

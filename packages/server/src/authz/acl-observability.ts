@@ -8,7 +8,7 @@
 import { type DbClient, getDb } from "../db/client.js";
 import { bumpAclGeneration } from "./acl-generation.js";
 
-const ACL_ERROR_MESSAGE_PREFIX = "acl: ";
+export const ACL_ERROR_MESSAGE_PREFIX = "acl: ";
 
 /** Maximum length of the complete persisted message, including its prefix. */
 const ACL_ERROR_MESSAGE_MAX_LENGTH = 500;
@@ -174,5 +174,37 @@ export async function deleteConnectionAclRow(
       AND c.organization_id = ${params.organizationId}
       AND a.organization_id = c.organization_id
       AND a.connection_id = ${sql.unsafe(aclConnectionIdSql("c"))}
+  `;
+}
+
+
+/**
+ * Release a connection's ACL materialization and its ACL-owned error text.
+ *
+ * For a connection a source deliberately EXCLUDES from its sweep (a
+ * consent-only grant-holder), {@link clearConnectionAclError} can never fire:
+ * it only clears behind a `fresh` state, and an excluded connection never syncs
+ * to reach one. Without this, a failure recorded by an earlier tick — or by any
+ * tick before the exclusion existed — stays on a healthy row forever.
+ *
+ * The state row is a pure materialization with no FK dependents (same rationale
+ * as {@link deleteConnectionAclRow}), and only `acl:`-prefixed text is cleared,
+ * so another subsystem's error message survives untouched.
+ */
+export async function releaseConnectionAclState(
+	sql: DbClient,
+	params: {
+		organizationId: string;
+		connectionId: string | number;
+	},
+): Promise<void> {
+	await deleteConnectionAclRow(sql, params);
+	await sql`
+    UPDATE connections
+    SET error_message = NULL, updated_at = current_timestamp
+    WHERE id = ${params.connectionId}
+      AND organization_id = ${params.organizationId}
+      AND deleted_at IS NULL
+      AND left(error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
   `;
 }

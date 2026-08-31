@@ -25,8 +25,11 @@ import {
   githubReposToResources,
 } from '@lobu/connectors/github-identity';
 import {
+  ACL_ERROR_MESSAGE_PREFIX,
+  aclConnectionIdSql,
   clearConnectionAclError,
   markConnectionAclFailed,
+  releaseConnectionAclState,
 } from './acl-observability.js';
 import { buildAccessGraph } from './access-graph.js';
 import { captureAclSyncFence } from './acl-generation.js';
@@ -202,6 +205,34 @@ async function fetchRepoCollaborators(
  */
 export async function runGithubAclSyncTick(coreServices: CoreServices): Promise<void> {
   const sql = getDb();
+  // Residue release, BEFORE the sweep below. The exclusion stops NEW failures but
+  // cannot undo old ones: `clearConnectionAclError` only clears behind a
+  // `fresh` state, which an excluded row can never reach, so a failure written
+  // by an earlier tick (or by any tick before this exclusion existed) would sit
+  // on a healthy connection forever. Matches only rows that actually carry
+  // residue, so the steady state does no work.
+  const stale = await sql<{ id: string; organization_id: string }>`
+		SELECT c.id::text AS id, c.organization_id
+		FROM connections c
+		WHERE c.connector_key = 'github'
+		  AND c.deleted_at IS NULL
+		  AND c.config->>'consent_only' = 'true'
+		  AND (
+		    left(c.error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
+		    OR EXISTS (
+		      SELECT 1 FROM authz_source_acl_state a
+		      WHERE a.organization_id = c.organization_id
+		        AND a.connection_id = ${sql.unsafe(aclConnectionIdSql('c'))}
+		    )
+		  )
+	`;
+  for (const row of stale) {
+    await releaseConnectionAclState(sql, {
+      organizationId: row.organization_id,
+      connectionId: row.id,
+    });
+  }
+
   // Consent-only grant-holders are EXCLUDED, not swept and failed: they exist
   // solely to hold an OAuth grant for delegation, and `manage_feeds` refuses
   // feeds on them by construction, so `listRepos` is empty for them on every

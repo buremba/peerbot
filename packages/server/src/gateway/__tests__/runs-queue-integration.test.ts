@@ -269,6 +269,50 @@ describe("RunsQueue — action_input JSONB shape", () => {
   });
 });
 
+describe("RunsQueue — task parent provenance", () => {
+  test("claims a durable task after its Automation parent has completed", async () => {
+    if (!queue) throw new Error("queue not started");
+    const sql = getDb();
+    const [parent] = await sql<{ id: number }>`
+      INSERT INTO runs (run_type, status, completed_at)
+      VALUES ('automation', 'completed', now())
+      RETURNING id
+    `;
+    const queueName = "task:test-completed-parent";
+    const [task] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        run_type, queue_name, action_key, action_input, parent_run_id,
+        status, run_at
+      ) VALUES (
+        'task', ${queueName}, 'test-completed-parent',
+        ${sql.json({
+          name: "test-completed-parent",
+          payload: { sourceRunId: parent.id },
+        })}::jsonb,
+        ${parent.id}, 'pending', now()
+      )
+      RETURNING id
+    `;
+
+    let consumed = false;
+    await queue.work(queueName, async () => {
+      consumed = true;
+    });
+
+    let status = "";
+    const start = Date.now();
+    while (status !== "completed" && Date.now() - start < 5000) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const rows = await sql<{ status: string }>`
+        SELECT status FROM runs WHERE id = ${task.id}
+      `;
+      status = rows[0]?.status ?? "";
+    }
+    expect(consumed).toBe(true);
+    expect(status).toBe("completed");
+  });
+});
+
 describe("RunsQueue — graceful shutdown", () => {
   test("stop() releases claimed rows back to pending", async () => {
     if (!queue) throw new Error("queue not started");

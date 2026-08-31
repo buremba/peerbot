@@ -88,6 +88,7 @@ async function sleepUnlessAborted(ms: number, abortSignal?: AbortSignal): Promis
 // claimed the run, marking it timeout while the worker was about to
 // pick it up.
 const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
+export const DAEMON_BUILTIN_POST_CLAIM_BUDGET_MS = 305_000;
 const POLL_MS = 500;
 
 interface DeviceActionRunOutcome {
@@ -120,11 +121,12 @@ export function waitForDeviceActionRun(
    * On abort we stop polling and finalize the run as `timeout` so the orphaned
    * poll loop and any in-flight device work don't leak past the caller.
    */
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  postClaimMs = POST_CLAIM_BUDGET_MS
 ): Promise<DeviceActionRunOutcome> {
   return waitForDeviceActionRunWithOptions(runId, organizationId, {
     queueMs: DEVICE_ACTION_QUEUE_BUDGET_MS,
-    postClaimMs: POST_CLAIM_BUDGET_MS,
+    postClaimMs,
     pollMs: POLL_MS,
     abortSignal,
   });

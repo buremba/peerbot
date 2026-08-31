@@ -54,7 +54,10 @@ import { deriveBrowserActionContext } from "../../../../worker-api/browser-actio
 import { resolveRunInitiator } from "../../../initiator";
 import type { ToolContext } from "../../../registry";
 import { getOrgUrlContext } from "../../../view-urls";
-import { waitForDeviceActionRun } from "../../device-action-wait";
+import {
+	DAEMON_BUILTIN_POST_CLAIM_BUDGET_MS,
+	waitForDeviceActionRun,
+} from "../../device-action-wait";
 import {
 	qualifiedOperationKey,
 	type ConnectionRow,
@@ -914,6 +917,9 @@ export async function handleExecute(
 			runId,
 			ctx.organizationId,
 			ctx.abortSignal,
+			connection.connector_key === "os.shell"
+				? DAEMON_BUILTIN_POST_CLAIM_BUDGET_MS
+				: undefined,
 		);
 		await trackOperationReaction(runId);
 		if (result.status === "completed") {

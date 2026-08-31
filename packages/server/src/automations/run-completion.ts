@@ -164,7 +164,9 @@ export async function bumpDeviceFinalizeNudge(
 export async function markAutomationRunCompleted(
 	sql: DbClient,
 	runId: number,
-	fallbackModel?: string
+	fallbackModel?: string,
+	expectedMessageId?: string,
+	claimedBy?: string,
 ): Promise<void> {
 	await sql`
     UPDATE runs
@@ -179,6 +181,8 @@ export async function markAutomationRunCompleted(
         )
     WHERE id = ${runId}
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+	  AND (${expectedMessageId ?? null}::text IS NULL OR dispatched_message_id = ${expectedMessageId ?? null})
+	  AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
   `;
 }
 
@@ -192,6 +196,8 @@ async function terminalizeSuccessfulTurn(
 	sql: DbClient,
 	runId: number,
 	budget: number,
+	expectedMessageId?: string,
+	claimedBy?: string,
 ): Promise<boolean> {
 	return sql.begin(async (tx) => {
 		await lockOwningAutomationForRun(tx, runId);
@@ -199,6 +205,8 @@ async function terminalizeSuccessfulTurn(
 			SELECT id FROM runs
 			WHERE id = ${runId}
 			  AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+			  AND (${expectedMessageId ?? null}::text IS NULL OR dispatched_message_id = ${expectedMessageId ?? null})
+			  AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
 			FOR UPDATE
 		`;
 		if (locked.length === 0) return false;
@@ -210,7 +218,7 @@ async function terminalizeSuccessfulTurn(
 				approvalFailure,
 			);
 		}
-		await markAutomationRunCompleted(tx, runId, "lobu-agent");
+		await markAutomationRunCompleted(tx, runId, "lobu-agent", expectedMessageId, claimedBy);
 		return true;
 	});
 }
@@ -220,7 +228,9 @@ async function markAutomationRunFailed(
 	runId: number,
 	message: string,
 	notBefore?: Date | null,
-	errorCode?: string | null
+	errorCode?: string | null,
+	expectedMessageId?: string,
+	claimedBy?: string,
 ): Promise<boolean> {
 	return sql.begin(async (tx) => {
 		return markAutomationRunFailedInTransaction(
@@ -229,6 +239,8 @@ async function markAutomationRunFailed(
 			message,
 			notBefore,
 			errorCode,
+			expectedMessageId,
+			claimedBy,
 		);
 	});
 }
@@ -485,9 +497,13 @@ export async function failAutomationParentRunFromQueue(
 async function requeueAutomationRunForFinalizeNudge(
 	sql: DbClient,
 	runId: number,
-	nextNudgeCount: number
-): Promise<void> {
-	await sql`
+	nextNudgeCount: number,
+	expectedMessageId?: string,
+	claimedBy?: string,
+): Promise<boolean> {
+	return sql.begin(async (tx) => {
+		await lockOwningAutomationForRun(tx, runId);
+	const rows = await tx`
     UPDATE runs
     SET status = 'pending',
         claimed_by = NULL,
@@ -501,7 +517,13 @@ async function requeueAutomationRunForFinalizeNudge(
         )
     WHERE id = ${runId}
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-  `;
+	  AND (${expectedMessageId ?? null}::text IS NULL OR dispatched_message_id = ${expectedMessageId ?? null})
+	  AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
+	  AND COALESCE((approved_input->>'finalize_nudge_count')::int, 0) = ${nextNudgeCount - 1}
+	RETURNING id
+	  `;
+	return rows.length > 0;
+	});
 }
 
 export async function resolveAutomationRunsByMessageIds(
@@ -514,7 +536,8 @@ export async function resolveAutomationRunsByMessageIds(
 
 	const sql = db ?? getDb();
 	const rows = await sql`
-    SELECT r.id, r.run_type, r.approved_input, w.execution_config
+		SELECT r.id, r.run_type, r.approved_input, r.dispatched_message_id,
+		       r.claimed_by, w.execution_config
     FROM runs r
     LEFT JOIN automations w ON w.id = r.automation_id
     WHERE r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
@@ -529,6 +552,8 @@ export async function resolveAutomationRunsByMessageIds(
 			run_type: string;
 			approved_input: Record<string, unknown> | null;
 			execution_config: Record<string, unknown> | null;
+			dispatched_message_id: string | null;
+			claimed_by: string | null;
 		};
 		const runId = Number(typedRow.id);
 		if (!Number.isFinite(runId)) continue;
@@ -544,7 +569,9 @@ export async function resolveAutomationRunsByMessageIds(
 					runId,
 					result.error,
 					notBefore,
-					result.errorCode
+					result.errorCode,
+					typedRow.dispatched_message_id ?? undefined,
+					typedRow.claimed_by ?? undefined
 				)
 			) {
 				resolved++;
@@ -554,19 +581,19 @@ export async function resolveAutomationRunsByMessageIds(
 
 		const budget = resolveFinalizeNudgeBudget(typedRow.execution_config);
 		if (typedRow.approved_input?.trigger_execution === "turn") {
-			if (await terminalizeSuccessfulTurn(sql, runId, budget)) resolved++;
+			if (await terminalizeSuccessfulTurn(sql, runId, budget, typedRow.dispatched_message_id ?? undefined, typedRow.claimed_by ?? undefined)) resolved++;
 			continue;
 		}
 
 		// Capture-mode evals persist their preview instead of a live result.
 		if (typedRow.run_type === AUTOMATION_EVAL_RUN_TYPE) {
-			if (await terminalizeSuccessfulTurn(sql, runId, budget)) resolved++;
+			if (await terminalizeSuccessfulTurn(sql, runId, budget, typedRow.dispatched_message_id ?? undefined, typedRow.claimed_by ?? undefined)) resolved++;
 			continue;
 		}
 
 		const approvalFailure = await describePendingApproval(sql, runId, budget);
 		if (approvalFailure) {
-			if (await markAutomationRunFailed(sql, runId, approvalFailure)) {
+			if (await markAutomationRunFailed(sql, runId, approvalFailure, undefined, undefined, typedRow.dispatched_message_id ?? undefined, typedRow.claimed_by ?? undefined)) {
 				resolved++;
 			}
 			continue;
@@ -578,7 +605,8 @@ export async function resolveAutomationRunsByMessageIds(
 			typedRow.approved_input?.finalize_nudge_count ?? 0
 		);
 		if (Number.isFinite(nudgeCount) && nudgeCount < budget) {
-			await requeueAutomationRunForFinalizeNudge(sql, runId, nudgeCount + 1);
+			const nudged = await requeueAutomationRunForFinalizeNudge(sql, runId, nudgeCount + 1, typedRow.dispatched_message_id ?? undefined, typedRow.claimed_by ?? undefined);
+			if (!nudged) continue;
 			logger.info(
 				{ run_id: runId, attempt: nudgeCount + 1, max: budget },
 				"[automations] Agent finished without complete_window — re-dispatching for finalize nudge"
@@ -590,7 +618,8 @@ export async function resolveAutomationRunsByMessageIds(
 			await markAutomationRunFailed(
 				sql,
 				runId,
-				await describeFinalizeMiss(sql, runId, budget)
+				await describeFinalizeMiss(sql, runId, budget),
+				undefined, undefined, typedRow.dispatched_message_id ?? undefined, typedRow.claimed_by ?? undefined
 			)
 		) {
 			resolved++;

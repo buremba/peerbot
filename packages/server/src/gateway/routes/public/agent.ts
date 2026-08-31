@@ -993,6 +993,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
               runId: automationIntent.runId,
               organizationId: tokenOrganizationId,
               conversationId,
+				executionMode: automationVerification?.executionMode,
             })
           : null;
       return {

@@ -21,6 +21,7 @@ function buildRunWorkerAccess(args: {
 	channelId: string;
 	source: string;
 	automationRunId?: number;
+	executionMode?: "live" | "capture";
 }): RunWorkerAccess {
 	const issuedAt = Date.now();
 	return {
@@ -55,6 +56,7 @@ export function buildAutomationRunWorkerAccess(args: {
 	runId: number;
 	organizationId: string;
 	conversationId?: string;
+	executionMode?: "live" | "capture";
 }): RunWorkerAccess {
 	const expectedConversationId = `${args.agentId}_automation_${args.automationId}_run_${args.runId}`;
 	const conversationId = args.conversationId ?? expectedConversationId;
@@ -74,6 +76,7 @@ export function buildAutomationRunWorkerAccess(args: {
 		channelId: `api_${userId}`,
 		source: AUTOMATION_RUN_SOURCE,
 		automationRunId: args.runId,
+		executionMode: args.executionMode,
 	});
 }
 

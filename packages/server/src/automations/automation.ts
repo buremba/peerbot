@@ -64,6 +64,8 @@ import {
 	AUTOMATION_RUN_TYPE,
 	AUTOMATION_RUN_TYPES,
 	AUTOMATION_RUN_TYPES_PG,
+	executionModeForRunType,
+	type ExecutionMode,
 } from "../runs/run-types.js";
 
 type AutomationRunStatus =
@@ -95,6 +97,7 @@ interface ClaimedAutomationRunRow {
 	id: number;
 	organization_id: string;
 	automation_id: number;
+	run_type: string;
 	approved_input: unknown;
 	claim_token: string;
 }
@@ -795,7 +798,9 @@ export async function sweepStaleAutomationRuns(
 		sql,
 		coarseStaleInterval
 	);
-	const executingTimedOutRows = await sql.begin(async (tx) => {
+	let executingTimedOutRows: Awaited<ReturnType<typeof markStaleRunsAsTimeout>> = [];
+	while (true) {
+		const batch = await sql.begin(async (tx) => {
 		const rows = await markStaleRunsAsTimeout(tx, {
 			// Both lanes are terminalized, but only a real Automation that reached
 			// `running` may count toward the schedule circuit breaker. A claimed
@@ -806,6 +811,7 @@ export async function sweepStaleAutomationRuns(
 			coarseStaleInterval,
 			heartbeatErrorMessage: `Automation run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
 			coarseErrorMessage: `Automation run exceeded ${coarseStaleInterval} without reaching terminal state`,
+			maxRows: 100,
 		});
 		for (const row of rows) {
 			if (row.organization_id) {
@@ -828,7 +834,10 @@ export async function sweepStaleAutomationRuns(
 			}
 		}
 		return rows;
-	});
+		});
+		executingTimedOutRows.push(...batch);
+		if (batch.length < 100) break;
+	}
 	const executingTimedOut = executingTimedOutRows.length;
 	const timedOut = pendingTimedOut + executingTimedOut;
 	if (timedOut > 0) {
@@ -1523,7 +1532,7 @@ async function claimAutomationRun(
 		// proper column); both shapes are guarded here so the filter survives
 		// either schema.
 		const candidates = await tx`
-      SELECT r.id, r.organization_id, r.automation_id, r.approved_input
+			SELECT r.id, r.organization_id, r.automation_id, r.run_type, r.approved_input
       FROM runs r
       WHERE r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
         AND r.status = 'pending'
@@ -1567,6 +1576,7 @@ async function claimAutomationRun(
 			id: unknown;
 			organization_id: unknown;
 			automation_id: unknown;
+			run_type: unknown;
 			approved_input: unknown;
 		};
 		const candidateId = Number(candidate.id);
@@ -1584,6 +1594,7 @@ async function claimAutomationRun(
 			id: candidateId,
 			organization_id: String(candidate.organization_id),
 			automation_id: automationId,
+			run_type: String(candidate.run_type),
 			approved_input: candidate.approved_input,
 			claim_token: claimToken,
 		};
@@ -1637,6 +1648,7 @@ export async function preflightAutomationMemoryTools(params: {
 	organizationId: string;
 	agentId: string;
 	runId: number;
+	executionMode: ExecutionMode;
 }): Promise<
 	{ ok: true } | { ok: false; error: string; retryable: boolean }
 > {
@@ -1651,6 +1663,8 @@ export async function preflightAutomationMemoryTools(params: {
 			organizationId: params.organizationId,
 			platform: "api",
 			source: AUTOMATION_RUN_SOURCE,
+			executionMode: params.executionMode,
+			automationRunId: params.runId,
 			sessionKey: `automation_${params.runId}`,
 		}
 	);
@@ -1863,6 +1877,7 @@ async function dispatchAutomationRun(
 			organizationId: run.organization_id,
 			agentId,
 			runId: run.id,
+			executionMode: executionModeForRunType(run.run_type),
 		});
 		if (!preflight.ok) {
 			if (preflight.retryable) {

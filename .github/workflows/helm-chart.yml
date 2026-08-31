@@ -123,6 +123,9 @@ jobs:
             exit 1
           fi
 
+      - name: Chat run failure alert stays wired
+        run: bash charts/lobu/tests/chat-run-failure-alert.sh
+
       - name: Exercise migration failure recovery
         run: sh charts/lobu/tests/migrate-upgrade-recovery.sh
 

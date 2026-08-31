@@ -38,6 +38,22 @@ spec:
             description: "{{ include "lobu.fullname" . }}-app dropped to 0 available replicas, so the ingress served 503 for that window. Deploy-related unless a node was lost: check whether the pre-upgrade migration hook quiesced (kubectl logs job/{{ include "lobu.fullname" . }}-migrate) and whether it should have — it only quiesces when an incompatible migration is pending (or the check cannot answer)."
     - name: lobu-automations
       rules:
+        # A terminal chat run failure means the user-facing reply was dropped.
+        # `increase` handles counter resets and returns no series value for an
+        # absent metric; summing across queue avoids high-cardinality alerts.
+        # There is no established runbook annotation convention in this chart.
+        # The warning/15m/one-failure defaults are intentionally conservative;
+        # threshold and severity are the only ops decisions before merge.
+        - alert: LobuChatRunFailure
+          expr: |
+            sum(increase(lobu_runs_failed_total{run_type="chat_message"}[15m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: lobu
+          annotations:
+            summary: "Lobu chat run failed terminally"
+            description: "A chat-message run exhausted retries and its user-facing reply was dropped in the last 15m. Inspect the failed runs table and worker logs. Ops decision before merge: confirm the one-failure threshold and warning severity."
         # Heartbeat / dead-man's-switch. The 12-day outage (lobu#1046) was a
         # SILENT one: the app was healthy but the automation scheduler produced
         # zero successful ticks. Alert on the ABSENCE of success, not just on

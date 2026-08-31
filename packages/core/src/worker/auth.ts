@@ -68,10 +68,12 @@ export interface WorkerTokenData {
    */
   executionMode?: "live" | "capture";
   /**
-   * The Automation `runs.id` a capture session records its suppressed side
-   * effects onto. NOT {@link runId} — an Automation execution writes two rows and
-   * that one is the per-turn chat_message run. Set only alongside
-   * `executionMode: 'capture'`.
+   * The parent Automation `runs.id` for this one-shot session. NOT
+   * {@link runId} — an Automation execution writes a parent row and a
+   * per-turn chat_message row. A capture session records its suppressed side
+   * effects onto this row and must carry it. A live session MAY carry it as
+   * signed parent identity; today the mint sets it only for capture, so no
+   * live consumer reads it yet.
    */
   automationRunId?: number;
   sessionKey?: string;
@@ -170,7 +172,7 @@ export interface WorkerTokenOptions {
   source?: string;
   /** Side-effect mode — see WorkerTokenData.executionMode. */
   executionMode?: "live" | "capture";
-  /** Automation run this capture session replays — see WorkerTokenData.automationRunId. */
+  /** Parent Automation run for this session — see WorkerTokenData.automationRunId. */
   automationRunId?: number;
   sessionKey?: string;
   traceId?: string;
@@ -387,9 +389,9 @@ function verifyToken(
         return null;
       }
     }
-    // Same shape rule for `automationRunId` — it addresses the row the capture
-    // guard writes its record onto, so a non-integer must be rejected here
-    // rather than reaching a query as a coerced value.
+    // Same shape rule for `automationRunId` — it addresses the parent
+    // Automation run row, so a non-integer must be rejected here rather than
+    // reaching a query as a coerced value.
     if (data.automationRunId !== undefined) {
       if (
         typeof data.automationRunId !== "number" ||
@@ -416,23 +418,16 @@ function verifyToken(
       );
       return null;
     }
-    // The capture pair is inseparable, for the same reason the admin pair
-    // below is: the mode says the run must not perform side effects and
-    // `automationRunId` says which row records what it tried to do. A capture
-    // run that cannot record is the state evals must never reach — its side
-    // effects are suppressed but nothing says what was suppressed, so the
-    // replay scores as clean. A diverged pair is either a forged token or a
-    // mint-side bug: `buildWorkerTokenClaims` gates both on one verified
-    // intent, but reads the run id back off `platformMetadata.intent`
-    // separately, where a malformed intent yields undefined on its own.
-    // Reject either way — a rejected token fails the run closed, where
-    // honouring the pair would run an eval nothing can score.
+    // A capture token must name the row that records suppressed effects. The
+    // reverse is deliberately NOT enforced: a live token carrying a parent
+    // Automation run id is a valid shape, so the two are checked in one
+    // direction only.
     if (
-      (data.executionMode === "capture") !==
-      (data.automationRunId !== undefined)
+      data.executionMode === "capture" &&
+      data.automationRunId === undefined
     ) {
       logger.error(
-        "Worker token rejected: executionMode 'capture' and automationRunId must be set together"
+        "Worker token rejected: executionMode 'capture' requires automationRunId"
       );
       return null;
     }

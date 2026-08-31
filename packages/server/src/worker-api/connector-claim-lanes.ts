@@ -27,6 +27,14 @@ export interface ConnectorClaimContext {
   backendCapacity?: Record<string, number>;
 }
 
+/** A backend is claimable only when this poll explicitly advertises capacity. */
+export function hasPositiveBackendCapacity(
+  capacity: Record<string, number> | undefined,
+  backend: string
+): boolean {
+  return Number.isFinite(capacity?.[backend]) && (capacity?.[backend] ?? 0) > 0;
+}
+
 interface ConnectorClaimLaneRefs {
   connectorKey: SqlFragment;
   connectorVersion: SqlFragment;
@@ -117,14 +125,19 @@ export function connectorClaimLaneSql(
   // A worker may be able to run the daemon-owned backend while its connector
   // compiler/SDK runtime is unavailable. Never let a compiled artifact enter
   // any claim lane unless that backend was explicitly advertised as ready.
-  const compiledBackendReady =
-    (context.backendCapacity?.compiled_connector ?? 0) > 0;
+  const compiledBackendReady = hasPositiveBackendCapacity(context.backendCapacity, 'compiled_connector');
+  const daemonBuiltinReady = hasPositiveBackendCapacity(context.backendCapacity, 'daemon_builtin');
 
   return sql`
     (
       (
         COALESCE(${refs.runManifestBacked}, false)
         OR ${compiledBackendReady}
+      )
+      AND (
+        NOT COALESCE(${refs.runManifestBacked}, false)
+        OR COALESCE(${refs.runRuntime}->>'execution', '') <> 'daemon_builtin'
+        OR ${daemonBuiltinReady}
       )
       AND
       -- Trusted/anonymous fleet worker. Execution-pinned connections stay on

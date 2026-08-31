@@ -231,7 +231,7 @@ const server = createServer(async (request, response) => {
       } else {
         activeAttempt.resolve();
       }
-      json(response, 200, {});
+      json(response, 200, { success: true });
       return;
     }
     if (request.url === '/api/workers/heartbeat' && request.method === 'POST') {

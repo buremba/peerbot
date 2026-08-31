@@ -151,6 +151,20 @@ describe('daemon-builtin os.shell', () => {
     expect(output.exit_code).toBe(0);
   });
 
+  test('drains output emitted as the supervisor closes', async () => {
+    const output = await runShellBuiltin({
+      command: `node -e 'process.stdout.write("stdout-at-close"); process.stderr.write("stderr-at-close"); process.exit(0)'`,
+      cwd: process.cwd(),
+    });
+
+    expect(output).toMatchObject({
+      success: true,
+      stdout: 'stdout-at-close',
+      stderr: 'stderr-at-close',
+      exit_code: 0,
+    });
+  });
+
   test('executes without compiled connector code or connector SDK resolution', async () => {
     const { client, completions } = stubClient();
     const result = await executeRun(

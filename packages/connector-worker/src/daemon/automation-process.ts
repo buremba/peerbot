@@ -84,8 +84,25 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
       }
     }, treeTermGraceMs);
   };
+  const stopAfterSourceError = () => {
+    if (process.platform === 'win32') {
+      try { target?.kill('SIGTERM'); } catch {}
+      setTimeout(() => {
+        try { target?.kill('SIGKILL'); } catch {}
+      }, treeTermGraceMs);
+      return;
+    }
+    try { process.kill(-process.pid, 'SIGTERM'); } catch { try { target?.kill('SIGTERM'); } catch {} }
+    setTimeout(() => {
+      try { process.kill(-process.pid, 'SIGKILL'); } catch { try { target?.kill('SIGKILL'); } catch {} }
+    }, treeTermGraceMs);
+  };
   process.on('SIGTERM', () => {});
   process.once('disconnect', stopAfterParentLoss);
+  process.stdin.once('error', () => {
+    finish(1, null, 'source stream error');
+    stopAfterSourceError();
+  });
   process.on('message', (message: unknown) => {
     if (
       typeof message !== 'object' ||

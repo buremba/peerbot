@@ -435,10 +435,14 @@ export class WorkerClient implements ExecutorClient {
    * Report action run completion
    */
   async completeAction(req: CompleteActionRequest): Promise<void> {
-    await this.requestVoid(
+    const response = await this.requestJson<{ success?: unknown; reason?: unknown }>(
       '/api/workers/complete-action',
       req
     );
+    if (response?.success === true || response?.success === false && response?.reason === 'already_finalized') {
+      return;
+    }
+    throw new WorkerDecodeError('Invalid /api/workers/complete-action response');
   }
 
   /**

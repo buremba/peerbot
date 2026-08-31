@@ -14,6 +14,7 @@ import { SubprocessExecutor } from '../executor/subprocess.js';
 import { executeAutomationRun } from './automation.js';
 import { executeDaemonBuiltin } from './builtins/index.js';
 import { executeDeviceChatRun } from './device-chat.js';
+import { WorkerDecodeError } from './client.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
 import { log } from './log.js';
@@ -122,7 +123,9 @@ async function completeActionOnce(
       await withTerminalDeliveryTimeout(client.completeAction(payload), remaining);
       return;
     } catch (error) {
+      if (error instanceof WorkerDecodeError) throw error;
       lastError = error;
+      if (error instanceof Error && error.message === 'terminal completion deadline exceeded') break;
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));

@@ -84,7 +84,17 @@ export async function runShellBuiltin(
     let stderr = '';
     let timedOut = false;
     let settled = false;
+    let finishing = false;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const waitForClose = (stream: NodeJS.ReadableStream | null | undefined): Promise<void> => {
+      if (!stream || (stream as NodeJS.ReadableStream & { destroyed?: boolean }).destroyed) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => stream.once('close', resolve));
+    };
+    const stdoutClosed = waitForClose(child.stdout);
+    const stderrClosed = waitForClose(child.stderr);
 
     const killOwnedProcessGroup = (signal: NodeJS.Signals): void => {
       try {
@@ -98,14 +108,19 @@ export async function runShellBuiltin(
     const abortHandler = () => {
       if (!settled) void terminateChild(child).finally(() => finish(child.exitCode ?? -1));
     };
-    if (shutdownSignal?.aborted) abortHandler();
+    // Let the finish closure initialize before handling an already-aborted
+    // signal; this path is common during daemon shutdown.
+    if (shutdownSignal?.aborted) queueMicrotask(abortHandler);
     else shutdownSignal?.addEventListener('abort', abortHandler, { once: true });
 
-    const finish = (exitCode: number): void => {
-      if (settled) return;
-      settled = true;
+    const finish = async (exitCode: number): Promise<void> => {
+      if (settled || finishing) return;
+      finishing = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
       shutdownSignal?.removeEventListener('abort', abortHandler);
+      await Promise.all([stdoutClosed, stderrClosed]);
+      if (settled) return;
+      settled = true;
       resolve({
         stdout,
         stderr,

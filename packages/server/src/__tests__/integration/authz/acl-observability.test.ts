@@ -18,7 +18,10 @@ import {
 	formatAclErrorMessage,
 	isAclErrorMessage,
 } from "../../../authz/acl-observability";
-import { syncGithubConnectionAcl } from "../../../authz/github-acl-sync";
+import {
+	runGithubAclSyncTick,
+	syncGithubConnectionAcl,
+} from "../../../authz/github-acl-sync";
 import { runConnectorHealthCheck } from "../../../connectors/connector-health";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -383,6 +386,45 @@ describe("acl observability", () => {
 			// module exists to remove, so the reason must survive the losing clear.
 			expect(state?.freshness_state).toBe("failed");
 			expect(row?.error_message).toBe(formatAclErrorMessage("newer failure"));
+		});
+
+		it("skips a consent-only grant-holder instead of marking it ACL-failed", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Consent Only Org" });
+			// A consent-only grant-holder holds an OAuth grant for delegation and
+			// `manage_feeds` refuses feeds on it BY CONSTRUCTION, so a feedless sweep
+			// is its steady state — not an outage to downgrade the graph over.
+			const consentOnly = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				config: { consent_only: true },
+				createDefaultFeed: false,
+			});
+			// A NORMAL connection that has no feeds must still fail closed; the skip
+			// is scoped to consent-only, never a blanket "empty means fine".
+			const regular = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				createDefaultFeed: false,
+			});
+
+			await runGithubAclSyncTick({
+				getAppInstallationStore: () => ({}),
+			} as unknown as Parameters<typeof runGithubAclSyncTick>[0]);
+
+			const [consentRow] = await sql`
+        SELECT error_message FROM connections WHERE id = ${consentOnly.id}
+      `;
+			expect(consentRow?.error_message).toBeNull();
+
+			const [regularRow] = await sql`
+        SELECT error_message FROM connections WHERE id = ${regular.id}
+      `;
+			expect(regularRow?.error_message).toBe(
+				formatAclErrorMessage(
+					"GitHub ACL sync unavailable: no repository feeds configured",
+				),
+			);
 		});
 	});
 

@@ -202,10 +202,18 @@ async function fetchRepoCollaborators(
  */
 export async function runGithubAclSyncTick(coreServices: CoreServices): Promise<void> {
   const sql = getDb();
+  // Consent-only grant-holders are EXCLUDED, not swept and failed: they exist
+  // solely to hold an OAuth grant for delegation, and `manage_feeds` refuses
+  // feeds on them by construction, so `listRepos` is empty for them on every
+  // tick. Sweeping them would mark a healthy row `failed` forever (the reason
+  // only clears on a successful sync, which can never happen), turning the
+  // ACL-failure signal into permanent noise. A NORMAL connection that has no
+  // feeds still fails closed below — the skip is scoped to consent-only.
   const connections = await sql<{ id: string; organization_id: string }>`
 		SELECT id::text AS id, organization_id
 		FROM connections
 		WHERE connector_key = 'github' AND status = 'active' AND deleted_at IS NULL
+		  AND config->>'consent_only' IS DISTINCT FROM 'true'
 	`;
   if (connections.length === 0) return;
 

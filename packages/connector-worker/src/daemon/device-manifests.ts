@@ -16,7 +16,7 @@ export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
   version: '0.2.0',
   name: 'Shell',
   description:
-    'Run shell commands on this device through Lobu. Returns structured stdout/stderr/exit_code. Commands run in the device\'s real environment (host PATH, files) - gate with approval.',
+    'Run shell commands on this device through Lobu. Returns structured stdout/stderr/exit_code. Commands see the device\'s real filesystem and PATH but a minimal environment (no profile, no inherited secrets) - gate with approval.',
   required_capability: 'os.shell',
   runtime: { platforms: ['headless'], execution: 'daemon_builtin' },
   auth_schema: { methods: [{ type: 'none' }] },
@@ -27,7 +27,7 @@ export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
       kind: 'write',
       name: 'Run command',
       description:
-        'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash -lc`, so pipes, redirects, and && chains work. Prefer one focused command per call.',
+        'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash --noprofile --norc -c`, so pipes, redirects, and && chains work, but shell profile/rc files are NOT loaded - use absolute paths rather than relying on aliases or a login PATH. Prefer one focused command per call.',
       requiresApproval: true,
       inputSchema: {
         type: 'object',

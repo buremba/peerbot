@@ -574,6 +574,40 @@ describe("acl observability", () => {
 			expect(row?.unhealthy_alerted_at).not.toBeNull();
 		});
 
+		it("suppresses the alert for a consent-only github row but not a slack one", async () => {
+			// The retained `failed` row is deliberate — it keeps already-synced
+			// events fenced — but the github tick no longer sweeps consent-only
+			// connections, so it can never clear and alerting on it would be
+			// permanent noise. The slack tick DOES still sweep them, so a failure
+			// it records is live and must still alert.
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Consent Alert Org" });
+			const gh = await seedAclFailedConnection({
+				orgId: org.id,
+				errorMessage: formatAclErrorMessage("GitHub ACL sync failed: 401"),
+			});
+			const slack = await seedAclFailedConnection({
+				orgId: org.id,
+				errorMessage: formatAclErrorMessage("Slack ACL sync failed: 401"),
+			});
+			await sql`
+        UPDATE connections
+        SET config = jsonb_set(COALESCE(config, '{}'::jsonb), '{consent_only}', 'true')
+        WHERE id IN (${gh.id}, ${slack.id})
+      `;
+			await sql`
+        UPDATE connections SET connector_key = 'slack' WHERE id = ${slack.id}
+      `;
+
+			const result = await runConnectorHealthCheck();
+			expect(
+				result.details.find((d) => d.connectionId === gh.id)?.reason,
+			).toBeUndefined();
+			expect(result.details.find((d) => d.connectionId === slack.id)?.reason).toBe(
+				"acl_failed",
+			);
+		});
+
 		it("does not attribute a chat runtime ACL failure to a colliding data slug", async () => {
 			const sql = getTestDb();
 			const org = await createTestOrganization({

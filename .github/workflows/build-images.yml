@@ -106,6 +106,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Verify published release binds to this immutable commit
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          release=$(gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}")
+          [ "$(jq -r '.draft' <<<"$release")" = false ] && [ "$(jq -r '.prerelease' <<<"$release")" = false ] || { echo "::error::release is not a published stable release"; exit 1; }
+          tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
+          tag_sha=$(jq -r '.object.sha' <<<"$tag_ref")
+          if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then tag_sha=$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha'); fi
+          [ "$tag_sha" = "$RELEASE_SHA" ] && [ "$(jq -r '.target_commitish' <<<"$release")" = "$RELEASE_SHA" ] || { echo "::error::release/tag does not bind to workflow SHA"; exit 1; }
+
       # Every tag decision lives in scripts/derive-image-tags.mjs so it is
       # covered by scripts/__tests__/derive-image-tags.test.ts. Computed once
       # here so app/worker/embeddings cannot disagree about the tag,

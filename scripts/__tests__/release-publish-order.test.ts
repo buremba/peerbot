@@ -1,6 +1,14 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
+import {
+  compareVersions,
+  manifestBump,
+  releaseTagForVersion,
+  selectLatestRequiredJobs,
+  selectUniqueLatestRun,
+  verifyImmutableRelease,
+} from "../release-provenance.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const read = (name: string) =>
@@ -60,7 +68,7 @@ describe("release provenance workflow structure", () => {
     const release = uncommented(read("release-please.yml"));
     expect(release).toContain("filter=all");
     expect(release).toContain("--paginate --slurp");
-    expect(release).toContain("max_by(.run_attempt // 1)");
+    expect(release).toContain("map(.run_attempt // 1) | max");
     expect(release).toContain("head_repository.full_name");
     expect(release).toContain("jq -r '.event' <<<\"$build_run\")");
     expect(release).toContain('[ "$event" = push ] && [ "$branch" = main ]');
@@ -72,10 +80,10 @@ describe("release provenance workflow structure", () => {
     expect(release).toContain("main moved while waiting for exact CI");
   });
 
-  it("keeps release creation privileged and non-cancelling, with a final main recheck", () => {
+  it("keeps release creation privileged without a global evicting queue", () => {
     const release = read("release-please.yml");
     const write = job(release, "release-please-write");
-    expect(write).toContain("cancel-in-progress: false");
+    expect(write).not.toContain("concurrency:");
     expect(write).toContain("contents: write");
     expect(write).toContain("pull-requests: write");
     expect(write).toContain(
@@ -84,6 +92,8 @@ describe("release provenance workflow structure", () => {
     expect(write).toContain("target-branch: main");
     expect(write).toContain("release_created");
     expect(write).toContain("RELEASE_SHA");
+    expect(write).toContain("skip-github-release: true");
+    expect(write).toContain("Publish only a real immutable manifest bump");
   });
 
   it("separates manual image builds and guards before any checkout", () => {
@@ -169,5 +179,140 @@ describe("release provenance workflow structure", () => {
     expect(uncommented(source)).toContain(
       "publish policy must run from current main"
     );
+  });
+});
+
+describe("release provenance helpers execute the attestation policy", () => {
+  const required = ["generate-tag", "build-worker"];
+  const greenPages = [
+    {
+      jobs: [
+        {
+          name: "generate-tag",
+          run_attempt: 1,
+          status: "completed",
+          conclusion: "success",
+        },
+        {
+          name: "build-worker",
+          run_attempt: 1,
+          status: "completed",
+          conclusion: "success",
+        },
+      ],
+    },
+    {
+      jobs: [
+        {
+          name: "build-worker",
+          run_attempt: 2,
+          status: "completed",
+          conclusion: "success",
+        },
+      ],
+    },
+  ];
+
+  it("flattens multi-page jobs and selects exactly the latest attempt", () => {
+    expect(
+      selectLatestRequiredJobs(greenPages, required).map(
+        (job) => job.run_attempt
+      )
+    ).toEqual([1, 2]);
+    expect(() =>
+      selectLatestRequiredJobs(
+        [
+          {
+            jobs: [
+              { name: "generate-tag", run_attempt: 2 },
+              { name: "generate-tag", run_attempt: 2 },
+            ],
+          },
+        ],
+        ["generate-tag"]
+      )
+    ).toThrow("duplicate latest-attempt");
+    expect(() =>
+      selectLatestRequiredJobs(
+        [
+          {
+            jobs: [
+              {
+                name: "generate-tag",
+                status: "completed",
+                conclusion: "skipped",
+              },
+            ],
+          },
+        ],
+        ["generate-tag"]
+      )
+    ).toThrow("completed-success");
+  });
+
+  it("rejects ambiguous, skipped, failed, and missing selected CI runs", () => {
+    const expected = {
+      workflow_id: 7,
+      event: "push",
+      head_branch: "main",
+      head_sha: "a",
+      status: "completed",
+      conclusion: "success",
+    };
+    expect(
+      selectUniqueLatestRun([{ ...expected, id: 1, run_attempt: 1 }], expected)
+        .id
+    ).toBe(1);
+    expect(() =>
+      selectUniqueLatestRun(
+        [
+          { ...expected, id: 1, run_attempt: 2 },
+          { ...expected, id: 2, run_attempt: 2 },
+        ],
+        expected
+      )
+    ).toThrow("ambiguous");
+    expect(() => selectUniqueLatestRun([], expected)).toThrow("no matching");
+  });
+
+  it("binds stable release versions and immutable partial recovery", () => {
+    expect(manifestBump({ current: "17.3.0", parent: "17.2.0" })).toEqual({
+      bumped: true,
+      version: "17.3.0",
+    });
+    expect(manifestBump({ current: "17.2.0", parent: "17.2.0" })).toEqual({
+      bumped: false,
+      version: "17.2.0",
+    });
+    expect(compareVersions("17.10.0", "17.9.0")).toBe(1);
+    expect(releaseTagForVersion("17.3.0")).toBe("lobu-v17.3.0");
+    expect(() => manifestBump({ current: "17.1.0", parent: "17.2.0" })).toThrow(
+      "not newer"
+    );
+    const attested = { name: "lobu-v17.3.0", sha: "a".repeat(40) };
+    expect(
+      verifyImmutableRelease({
+        tag: attested,
+        release: {
+          tag_name: attested.name,
+          target_commitish: attested.sha,
+          prerelease: false,
+        },
+        expectedTag: attested.name,
+        expectedSha: attested.sha,
+      })
+    ).toBe(true);
+    expect(() =>
+      verifyImmutableRelease({
+        tag: attested,
+        release: {
+          tag_name: attested.name,
+          target_commitish: "b".repeat(40),
+          prerelease: false,
+        },
+        expectedTag: attested.name,
+        expectedSha: attested.sha,
+      })
+    ).toThrow("attested commit");
   });
 });

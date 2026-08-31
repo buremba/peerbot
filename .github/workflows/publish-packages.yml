@@ -49,9 +49,12 @@ jobs:
           IMAGE_RUN_ID: ${{ inputs.image_run_id }}
           BUMP: ${{ inputs.bump }}
           WORKFLOW_REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           [ "$WORKFLOW_REF" = refs/heads/main ] || { echo "::error::publish policy must run from current main"; exit 1; }
+          current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [ "$DISPATCH_SHA" = "$current_sha" ] || { echo "::error::publish workflow is not at current main"; exit 1; }
           [ "$BUMP" = skip ] || { echo "::error::hosted arbitrary version bumps are forbidden"; exit 1; }
           [[ "$RELEASE_TAG" =~ ^lobu-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::release_tag must be an exact lobu-vSemVer tag"; exit 1; }
           version="${RELEASE_TAG#lobu-v}"
@@ -67,6 +70,7 @@ jobs:
             tag_sha=$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')
           fi
           [[ "$tag_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not peel release tag"; exit 1; }
+          [ "$(jq -r '.target_commitish' <<<"$release")" = "$tag_sha" ] || { echo "::error::release target does not match peeled tag"; exit 1; }
 
           current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
           compare=$(gh api "repos/${REPOSITORY}/compare/${tag_sha}...${current_sha}")
@@ -78,25 +82,26 @@ jobs:
           [ "$(jq -r '.workflow_id' <<<"$build_run")" = "$build_workflow_id" ] || { echo "::error::wrong Build Images workflow"; exit 1; }
           [ "$(jq -r '.head_repository.full_name // empty' <<<"$build_run")" = "$REPOSITORY" ] || { echo "::error::Build Images repository mismatch"; exit 1; }
           [ "$(jq -r '.event' <<<"$build_run")" = release ] || { echo "::error::Build Images run must be a release event"; exit 1; }
+          [ "$(jq -r '.status' <<<"$build_run")" = completed ] && [ "$(jq -r '.conclusion' <<<"$build_run")" = success ] || { echo "::error::Build Images release run is not completed-success"; exit 1; }
           [ "$(jq -r '.head_sha' <<<"$build_run")" = "$tag_sha" ] || { echo "::error::Build Images SHA does not match peeled tag"; exit 1; }
 
           jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}/jobs?filter=all&per_page=100")
           selected=$(jq --arg required "$REQUIRED_IMAGE_JOBS" '
             ( $required | split(" ") ) as $required_jobs
-            | [ .[][] | select(.name as $name | ($required_jobs | index($name)) != null) ]
-            | group_by(.name)
-            | if any(.[]; ([ .[] | select(.run_attempt == (max_by(.run_attempt // 1).run_attempt // 1)) ] | length) != 1)
-              then error("duplicate latest-attempt required job") else . end
-            | map(max_by(.run_attempt // 1))
-            | if (map(.name) | sort) == ($required_jobs | sort)
-              and all(.[]; .status == "completed" and .conclusion == "success")
-              then . else error("required release image jobs missing, skipped, failed, or incomplete") end
+            | [ .[] | .jobs[] ] as $jobs
+            | $required_jobs | map(. as $name
+              | [ $jobs[] | select(.name == $name) ] as $matches
+              | if ($matches | length) == 0 then error("missing required job") else . end
+              | ($matches | map(.run_attempt // 1) | max) as $latest
+              | [ $matches[] | select((.run_attempt // 1) == $latest) ] as $chosen
+              | if ($chosen | length) != 1 then error("duplicate latest-attempt required job") else $chosen[0] end)
+            | if all(.[]; .status == "completed" and .conclusion == "success") then . else error("required release image jobs missing, skipped, failed, or incomplete") end
           ' <<<"$jobs") || { echo "::error::release image-job attestation failed"; exit 1; }
           printf '%s\n' "$selected" >/dev/null
 
           ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id')
-          ci_run_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${tag_sha}&event=push&branch=main&status=completed&per_page=100" \
-            --jq '[.workflow_runs[] | select(.workflow_id == '"$ci_workflow_id"' and .repository.full_name == "'"$REPOSITORY"'" and .event == "push" and .head_branch == "main" and .head_sha == "'"$tag_sha"'" and .status == "completed" and .conclusion == "success")] | sort_by(.run_attempt // 1) | last.id // empty')
+          ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${tag_sha}&event=push&branch=main&status=completed&per_page=100")
+          ci_run_id=$(jq -r --arg workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$tag_sha" '[.workflow_runs[] | select((.workflow_id|tostring) == $workflow_id and .repository.full_name == $repo and .event == "push" and .head_branch == "main" and .head_sha == $sha and .status == "completed" and .conclusion == "success")] as $runs | if ($runs|length) == 0 then "" else ($runs | map(.run_attempt // 1) | max) as $latest | [$runs[] | select((.run_attempt // 1) == $latest)] as $chosen | if ($chosen|length) == 1 then ($chosen[0].id|tostring) else error("ambiguous CI latest attempt") end end' <<<"$ci_runs")
           [ -n "$ci_run_id" ] || { echo "::error::no exact successful CI push/main run for release SHA"; exit 1; }
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -109,6 +114,9 @@ jobs:
     needs: attest-publish
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    concurrency:
+      group: publish-packages-${{ needs.attest-publish.outputs.version }}
+      cancel-in-progress: false
     environment: production
     env:
       CLAWHUB_TOKEN_SET: ${{ secrets.CLAWHUB_TOKEN != '' }}
@@ -150,7 +158,15 @@ jobs:
         if: ${{ env.CLAWHUB_TOKEN_SET == 'true' }}
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
-        run: npx --yes clawhub@latest login --token "$CLAWHUB_TOKEN" --no-browser
+          run: npx --yes clawhub@latest login --token "$CLAWHUB_TOKEN" --no-browser
+
+      - name: Gate package version monotonicity
+        env:
+          EXPECTED_VERSION: ${{ needs.attest-publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          published=$(npm view @lobu/cli versions --json 2>/dev/null || echo '[]')
+          node --input-type=module -e 'import { compareVersions } from "./scripts/release-provenance.mjs"; const versions = JSON.parse(process.argv[1]); const current = process.argv[2]; const stable = (Array.isArray(versions) ? versions : [versions]).filter(v => /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(v)); if (stable.some(v => compareVersions(v, current) > 0)) throw new Error(`npm already contains a newer stable version than ${current}`);' "$published" "$EXPECTED_VERSION"
 
       - name: Publish packages at exact version
         env:

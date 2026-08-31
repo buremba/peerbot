@@ -15,15 +15,23 @@ import {
 describe("parseConfig", () => {
 	test("webhook string booleans are accepted and unknown keys stripped", () => {
 		const parsed = parseConfig("webhook", {
-			token: "t1",
+			token: "webhook-token-at-least-32-characters",
 			searchable: "true",
 			junkKey: "should-not-persist",
 		}) as Record<string, unknown>;
 		expect(parsed).toEqual({
 			platform: "webhook",
-			token: "t1",
+			token: "webhook-token-at-least-32-characters",
 			searchable: "true",
 		});
+	});
+
+	test("webhook config rejects missing, empty, and weak bearer tokens", () => {
+		expect(() => parseConfig("webhook", {})).toThrow(/token/);
+		expect(() => parseConfig("webhook", { token: "" })).toThrow(/token/);
+		expect(() => parseConfig("webhook", { token: "too-short" })).toThrow(
+			/token/,
+		);
 	});
 
 	test("telegram config keeps declared keys and drops extras", () => {

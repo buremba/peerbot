@@ -1289,24 +1289,12 @@ export class ChatInstanceManager {
     request: Request,
 		peerAddress?: string | null,
   ): Promise<Response> {
-    // A stopped row is deliberately off — refuse deliveries exactly like a
-    // stopped chat connection (whose instance would not be running). Error
-    // status stays accepting: webhook connections have no startup that can
-    // fail, and a stray error row should not silently drop deliveries.
-    const stored = await this.connectionStore.getConnection(connectionId);
-		if (
-			!stored ||
-			stored.platform !== "webhook" ||
-			stored.status === "stopped"
-		) {
-      // A chat-connection miss may still be a CONNECTOR connection (a data
-      // connector row in `connections`, credential_mode NULL) that registered a
-      // provider webhook at connect time. Resolve that row, build a synthetic
-      // webhook config from
-      // its stored scheme + secret, and run the SAME ingest handler — so HMAC
-      // verification, size cap, rate limits, and dedupe all apply unchanged.
-			const bridged =
-				await this.resolveConnectorWebhookConnection(connectionId);
+		// Numeric webhook URLs are the canonical provider-connector namespace.
+		// Resolve it first so a legacy generic webhook whose stable id is numeric
+		// cannot shadow an unrelated provider connection across organizations.
+		const bridged = /^\d+$/.test(connectionId)
+			? await this.resolveConnectorWebhookConnection(connectionId)
+			: null;
       if (bridged) {
         return orgContext.run({ organizationId: bridged.stored.organizationId! }, () =>
           handleWebhookIngest(
@@ -1380,6 +1368,17 @@ export class ChatInstanceManager {
 					),
         );
       }
+
+    // A stopped row is deliberately off — refuse deliveries exactly like a
+    // stopped chat connection (whose instance would not be running). Error
+    // status stays accepting: webhook connections have no startup that can
+    // fail, and a stray error row should not silently drop deliveries.
+    const stored = await this.connectionStore.getConnection(connectionId);
+		if (
+			!stored ||
+			stored.platform !== "webhook" ||
+			stored.status === "stopped"
+		) {
       return new Response(JSON.stringify({ error: "Connection not found" }), {
         status: 404,
         headers: { "content-type": "application/json" },
@@ -1391,7 +1390,8 @@ export class ChatInstanceManager {
         stored,
         request,
         this.services.getSecretStore(),
-				peerAddress,
+        peerAddress,
+        { activateGenericAutomationEvent: true },
       );
     }
     return orgContext.run({ organizationId: stored.organizationId }, () =>
@@ -1399,8 +1399,9 @@ export class ChatInstanceManager {
         stored,
         request,
         this.services.getSecretStore(),
-				peerAddress,
-			),
+        peerAddress,
+        { activateGenericAutomationEvent: true },
+      ),
     );
   }
 

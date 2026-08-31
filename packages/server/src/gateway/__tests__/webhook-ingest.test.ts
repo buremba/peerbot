@@ -145,6 +145,66 @@ async function eventRows(connectionId = "whk1"): Promise<any[]> {
   `;
 }
 
+async function seedWebhookEventAutomation({
+	connectionId,
+	semanticType = "alert",
+}: {
+	connectionId: number;
+	semanticType?: string;
+}): Promise<number> {
+	const { getDb } = await import("../../db/client.js");
+	const sql = getDb();
+	const creatorId = "webhook-automation-owner";
+	await sql`
+		INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+		VALUES (${creatorId}, 'Webhook owner', 'webhook-owner@test.example', true, now(), now())
+		ON CONFLICT (id) DO NOTHING
+	`;
+	return sql.begin(async (tx) => {
+		const [automation] = await tx<{ id: number }>`
+			WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
+			INSERT INTO automations (
+				id, automation_group_id, organization_id, agent_id, created_by,
+				name, slug, status, triggers
+			)
+			SELECT id, id, ${ORG}, ${AGENT}, ${creatorId},
+			       'Webhook alert processor', 'webhook-alert-' || id, 'active',
+			       ${tx.json([
+					{
+						kind: "event",
+						source: "connector",
+						connector_key: "webhook",
+						connection_id: connectionId,
+						event_types: ["delivery.received"],
+						match: { semantic_type: semanticType },
+						execution: "turn",
+						active_run: "queue",
+						output: "silent",
+						skip_if_unchanged: true,
+					},
+				])}::jsonb
+			FROM next_id
+			RETURNING id
+		`;
+		const [version] = await tx<{ id: number }>`
+			INSERT INTO automation_versions (
+				automation_id, version, name, prompt, version_sources,
+				change_notes, created_by
+			) VALUES (
+				${automation.id}, 1, 'Webhook alert processor',
+				'Process the incoming alert.', '[]'::jsonb,
+				'Test webhook activation', ${creatorId}
+			)
+			RETURNING id
+		`;
+		await tx`
+			UPDATE automations SET current_version_id = ${version.id}
+			WHERE id = ${automation.id}
+		`;
+		return Number(automation.id);
+	});
+}
+
 describe("handleWebhookIngest auth", () => {
 	test("accepts Authorization: Bearer and persists the event", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
@@ -812,6 +872,138 @@ describe("ChatInstanceManager webhook wiring", () => {
 		expect(rows[0].organization_id).toBe(ORG);
 	});
 
+	test("persists, activates, scopes, and deduplicates a generic delivery", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { orgContext } = await import("../../lobu/stores/org-context.js");
+		const { runtimeConnectionIdToSlug } = await import(
+			"../../lobu/stores/connections-projection.js"
+		);
+		const { getDb } = await import("../../db/client.js");
+		const { manager } = await buildManager();
+
+		const created = await orgContext.run({ organizationId: ORG }, () =>
+			manager.addConnection("webhook", AGENT, {
+				platform: "webhook",
+				semanticType: "alert",
+				titlePath: "/title",
+			}),
+		);
+		const token = created.config.token as string;
+		const sql = getDb();
+		const [connection] = await sql<{ id: number }>`
+			SELECT id FROM connections
+			WHERE organization_id = ${ORG}
+			  AND connector_key = 'webhook'
+			  AND slug = ${runtimeConnectionIdToSlug(created.id)}
+			LIMIT 1
+		`;
+		if (!connection) throw new Error("Webhook connection projection was not created");
+
+		const automationId = await seedWebhookEventAutomation({
+			connectionId: Number(connection.id),
+		});
+
+		const makeRequest = () =>
+			new Request(`http://gateway.test/api/v1/webhooks/${created.id}`, {
+				method: "POST",
+				body: JSON.stringify({ title: "Database unavailable", severity: "critical" }),
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${token}`,
+				},
+			});
+		const concurrent = await Promise.all(
+			Array.from({ length: 6 }, () =>
+				manager.handleIngestWebhook(created.id, makeRequest()),
+			),
+		);
+		expect(concurrent.every((response) => response.status === 202)).toBe(true);
+		const concurrentBodies = (await Promise.all(
+			concurrent.map((response) => response.json()),
+		)) as Array<{ id: number; duplicate?: boolean }>;
+		expect(new Set(concurrentBodies.map((body) => body.id)).size).toBe(1);
+		expect(concurrentBodies.some((body) => body.duplicate === true)).toBe(true);
+		const firstBody = concurrentBodies[0];
+		if (!firstBody) throw new Error("Webhook delivery returned no response body");
+
+		const runs = await sql<{
+			approved_input: Record<string, unknown>;
+			status: string;
+		}>`
+			SELECT approved_input, status FROM runs
+			WHERE automation_id = ${automationId}
+			  AND run_type = 'automation'
+			ORDER BY id
+		`;
+		expect(runs).toHaveLength(1);
+		expect(runs[0]?.approved_input).toMatchObject({
+			dispatch_source: "event",
+			trigger_execution: "turn",
+			delivery_ids: [`webhook:event:${firstBody.id}`],
+			trigger_signal: {
+				connector_key: "webhook",
+				connection_id: Number(connection.id),
+				event_type: "delivery.received",
+				attributes: {
+					semantic_type: "alert",
+				},
+			},
+		});
+		const [event] = await sql<{ connection_id: number }>`
+			SELECT connection_id FROM events WHERE id = ${firstBody.id}
+		`;
+		expect(Number(event?.connection_id)).toBe(Number(connection.id));
+
+		const other = await orgContext.run({ organizationId: ORG }, () =>
+			manager.addConnection("webhook", AGENT, {
+				platform: "webhook",
+				semanticType: "alert",
+			}),
+		);
+		const otherResponse = await manager.handleIngestWebhook(
+			other.id,
+			new Request(`http://gateway.test/api/v1/webhooks/${other.id}`, {
+				method: "POST",
+				body: JSON.stringify({ title: "Different connection" }),
+				headers: {
+					"content-type": "application/json",
+					authorization: `Bearer ${String(other.config.token)}`,
+				},
+			}),
+		);
+		expect(otherResponse.status).toBe(202);
+
+		const { normalizeAutomationSources } = await import(
+			"../../automations/source-refs.js"
+		);
+		const { executeDataSources } = await import(
+			"../../utils/execute-data-sources.js"
+		);
+		const [source] = await normalizeAutomationSources(sql, ORG, [
+			{ name: "incoming", query: `@connection:${connection.id}` },
+		]);
+		const readback = await executeDataSources(
+			[{ name: source.name, query: source.query }],
+			{ organizationId: ORG },
+			sql,
+		);
+		expect(readback.incoming).toHaveLength(1);
+		expect(readback.incoming?.[0]).toMatchObject({
+			id: firstBody.id,
+			connection_id: Number(connection.id),
+			payload_data: {
+				title: "Database unavailable",
+				severity: "critical",
+			},
+		});
+
+		const [{ count }] = await sql<{ count: number }>`
+			SELECT count(*)::int AS count FROM runs
+			WHERE automation_id = ${automationId} AND run_type = 'automation'
+		`;
+		expect(count).toBe(1);
+	});
+
 	test("a stopped webhook connection refuses deliveries with 404", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const { orgContext } = await import("../../lobu/stores/org-context.js");
@@ -1025,7 +1217,11 @@ describe("connector-connection webhook bridge (connections table)", () => {
 	 */
 	async function seedRegisteredConnectorConnection(
 		secretStore: any,
-		overrides: { status?: string; secret?: string | null } = {},
+		overrides: {
+			status?: string;
+			secret?: string | null;
+			connectorKey?: string;
+		} = {},
 	): Promise<string> {
 		const { getDb } = await import("../../db/client.js");
 		const { orgContext } = await import("../../lobu/stores/org-context.js");
@@ -1034,9 +1230,10 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		const secretValue =
 			overrides.secret === null ? null : (overrides.secret ?? SIG_SECRET);
 		// Insert first to get the generated id, then persist the secret + stamp.
+		const connectorKey = overrides.connectorKey ?? "github";
 		const inserted = (await getDb()`
 			INSERT INTO connections (organization_id, connector_key, slug, status, config)
-			VALUES (${ORG}, ${"github"}, ${`github-${Date.now()}-${Math.random()}`},
+			VALUES (${ORG}, ${connectorKey}, ${`${connectorKey}-${Date.now()}-${Math.random()}`},
 				${overrides.status ?? "active"}, ${getDb().json({})})
 			RETURNING id
 		`) as Array<{ id: number }>;
@@ -1209,6 +1406,69 @@ describe("connector-connection webhook bridge (connections table)", () => {
 		expect(new Date(String(feed.next_run_at)).getTime()).toBeLessThanOrEqual(
 			Date.now() + 1000,
 		);
+	});
+
+	test("a raw provider bridge does not emit the generic webhook Automation event", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager, secretStore } = await buildManager();
+		const { orgContext } = await import("../../lobu/stores/org-context.js");
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		const { getDb } = await import("../../db/client.js");
+		const id = await seedRegisteredConnectorConnection(secretStore, {
+			connectorKey: "linear",
+		});
+		// Simulate a pre-guard legacy generic webhook with the same numeric runtime
+		// id. Provider IDs own numeric URLs, so this row must not shadow the signed
+		// connector delivery and turn it into generic bearer-token auth.
+		await orgContext.run({ organizationId: ORG }, () =>
+			manager.addConnection(
+				"webhook",
+				AGENT,
+				{
+					platform: "webhook",
+					token: "legacy-numeric-webhook-token-0123456789",
+				},
+				undefined,
+				undefined,
+				id,
+			),
+		);
+		const automationId = await seedWebhookEventAutomation({
+			connectionId: Number(id),
+			semanticType: "issue",
+		});
+		const app = createConnectionWebhookRoutes(manager);
+		const raw = JSON.stringify({ action: "create", issue: { id: "LIN-1" } });
+		const response = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers: {
+					"content-type": "application/json",
+					"x-github-delivery": "linear-bridge-1",
+					"x-hub-signature-256": sign(raw, { prefix: "sha256=" }),
+				},
+			}),
+		);
+
+		expect(response.status).toBe(202);
+		const rows = await eventRows(id);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			connector_key: `webhook:${id}`,
+			origin_id: "linear-bridge-1",
+			semantic_type: "issue",
+		});
+		expect(rows[0].connection_id).toBeNull();
+		const [{ count }] = await getDb()<{ count: number }>`
+			SELECT count(*)::int AS count
+			FROM runs
+			WHERE automation_id = ${automationId}
+			  AND run_type = 'automation'
+		`;
+		expect(count).toBe(0);
 	});
 
 	test("an authenticated Jira delivery lands as a structured event on the Atlassian Rovo feed", async () => {

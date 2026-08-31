@@ -218,12 +218,11 @@ const boolOrString = (description: string) =>
 
 export const WebhookConfigSchema = Type.Object({
 	platform: Type.Literal("webhook"),
-	token: Type.Optional(
-		Type.String({
-			description:
-				"Bearer token authenticating inbound deliveries. Auto-generated when omitted; stored as a secret:// ref.",
-		}),
-	),
+	token: Type.String({
+		minLength: 32,
+		description:
+			"Bearer token authenticating inbound deliveries. Required on public create/apply surfaces; stored as a secret:// ref.",
+	}),
 	allowQueryAuth: Type.Optional(
 		boolOrString(
 			"Allow `?token=` auth for senders that cannot set headers (e.g. Sentry's legacy WebHooks plugin). Default false.",

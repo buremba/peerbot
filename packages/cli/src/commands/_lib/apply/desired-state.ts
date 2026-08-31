@@ -671,23 +671,25 @@ export function validateConnectionAgainstConnector(
   authProfiles: ReadonlyMap<string, DesiredAuthProfile>,
   schemas: ResolvedConnectorSchemas | null
 ): void {
-  const declaredChatPlatform = schemas?.optionsSchema?.["x-lobu-chat-platform"];
-  const isChatConnector =
-    typeof declaredChatPlatform === "string" &&
-    declaredChatPlatform === connection.connector;
-  if (schemas && connection.credentialMode === "byo" && !isChatConnector) {
+  const declaredConnectionPlatform =
+    schemas?.optionsSchema?.["x-lobu-chat-platform"] ??
+    schemas?.optionsSchema?.["x-lobu-adapterless-platform"];
+  const isByoConnection =
+    typeof declaredConnectionPlatform === "string" &&
+    declaredConnectionPlatform === connection.connector;
+  if (schemas && connection.credentialMode === "byo" && !isByoConnection) {
     throw new ValidationError(
-      `${connection.sourceFile}: connection "${connection.slug}" uses credentialMode "byo", but connector "${connection.connector}" does not declare the chat capability`
+      `${connection.sourceFile}: connection "${connection.slug}" uses credentialMode "byo", but connector "${connection.connector}" does not declare the chat capability or an adapterless connection platform`
     );
   }
-  if (schemas && isChatConnector && connection.credentialMode !== "byo") {
+  if (schemas && isByoConnection && connection.credentialMode !== "byo") {
     if (connection.config?.managedBy) {
       throw new ValidationError(
-        `${connection.sourceFile}: managed chat connection "${connection.slug}" is owned by the OAuth/install flow and cannot be declared in config`
+        `${connection.sourceFile}: managed connection "${connection.slug}" is owned by the OAuth/install flow and cannot be declared in config`
       );
     }
     throw new ValidationError(
-      `${connection.sourceFile}: chat connection "${connection.slug}" must declare credentialMode "byo" (hosted connections use "hosted" and are not persisted)`
+      `${connection.sourceFile}: connection "${connection.slug}" must declare credentialMode "byo" (hosted connections use "hosted" and are not persisted)`
     );
   }
   // Validate against `{}` when config is omitted too — that surfaces missing

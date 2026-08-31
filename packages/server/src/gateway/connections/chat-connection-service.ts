@@ -328,6 +328,11 @@ export async function upsertByoChatConnection(
 	created: boolean;
 	changed: boolean;
 }> {
+	if (input.platform === "webhook" && /^\d+$/.test(input.stableId)) {
+		throw new Error(
+			"Webhook connection slugs cannot be numeric because numeric webhook URLs are reserved for provider connector IDs",
+		);
+	}
 	if (input.stableId.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
 		throw new Error(
 			`Stable ID ${input.stableId} is reserved for managed Slack installations`,

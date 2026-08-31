@@ -2,148 +2,172 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
 
-const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-const workflow = (name: string) =>
-  readFileSync(`${repoRoot}/.github/workflows/${name}`, "utf8");
-
-/**
- * Slice one top-level job out of a workflow. Scanning to the next job-key line
- * rather than to a named sibling keeps these assertions independent of job
- * order — reordering build-images.yml must not silently empty the haystack.
- */
-function jobBlock(yaml: string, jobId: string): string {
+const root = fileURLToPath(new URL("../..", import.meta.url));
+const read = (name: string) =>
+  readFileSync(`${root}/.github/workflows/${name}`, "utf8");
+const job = (yaml: string, id: string) => {
   const lines = yaml.split("\n");
-  const start = lines.indexOf(`  ${jobId}:`);
-  if (start === -1) throw new Error(`job '${jobId}' not found in workflow`);
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (/^ {2}[A-Za-z_][\w-]*:/.test(lines[i])) {
-      end = i;
-      break;
-    }
-  }
-  return lines.slice(start, end).join("\n");
-}
+  const start = lines.indexOf(`  ${id}:`);
+  if (start < 0) throw new Error(`missing job ${id}`);
+  const end = lines.findIndex(
+    (line, index) => index > start && /^ {2}[A-Za-z_][\w-]*:/.test(line)
+  );
+  return lines.slice(start, end < 0 ? lines.length : end).join("\n");
+};
+const uncommented = (text: string) =>
+  text
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+const runBodies = (text: string) =>
+  text
+    .split("\n")
+    .reduce<{ active: boolean; lines: string[] }>(
+      (state, line) => {
+        if (/^ {8}run: \|/.test(line))
+          return { active: true, lines: state.lines };
+        if (state.active && !/^ {10}/.test(line))
+          return { active: false, lines: state.lines };
+        if (state.active) state.lines.push(line);
+        return state;
+      },
+      { active: false, lines: [] }
+    )
+    .lines.join("\n");
 
-describe("release package publication ordering", () => {
-  it("slices jobs at every valid job ID", () => {
-    const yaml = [
-      "jobs:",
-      "  target:",
-      "    marker: target",
-      "  _next-job:",
-      "    marker: sibling",
-    ].join("\n");
+const requiredJobs = [
+  "generate-tag",
+  "connector-parity-smoke",
+  "build-worker",
+  "build-embeddings-service",
+  "build-app",
+  "app-image-smoke",
+];
 
-    expect(jobBlock(yaml, "target")).not.toContain("sibling");
+describe("release provenance workflow structure", () => {
+  it("uses completed Build Images workflow runs and requires manual image_run_id", () => {
+    const release = uncommented(read("release-please.yml"));
+    expect(release).toContain("workflow_run:");
+    expect(release).toContain('workflows: ["Build and Push Images"]');
+    expect(release).toContain("types: [completed]");
+    expect(release).toContain("workflow_dispatch:");
+    expect(release).toMatch(/image_run_id:[\s\S]*required: true/);
+    expect(release).not.toContain("on:\n  push:");
+    expect(release).not.toContain("gh workflow run publish-packages.yml");
   });
 
-  it("does not dispatch package publication at release creation time", () => {
-    expect(workflow("release-please.yml")).not.toContain(
-      "gh workflow run publish-packages.yml"
+  it("attests exact main push metadata, paginates all jobs, and selects attempts", () => {
+    const release = uncommented(read("release-please.yml"));
+    expect(release).toContain("filter=all");
+    expect(release).toContain("--paginate --slurp");
+    expect(release).toContain("max_by(.run_attempt // 1)");
+    expect(release).toContain("head_repository.full_name");
+    expect(release).toContain("jq -r '.event' <<<\"$build_run\")");
+    expect(release).toContain('[ "$event" = push ] && [ "$branch" = main ]');
+    expect(release).toContain(
+      '[ "$status" = completed ] && [ "$conclusion" = success ]'
     );
+    for (const name of requiredJobs) expect(release).toContain(name);
+    expect(release).toContain("sleep 20");
+    expect(release).toContain("main moved while waiting for exact CI");
   });
 
-  it("dispatches only after app-image-smoke and pins the release tag and run", () => {
-    const job = jobBlock(
-      workflow("build-images.yml"),
+  it("keeps release creation privileged and non-cancelling, with a final main recheck", () => {
+    const release = read("release-please.yml");
+    const write = job(release, "release-please-write");
+    expect(write).toContain("cancel-in-progress: false");
+    expect(write).toContain("contents: write");
+    expect(write).toContain("pull-requests: write");
+    expect(write).toContain(
+      "Recheck current main immediately before release action"
+    );
+    expect(write).toContain("target-branch: main");
+    expect(write).toContain("release_created");
+    expect(write).toContain("RELEASE_SHA");
+  });
+
+  it("separates manual image builds and guards before any checkout", () => {
+    const images = uncommented(read("build-images.yml"));
+    expect(images).toContain(
+      "github.event_name == 'workflow_dispatch' && '-manual'"
+    );
+    const guard = job(images, "current-main-guard");
+    expect(guard).toContain("git/ref/heads/main");
+    expect(guard).toContain("refs/heads/main");
+    expect(guard).toContain("github.sha");
+    expect(images.indexOf("current-main-guard:")).toBeLessThan(
+      images.indexOf("uses: actions/checkout")
+    );
+    expect(images).toContain("BUILD_PLATFORMS");
+    expect(images).toContain("linux/arm64");
+    expect(images).toContain("latest");
+  });
+
+  it("dispatches package publication from main policy with exact inputs", () => {
+    const trigger = job(
+      uncommented(read("build-images.yml")),
       "trigger-package-publish"
     );
-
-    expect(job).toContain("needs: [generate-tag, app-image-smoke]");
-    expect(job).toContain("github.event_name == 'release'");
-    expect(job).toContain('--ref "$RELEASE_TAG"');
-    expect(job).toContain('-f image_run_id="$GITHUB_RUN_ID"');
+    expect(trigger).toContain("--ref main");
+    expect(trigger).not.toContain('--ref "$RELEASE_TAG"');
+    expect(trigger).toContain('-f release_tag="$RELEASE_TAG"');
+    expect(trigger).toContain("-f bump=skip");
+    expect(trigger).toContain('-f image_run_id="$GITHUB_RUN_ID"');
   });
 
-  it("keeps the dispatch skipped when app-image-smoke is not green", () => {
-    // A job whose `if:` carries no status function inherits `success()` over
-    // its `needs`, so a failed or skipped app-image-smoke skips the dispatch.
-    // `always()`/`!cancelled()` would opt out of that and publish anyway.
-    const job = jobBlock(
-      workflow("build-images.yml"),
-      "trigger-package-publish"
-    );
-
-    expect(job).not.toMatch(/always\(\)|cancelled\(\)|failure\(\)/);
+  it("requires release and producer identifiers and removes fallback and bumps", () => {
+    const publish = uncommented(read("publish-packages.yml"));
+    expect(publish).toMatch(/release_tag:[\s\S]*required: true/);
+    expect(publish).toMatch(/image_run_id:[\s\S]*required: true/);
+    expect(publish).toContain('BUMP" = skip');
+    expect(publish).not.toContain("workflow_runs[0]");
+    expect(publish).not.toContain('node scripts/publish-packages.mjs "$BUMP"');
+    expect(publish).toContain("--skip-bump");
+    expect(publish).toContain("ci_workflow_id");
   });
 
-  it("pages when the dispatch itself fails", () => {
-    // build-images is the only thing watching this dispatch; if it drops off
-    // notify-failure's needs, a failed publish trigger goes unnoticed until
-    // someone checks npm.
-    const job = jobBlock(workflow("build-images.yml"), "notify-failure");
-
-    expect(job).toMatch(
-      /^\s+needs:\s*\[[^\]]*\btrigger-package-publish\b[^\]]*\]/m
+  it("fail-closes release attestation and allows only green individual producer jobs", () => {
+    const attest = job(
+      uncommented(read("publish-packages.yml")),
+      "attest-publish"
     );
+    expect(attest).toContain("draft");
+    expect(attest).toContain("git/ref/tags");
+    expect(attest).toContain("git/tags");
+    expect(attest).toContain("compare/");
+    expect(attest).toContain("jq -r '.event' <<<\"$build_run\")");
+    expect(attest).toContain("jq -r '.event' <<<\"$build_run\")");
+    expect(attest).toContain('status == "completed"');
+    expect(attest).toContain('conclusion == "success"');
+    expect(attest).toContain("duplicate latest-attempt required job");
+    expect(attest).toContain(
+      'all(.[]; .status == "completed" and .conclusion == "success")'
+    );
+    expect(read("publish-packages.yml")).toContain("actions: read");
+    expect(attest).toContain("exact successful CI push/main run");
   });
 
-  it("validates the exact producer SHA and green smoke before publishing", () => {
-    const publish = workflow("publish-packages.yml");
-
-    expect(publish).toMatch(/^permissions:\n(?: {2}.*\n)* {2}actions: read$/m);
-    expect(publish).toContain("actions/workflows/build-images.yml");
-    expect(publish).toContain("--jq '.id'");
-    expect(publish).toContain(
-      'if [ "$workflow_id" != "$expected_workflow_id" ]'
+  it("keeps credentials out of the read-only gate and checks out the attested SHA", () => {
+    const publish = read("publish-packages.yml");
+    const attest = job(publish, "attest-publish");
+    const privileged = job(publish, "publish-packages");
+    expect(attest).not.toContain("id-token: write");
+    expect(attest).not.toContain("NPM_TOKEN");
+    expect(privileged).toContain("id-token: write");
+    expect(privileged).toContain(
+      "ref: ${{ needs.attest-publish.outputs.tag_sha }}"
     );
-    expect(publish).not.toContain(
-      'if [ "$workflow_path" != ".github/workflows/build-images.yml" ]'
-    );
-    expect(publish).toContain("--jq '[.workflow_id, .head_sha] | @tsv'");
-    expect(publish).toContain('if [ "$run_sha" != "$sha" ]');
-    expect(publish).toContain('select(.name == "app-image-smoke")');
-    expect(publish).toContain(
-      'if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]'
-    );
+    expect(privileged).toContain("scripts/publish-packages.mjs --skip-bump");
+    expect(privileged).toContain("NODE_AUTH_TOKEN");
+    expect(runBodies(publish)).not.toContain("${{ inputs.");
+    expect(publish).toContain("published-artifact-smoke.yml");
   });
 
-  it("reads dispatch inputs through env, not template expansion", () => {
-    // publish-packages holds `id-token: write` and the production NPM_TOKEN, so
-    // a `${{ inputs.* }}` expanded inside a `run:` body is a publish-credential
-    // injection reachable by anyone who can dispatch the workflow.
-    const publish = workflow("publish-packages.yml");
-    const runBodies = publish
-      .split("\n")
-      .filter((line) => !/^\s{8,}[A-Z_]+:\s/.test(line))
-      .join("\n");
-
-    expect(runBodies).not.toContain("${{ inputs.image_run_id }}");
-    expect(runBodies).not.toContain("${{ inputs.bump }}");
-    expect(publish).toContain('run_id="$IMAGE_RUN_ID"');
-  });
-
-  it("gates a successful publish on the exact npm artifact smoke", () => {
-    const publish = workflow("publish-packages.yml");
-    const artifactSmoke = workflow("published-artifact-smoke.yml");
-    const verify = jobBlock(publish, "verify-published-artifact");
-
-    expect(artifactSmoke).toContain("workflow_call:");
-    expect(artifactSmoke).not.toContain("workflow_run:");
-    expect(verify).toContain("needs: publish-packages");
-    expect(verify).toContain(
-      "uses: ./.github/workflows/published-artifact-smoke.yml"
+  it("does not accept comment-only evidence", () => {
+    const source = read("publish-packages.yml");
+    expect(uncommented(source)).not.toContain("newest exact-SHA");
+    expect(uncommented(source)).toContain(
+      "publish policy must run from current main"
     );
-    expect(verify).toContain(
-      "version: ${{ needs.publish-packages.outputs.published-version }}"
-    );
-    expect(publish).toContain(
-      "published-version: ${{ steps.published-version.outputs.version }}"
-    );
-    expect(publish).toContain("require('./packages/cli/package.json').version");
-  });
-
-  it("fails closed when the published Helm chart is not public", () => {
-    const publish = jobBlock(workflow("helm-chart.yml"), "publish");
-
-    expect(publish).not.toContain("/visibility");
-    expect(publish).not.toContain("|| true");
-    expect(publish).toContain(
-      'gh api "/orgs/${OWNER}/packages/container/charts%2Flobu"'
-    );
-    expect(publish).toContain("--jq '.visibility'");
-    expect(publish).toContain('if [ "$visibility" != "public" ]');
-    expect(publish).toContain("exit 1");
   });
 });

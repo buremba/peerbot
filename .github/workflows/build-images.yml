@@ -17,7 +17,7 @@ name: Build and Push Images
 # matching ImagePolicy lives in the owletto submodule and accepts both the old
 # two-segment tags and the new three-segment form.
 concurrency:
-  group: build-images${{ github.event_name == 'release' && '-release' || '' }}
+  group: build-images${{ github.event_name == 'workflow_dispatch' && '-manual' || github.event_name == 'release' && '-release' || '' }}
   cancel-in-progress: false
 
 on:
@@ -68,8 +68,34 @@ env:
         || 'linux/amd64' }}
 
 jobs:
+  # A manual run is allowed only from the current main tip. This job performs
+  # no checkout, so an old branch cannot execute repository code before the
+  # guard has passed. Manual runs have their own concurrency group above and
+  # therefore cannot evict a pending main push.
+  current-main-guard:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Require manual dispatch from current main
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [ "$REF" = "refs/heads/main" ] || { echo "::error::manual image builds must target main"; exit 1; }
+          current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [ "$current_sha" = "$DISPATCH_SHA" ] || { echo "::error::manual image build is not at current main"; exit 1; }
+      - name: Allow automated event
+        if: github.event_name != 'workflow_dispatch'
+        run: echo "automated event does not need a manual ref guard"
+
   generate-tag:
     runs-on: ubuntu-24.04
+    needs: [current-main-guard]
     outputs:
       tag: ${{ steps.tags.outputs.tag }}
       semver: ${{ steps.tags.outputs.semver }}
@@ -273,11 +299,9 @@ jobs:
             "${REGISTRY}/${IMAGE_NAME_APP}:${{ needs.generate-tag.outputs.tag }}"
 
   # Package publication belongs after the exact release artifact passes its
-  # runtime smoke. release-please used to dispatch this immediately after
-  # creating the release, while build-images was still queued/in progress;
-  # publish-packages correctly failed closed, leaving 14.9 and 14.10 absent
-  # from npm. Target the release tag and pass this exact run ID so
-  # the downstream guard cannot select a different same-SHA image run.
+  # runtime smoke. Dispatch from current main so the hardened workflow policy
+  # is used; the release tag is data, not the workflow ref. Pass this exact run
+  # ID so the downstream gate cannot select a different producer.
   trigger-package-publish:
     runs-on: ubuntu-24.04
     needs: [generate-tag, app-image-smoke]
@@ -296,7 +320,8 @@ jobs:
           set -euo pipefail
           gh workflow run publish-packages.yml \
             --repo "$GITHUB_REPOSITORY" \
-            --ref "$RELEASE_TAG" \
+            --ref main \
+            -f release_tag="$RELEASE_TAG" \
             -f bump=skip \
             -f image_run_id="$GITHUB_RUN_ID"
 

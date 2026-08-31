@@ -1,42 +1,142 @@
 name: Release Please
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["Build and Push Images"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      image_run_id:
+        description: "Exact successful main Build and Push Images run"
+        required: true
+        type: string
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  actions: read
+
+env:
+  REQUIRED_IMAGE_JOBS: generate-tag connector-parity-smoke build-worker build-embeddings-service build-app app-image-smoke
 
 jobs:
-  release-please:
+  attest:
+    name: Attest main image and CI runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.attest.outputs.sha }}
+      image_run_id: ${{ steps.attest.outputs.image_run_id }}
+      ci_run_id: ${{ steps.attest.outputs.ci_run_id }}
+    steps:
+      - name: Fetch and attest immutable producer runs
+        id: attest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          EVENT_IMAGE_RUN_ID: ${{ github.event.workflow_run.id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          image_run_id="${INPUT_IMAGE_RUN_ID:-${EVENT_IMAGE_RUN_ID:-}}"
+          [ -n "$image_run_id" ] || { echo "::error::image_run_id is required"; exit 1; }
+
+          build_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/build-images.yml" --jq '.id')
+          build_run=$(gh api "repos/${REPOSITORY}/actions/runs/${image_run_id}")
+          workflow_id=$(jq -r '.workflow_id' <<<"$build_run")
+          sha=$(jq -r '.head_sha' <<<"$build_run")
+          head_repo=$(jq -r '.head_repository.full_name // empty' <<<"$build_run")
+          event=$(jq -r '.event' <<<"$build_run")
+          branch=$(jq -r '.head_branch // empty' <<<"$build_run")
+          status=$(jq -r '.status' <<<"$build_run")
+          conclusion=$(jq -r '.conclusion // empty' <<<"$build_run")
+          [ "$workflow_id" = "$build_workflow_id" ] || { echo "::error::wrong Build Images workflow"; exit 1; }
+          [ "$head_repo" = "$REPOSITORY" ] || { echo "::error::Build Images run repository mismatch"; exit 1; }
+          [ "$event" = push ] && [ "$branch" = main ] || { echo "::error::Build Images run must be a main push"; exit 1; }
+          [ "$status" = completed ] && [ "$conclusion" = success ] || { echo "::error::Build Images run is not completed-success"; exit 1; }
+
+          current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [ "$current_sha" = "$sha" ] || { echo "::error::main moved while attesting Build Images"; exit 1; }
+
+          jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${image_run_id}/jobs?filter=all&per_page=100")
+          selected=$(jq --arg required "$REQUIRED_IMAGE_JOBS" '
+            ( $required | split(" ") ) as $required_jobs
+            | [ .[][] | select(.name as $name | ($required_jobs | index($name)) != null) ]
+            | group_by(.name)
+            | if any(.[]; ([ .[] | select(.run_attempt == (max_by(.run_attempt // 1).run_attempt // 1)) ] | length) != 1)
+              then error("duplicate latest-attempt required job") else . end
+            | map(max_by(.run_attempt // 1))
+            | if (map(.name) | sort) == ($required_jobs | sort)
+              and all(.[]; .status == "completed" and .conclusion == "success")
+              and (map({key: .name, value: .}) | from_entries | length) == ($required_jobs | length)
+              then . else error("required image jobs missing, duplicated, skipped, failed, or incomplete") end
+          ' <<<"$jobs") || { echo "::error::Build Images required-job attestation failed"; exit 1; }
+          printf '%s\n' "$selected" >/dev/null
+
+          ci_run_id=""
+          ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id')
+          for attempt in $(seq 1 20); do
+            current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+            [ "$current_sha" = "$sha" ] || { echo "::error::main moved while waiting for exact CI"; exit 1; }
+            ci_run_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&branch=main&status=completed&per_page=100" \
+              --jq '[.workflow_runs[] | select(.workflow_id == '"$ci_workflow_id"' and .repository.full_name == "'"$REPOSITORY"'" and .event == "push" and .head_branch == "main" and .head_sha == "'"$sha"'" and .status == "completed" and .conclusion == "success")] | sort_by(.run_attempt // 1) | last.id // empty')
+            [ -n "$ci_run_id" ] && break
+            sleep 20
+          done
+          [ -n "$ci_run_id" ] || { echo "::error::exact successful CI push/main run was not observed within the bounded wait"; exit 1; }
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "image_run_id=$image_run_id" >> "$GITHUB_OUTPUT"
+          echo "ci_run_id=$ci_run_id" >> "$GITHUB_OUTPUT"
+
+  release-please-write:
+    name: Create release from attested main
+    needs: attest
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    concurrency:
+      group: release-please-write
+      cancel-in-progress: false
     environment: production
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
-      # Releases created with GITHUB_TOKEN do not trigger release-event
-      # workflows, including build-images and mac-release.
       - name: Require release automation token
         env:
           RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         run: |
-          if [ -z "$RELEASE_PLEASE_TOKEN" ]; then
-            echo "::error::RELEASE_PLEASE_TOKEN is required so release-event workflows can run."
-            exit 1
-          fi
+          set -euo pipefail
+          [ -n "$RELEASE_PLEASE_TOKEN" ] || { echo "::error::RELEASE_PLEASE_TOKEN is required"; exit 1; }
 
-      - uses: googleapis/release-please-action@v5
+      - name: Recheck current main immediately before release action
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [ "$current_sha" = "$ATTESTED_SHA" ] || { echo "::error::main advanced after attestation"; exit 1; }
+
+      - name: Run Release Please against main
+        id: release
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           include-component-in-tag: true
+          target-branch: main
 
-  # build-images.yml triggers publish-packages.yml only after the release's
-  # exact app image has been built and boot-smoked. Keeping that dependency at
-  # the artifact chokepoint prevents release creation from racing image CI.
-
-  # mac-release.yml now auto-fires on `release: types: [published]` directly,
-  # so this job is no longer needed — see mac-release.yml's `on:` block.
+      - name: Verify emitted release SHA
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [ -n "$RELEASE_SHA" ] && [ "$RELEASE_SHA" = "$ATTESTED_SHA" ] || {
+            echo "::error::Release Please emitted a release for an unexpected SHA"
+            exit 1
+          }

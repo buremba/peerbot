@@ -246,7 +246,7 @@ try {
     fullPage: true,
   });
   await page.getByRole("button", { name: "Approve" }).click();
-  await page.getByRole("heading", { name: "Access Authorized" }).waitFor();
+  await page.getByText("Access Authorized", { exact: true }).waitFor();
 
   const deviceTokens = await postForm("/oauth/token", {
     grant_type: "urn:ietf:params:oauth:grant-type:device_code",

@@ -108,9 +108,9 @@ export const OAuthCredentialsSchema = Type.Object({
  */
 export const EXECUTION_BACKENDS = {
   /** Artifact compiled from connector source and executed by the worker. */
-  compiledConnector: 'compiled_connector',
+  compiledConnector: "compiled_connector",
   /** Built into the daemon binary; no compiler or SDK resolution involved. */
-  daemonBuiltin: 'daemon_builtin',
+  daemonBuiltin: "daemon_builtin",
 } as const;
 
 /**
@@ -126,7 +126,7 @@ export const EXECUTION_BACKENDS = {
 export function defaultBackendCapacity(
   platform: string | null | undefined
 ): Record<string, number> {
-  return platform === 'headless'
+  return platform === "headless"
     ? {
         [EXECUTION_BACKENDS.daemonBuiltin]: 1,
         [EXECUTION_BACKENDS.compiledConnector]: 1,

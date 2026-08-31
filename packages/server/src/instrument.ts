@@ -16,6 +16,7 @@ import { resolveSentryRuntime } from './utils/runtime-info';
 import {
   scrubSentryBreadcrumb,
   scrubSentryErrorEvent,
+  scrubSentryTransactionEvent,
 } from './utils/sentry-scrubber';
 
 // .env is the single source of truth for secrets. This module reads SENTRY_DSN
@@ -69,6 +70,7 @@ if (dsn) {
     // validation noise.
     sampleRate: 1.0,
     beforeSend: scrubSentryErrorEvent,
+    beforeSendTransaction: scrubSentryTransactionEvent,
     beforeBreadcrumb: scrubSentryBreadcrumb,
     // The NodeSystemError integration calls util.getSystemErrorMap(), which
     // some Node builds we run under (notably v24.x in our app image) don't

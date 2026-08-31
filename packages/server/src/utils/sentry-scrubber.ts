@@ -1,12 +1,38 @@
-import type { Breadcrumb, ErrorEvent } from '@sentry/node';
+import { isSecretKey, redactUriCredentials } from '@lobu/core';
+import type { Breadcrumb, ErrorEvent, TransactionEvent } from '@sentry/node';
 
 /**
- * Secret only as a whole key name. As substrings these match `status_code`,
- * `error_code`, and `stack_key` — the fields triage actually needs.
+ * Secret as a QUERY PARAMETER name, and only there. `code` is an OAuth
+ * authorization code in `?code=…` but a Node/Postgres error code
+ * (`ECONNREFUSED`, `23505`) as an object key; `state` and `key` are the same
+ * story. Context decides, so this stays separate from the shared key denylist
+ * rather than widening it — redacting these as object keys would blank the
+ * fields triage actually reads.
  */
-const EXACT_SECRET_KEYS = new Set(['state', 'code', 'key']);
-const SECRET_KEY_PATTERN =
-	/(?:authorization|apikey|bearer|cookie|credential|password|secret|signature|token)/i;
+const SECRET_QUERY_PARAMS = new Set(['state', 'code', 'key']);
+/**
+ * Credential key names the shared config denylist has no reason to carry:
+ * request signatures reach telemetry (webhook headers, presigned URLs) but
+ * never appear in connector config, and that denylist also feeds the CLI's
+ * deployment manifest hash — widening it there would change hashes.
+ */
+const EXTRA_SECRET_KEYS = new Set(['signature', 'sig', 'xhubsignature']);
+
+/** Separator/case-squashed form, for keys core's camel-case split can't read. */
+function squashKey(key: string): string {
+	return key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+}
+
+/**
+ * Object and header keys. Core's normalizer splits on case boundaries, so an
+ * arbitrarily-cased header (`CoOkIe`) normalizes to `co_ok_ie` and misses;
+ * test the squashed form too.
+ */
+function isSecretObjectKey(key: string): boolean {
+	if (isSecretKey(key)) return true;
+	const squashed = squashKey(key);
+	return isSecretKey(squashed) || EXTRA_SECRET_KEYS.has(squashed);
+}
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
 /**
  * A relative URL (`/api/v1/files/a?token=…`) and Sentry's own
@@ -23,13 +49,16 @@ function decodeKey(raw: string): string {
 	}
 }
 
-function isSecretKey(key: string): boolean {
-	const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
-	return EXACT_SECRET_KEYS.has(normalized) || SECRET_KEY_PATTERN.test(normalized);
+function isSecretQueryParam(name: string): boolean {
+	const key = decodeKey(name);
+	return isSecretObjectKey(key) || SECRET_QUERY_PARAMS.has(squashKey(key));
 }
 
 function scrubString(value: string): string {
-	const withoutUrlQueries = value.replace(URL_PATTERN, (candidate) => {
+	// `postgres://user:pa55@host/db` carries its credential in the userinfo, not
+	// in a query pair or a secret-named key, so neither pass below would see it.
+	const withoutUriCredentials = redactUriCredentials(value);
+	const withoutUrlQueries = withoutUriCredentials.replace(URL_PATTERN, (candidate) => {
 		try {
 			const url = new URL(candidate.replace(/[),.;]+$/, ''));
 			return `${url.origin}${url.pathname}`;
@@ -40,7 +69,7 @@ function scrubString(value: string): string {
 	return withoutUrlQueries.replace(
 		QUERY_PAIR_PATTERN,
 		(match, lead: string, name: string) =>
-			isSecretKey(decodeKey(name)) ? `${lead}${name}=[REDACTED]` : match
+			isSecretQueryParam(name) ? `${lead}${name}=[REDACTED]` : match
 	);
 }
 
@@ -69,19 +98,30 @@ export function scrubSentryValue(value: unknown): unknown {
 			if (current.stack) serialized.stack = scrubString(current.stack);
 			if (current.cause !== undefined) serialized.cause = scrub(current.cause);
 			for (const key of Object.keys(current)) {
-				serialized[key] = isSecretKey(key)
+				serialized[key] = isSecretObjectKey(key)
 					? '[REDACTED]'
 					: scrub((current as unknown as Record<string, unknown>)[key]);
 			}
 			return serialized;
 		}
 
+		// Built-ins whose state is not enumerable: walking them as plain objects
+		// yields `{}` (Date, Map, Set, RegExp) or one key per byte (Buffer). A
+		// readable summary costs less payload and tells triage strictly more.
+		if (current instanceof Date) return current.toISOString();
+		if (current instanceof RegExp) return String(current);
+		if (ArrayBuffer.isView(current)) {
+			return `[${current.constructor.name} ${current.byteLength} bytes]`;
+		}
+		if (current instanceof Map) return `[Map ${current.size} entries]`;
+		if (current instanceof Set) return `[Set ${current.size} items]`;
+
 		if (Array.isArray(current)) return current.map((item) => scrub(item));
 
 		const result: Record<string, unknown> = {};
 		try {
 			for (const key of Object.keys(current)) {
-				if (isSecretKey(key)) {
+				if (isSecretObjectKey(key)) {
 					result[key] = '[REDACTED]';
 					continue;
 				}
@@ -102,6 +142,15 @@ export function scrubSentryValue(value: unknown): unknown {
 
 export function scrubSentryErrorEvent(event: ErrorEvent): ErrorEvent {
 	return scrubSentryValue(event) as ErrorEvent;
+}
+
+/**
+ * Transactions are sampled (0.02 prod, 1.0 dev) but not exempt: a span's
+ * attributes carry the request URL, which is the very `?token=` vector the
+ * error path scrubs. Without this they reach Sentry unscrubbed.
+ */
+export function scrubSentryTransactionEvent(event: TransactionEvent): TransactionEvent {
+	return scrubSentryValue(event) as TransactionEvent;
 }
 
 /** Never drops a breadcrumb; it only rewrites credential material in place. */

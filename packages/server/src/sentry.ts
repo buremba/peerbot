@@ -50,10 +50,13 @@ export function captureServerError(
       // returning its response, and hono mints a placeholder 200 on that first
       // `c.res` access — which tagged every 500 in this path as a 200.
       http_status: String(httpStatus),
-      host: c.req.header('host') ?? 'unknown',
     },
     extra: {
       path: c.req.path,
+      // `extra`, not `tags`: Host is client-supplied, so as an indexed tag its
+      // value cardinality is unbounded by anything we control. Triage still
+      // reads it here; the search index stays bounded.
+      host: c.req.header('host') ?? 'unknown',
     },
   });
   markSentryReported(c);

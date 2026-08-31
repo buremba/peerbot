@@ -42,7 +42,7 @@ describe('Sentry credential scrubber', () => {
 	it('handles errors, causes, breadcrumbs, and circular values', () => {
 		const cause = new Error(`download failed at https://example.test/file?code=${SECRET}`);
 		const error = new Error('outer', { cause });
-		(error as Error & { extras?: unknown }).extras = { state: SECRET };
+		(error as Error & { extras?: unknown }).extras = { api_key: SECRET };
 		const circular: Record<string, unknown> = { error, breadcrumb: { data: { token: SECRET } } };
 		circular.self = circular;
 
@@ -80,14 +80,63 @@ describe('Sentry credential scrubber', () => {
 			status_code: 500,
 			error_code: 'E_TIMEOUT',
 			stack_key: 'abc',
-			code: SECRET,
-			state: SECRET,
 		}) as Record<string, unknown>;
 		expect(result.status_code).toBe(500);
 		expect(result.error_code).toBe('E_TIMEOUT');
 		expect(result.stack_key).toBe('abc');
-		expect(result.code).toBe('[REDACTED]');
-		expect(result.state).toBe('[REDACTED]');
+	});
+
+	it('keeps error codes as object keys but redacts them as query parameters', () => {
+		// `code`/`state`/`key` are credentials in `?code=…` and diagnostics as
+		// object keys. Redacting the key form blanks the Node errno and the
+		// Postgres SQLSTATE, which are the first things read during triage.
+		const result = scrubSentryValue({
+			code: 'ECONNREFUSED',
+			state: 'running',
+			pgCode: '23505',
+			url: `/oauth/callback?code=${SECRET}&state=${SECRET}`,
+		}) as Record<string, string>;
+		expect(result.code).toBe('ECONNREFUSED');
+		expect(result.state).toBe('running');
+		expect(result.pgCode).toBe('23505');
+		expect(result.url).not.toContain(SECRET);
+		expect(result.url).toContain('/oauth/callback');
+	});
+
+	it('uses the shared secret-key denylist rather than a private copy', () => {
+		// These are all classified by @lobu/core's isSecretKey; a hand-rolled
+		// local pattern silently missed every one of them.
+		const result = scrubSentryValue({
+			auth: SECRET,
+			dsn: SECRET,
+			private_key: SECRET,
+			database_url: SECRET,
+			session_id: SECRET,
+		}) as Record<string, string>;
+		for (const field of ['auth', 'dsn', 'private_key', 'database_url', 'session_id']) {
+			expect(result[field]).toBe('[REDACTED]');
+		}
+	});
+
+	it('redacts URI userinfo credentials that carry no query string at all', () => {
+		const result = scrubSentryValue(
+			`connect failed: postgres://lobu:${SECRET}@db.internal:5432/lobu`,
+		) as string;
+		expect(result).not.toContain(SECRET);
+		expect(result).toContain('db.internal:5432/lobu');
+	});
+
+	it('summarizes built-ins that a plain walk would flatten or explode', () => {
+		const result = scrubSentryValue({
+			at: new Date('2026-08-31T12:00:00.000Z'),
+			buf: Buffer.from('abcd'),
+			seen: new Set([1, 2]),
+			byKey: new Map([['a', 1]]),
+		}) as Record<string, unknown>;
+		expect(result.at).toBe('2026-08-31T12:00:00.000Z');
+		expect(result.buf).toBe('[Buffer 4 bytes]');
+		expect(result.seen).toBe('[Set 2 items]');
+		expect(result.byKey).toBe('[Map 1 entries]');
 	});
 
 	it('preserves an Error instead of flattening it to an empty object', () => {

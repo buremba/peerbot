@@ -964,11 +964,11 @@ export type ManageEntityData = {
      */
     search?: string;
     /**
-     * [list/list_links] Page size (default: 100, max: 500)
+     * Page size (default: 100, max: 500)
      */
     limit?: number;
     /**
-     * [list/list_links] Pagination offset (default: 0)
+     * Pagination offset (default: 0, max: 1000000)
      */
     offset?: number;
     /**
@@ -2049,11 +2049,11 @@ export type ManageConnectionsData = {
          */
         setup_attempt_id?: string;
         /**
-         * Page size (default: 100)
+         * Page size (default: 50, max: 500)
          */
         limit?: number;
         /**
-         * Pagination offset (default: 0)
+         * Pagination offset (default: 0, max: 1000000)
          */
         offset?: number;
       }
@@ -3157,11 +3157,11 @@ export type ManageFeedsData = {
          */
         health?: "healthy" | "failing";
         /**
-         * Page size (default: 100)
+         * Page size (default: 50, max: 500)
          */
         limit?: number;
         /**
-         * Pagination offset (default: 0)
+         * Pagination offset (default: 0, max: 1000000)
          */
         offset?: number;
       }
@@ -3689,11 +3689,11 @@ export type ManageOperationsData = {
          */
         include_output_schema?: boolean;
         /**
-         * Page size (default: 100)
+         * Page size (default: 100 for list_available; 20 for list_runs; max: 500)
          */
         limit?: number;
         /**
-         * Pagination offset (default: 0)
+         * Pagination offset (default: 0, max: 1000000)
          */
         offset?: number;
       }
@@ -3783,11 +3783,11 @@ export type ManageOperationsData = {
          */
         before_created_at?: string;
         /**
-         * Page size (default: 100)
+         * Page size (default: 100 for list_available; 20 for list_runs; max: 500)
          */
         limit?: number;
         /**
-         * Pagination offset (default: 0)
+         * Pagination offset (default: 0, max: 1000000)
          */
         offset?: number;
       }
@@ -4709,7 +4709,7 @@ export type ManageAutomationsData = {
       note?: string;
     }>;
     /**
-     * [list/get_feedback] Maximum records to return. get_feedback defaults to 50; list defaults to all matching Automations.
+     * [list/get_feedback] Maximum records to return (max: 500). get_feedback defaults to 50; list defaults to all matching Automations.
      */
     limit?: number;
   };
@@ -5014,7 +5014,7 @@ export type GetAutomationData = {
      */
     template_version_id?: number;
     /**
-     * Page number for pagination (default: 1)
+     * Page number for pagination (default: 1, max: 1000000)
      */
     page?: number;
     /**

@@ -112,9 +112,19 @@ export const GetAutomationSchema = Type.Object({
         "Pin to a specific persisted Automation version. Workers receive this from runs.approved_input.version_id and pass it back so the agent loop reads the same version it extracted with, even if the group is edited mid-run.",
     })
   ),
-  page: Type.Optional(Type.Number({ description: 'Page number for pagination (default: 1)' })),
+  page: Type.Optional(
+    Type.Integer({
+      minimum: 1,
+      maximum: 1_000_000,
+      description: 'Page number for pagination (default: 1, max: 1000000)',
+    })
+  ),
   page_size: Type.Optional(
-    Type.Number({ description: 'Results per page (default: 50, max: 500)' })
+    Type.Integer({
+      minimum: 1,
+      maximum: 500,
+      description: 'Results per page (default: 50, max: 500)',
+    })
   ),
   include_classification: Type.Optional(
     Type.String({

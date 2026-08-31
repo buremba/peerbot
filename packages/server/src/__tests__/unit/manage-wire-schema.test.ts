@@ -256,6 +256,18 @@ describe("run_sdk / query_sdk: script contract on the wire", () => {
 	});
 });
 
+describe("manage_operations pagination on the flattened wire schema", () => {
+	it("documents both action defaults without publishing one false default", () => {
+		const tool = getAllTools().find((entry) => entry.name === "manage_operations");
+		const limit = tool?.inputSchema?.properties?.limit as
+			| { default?: unknown; description?: string }
+			| undefined;
+		expect(limit?.default).toBeUndefined();
+		expect(limit?.description).toContain("list_available");
+		expect(limit?.description).toContain("list_runs");
+	});
+});
+
 describe("manage_connections: per-action required fields surface on the wire", () => {
 	// Spot-check a few actions whose required fields are non-trivial. The
 	// general invariant (every action's required fields named in the enum

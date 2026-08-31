@@ -103,6 +103,40 @@ export const OAuthCredentialsSchema = Type.Object({
 /** Server-selected execution path for an exact pinned connector artifact. */
 export const ExecutionBackendSchema = Type.Literal("native_bridge");
 
+/**
+ * Execution backends a worker can advertise capacity for. Declared here, and
+ * imported by both the daemon that advertises and the gateway that gates on
+ * it, because the two sides only agree by string equality: a typo in either
+ * copy silently disables every claim for that worker rather than failing.
+ */
+export const EXECUTION_BACKENDS = {
+  /** Artifact compiled from connector source and executed by the worker. */
+  compiledConnector: 'compiled_connector',
+  /** Built into the daemon binary; no compiler or SDK resolution involved. */
+  daemonBuiltin: 'daemon_builtin',
+} as const;
+
+/**
+ * What a worker on `platform` advertises when it sends no `backend_capacity`.
+ *
+ * Every daemon is compiled-capable by construction: `startDaemonCommand`
+ * asserts the compiled runtime resolves and loads before the first poll, so a
+ * polling daemon has already proven it. `headless` — the default platform of
+ * `lobu daemon` — additionally owns the in-process daemon builtin. Platforms
+ * that poll without running a daemon (the Chrome extension, the macOS app)
+ * never run one and so never advertise it.
+ */
+export function defaultBackendCapacity(
+  platform: string | null | undefined
+): Record<string, number> {
+  return platform === 'headless'
+    ? {
+        [EXECUTION_BACKENDS.daemonBuiltin]: 1,
+        [EXECUTION_BACKENDS.compiledConnector]: 1,
+      }
+    : { [EXECUTION_BACKENDS.compiledConnector]: 1 };
+}
+
 /** `POST /api/workers/poll` request body. */
 export const PollRequestSchema = Type.Object({
   worker_id: Type.String(),

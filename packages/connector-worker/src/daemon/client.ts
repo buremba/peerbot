@@ -346,14 +346,7 @@ export class WorkerClient implements ExecutorClient {
         ? {}
         : { capacity_available: capacityAvailable }),
       ...(Object.keys(this.backendCapacity).length > 0
-        ? {
-            backend_capacity: Object.fromEntries(
-              Object.entries(this.backendCapacity).map(([backend, capacity]) => [
-                backend,
-                Math.min(capacity, capacityAvailable ?? capacity),
-              ])
-            ),
-          }
+        ? { backend_capacity: this.backendCapacity }
         : {}),
       // app_version belongs to the device registration fields, so omit both for
       // fleet workers rather than sending empty values. A device worker also

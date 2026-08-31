@@ -355,7 +355,14 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [org.id],
       baseOrgScopeIds: [org.id],
       workerHardensDbEgress: false,
-      backendCapacity: { compiled_connector: 1 },
+      // Deliberately the map a headless daemon advertises, both backends open,
+      // so the claim assertions below double as the regression test: `headless`
+      // is the default platform of `lobu daemon` and that daemon asserts its
+      // compiled runtime loads before it polls, so owning the daemon builtin
+      // must never cost a worker its compiled lane. If it did, every
+      // execution-pinned compiled connection on a self-hosted device would stop
+      // being claimed with no error anywhere.
+      backendCapacity: { daemon_builtin: 1, compiled_connector: 1 },
     };
     const chromeContext: DueFeedClaimContext = {
       isUserScopedWorker: true,
@@ -368,9 +375,11 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [org.id],
       baseOrgScopeIds: [org.id],
       workerHardensDbEgress: false,
-      // Chrome is a bridge-only worker in this fixture; it must not advertise
-      // compiled connector capacity merely because it polls successfully.
-      backendCapacity: { compiled_connector: 0 },
+      // Matches what poll.ts advertises for a non-headless platform. This
+      // feed claims through the manifest/bridge lane, which does not consult
+      // compiled capacity at all -- so the value here must mirror production
+      // rather than imply a restriction the lane never applies.
+      backendCapacity: { compiled_connector: 1 },
     };
 
     // Production incident shape: the Mac is recently seen but busy, so it is not

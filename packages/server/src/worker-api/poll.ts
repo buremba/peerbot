@@ -14,6 +14,7 @@ import {
 import { Value } from '@sinclair/typebox/value';
 import {
   PollRequestSchema,
+  defaultBackendCapacity,
   type PollRequest,
 } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
@@ -430,20 +431,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // client that predates the field, or one that never runs the daemon at all
   // (the Chrome extension and the macOS app poll directly). Mirror what the
   // daemon would have advertised for that platform rather than inventing a
-  // wider or narrower grant: headless keeps its compiler/SDK runtime gated off
-  // while still owning the daemon backend, and every other platform is
-  // compiled-capable. Not keyed on token scope: user-scoped device workers are
-  // compiled-capable too.
+  // wider or narrower grant: a running daemon has asserted its compiled
+  // runtime loads before it polls, so every platform is compiled-capable, and
+  // `headless` additionally owns the in-process daemon builtin. Not keyed on
+  // token scope: user-scoped device workers are compiled-capable too.
   //
   // Placed AFTER the binding resolution above, and keyed on effectivePlatform,
   // because the claim lane is: a headless-bound device that omits `platform`
   // from its body would otherwise default to compiled-only and silently lose
   // the daemon backend it is the only worker able to run.
   if (!backendCapacityProvided) {
-    backendCapacity =
-      effectivePlatform === 'headless'
-        ? { daemon_builtin: 1, compiled_connector: 0 }
-        : { compiled_connector: 1 };
+    backendCapacity = defaultBackendCapacity(effectivePlatform);
   }
   // For user-scoped (device) workers, authorize the advertised capability set
   // against the platform-specific allowlist in @lobu/core. Anything outside

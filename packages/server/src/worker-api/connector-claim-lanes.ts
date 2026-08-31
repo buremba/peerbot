@@ -29,7 +29,7 @@ export interface ConnectorClaimContext {
 }
 
 /** A backend is claimable only when this poll explicitly advertises capacity. */
-export function hasPositiveBackendCapacity(
+function hasPositiveBackendCapacity(
   capacity: Record<string, number> | undefined,
   backend: string
 ): boolean {

@@ -25,7 +25,13 @@ const PROCESS_REAP_GRACE_MS = 5000;
  * negative-pid group signals.
  */
 function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): void {
-  const [binary, ...args] = process.argv.slice(1);
+  const supervisorArgs = process.argv.slice(1);
+  const targetEnvIndex = supervisorArgs.indexOf('--lobu-target-env');
+  const targetEnv = targetEnvIndex >= 0
+    ? JSON.parse(supervisorArgs[targetEnvIndex + 1] ?? '{}') as NodeJS.ProcessEnv
+    : process.env;
+  if (targetEnvIndex >= 0) supervisorArgs.splice(targetEnvIndex, 2);
+  const [binary, ...args] = supervisorArgs;
   let targetFinished = false;
   let parentLost = false;
   let target: ChildProcess | undefined;
@@ -100,7 +106,7 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
   } else {
     try {
       target = spawnChild(binary, args, {
-        env: process.env,
+        env: targetEnv,
         stdio: ['pipe', 'inherit', 'inherit'],
         windowsHide: true,
       });
@@ -218,7 +224,7 @@ export function signalOwnedPosixProcessGroup(
     sendSignal(-owner.pid, signal);
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH' || (err as NodeJS.ErrnoException).code === 'EPERM') return false;
     throw err;
   }
 }
@@ -319,14 +325,15 @@ export function spawnSupervisedCli(
   binary: string,
   args: string[],
   env: NodeJS.ProcessEnv,
-  options: { stdin?: 'ignore' | 'pipe' } = {}
+  options: { stdin?: 'ignore' | 'pipe'; cwd?: string } = {}
 ): SupervisedCli {
   const supervisor = spawn(
     process.execPath,
-    ['-e', CLI_SUPERVISOR_SOURCE, '--', binary, ...args],
+    ['-e', CLI_SUPERVISOR_SOURCE, '--', '--lobu-target-env', JSON.stringify(env), binary, ...args],
     {
       detached: SUPPORTS_PROCESS_GROUPS,
       env,
+      cwd: options.cwd,
       stdio: [options.stdin ?? 'ignore', 'pipe', 'pipe', 'ipc'],
       windowsHide: true,
     }

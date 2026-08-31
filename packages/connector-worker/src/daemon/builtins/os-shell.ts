@@ -1,7 +1,12 @@
-import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
+import {
+  releaseSupervisor,
+  signalOwnedPosixProcessGroup,
+  spawnSupervisedCli,
+  terminateChild,
+} from '../automation-process.js';
 
 export interface ShellRunOutput {
   stdout: string;
@@ -14,17 +19,8 @@ export interface ShellRunOutput {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 300_000;
-const TERMINATION_GRACE_MS = 3_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TRUNCATED_MARKER = '\n... (output truncated)';
-// Keep the outer process group alive through the grace period so its numeric
-// pgid cannot be recycled before SIGKILL. The inner shell starts cleanly and
-// still receives the command's normal signals.
-const SHELL_GROUP_ANCHOR = `trap 'sleep 4' TERM
-bash --noprofile --norc -lc "$1"
-status=$?
-exit "$status"`;
-
 function appendCapped(current: string, chunk: string): string {
   if (current.endsWith(TRUNCATED_MARKER)) return current;
   const next = current + chunk;
@@ -73,46 +69,27 @@ export async function runShellBuiltin(
 
   const startedAt = Date.now();
   return await new Promise<ShellRunOutput>((resolve) => {
-    const child = spawn('bash', ['-c', SHELL_GROUP_ANCHOR, 'lobu-os-shell', command], {
-      cwd,
-      env: shellEnvironment(),
-      detached: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    const supervised = spawnSupervisedCli(
+      'bash', ['--noprofile', '--norc', '-c', command], shellEnvironment(), { stdin: 'pipe', cwd },
+    );
+    const child = supervised.supervisor;
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     let settled = false;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
     const killOwnedProcessGroup = (signal: NodeJS.Signals): void => {
       try {
         if (child.pid != null) {
-          process.kill(-child.pid, signal);
-          return;
+          if (signalOwnedPosixProcessGroup(child, signal)) return;
         }
-      } catch {
-        // The process group may have already exited or the platform may not
-        // support negative process ids. Fall back to the direct child.
-      }
-      try {
-        child.kill(signal);
-      } catch {
-        // Exit raced cleanup; close/error still owns settlement.
-      }
+      } catch {}
+      try { child.kill(signal); } catch {}
     };
 
     const abortHandler = () => {
-      killOwnedProcessGroup('SIGTERM');
-      forceKillTimer = setTimeout(() => {
-        if (settled) return;
-        killOwnedProcessGroup('SIGKILL');
-        child.stdin.destroy();
-        child.stdout.destroy();
-        child.stderr.destroy();
-        finish(child.exitCode ?? -1);
-      }, TERMINATION_GRACE_MS);
+      if (!settled) void terminateChild(child).finally(() => finish(child.exitCode ?? -1));
     };
     if (shutdownSignal?.aborted) abortHandler();
     else shutdownSignal?.addEventListener('abort', abortHandler, { once: true });
@@ -121,7 +98,6 @@ export async function runShellBuiltin(
       if (settled) return;
       settled = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
-      if (forceKillTimer) clearTimeout(forceKillTimer);
       shutdownSignal?.removeEventListener('abort', abortHandler);
       resolve({
         stdout,
@@ -133,34 +109,28 @@ export async function runShellBuiltin(
       });
     };
 
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
       stdout = appendCapped(stdout, chunk);
     });
-    child.stderr.on('data', (chunk: string) => {
+    child.stderr?.on('data', (chunk: string) => {
       stderr = appendCapped(stderr, chunk);
     });
-    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+    child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
       if (error.code !== 'EPIPE') stderr = appendCapped(stderr, `stdin error: ${error.message}\n`);
     });
-    child.stdin.end(stdin);
+    child.stdin?.end(stdin);
 
     timeoutTimer = setTimeout(() => {
       timedOut = true;
-      killOwnedProcessGroup('SIGTERM');
-      forceKillTimer = setTimeout(() => {
-        if (settled) return;
-        killOwnedProcessGroup('SIGKILL');
-        child.stdin.destroy();
-        child.stdout.destroy();
-        child.stderr.destroy();
-        finish(child.exitCode ?? -1);
-      }, TERMINATION_GRACE_MS);
+      void terminateChild(child).finally(() => finish(child.exitCode ?? -1));
     }, timeoutMs);
 
-    child.on('close', (code, signal) => {
-      finish(code ?? (signal ? -1 : 0));
+    supervised.targetExit.then((target) => {
+      if (process.platform !== 'win32') killOwnedProcessGroup('SIGKILL');
+      else void terminateChild(child);
+      void releaseSupervisor(child).finally(() => finish(target.exitCode ?? -1));
     });
     child.on('error', (error) => {
       stderr = appendCapped(stderr, `spawn error: ${error.message}`);

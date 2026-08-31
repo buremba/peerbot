@@ -7,7 +7,7 @@ export type DaemonBuiltinErrorCode =
 
 export type DaemonBuiltinResult =
   | { ok: true; output: Record<string, unknown> }
-  | { ok: false; code: DaemonBuiltinErrorCode; error: string };
+  | { ok: false; code: DaemonBuiltinErrorCode; error: string; output?: Record<string, unknown> };
 
 export async function executeDaemonBuiltin(params: {
   connectorKey: string;
@@ -32,6 +32,7 @@ export async function executeDaemonBuiltin(params: {
         error: output.timed_out
           ? `Shell command timed out after ${output.duration_ms}ms`
           : `Shell command exited with code ${output.exit_code}`,
+        output: { ...output },
       };
     }
     return { ok: true, output: { ...output } };

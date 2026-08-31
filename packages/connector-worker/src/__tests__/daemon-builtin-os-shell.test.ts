@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,10 +14,8 @@ function processIsLive(pid: number): boolean {
     }
     process.kill(pid, 0);
     if (process.platform === 'darwin') {
-      const state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
-        encoding: 'utf8',
-      }).trim();
-      return !state.startsWith('Z');
+      process.kill(pid, 0);
+      return true;
     }
     return true;
   } catch (error) {
@@ -61,7 +58,7 @@ function stubClient() {
 }
 
 describe('daemon-builtin os.shell', () => {
-  test('uses a minimal child environment and does not leak worker or control-plane secrets', async () => {
+  test('uses a minimal child environment and does not inherit control-plane env', async () => {
     const sentinels = {
       WORKER_API_TOKEN: process.env.WORKER_API_TOKEN,
       LOBU_API_TOKEN: process.env.LOBU_API_TOKEN,
@@ -101,12 +98,11 @@ describe('daemon-builtin os.shell', () => {
 
   test('force-kills SIGTERM-ignoring descendants in its process group', async () => {
     const testDir = mkdtempSync(join(tmpdir(), 'lobu-shell-test-'));
-    const readyPath = join(testDir, 'ready');
     let descendantPid = 0;
     try {
       const output = await runShellBuiltin({
-        command: `node -e 'const fs = require("node:fs"); process.on("SIGTERM", () => {}); process.on("SIGHUP", () => {}); fs.writeFileSync("${readyPath}", String(process.pid)); setTimeout(() => {}, 10000)' >/dev/null 2>&1 & while [ ! -s ${JSON.stringify(readyPath)} ]; do sleep 0.01; done; cat ${JSON.stringify(readyPath)}; wait`,
-        cwd: process.cwd(),
+        command: `node -e 'const fs = require("node:fs"); process.on("SIGTERM", () => {}); process.on("SIGHUP", () => {}); fs.writeFileSync("./ready", String(process.pid)); setTimeout(() => {}, 10000)' >/dev/null 2>&1 & while [ ! -s ./ready ]; do sleep 0.01; done; cat ./ready; wait`,
+        cwd: testDir,
         timeout_ms: 300,
       });
       descendantPid = Number(output.stdout.trim());
@@ -120,7 +116,7 @@ describe('daemon-builtin os.shell', () => {
     }
   });
 
-  test('settles after its grace period when a session-detached child keeps stdio open', async () => {
+  test('kills a session-detached descendant before settlement', async () => {
     if (process.platform !== 'linux') return;
 
     let escapedPid = 0;
@@ -136,7 +132,7 @@ describe('daemon-builtin os.shell', () => {
       expect(output.timed_out).toBe(true);
       expect(Date.now() - started).toBeLessThan(5_500);
       expect(Number.isInteger(escapedPid)).toBe(true);
-      expect(processGroupExists(escapedPid)).toBe(true);
+      expect(processGroupExists(escapedPid)).toBe(false);
     } finally {
       if (escapedPid > 0) forceKill(escapedPid, true);
     }
@@ -257,6 +253,54 @@ describe('daemon-builtin os.shell', () => {
     expect(Date.now() - started).toBeLessThan(5_500);
     expect(completions[0]?.status).toBe('failed');
     expect(completions[0]?.error_message).toStartWith('operation_execution_failed: Shell command timed out after ');
+    expect(completions[0]?.action_output).toMatchObject({
+      stdout: '', stderr: '', timed_out: true, success: false,
+    });
+  });
+
+  test('preserves structured output for nonzero builtin results', async () => {
+    const { client, completions } = stubClient();
+    const result = await executeRun(client as never, {
+      run_id: 468,
+      run_type: 'action',
+      connector_key: 'os.shell',
+      connector_version: '0.2.0',
+      execution_backend: 'daemon_builtin',
+      action_key: 'run',
+      action_input: { command: "printf out; printf err >&2; exit 7", cwd: process.cwd() },
+    }, {}, { heartbeatIntervalMs: 5_000 });
+    expect(result.error).toContain('operation_execution_failed: Shell command exited with code 7');
+    expect(completions).toHaveLength(1);
+    expect(completions[0]).toMatchObject({
+      status: 'failed',
+      action_output: { stdout: 'out', stderr: 'err', exit_code: 7, timed_out: false, success: false },
+    });
+  });
+
+  test('retries one immutable success payload after terminal delivery loss', async () => {
+    const payloads: Array<Record<string, unknown>> = [];
+    let attempts = 0;
+    const client = {
+      id: 'headless:test',
+      async heartbeat() {},
+      async completeAction(input: Record<string, unknown>) {
+        payloads.push(structuredClone(input));
+        attempts += 1;
+        if (attempts === 1) throw new Error('response lost');
+      },
+    };
+    await expect(executeRun(client as never, {
+      run_id: 469,
+      run_type: 'action',
+      connector_key: 'os.shell',
+      connector_version: '0.2.0',
+      execution_backend: 'daemon_builtin',
+      action_key: 'run',
+      action_input: { command: 'printf success', cwd: process.cwd() },
+    }, {}, { heartbeatIntervalMs: 5_000 })).resolves.toEqual({ itemsCollected: 0 });
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toEqual(payloads[1]);
+    expect(payloads[0]).toMatchObject({ status: 'success', action_output: { stdout: 'success' } });
   });
 
   test('ignores poisoned Bash function state while enforcing timeout reaping', async () => {
@@ -267,12 +311,13 @@ describe('daemon-builtin os.shell', () => {
     try {
       const started = Date.now();
       const result = await runShellBuiltin({
-        command: 'trap "" TERM; sleep 30',
+        command: 'trap "" TERM; sleep 30 & descendant=$!; echo "$descendant"; wait',
         cwd: process.cwd(),
         timeout_ms: 100,
       });
       expect(result.success).toBe(false);
       expect(result.timed_out).toBe(true);
+      if (process.platform !== 'darwin') expect(processIsLive(Number(result.stdout.trim()))).toBe(false);
       expect(Date.now() - started).toBeLessThan(4_000);
     } finally {
       if (previousBashFunction === undefined) delete process.env['BASH_FUNC_sleep%%'];

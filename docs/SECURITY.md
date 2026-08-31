@@ -88,6 +88,14 @@ Skills are executable, security-sensitive input:
 - Network policy is declared on the agent (`network.allowed` / `network.denied` → `settings.networkConfig`), not on skills; gateway egress controls apply on top.
 - Destructive MCP tool calls require in-thread approval unless pre-approved via `defineAgent({ tools: { preApproved } })` in `lobu.config.ts`.
 
+### Approved device shell
+
+`os.shell` runs as the device user with that user's HOME and filesystem access.
+Its child environment omits control-plane variables, but this is not a same-user
+credential or filesystem boundary: an approved shell can read files available to
+the device user, including device configuration. Human/agent approval is the
+trust boundary; automatic mode is opt-in and remains approval-gated by default.
+
 ## What changed from earlier docs
 
 Previous versions of this page described Kubernetes pod isolation, NetworkPolicies, gVisor, Kata, and per-pod PVCs. None of that is shipped any more — the gateway now spawns local worker subprocesses instead of orchestrating per-worker containers. On Linux hosts with an enabled, usable systemd user manager, the worker spawn path applies loopback-only IP rules and cgroup limits through `systemd-run --scope`; it does not apply capability drops or other exec-context hardening. The rest were paying isolation costs for a multi-tenant deployment Lobu doesn't ship.

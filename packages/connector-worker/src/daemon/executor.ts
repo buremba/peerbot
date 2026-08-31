@@ -91,6 +91,31 @@ const DEFAULT_CONFIG: ExecutorConfig = {
   maxOldSpaceSize: 1024,
 };
 
+const TERMINAL_DELIVERY_DEADLINE_MS = 15_000;
+
+/** Retry one immutable terminal payload without changing its outcome. */
+async function completeActionOnce(
+  client: ExecutorClient,
+  payload: Parameters<ExecutorClient['completeAction']>[0],
+): Promise<void> {
+  const deadline = Date.now() + TERMINAL_DELIVERY_DEADLINE_MS;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    try {
+      await Promise.race([
+        client.completeAction(payload),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('terminal completion deadline exceeded')), remaining)),
+      ]);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 /**
  * Fold the gateway's authoritative DB egress config into the worker's env.
  *
@@ -478,7 +503,7 @@ async function executeActionRun(
   if (!codeResult.ok) {
     const errorMessage = `Action run ${run_id} (${connector_key}): ${codeResult.error}`;
     log.info('[executor]', errorMessage);
-    await client.completeAction({
+    await completeActionOnce(client, {
       run_id,
       worker_id: client.id,
       status: 'failed',
@@ -504,6 +529,7 @@ async function executeActionRun(
       log.debug('[executor] Action heartbeat failed:', err);
     }
   }, cfg.heartbeatIntervalMs);
+  let terminalPayloadStarted = false;
 
   try {
     const result = await executeCompiledConnector({
@@ -547,7 +573,8 @@ async function executeActionRun(
     }
     const actionOutput = result.output;
 
-    await client.completeAction({
+    terminalPayloadStarted = true;
+    await completeActionOnce(client, {
       run_id,
       worker_id: client.id,
       status: 'success',
@@ -560,7 +587,10 @@ async function executeActionRun(
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.info(`[executor] Action run ${run_id} failed:`, errorMessage);
 
-    await client.completeAction({
+    if (terminalPayloadStarted) {
+      return { itemsCollected: 0, error: errorMessage };
+    }
+    await completeActionOnce(client, {
       run_id,
       worker_id: client.id,
       status: 'failed',
@@ -611,22 +641,29 @@ async function executeDaemonBuiltinActionRun(
     });
     if (!result.ok) {
       const message = `${result.code}: ${result.error}`;
-      await client.completeAction({
+      await completeActionOnce(client, {
         run_id,
         worker_id: client.id,
         status: 'failed',
         error_message: message,
+        ...(result.output ? { action_output: result.output } : {}),
       });
       return { itemsCollected: 0, error: message };
     }
 
-    await client.completeAction({
+    await completeActionOnce(client, {
       run_id,
       worker_id: client.id,
       status: 'success',
       action_output: result.output,
     });
     return { itemsCollected: 0 };
+  } catch (error) {
+    // Delivery uncertainty is not an execution failure. The immutable payload
+    // was retried above; never send a contradictory terminal result here.
+    const message = error instanceof Error ? error.message : String(error);
+    log.info(`[executor] Daemon built-in terminal delivery uncertain for ${run_id}:`, message);
+    return { itemsCollected: 0, error: message };
   } finally {
     clearInterval(heartbeatInterval);
   }

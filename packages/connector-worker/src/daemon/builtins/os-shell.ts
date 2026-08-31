@@ -17,6 +17,13 @@ const MAX_TIMEOUT_MS = 300_000;
 const TERMINATION_GRACE_MS = 3_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TRUNCATED_MARKER = '\n... (output truncated)';
+// Keep the outer process group alive through the grace period so its numeric
+// pgid cannot be recycled before SIGKILL. The inner shell starts cleanly and
+// still receives the command's normal signals.
+const SHELL_GROUP_ANCHOR = `trap 'sleep 4' TERM
+bash --noprofile --norc -lc "$1"
+status=$?
+exit "$status"`;
 
 function appendCapped(current: string, chunk: string): string {
   if (current.endsWith(TRUNCATED_MARKER)) return current;
@@ -52,7 +59,7 @@ export async function runShellBuiltin(input: Record<string, unknown>): Promise<S
 
   const startedAt = Date.now();
   return await new Promise<ShellRunOutput>((resolve) => {
-    const child = spawn('bash', ['--noprofile', '--norc', '-lc', command], {
+    const child = spawn('bash', ['-c', SHELL_GROUP_ANCHOR, 'lobu-os-shell', command], {
       cwd,
       env: { ...process.env, LC_ALL: 'C' },
       detached: true,

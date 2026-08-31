@@ -36,6 +36,14 @@ describe('custom connector Cloud gate', () => {
 		})).toThrow();
 	});
 
+	test('fails closed when executable provenance is missing', () => {
+		process.env.LOBU_CLOUD_MODE = 'true';
+		expect(() => assertCustomConnectorCloudAllowed({
+			provenance: undefined,
+			hasExecutableBytes: true,
+		})).toThrow(CUSTOM_CONNECTOR_CLOUD_DISABLED);
+	});
+
 	test('leaves self-host and metadata-only artifacts unchanged', () => {
 		delete process.env.LOBU_CLOUD_MODE;
 		expect(() => assertCustomConnectorInstallAllowed()).not.toThrow();

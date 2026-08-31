@@ -23,6 +23,8 @@ import type {
   ConnectorAgentToolingEnv,
 } from "@lobu/connector-sdk";
 import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
+import { findBundledConnectorFile } from "../../utils/connector-catalog";
+import { assertCustomConnectorCloudAllowed } from "../../utils/custom-connector-cloud-gate";
 import { getDb } from "../../db/client.js";
 import {
   getAppInstallationAuthMethods,
@@ -139,6 +141,9 @@ interface ToolingConnectionRow {
   installation_provider_instance: string | null;
   installation_app_id: string | null;
   installation_tenant: string | null;
+  artifact_organization_id: string | null;
+  artifact_compiled: boolean;
+  artifact_source_path: string | null;
 }
 
 /**
@@ -225,6 +230,9 @@ async function loadToolingConnections(
            c.config,
            cd.agent_tooling,
            cd.auth_schema,
+           cv.organization_id AS artifact_organization_id,
+           (cv.compiled_code IS NOT NULL) AS artifact_compiled,
+           cv.source_path AS artifact_source_path,
            -- Lease AUTHORITY, joined only for the fingerprint: revoking or
            -- transferring an installation must invalidate a warm worker that
            -- is still holding a token minted under it. These fields do not
@@ -239,6 +247,15 @@ async function loadToolingConnections(
       ON cd.key = c.connector_key
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
+    LEFT JOIN LATERAL (
+      SELECT organization_id, compiled_code, source_path
+      FROM connector_versions
+      WHERE connector_key = cd.key
+        AND version = cd.version
+        AND (organization_id = cd.organization_id OR organization_id IS NULL)
+      ORDER BY organization_id NULLS LAST
+      LIMIT 1
+    ) cv ON TRUE
     LEFT JOIN app_installations ai
       -- connections.config is a jsonb blob written by the install path, not a
       -- typed column, so a malformed installation_ref is representable. A bare
@@ -347,6 +364,21 @@ export async function resolveAgentToolingDeclaration(params: {
   // `loadToolingConnections` is ORDER BY c.id, so the digest is stable across
   // turns and replicas without sorting here.
   for (const row of await loadToolingConnections(params.organizationId)) {
+    try {
+      assertCustomConnectorCloudAllowed({
+        provenance: row.artifact_organization_id
+          ? 'organization'
+          : row.artifact_compiled
+            ? 'shared'
+            : row.artifact_source_path?.startsWith('device-manifest://')
+              ? 'device-manifest'
+              : 'metadata-only',
+        hasExecutableBytes: row.artifact_compiled,
+        hasMatchingBundledSource: findBundledConnectorFile(row.connector_key) !== null,
+      });
+    } catch {
+      continue;
+    }
     const tooling = parseAgentTooling(row.agent_tooling);
     for (const pkg of tooling?.nix?.packages ?? []) packages.add(pkg);
     for (const domain of tooling?.domains ?? []) domains.add(domain);
@@ -398,6 +430,21 @@ export async function resolveAgentTooling(params: {
   let leaseExpiresAt: Date | null = null;
 
   for (const row of rows) {
+    try {
+      assertCustomConnectorCloudAllowed({
+        provenance: row.artifact_organization_id
+          ? 'organization'
+          : row.artifact_compiled
+            ? 'shared'
+            : row.artifact_source_path?.startsWith('device-manifest://')
+              ? 'device-manifest'
+              : 'metadata-only',
+        hasExecutableBytes: row.artifact_compiled,
+        hasMatchingBundledSource: findBundledConnectorFile(row.connector_key) !== null,
+      });
+    } catch {
+      continue;
+    }
     const tooling = parseAgentTooling(row.agent_tooling);
     // Recorded for EVERY row, including ones that contribute nothing: removing
     // a malformed connection still changes the org's tooling identity.

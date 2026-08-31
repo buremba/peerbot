@@ -23,12 +23,14 @@ function denied(): never {
  * no executable bytes and remain usable in Cloud.
  */
 export function assertCustomConnectorCloudAllowed(params: {
-	provenance: ConnectorArtifactProvenance;
+	provenance: ConnectorArtifactProvenance | null | undefined;
 	hasExecutableBytes?: boolean;
 	hasMatchingBundledSource?: boolean;
 }): void {
 	if (!isCloudMode()) return;
-	if (!params.hasExecutableBytes || params.provenance === 'bundled' || params.provenance === 'metadata-only' || params.provenance === 'device-manifest') return;
+	if (!params.hasExecutableBytes) return;
+	if (!params.provenance) denied();
+	if (params.provenance === 'bundled' || params.provenance === 'metadata-only' || params.provenance === 'device-manifest') return;
 	if (params.provenance === 'shared' && params.hasMatchingBundledSource) return;
 	denied();
 }

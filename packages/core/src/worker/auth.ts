@@ -70,9 +70,10 @@ export interface WorkerTokenData {
   /**
    * The parent Automation `runs.id` for this one-shot session. NOT
    * {@link runId} — an Automation execution writes a parent row and a
-   * per-turn chat_message row. Live sessions use it to stamp trusted causal
-   * provenance on descendant tool runs; capture sessions also use it to
-   * record suppressed side effects.
+   * per-turn chat_message row. A capture session records its suppressed side
+   * effects onto this row and must carry it. A live session MAY carry it as
+   * signed parent identity; today the mint sets it only for capture, so no
+   * live consumer reads it yet.
    */
   automationRunId?: number;
   sessionKey?: string;
@@ -388,9 +389,9 @@ function verifyToken(
         return null;
       }
     }
-    // Same shape rule for `automationRunId` — it addresses the row the capture
-    // guard writes its record onto, so a non-integer must be rejected here
-    // rather than reaching a query as a coerced value.
+    // Same shape rule for `automationRunId` — it addresses the parent
+    // Automation run row, so a non-integer must be rejected here rather than
+    // reaching a query as a coerced value.
     if (data.automationRunId !== undefined) {
       if (
         typeof data.automationRunId !== "number" ||
@@ -417,9 +418,10 @@ function verifyToken(
       );
       return null;
     }
-    // A capture token must name the row that records suppressed effects. Live
-    // Automation tokens may also carry automationRunId: that signed parent
-    // identity is how embedded MCP stamps durable descendant lineage.
+    // A capture token must name the row that records suppressed effects. The
+    // reverse is deliberately NOT enforced: a live token carrying a parent
+    // Automation run id is a valid shape, so the two are checked in one
+    // direction only.
     if (
       data.executionMode === "capture" &&
       data.automationRunId === undefined

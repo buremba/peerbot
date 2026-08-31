@@ -168,6 +168,26 @@ describe('SubprocessExecutor diagnostic capture', () => {
     }
   });
 
+  test('preserves a missing relative-module diagnostic', async () => {
+    const executor = new SubprocessExecutor({ timeoutMs: 30_000, maxOldSpaceSize: 256 });
+    let err: SubprocessError | null = null;
+    try {
+      await executor.execute(
+        `
+          import { createRequire } from 'node:module';
+          const require = createRequire(import.meta.url);
+          require('./missing-relative-module.cjs');
+        `,
+        BASE_JOB
+      );
+    } catch (e) {
+      err = e as SubprocessError;
+    }
+    expect(err).toBeInstanceOf(SubprocessError);
+    expect(err!.message).toContain("Cannot find module './missing-relative-module.cjs'");
+    expect(err!.message).not.toContain('Connector requires');
+  });
+
   test('classifies parent-driven SIGKILL as timeout', async () => {
     const executor = new SubprocessExecutor({ timeoutMs: 1_000, maxOldSpaceSize: 256 });
     let err: SubprocessError | null = null;

@@ -8,7 +8,9 @@
 
 import { type ChildProcess, fork, spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EventEnvelope } from '@lobu/connector-sdk';
@@ -133,6 +135,7 @@ const SYSTEM_ENV_KEYS = [
   'NODE_PATH',
   'PLAYWRIGHT_BROWSERS_PATH',
 ];
+const INTERNAL_RUNTIME_TEMP_DIR_ENV = 'LOBU_INTERNAL_RUNTIME_TEMP_DIR';
 function pickSystemEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const key of SYSTEM_ENV_KEYS) {
@@ -152,6 +155,29 @@ const DEFAULT_OPTIONS: SubprocessExecutorOptions = {
   timeoutMs: 600000,
   maxOldSpaceSize: 512,
 };
+
+async function removeRuntimeTempDir(tempDir: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await rm(tempDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === 4) {
+        // Cleanup must never replace the connector's real result/error. This
+        // warning makes a persistent Windows file lock or host FS failure
+        // visible while preserving the execution outcome.
+        console.warn(
+          `[SubprocessExecutor] Failed to remove runtime temp directory ${tempDir}:`,
+          error
+        );
+        return;
+      }
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, 25 * (attempt + 1))
+      );
+    }
+  }
+}
 
 export class SubprocessExecutor implements SyncExecutor {
   private options: SubprocessExecutorOptions;
@@ -174,6 +200,10 @@ export class SubprocessExecutor implements SyncExecutor {
           `connector on a backend that provisions native dependencies.`
       );
     }
+    // The parent owns this directory so a timeout/crash SIGKILL cannot bypass
+    // cleanup in the child. The child also removes it on graceful completion;
+    // both paths use forceful recursive cleanup so the race is harmless.
+    const runtimeTempDir = await mkdtemp(join(tmpdir(), 'lobu-connector-child-'));
     return new Promise<ExecutorResult>((resolve, reject) => {
       let childRunnerPath = join(__dirname, 'child-runner.js');
       const childRunnerTsPath = join(__dirname, 'child-runner.ts');
@@ -207,7 +237,13 @@ export class SubprocessExecutor implements SyncExecutor {
       // Node subprocess execution is process isolation, not a security sandbox.
       // Node --experimental-permission flags intentionally NOT enabled — the
       // connector runtime isn't compatible. Revisit if that changes.
-      const env = { ...pickSystemEnv(), ...job.env } as NodeJS.ProcessEnv;
+      const env = {
+        ...pickSystemEnv(),
+        ...job.env,
+        // Set last: connector-controlled job.env must never redirect the
+        // child disconnect handler into deleting an arbitrary path.
+        [INTERNAL_RUNTIME_TEMP_DIR_ENV]: runtimeTempDir,
+      } as NodeJS.ProcessEnv;
       let child: ChildProcess;
       if (nixPackages.length > 0) {
         // Wrap in nix-shell so the connector's declared native tools are on
@@ -554,6 +590,7 @@ export class SubprocessExecutor implements SyncExecutor {
         {
           compiledCode,
           job,
+          runtimeTempDir,
         },
         (err) => {
           if (err) {
@@ -579,6 +616,6 @@ export class SubprocessExecutor implements SyncExecutor {
           }
         }
       );
-    });
+    }).finally(() => removeRuntimeTempDir(runtimeTempDir));
   }
 }

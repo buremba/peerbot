@@ -15,10 +15,10 @@
  * gateway, or OAuth, and passes under `docker run --network=none`.
  */
 
-import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -26,7 +26,10 @@ import {
 	EXTERNAL_RUNTIME_DEPS,
 } from "../compile/index.js";
 import type { ExecutorJob } from "../executor/interface.js";
-import { registerConnectorRuntimeDependencyLoader } from "../executor/runtime-dependency-loader.js";
+import {
+	registerConnectorRuntimeDependencyLoader,
+	stageConnectorRuntimeDependencies,
+} from "../executor/runtime-dependency-loader.js";
 import { executeCompiledConnector } from "../executor/runtime.js";
 
 /**
@@ -37,6 +40,8 @@ import { executeCompiledConnector } from "../executor/runtime.js";
  */
 const SYNTHETIC_CONNECTOR_SOURCE = `
 import { ConnectorRuntime } from '@lobu/connector-sdk';
+const sharp = require('sharp');
+void sharp;
 
 export default class SelfCheckNoopConnector extends ConnectorRuntime {
   definition = {
@@ -123,29 +128,27 @@ const errMsg = (err: unknown): string =>
 	err instanceof Error ? err.message : String(err);
 
 /**
- * Write `content` to a temp file UNDER cwd, run `fn`, then remove it. Under cwd
- * (not the OS tmpdir) so the bundle's bare `@lobu/connector-sdk` import — left
- * externalized by the compiler — resolves via the runtime's `node_modules`,
- * the same reason `child-runner.ts` stages its module under cwd.
+ * Write `content` inside a private OS temp directory, stage the runtime package
+ * facade used by both ESM and CommonJS resolution, run `fn`, then remove the
+ * directory. This keeps startup independent of whether cwd is writable.
  */
-async function withCwdTempFile<T>(
+async function withRuntimeTempFile<T>(
 	ext: string,
 	content: string,
 	fn: (filePath: string) => Promise<T>,
 ): Promise<T> {
-	const filePath = join(
-		process.cwd(),
-		`.lobu-self-check-${process.pid}-${randomBytes(8).toString("hex")}${ext}`,
-	);
-	await writeFile(filePath, content, {
-		encoding: "utf-8",
-		flag: "wx",
-		mode: 0o600,
-	});
+	const tempDir = await mkdtemp(join(tmpdir(), "lobu-self-check-"));
+	const filePath = join(tempDir, `connector${ext}`);
 	try {
+		await stageConnectorRuntimeDependencies(tempDir);
+		await writeFile(filePath, content, {
+			encoding: "utf-8",
+			flag: "wx",
+			mode: 0o600,
+		});
 		return await fn(filePath);
 	} finally {
-		await rm(filePath, { force: true });
+		await rm(tempDir, { recursive: true, force: true });
 	}
 }
 
@@ -214,7 +217,7 @@ async function instantiateConnector(
 	compile: (filePath: string) => Promise<string>,
 ): Promise<DiscoveredConnector | null> {
 	const compiled = await compile(sourcePath);
-	return withCwdTempFile(".mjs", compiled, async (tmpFile) => {
+	return withRuntimeTempFile(".mjs", compiled, async (tmpFile) => {
 		const mod = (await import(pathToFileURL(tmpFile).href)) as Record<
 			string,
 			unknown
@@ -250,7 +253,7 @@ async function runSyntheticConnector(
 	compile: (filePath: string) => Promise<string>,
 ): Promise<void> {
 	// esbuild needs a file entry, so stage the inline source in a temp `.ts`.
-	const compiled = await withCwdTempFile(
+	const compiled = await withRuntimeTempFile(
 		".ts",
 		SYNTHETIC_CONNECTOR_SOURCE,
 		compile,

@@ -80,11 +80,11 @@ describe('os.shell connector', () => {
 
   it('rejects timeout values beyond the published execution budget', async () => {
     const result = await connector.execute(
-      runContext('run', { command: 'printf nope', timeout_ms: 170001 })
+      runContext('run', { command: 'printf nope', timeout_ms: 150001 })
     );
     expect(result).toEqual({
       success: false,
-      error: 'timeout_ms must be an integer between 100 and 170000',
+      error: 'timeout_ms must be an integer between 100 and 150000',
     });
   });
   it('runs a command and returns stdout with exit 0', async () => {

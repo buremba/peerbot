@@ -361,7 +361,7 @@ describe('daemon-builtin os.shell', () => {
     const pending = runShellBuiltin({
       command: 'sleep 30 & child=$!; sleep 30 & grandchild=$!; wait "$child" "$grandchild"',
       cwd: process.cwd(),
-      timeout_ms: 170_000,
+      timeout_ms: 150_000,
     }, shutdown.signal);
     setTimeout(() => shutdown.abort(), 100);
     const result = await pending;
@@ -374,7 +374,7 @@ describe('daemon-builtin os.shell', () => {
     await expect(runShellBuiltin({
       command: 'printf nope',
       cwd: process.cwd(),
-      timeout_ms: 170_001,
-    })).rejects.toThrow('between 100 and 170000');
+      timeout_ms: 150_001,
+    })).rejects.toThrow('between 100 and 150000');
   });
 });

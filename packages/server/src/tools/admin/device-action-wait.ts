@@ -88,8 +88,9 @@ async function sleepUnlessAborted(ms: number, abortSignal?: AbortSignal): Promis
 // claimed the run, marking it timeout while the worker was about to
 // pick it up.
 const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
-// os.shell accepts at most 170s; retain 5s for daemon cleanup and terminal
-// delivery while staying below run_sdk's 180s wall-clock ceiling.
+// os.shell accepts at most 150s. The daemon waiter allows that command budget
+// plus 3s TERM grace, up to 5s reaping, up to 15s terminal delivery, and
+// bounded network/server grace, while staying below run_sdk's 180s ceiling.
 export const DAEMON_BUILTIN_POST_CLAIM_BUDGET_MS = 175_000;
 const POLL_MS = 500;
 

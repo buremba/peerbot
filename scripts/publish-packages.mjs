@@ -620,6 +620,8 @@ export { rewriteWorkspaceRefs };
 /** Internals exposed for the guard tests; not part of any published surface. */
 export const __testing = {
   PACKAGES,
+  transformCorePublish,
+  transformWorkerPublish,
   lobuRuntimeDeps,
   markUnavailablePackage,
   packageNameFor,

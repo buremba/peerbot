@@ -39,7 +39,7 @@ export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
             maxLength: 20000,
           },
           cwd: { type: 'string' },
-          timeout_ms: { type: 'integer', minimum: 100, maximum: 170000, default: 60000 },
+          timeout_ms: { type: 'integer', minimum: 100, maximum: 150000, default: 60000 },
           stdin: { type: 'string', maxLength: 1000000 },
         },
         additionalProperties: false,

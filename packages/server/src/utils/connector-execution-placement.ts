@@ -40,12 +40,13 @@ export function isChromeNamespaceConnectorKey(connectorKey: string): boolean {
 
 export function isHeadlessConnectorRuntime(
   runtime: unknown,
-): runtime is { platforms: string[] } {
+): runtime is { platforms: string[]; execution: 'daemon_builtin' } {
   return (
     typeof runtime === 'object' &&
     runtime !== null &&
     Array.isArray((runtime as { platforms?: unknown }).platforms) &&
-    (runtime as { platforms: unknown[] }).platforms.includes('headless')
+    (runtime as { platforms: unknown[] }).platforms.includes('headless') &&
+    (runtime as { execution?: unknown }).execution === 'daemon_builtin'
   );
 }
 

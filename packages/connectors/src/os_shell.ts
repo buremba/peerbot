@@ -37,9 +37,10 @@ interface RunOutput {
   duration_ms: number;
 }
 
-// Keep execution inside run_sdk's 180s outer ceiling after cleanup and
-// terminal-delivery grace.
-const MAX_TIMEOUT_MS = 170000;
+// Keep the requested command budget truthful: run_sdk's 180s outer ceiling
+// must also cover 3s TERM grace, up to 5s reaping, up to 15s terminal
+// delivery, and bounded network/server grace.
+const MAX_TIMEOUT_MS = 150000;
 const DEFAULT_TIMEOUT_MS = 60000;
 const SIGTERM_GRACE_MS = 3000;
 // The outer shell remains the live process-group owner until Node's grace
@@ -229,7 +230,7 @@ export default class OsShellConnector extends ConnectorRuntime {
             timeout_ms: {
               type: 'integer',
               minimum: 100,
-              maximum: 170000,
+              maximum: 150000,
               default: 60000,
               description:
                 'Wall-clock budget in milliseconds. On timeout the owned process group gets SIGTERM (3s grace) then SIGKILL. Session-detached or daemonized commands may outlive the call; this is not sandbox containment.',

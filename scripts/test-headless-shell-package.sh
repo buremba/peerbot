@@ -17,6 +17,8 @@ test -f "$package_root/dist/daemon/builtins/index.js" || {
 
 smoke_dir="$(mktemp -d)"
 daemon_cwd="$(mktemp -d)"
+raw_runtime="$smoke_dir/raw-runtime"
+mkdir -p "$raw_runtime"
 trap 'rm -rf "$smoke_dir" "$daemon_cwd"' EXIT
 
 (cd "$package_root" && bun pm pack --destination "$smoke_dir" --quiet) >/dev/null
@@ -25,9 +27,9 @@ test "${#archives[@]}" -eq 1 || {
   echo "expected one connector-worker tarball, found ${#archives[@]}" >&2
   exit 1
 }
-tar -xzf "${archives[0]}" -C "$smoke_dir"
+tar -xzf "${archives[0]}" -C "$raw_runtime"
 
-PACKAGE_ROOT="$smoke_dir/package" node --input-type=module <<'NODE'
+PACKAGE_ROOT="$raw_runtime/package" node --input-type=module <<'NODE'
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -57,43 +59,73 @@ NODE
 # an empty npm prefix, and invoke the installed `lobu daemon` bin. No workspace
 # node_modules link is present in this phase.
 published_dir="$smoke_dir/published"
-mkdir -p "$published_dir/connector-worker" "$published_dir/cli" "$smoke_dir/prefix"
+mkdir -p "$published_dir/core" "$published_dir/connector-sdk" "$published_dir/embeddings" \
+  "$published_dir/connector-worker" "$published_dir/worker" "$published_dir/cli" "$smoke_dir/prefix"
+cp -R "$repo_root/packages/core/." "$published_dir/core/"
+cp -R "$repo_root/packages/connector-sdk/." "$published_dir/connector-sdk/"
+cp -R "$repo_root/packages/embeddings/." "$published_dir/embeddings/"
 cp -R "$package_root/." "$published_dir/connector-worker/"
+cp -R "$repo_root/packages/agent-worker/." "$published_dir/worker/"
 cp -R "$repo_root/packages/cli/." "$published_dir/cli/"
-PUBLISH_REPO_ROOT="$repo_root" PUBLISH_WORKER_ROOT="$published_dir/connector-worker" PUBLISH_CLI_ROOT="$published_dir/cli" node --input-type=module <<'NODE'
+PUBLISH_REPO_ROOT="$repo_root" PUBLISH_PACKAGE_ROOTS="$published_dir/core:$published_dir/connector-sdk:$published_dir/embeddings:$published_dir/connector-worker:$published_dir/worker:$published_dir/cli" node --input-type=module <<'NODE'
 import { readFile, writeFile } from 'node:fs/promises';
-import { rewriteWorkspaceRefs } from './scripts/publish-packages.mjs';
+import { __testing, rewriteWorkspaceRefs } from './scripts/publish-packages.mjs';
 
-for (const root of [process.env.PUBLISH_WORKER_ROOT, process.env.PUBLISH_CLI_ROOT]) {
+for (const root of process.env.PUBLISH_PACKAGE_ROOTS.split(':')) {
   const path = `${root}/package.json`;
   const pkg = JSON.parse(await readFile(path, 'utf8'));
-  await writeFile(path, `${JSON.stringify(rewriteWorkspaceRefs(pkg), null, 2)}\n`);
+  const transform = root.endsWith('/core')
+    ? __testing.transformCorePublish
+    : root.endsWith('/worker')
+      ? __testing.transformWorkerPublish
+      : rewriteWorkspaceRefs;
+  await writeFile(path, `${JSON.stringify(transform(pkg), null, 2)}\n`);
 }
 NODE
+(cd "$published_dir/core" && bun pm pack --destination "$published_dir" --quiet) >/dev/null
+(cd "$published_dir/connector-sdk" && bun pm pack --destination "$published_dir" --quiet) >/dev/null
+(cd "$published_dir/embeddings" && bun pm pack --destination "$published_dir" --quiet) >/dev/null
 (cd "$published_dir/connector-worker" && bun pm pack --destination "$published_dir" --quiet) >/dev/null
+(cd "$published_dir/worker" && bun pm pack --destination "$published_dir" --quiet) >/dev/null
 (cd "$published_dir/cli" && bun pm pack --destination "$published_dir" --quiet) >/dev/null
 published_archives=("$published_dir"/*.tgz)
-test "${#published_archives[@]}" -eq 2 || {
-  echo "expected transformed CLI and connector-worker tarballs" >&2
+test "${#published_archives[@]}" -eq 6 || {
+  echo "expected six transformed local @lobu tarballs" >&2
   exit 1
 }
 npm install --prefix "$smoke_dir/prefix" --no-audit --no-fund \
-  "${published_archives[0]}" "${published_archives[1]}" >/dev/null
+  "${published_archives[@]}" >/dev/null
 test ! -L "$smoke_dir/prefix/node_modules" || {
   echo "published install unexpectedly uses a node_modules symlink" >&2
   exit 1
 }
 PUBLISHED_PREFIX="$smoke_dir/prefix" node --input-type=module <<'NODE'
 import { access, readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 const prefix = process.env.PUBLISHED_PREFIX;
-const bin = resolve(prefix, 'node_modules/@lobu/cli/bin/lobu.js');
+const bin = resolve(prefix, 'node_modules/.bin/lobu');
 await access(bin);
 const workerBuiltins = resolve(prefix, 'node_modules/@lobu/connector-worker/dist/daemon/builtins/index.js');
 await access(workerBuiltins);
+const cliRequire = createRequire(bin);
+const workerRequire = createRequire(workerBuiltins);
+for (const [label, require_] of [['installed CLI', cliRequire], ['installed worker', workerRequire]]) {
+  try {
+    require_.resolve('@lobu/connector-sdk');
+  } catch (error) {
+    throw new Error(`${label} cannot resolve local @lobu/connector-sdk: ${error.message}`);
+  }
+  try {
+    require_.resolve('@lobu/connector-worker/compile');
+    throw new Error(`${label} resolved compiler-only @lobu/connector-worker/compile`);
+  } catch (error) {
+    if (error.message.includes('resolved compiler-only')) throw error;
+  }
+}
 const builtinsSource = await readFile(workerBuiltins, 'utf8');
-for (const forbidden of ['@lobu/connector-sdk', '/compile/index']) {
+for (const forbidden of ['/compile/index']) {
   if (builtinsSource.includes(forbidden)) {
     throw new Error(`published daemon built-ins retain compiler/SDK dependency: ${forbidden}`);
   }
@@ -101,13 +133,11 @@ for (const forbidden of ['@lobu/connector-sdk', '/compile/index']) {
 process.stdout.write('published install dependency boundary: ok\n');
 NODE
 
-# The full daemon has ordinary package dependencies. Reuse the repository's
-# already-installed dependency graph without copying it into the artifact; ESM
-# resolution still starts from the extracted package and the direct check above
-# has already proven the built-in itself is dependency-isolated.
-ln -s "$repo_root/node_modules" "$smoke_dir/node_modules"
+# The raw daemon gets the repository dependency graph only in its own isolated
+# sibling. The published CLI's ancestor chain never contains this link.
+ln -s "$repo_root/node_modules" "$raw_runtime/node_modules"
 
-PACKAGE_ROOT="$smoke_dir/package" PUBLISHED_ENTRY="$smoke_dir/prefix/node_modules/@lobu/cli/bin/lobu.js" DAEMON_CWD="$daemon_cwd" node --input-type=module <<'NODE'
+PACKAGE_ROOT="$raw_runtime/package" PUBLISHED_ENTRY="$smoke_dir/prefix/node_modules/.bin/lobu" DAEMON_CWD="$daemon_cwd" node --input-type=module <<'NODE'
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';

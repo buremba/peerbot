@@ -329,6 +329,25 @@ export class MultiTenantProvider implements WorkspaceProvider {
           }
         );
       }
+      // Rolling-deploy safety: older live Automation tokens did not carry the
+      // signed parent run claim. Accepting one here would let a new server
+      // create descendants with parent_run_id=NULL, outside terminal cleanup.
+      // Fail closed and let the dispatcher retry the run with a freshly minted
+      // token; never infer authority from a caller-shaped correlation string.
+      if (
+        tokenData.source === AUTOMATION_RUN_SOURCE &&
+        tokenData.automationRunId == null
+      ) {
+        return c.json(
+          {
+            error: 'invalid_token',
+            error_description:
+              'Automation worker token is missing parent-run provenance; retry with a fresh run token',
+          },
+          401,
+          { 'WWW-Authenticate': bearerChallenge('invalid_token') }
+        );
+      }
       // Per-run tokens minted server-side for a spawned local CLI (Automation
       // runs and device-placed chat turns) are the only worker tokens allowed
       // on this lane; a deployment's ordinary worker token is not.
@@ -416,6 +435,9 @@ export class MultiTenantProvider implements WorkspaceProvider {
           // Signed side-effect mode: 'capture' turns every non-read SDK call
           // into a recorded no-op (see tools/sdk_run.ts).
           executionMode: tokenData.executionMode ?? null,
+          // Signed parent identity for one-shot Automation sessions. The tool
+          // executor re-validates the row against this org + agent before use.
+          automationRunId: tokenData.automationRunId ?? null,
         },
         mcpIsAuthenticated: true,
         organizationId: requestedOrgId,

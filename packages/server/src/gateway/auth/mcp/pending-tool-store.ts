@@ -6,6 +6,7 @@
  */
 
 import { getDb } from "../../../db/client.js";
+import { AUTOMATION_RUN_TYPES_PG } from "../../../runs/run-types.js";
 
 const SCOPE = "pending-tool";
 
@@ -125,9 +126,28 @@ export async function takePendingTool(
     WHERE id = ${requestId}
       AND scope = ${SCOPE}
       AND expires_at > now()
+	  AND COALESCE(payload->>'conversationId', '') !~ '_automation_[0-9]+_run_[0-9]+$'
     RETURNING payload
   `;
   if (rows.length === 0) return null;
+	const payload = (rows[0] as { payload: PendingToolInvocation }).payload;
+	return payload ? withPairedAdminGrant(payload) : null;
+}
+
+/** Read-only lookup used to explain why a headless approval cannot be claimed. */
+export async function peekPendingTool(
+	requestId: string,
+): Promise<PendingToolInvocation | null> {
+	const sql = getDb();
+	const rows = await sql`
+		SELECT payload
+		FROM oauth_states
+		WHERE id = ${requestId}
+		  AND scope = ${SCOPE}
+		  AND expires_at > now()
+		LIMIT 1
+	`;
+	if (rows.length === 0) return null;
 	const payload = (rows[0] as { payload: PendingToolInvocation }).payload;
 	return payload ? withPairedAdminGrant(payload) : null;
 }
@@ -144,7 +164,7 @@ export async function listPendingToolsForRun(
     FROM oauth_states pending
     JOIN runs automation_run
       ON automation_run.id = ${runId}
-     AND automation_run.run_type = 'automation'
+	 AND automation_run.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
     WHERE pending.scope = ${SCOPE}
       AND pending.expires_at > now()
       AND pending.payload->>'organizationId' = automation_run.organization_id

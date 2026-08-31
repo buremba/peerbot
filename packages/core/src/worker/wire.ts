@@ -93,6 +93,14 @@ export interface MessagePayload {
    */
   organizationId: string;
 
+  /**
+   * Internal-only durable parent for a verified Automation-run intent. The
+   * public request body never controls this value; the gateway derives it from
+   * the signed/DB-verified session intent so queue failures can terminalize the
+   * owning Automation run promptly.
+   */
+  parentRunId?: number;
+
   // ── Bot & platform info (passed through to worker) ─────────────────
   /** Bot identifier. */
   botId: string;

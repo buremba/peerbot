@@ -475,6 +475,48 @@ describe("approval-run transition atomicity", () => {
 		expect(card?.interaction_status).toBe("approved");
 	});
 
+	it("never resumes an action approval linked to a headless Automation", async () => {
+		const sql = getTestDb();
+		const [parent] = await sql`
+			INSERT INTO runs (
+				organization_id, run_type, status, approval_status, created_at
+			) VALUES (
+				${orgId}, 'automation', 'executing', 'auto', NOW()
+			)
+			RETURNING id
+		`;
+		const queued = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: connectionId,
+				operation_key: "create_item",
+				input: { body: { value: "must-not-run" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number; status: string };
+		expect(queued.status).toBe("pending_approval");
+		await sql`
+			UPDATE runs SET parent_run_id = ${Number(parent.id)}
+			WHERE id = ${queued.run_id}
+		`;
+		const callsBefore = postItemsCalls;
+
+		const result = (await manageOperations(
+			{ action: "approve", run_id: queued.run_id },
+			{} as Env,
+			humanCtx,
+		)) as { error?: string };
+
+		expect(result.error).toContain("Headless Automation approvals cannot be resumed");
+		expect(postItemsCalls).toBe(callsBefore);
+		const [child] = await sql`
+			SELECT status, approval_status FROM runs WHERE id = ${queued.run_id}
+		`;
+		expect(child.status).toBe("pending");
+		expect(child.approval_status).toBe("pending");
+	});
+
 	it("builder completion card failure does NOT convert a successful apply into a business failure", async () => {
 		const sql = getTestDb();
 		const runId = await seedAgentAskRun(orgId, userId);

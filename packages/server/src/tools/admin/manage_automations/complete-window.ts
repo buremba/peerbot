@@ -28,6 +28,7 @@ import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
 import { promoteAutomationEntityOutput } from '../../../utils/promote-keyed-entities';
 import type { DeferredMutation } from '../../../authz/entity-mutation-gate';
+import { describePendingApproval } from '../../../automations/run-completion';
 import { insertEvent } from '../../../utils/insert-event';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import { persistAutomationEventOutput } from '../../../utils/persist-automation-event-output';
@@ -180,6 +181,11 @@ export async function handleCompleteWindow(
   captured?: true;
 }> {
   const sql = getDb();
+	const persistedDeferredApprovals: Array<{
+		deferred: DeferredMutation;
+		runId: number;
+		eventId: number;
+	}> = [];
   const provenanceClientId = args.client_id ?? ctx.clientId ?? null;
   const explicitProvenanceModel =
     typeof args.model === 'string' && args.model.trim() ? args.model : null;
@@ -715,6 +721,10 @@ export async function handleCompleteWindow(
         409
       );
     }
+		const approvalFailure = await describePendingApproval(tx, runId, 0);
+		if (approvalFailure) {
+			throw new ToolUserError(approvalFailure, 409);
+		}
 
     // ============================================
     // STEP 8: Link content to window (bulk INSERT)
@@ -889,6 +899,18 @@ export async function handleCompleteWindow(
       env
     );
 
+		// Persist review artifacts atomically with parent completion. The
+		// post-commit pass only delivers notifications; persistence failure rolls
+		// this transaction back so a retry can rebuild the deferred set.
+		for (const deferred of deferredApprovals) {
+			const persisted = await deferred.queue(ctx, env, {
+				automationReviewArtifact: true,
+				db: tx,
+				suppressNotification: true,
+			});
+			persistedDeferredApprovals.push({ deferred, ...persisted });
+		}
+
     const [completedRun] = await tx`
       UPDATE runs
       SET status = 'completed',
@@ -984,16 +1006,20 @@ export async function handleCompleteWindow(
     };
   });
 
-  // Post-commit: flush any deferred approvals (owned-field changes + policy-held
-  // creates) the automation couldn't apply inline. Done after the window transaction
-  // so the durable approval (run + event + notify) is never rolled back with the
-  // window, and a failure here never undoes the committed sync. Best-effort each.
-  for (const d of deferredApprovals) {
-    await d
-      .queue(ctx, env)
+  // Post-commit: rows/events are already durable. Replay the idempotent path
+  // only to deliver notifications against committed data.
+  for (const persisted of persistedDeferredApprovals) {
+    await persisted.deferred
+      .queue(ctx, env, {
+        automationReviewArtifact: true,
+		notifyExisting: {
+			runId: persisted.runId,
+			eventId: persisted.eventId,
+		},
+      })
       .catch((err) =>
         logger.error(
-          { err, automationId, action: d.display.action },
+          { err, automationId, action: persisted.deferred.display.action },
           '[complete-window] failed to queue deferred entity approval'
         )
       );

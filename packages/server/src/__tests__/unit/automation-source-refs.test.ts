@@ -199,4 +199,33 @@ describe("normalizeAutomationSources source.context classification", () => {
 			"SELECT * FROM events WHERE semantic_type NOT IN ('change', 'audit') ORDER BY occurred_at DESC",
 		);
 	});
+
+	it("rejects a referenced feed whose stored config no longer matches its active schema", async () => {
+		const feedSql = (async () => [
+			{
+				id: 452,
+				store: "events",
+				feed_key: "issues",
+				connection_slug: "github",
+				operations: ["sync"],
+				config: {},
+				feeds_schema: {
+					issues: {
+						operations: ["sync"],
+						configSchema: {
+							type: "object",
+							required: ["cursor_column"],
+							properties: { cursor_column: { type: "string" } },
+						},
+					},
+				},
+			},
+		]) as never;
+
+		await expect(
+			normalizeAutomationSources(feedSql, "org", [
+				{ name: "issues", query: "@feed:452" },
+			]),
+		).rejects.toThrow(/cursor_column/);
+	});
 });

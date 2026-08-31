@@ -16,9 +16,11 @@
  *  - update: any `deny` on a field wins immediately; otherwise the per-field
  *    `requireApproval` sets are UNION-ed across all interceptors (empty ⇒ allow).
  *
- * A `defer` never writes on the caller's transaction. The interceptor hands back
- * a `DeferredMutation` whose `queue()` closure the CORE runs strictly POST-COMMIT
- * (repo invariant: approvals + their events never ride the caller's tx).
+ * A `defer` hands back a `DeferredMutation` whose `queue()` closure the core
+ * normally runs post-commit. Automation keyed-output completion is the one
+ * intentional exception: it persists the approval run + event in the window
+ * transaction, then performs notification delivery post-commit, so a failed
+ * approval-event write cannot be hidden behind a successfully completed parent.
  *
  * Import-cycle note: the static edge chain is gate → approval-interceptor →
  * entity-field-approval → entity-management → gate (circular). This is safe
@@ -136,6 +138,12 @@ export interface DeferredMutation {
 	queue: (
 		ctx: ToolContext,
 		env: Env,
+		options?: {
+			automationReviewArtifact?: boolean;
+			db?: DbClient;
+			notifyExisting?: { runId: number; eventId: number };
+			suppressNotification?: boolean;
+		},
 	) => Promise<{ runId: number; eventId: number; approvalUrl?: string }>;
 	display: {
 		action: "create" | "update" | "delete";

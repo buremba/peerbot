@@ -73,13 +73,19 @@ import {
 } from "../utils/browser-ingestion-sanitizer";
 import {
 	bumpDeviceFinalizeNudge,
+	cleanupAutomationParentLineageInTransaction,
+	describePendingApproval,
 	resolveFinalizeNudgeBudget,
 } from "../automations/run-completion";
 import {
 	advanceScheduleAfterTerminalFailure,
 	deviceProviderQuotaResetNotBefore,
 } from "../automations/schedule-cursor";
-import { recordScheduledExecutionFailure } from "../automations/scheduled-failure-policy";
+import { isPermanentAutomationAgentError } from "../automations/failure-classification";
+import {
+	recordScheduledConfigurationFailure,
+	recordScheduledExecutionFailure,
+} from "../automations/scheduled-failure-policy";
 import { authorizeRunForWorker } from "./shared";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { runLeaseFence, runOwnerFence } from "../runs/run-lease";
@@ -1464,8 +1470,17 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	// advancing `next_run_at` twice and skipping a window.
 	// The stdout tail is stashed for diagnosis (why didn't the agent call
 	// complete_window?); the worker redacts before sending.
-	const failRun = async (reason: string): Promise<boolean> => {
-		return sql.begin(async (tx) => {
+	const failRunInTransaction = async (
+		tx: DbClient,
+		reason: string,
+	): Promise<boolean> => {
+			// Match completeWindow's global lock order: Automation first, run second.
+			// Callers that already own both locks simply reacquire them reentrantly.
+			await tx`
+				SELECT id FROM automations
+				WHERE id = ${automationId}
+				FOR UPDATE
+			`;
 			const failedRows = (await tx`
         UPDATE runs
         SET status = 'failed',
@@ -1479,31 +1494,71 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
         WHERE id = ${runId}
           ${runLeaseFence(tx, body.worker_id)}
         RETURNING id
-      `) as unknown as Array<{ id: number }>;
+			`) as unknown as Array<{ id: number }>;
 			if (failedRows.length === 0) return false;
+			await cleanupAutomationParentLineageInTransaction(
+				tx,
+				runId,
+				run.organization_id,
+				automationId,
+			);
 			await tx`
         UPDATE automations
         SET last_fired_at = NOW(), updated_at = NOW()
         WHERE id = ${automationId}
       `;
-			await recordScheduledExecutionFailure(
-				tx,
-				automationId,
+			const dispatchSource =
 				typeof approved.dispatch_source === "string"
 					? approved.dispatch_source
-					: null
-			);
+					: null;
+			if (isPermanentAutomationAgentError(null, reason)) {
+				await recordScheduledConfigurationFailure(
+					tx,
+					automationId,
+					dispatchSource,
+				);
+			} else {
+				await recordScheduledExecutionFailure(
+					tx,
+					automationId,
+					dispatchSource,
+				);
+			}
 			await advanceScheduleAfterTerminalFailure(
 				tx,
 				automationId,
-				typeof approved.dispatch_source === "string"
-					? approved.dispatch_source
-					: null,
+				dispatchSource,
 				deviceProviderQuotaResetNotBefore(reason)
 			);
 			return true;
-		});
 	};
+	const failRun = async (reason: string): Promise<boolean> => {
+		return sql.begin((tx) => failRunInTransaction(tx, reason));
+	};
+	const failPendingApprovalIfPresent = async (): Promise<
+		| { status: "clear" }
+		| { status: "blocked"; reason: string }
+		| { status: "missed" }
+	> =>
+		sql.begin(async (tx) => {
+			await tx`
+				SELECT id FROM automations
+				WHERE id = ${automationId}
+				FOR UPDATE
+			`;
+			const locked = await tx`
+				SELECT id FROM runs
+				WHERE id = ${runId}
+				  AND status = 'running'
+				  AND claimed_by = ${body.worker_id}
+				FOR UPDATE
+			`;
+			if (locked.length === 0) return { status: "missed" as const };
+			const approvalFailure = await describePendingApproval(tx, runId, 0);
+			if (!approvalFailure) return { status: "clear" as const };
+			await failRunInTransaction(tx, approvalFailure);
+			return { status: "blocked" as const, reason: approvalFailure };
+		});
 
 	const emitCompletionEvent = (
 		outcome: "completed" | "failed",
@@ -1551,7 +1606,13 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	// CLI is still running. Preserve that terminal intent instead of sending the
 	// run through the missing-completeWindow resume budget or failure taxonomy.
 	if (body.exit_reason === "cancelled") {
-		const cancelledRows = (await sql`
+		const cancelled = await sql.begin(async (tx) => {
+			await tx`
+				SELECT id FROM automations
+				WHERE id = ${automationId}
+				FOR UPDATE
+			`;
+			const cancelledRows = (await tx`
       UPDATE runs
       SET status = 'cancelled',
           completed_at = current_timestamp,
@@ -1564,14 +1625,23 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
         ${runLeaseFence(sql, body.worker_id)}
       RETURNING id
     `) as unknown as Array<{ id: number }>;
-		if (cancelledRows.length === 0) {
-			return c.json({ ok: true, status: run.status, idempotent: true });
-		}
-		await sql`
+			if (cancelledRows.length === 0) return false;
+			await cleanupAutomationParentLineageInTransaction(
+				tx,
+				runId,
+				run.organization_id,
+				automationId,
+			);
+			await tx`
       UPDATE automations
       SET last_fired_at = NOW(), updated_at = NOW()
       WHERE id = ${automationId}
     `;
+			return true;
+		});
+		if (!cancelled) {
+			return c.json({ ok: true, status: run.status, idempotent: true });
+		}
 		return c.json({
 			ok: true,
 			status: "cancelled",
@@ -1660,11 +1730,30 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			(approved.agent_kind as string).trim()
 				? (approved.agent_kind as string).trim()
 				: null;
-		const completedRows = await finalizeRun(sql, {
-			runId,
-			workerId: body.worker_id,
-			status: "completed",
-			extraSet: sql`,
+		const eventOutcome = await sql.begin(async (tx) => {
+			await tx`
+				SELECT id FROM automations
+				WHERE id = ${automationId}
+				FOR UPDATE
+			`;
+			const locked = await tx`
+				SELECT id FROM runs
+				WHERE id = ${runId}
+				  AND status = 'running'
+				  AND claimed_by = ${body.worker_id}
+				FOR UPDATE
+			`;
+			if (locked.length === 0) return { status: "missed" as const };
+			const approvalFailure = await describePendingApproval(tx, runId, 0);
+			if (approvalFailure) {
+				await failRunInTransaction(tx, approvalFailure);
+				return { status: "failed" as const, error: approvalFailure };
+			}
+			const completedRows = await finalizeRun(tx, {
+				runId,
+				workerId: body.worker_id,
+				status: "completed",
+				extraSet: tx`,
         outcome = ${classifyRunOutcome({ status: "completed" })},
         error_message = NULL,
         model_used = COALESCE(
@@ -1684,8 +1773,12 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
             to_jsonb(${durationMs}::bigint)
           )
         END`,
+			});
+			return completedRows.length > 0
+				? { status: "completed" as const }
+				: { status: "missed" as const };
 		});
-		if (completedRows.length === 0) {
+		if (eventOutcome.status === "missed") {
 			const finalRows = (await sql`
         SELECT status FROM runs WHERE id = ${runId} LIMIT 1
       `) as unknown as Array<{ status: string }>;
@@ -1693,6 +1786,15 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 				ok: true,
 				status: finalRows[0]?.status ?? "failed",
 				idempotent: true,
+			});
+		}
+		if (eventOutcome.status === "failed") {
+			emitCompletionEvent("failed", eventOutcome.error);
+			return c.json({
+				ok: true,
+				status: "failed",
+				reason_code: "pending_approval",
+				error: eventOutcome.error,
 			});
 		}
 		await sql`
@@ -1743,6 +1845,26 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			? Math.max(0, Math.trunc(body.finalize_attempt))
 			: attemptsSoFar;
 	if (reportedAttempt < attemptsSoFar) {
+		const approvalState = await failPendingApprovalIfPresent();
+		if (approvalState.status === "blocked") {
+			emitCompletionEvent("failed", approvalState.reason);
+			return c.json({
+				ok: true,
+				status: "failed",
+				reason_code: "pending_approval",
+				error: approvalState.reason,
+			});
+		}
+		if (approvalState.status === "missed") {
+			const [final] = (await sql`
+				SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+			`) as unknown as Array<{ status: string }>;
+			return c.json({
+				ok: true,
+				status: final?.status ?? "failed",
+				idempotent: true,
+			});
+		}
 		logger.info(
 			{ run_id: runId, reported: reportedAttempt, granted: attemptsSoFar },
 			"[completeAutomationRun] replayed exit report — re-serving the granted resume"
@@ -1763,14 +1885,29 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	// Budget N means N extra spawns after the first (same as cloud).
 	if (attemptsSoFar < budget) {
 		const nextAttempt = attemptsSoFar + 1;
-		const bumped = await bumpDeviceFinalizeNudge(
+		const bumpResult = await bumpDeviceFinalizeNudge(
 			sql,
+			automationId,
 			runId,
 			body.worker_id,
 			nextAttempt,
 			output ? output.slice(-2000) : null
 		);
-		if (!bumped) {
+		if (bumpResult === "blocked") {
+			const [failed] = (await sql`
+				SELECT error_message FROM runs WHERE id = ${runId} LIMIT 1
+			`) as unknown as Array<{ error_message: string | null }>;
+			const blockedReason =
+				failed?.error_message ?? "Automation run blocked on a pending approval.";
+			emitCompletionEvent("failed", blockedReason);
+			return c.json({
+				ok: true,
+				status: "failed",
+				reason_code: "pending_approval",
+				error: blockedReason,
+			});
+		}
+		if (bumpResult === "missed") {
 			const finalRows = (await sql`
         SELECT status,
                claimed_by,
@@ -1838,7 +1975,32 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 		". Use the lobu skill + `lobu memory exec` (knowledge.read → completeWindow) " +
 		"or MCP query_sdk/run_sdk. Check lobu CLI login/org, gateway reachability, " +
 		"and that the device token has mcp:write if using MCP.";
-	const transitioned = await failRun(reason);
+	const terminal = await sql.begin(async (tx) => {
+		await tx`
+			SELECT id FROM automations
+			WHERE id = ${automationId}
+			FOR UPDATE
+		`;
+		const locked = await tx`
+			SELECT id FROM runs
+			WHERE id = ${runId}
+			  AND status = 'running'
+			  AND claimed_by = ${body.worker_id}
+			FOR UPDATE
+		`;
+		if (locked.length === 0) {
+			return { transitioned: false, reason, approvalBlocked: false };
+		}
+		const approvalFailure = await describePendingApproval(tx, runId, 0);
+		const terminalReason = approvalFailure ?? reason;
+		const transitioned = await failRunInTransaction(tx, terminalReason);
+		return {
+			transitioned,
+			reason: terminalReason,
+			approvalBlocked: approvalFailure != null,
+		};
+	});
+	const transitioned = terminal.transitioned;
 	if (!transitioned) {
 		const finalRows = (await sql`
       SELECT status FROM runs WHERE id = ${runId} LIMIT 1
@@ -1849,14 +2011,16 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			idempotent: true,
 		});
 	}
-	emitCompletionEvent("failed", reason);
+	emitCompletionEvent("failed", terminal.reason);
 	return c.json({
 		ok: true,
 		status: "failed",
-		reason_code: "missing_complete_window",
+		reason_code: terminal.approvalBlocked
+			? "pending_approval"
+			: "missing_complete_window",
 		attempt: attemptsSoFar,
 		max_attempts: budget,
-		error: reason,
+		error: terminal.reason,
 	});
 }
 

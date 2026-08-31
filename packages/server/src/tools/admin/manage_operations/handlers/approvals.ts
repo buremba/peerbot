@@ -188,6 +188,58 @@ async function resolveReviewer(
   return { userId: ctx.userId, name: rows[0]?.name ?? null };
 }
 
+/**
+ * Headless Automation descendants are never resumable through a human
+ * approval click. The parent lock serializes this decision with Automation
+ * terminalization, whose cleanup also locks parent-first before descendants.
+ */
+async function blockHeadlessAutomationApproval(
+	runId: number,
+	organizationId: string,
+): Promise<ManageOperationsResult | null> {
+	const sql = getDb();
+	return sql.begin(async (tx) => {
+		const rows = await tx`
+			SELECT child.action_key, child.run_type, child.run_metadata,
+			       parent.status AS parent_status
+			FROM runs child
+			JOIN runs parent
+			  ON parent.id = child.parent_run_id
+			 AND parent.organization_id = child.organization_id
+			WHERE child.id = ${runId}
+			  AND child.organization_id = ${organizationId}
+			  AND child.run_type = ANY(${pgTextArray(["action", "internal"])}::text[])
+			  AND parent.run_type = ANY('{automation,automation_eval}'::text[])
+			FOR UPDATE OF parent
+			LIMIT 1
+		`;
+		if (rows.length === 0) return null;
+		const row = rows[0] as {
+			action_key: string | null;
+			run_type: string;
+			run_metadata: Record<string, unknown> | null;
+			parent_status: string;
+		};
+		// Keyed-output Automations intentionally finish before presenting their
+		// entity-field proposals for durable human review. Those completed-parent
+		// proposals are review artifacts, not unattended execution continuations.
+		if (
+			row.run_type === "internal" &&
+			ENTITY_CHANGE_ACTION_KEYS.includes(
+				row.action_key as (typeof ENTITY_CHANGE_ACTION_KEYS)[number],
+			) &&
+			row.run_metadata?.automation_review_artifact === true &&
+			row.parent_status === "completed"
+		) {
+			return null;
+		}
+		return {
+			error:
+				"Headless Automation approvals cannot be resumed by a human. Retry the Automation after configuring its approval policy for unattended execution.",
+		};
+	});
+}
+
 async function lockOrganizationForApproval(
 	tx: DbClient,
 	organizationId: string,
@@ -1455,6 +1507,11 @@ export async function handleApprove(
 	const humanGate = requireHumanApprovalContext(ctx, "approve");
 	if (humanGate) return humanGate;
 	await requireApprovalAuthority("approve", args.run_id, ctx);
+	const headlessBlock = await blockHeadlessAutomationApproval(
+		args.run_id,
+		ctx.organizationId,
+	);
+	if (headlessBlock) return headlessBlock;
 
 	const sql = getDb();
 

@@ -30,6 +30,11 @@ import {
 import { materializeDueItems } from "../scheduled/due-materializer";
 import { markStaleRunsAsTimeout } from "../scheduled/stale-run-sweeper";
 import { fingerprintAutomationSources } from "../tools/get_content/automation-mode";
+import type { AutomationSource } from "../types/automations";
+import {
+	AutomationSourceConfigurationError,
+	normalizeAutomationSources,
+} from "./source-refs";
 import { nextRunAt } from "../utils/cron";
 import { DEVICE_ONLINE_WINDOW_SECONDS } from "../utils/device-liveness";
 import logger from "../utils/logger";
@@ -45,8 +50,14 @@ import {
 	advanceAutomationSchedule,
 	advanceAutomationScheduleAfterSuccessfulWindow,
 } from "./schedule-cursor";
-import { recordScheduledExecutionFailure } from "./scheduled-failure-policy";
 import {
+	recordScheduledConfigurationFailure,
+	recordScheduledExecutionFailure,
+} from "./scheduled-failure-policy";
+import { isPermanentAutomationAgentError } from "./failure-classification";
+import {
+	cleanupAutomationParentLineageInTransaction,
+	lockOwningAutomationForRun,
 	resolveAutomationRunsByMessageIds,
 } from "./run-completion";
 import {
@@ -85,6 +96,7 @@ interface ClaimedAutomationRunRow {
 	organization_id: string;
 	automation_id: number;
 	approved_input: unknown;
+	claim_token: string;
 }
 
 interface ActiveAutomationRunInfo {
@@ -228,8 +240,15 @@ export function parseAutomationRunPayload(
 		trigger_output:
 			payload.trigger_output === "silent" ||
 			payload.trigger_output === "reply_to_source"
-				? payload.trigger_output
+					? payload.trigger_output
+					: undefined,
+		source_fingerprint:
+			typeof payload.source_fingerprint === "string"
+				? payload.source_fingerprint
 				: undefined,
+		source_preflight_pending: payload.source_preflight_pending === true,
+		source_fingerprint_required:
+			payload.source_fingerprint_required === true,
 	};
 }
 
@@ -254,6 +273,8 @@ async function enqueueAutomationRunForRecord(
 	dispatchSource: AutomationRunPayload["dispatch_source"],
 	sourceFingerprint?: string,
 	tx?: DbClient,
+	sourcePreflightPending = false,
+	sourceFingerprintRequired = false,
 ): Promise<QueueAutomationRunResult> {
 	if ((automation.status ?? "active") !== "active") {
 		throw new Error(`Automation ${automation.id} is not active.`);
@@ -282,18 +303,19 @@ async function enqueueAutomationRunForRecord(
 	);
 
 	const runParams = {
-			organizationId: automation.organization_id,
-			automationId: automation.id,
-			agentId: executor?.kind === "agent" ? executor.agentId : null,
-			windowStart: windowStart.toISOString(),
-			windowEnd: windowEnd.toISOString(),
-			dispatchSource,
-			deviceWorkerId:
-				executor?.kind === "device" ? executor.deviceWorkerId : null,
-			agentKind:
-				executor?.kind === "device" ? executor.agentKind : null,
-			sourceFingerprint,
-		};
+		organizationId: automation.organization_id,
+		automationId: automation.id,
+		agentId: executor?.kind === "agent" ? executor.agentId : null,
+		windowStart: windowStart.toISOString(),
+		windowEnd: windowEnd.toISOString(),
+		dispatchSource,
+		deviceWorkerId:
+			executor?.kind === "device" ? executor.deviceWorkerId : null,
+		agentKind: executor?.kind === "device" ? executor.agentKind : null,
+		sourceFingerprint,
+		sourcePreflightPending,
+		sourceFingerprintRequired,
+	};
 	const queued = tx
 		? await createAutomationRunInTransaction(runParams, tx)
 		: await createAutomationRun(runParams, sql);
@@ -307,36 +329,206 @@ async function completeSkippedAutomationRun(
 	runId: number,
 	windowStart: Date,
 	granularity: AutomationTimeGranularity,
-): Promise<void> {
-	// A server-side skip has no child stdout. Preserve the historical `{}`
-	// action_output for consumers, while output_tail makes the terminal no-op
-	// intentional to humans and run_metadata remains the machine-readable signal.
-	await sql.begin(async (tx) => {
-		await tx`SELECT id FROM automations WHERE id = ${automationId} FOR UPDATE`;
+	sourceFingerprint: string,
+	devicePinned: boolean,
+	claimToken: string,
+): Promise<boolean> {
+	// Caller holds the Automation row lock across source snapshot and completion.
+	const tx = sql;
 		const [completed] = await tx`
 			UPDATE runs
 			SET status = 'completed',
 			    outcome = ${classifyRunOutcome({ status: "completed" })},
+			    claimed_by = NULL,
+			    claimed_at = NULL,
 			    action_output = '{}'::jsonb,
 			    output_tail = 'No-op: scheduled source content is unchanged.',
-			    approved_input = COALESCE(approved_input, '{}'::jsonb)
-			      || jsonb_build_object('granularity', ${granularity}::text),
+			    approved_input = (
+			      COALESCE(approved_input, '{}'::jsonb)
+			      - 'source_preflight_pending'
+			    ) || jsonb_build_object(
+			      'granularity', ${granularity}::text,
+			      'source_fingerprint', ${sourceFingerprint}::text
+			    ),
 			    run_metadata = COALESCE(run_metadata, '{}'::jsonb)
 			      || '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
 			    completed_at = current_timestamp
 			WHERE id = ${runId}
 			  AND automation_id = ${automationId}
-			  AND status = 'pending'
+			  AND status = 'claimed'
+			  AND claimed_by = ${claimToken}
 			RETURNING id
 		`;
-		if (!completed) return;
+		if (!completed) return false;
 		await advanceExpectedAutomationWindow(
 			tx,
 			automationId,
 			windowStart,
 			granularity,
 		);
-	});
+		await advanceAutomationScheduleAfterSuccessfulWindow(
+			tx,
+			automationId,
+			devicePinned,
+			granularity,
+		);
+		return true;
+}
+
+type SourceFingerprintPreparation =
+	| { kind: "ready" }
+	| { kind: "skipped" }
+	| { kind: "failed" }
+	| { kind: "requeued" };
+
+async function prepareScheduledSourceFingerprint(params: {
+	sql: DbClient;
+	automation: DueAutomationRow;
+	runId: number;
+	payload: AutomationRunPayload;
+	claimToken: string;
+}): Promise<SourceFingerprintPreparation> {
+	const granularity =
+		params.payload.granularity ??
+		inferAutomationGranularityFromSchedule(params.automation.schedule);
+	const windowStart = new Date(params.payload.window_start);
+	const windowEnd = new Date(params.payload.window_end);
+	try {
+		return await params.sql.begin(async (tx) => {
+		await tx`SET LOCAL statement_timeout = '240s'`;
+		await tx`
+			SELECT id FROM automations
+			WHERE id = ${params.automation.id}
+			  AND organization_id = ${params.automation.organization_id}
+			FOR UPDATE
+		`;
+		const sourceRows = await tx<{
+			version_sources: unknown;
+			automation_sources: unknown;
+		}>`
+			SELECT version.version_sources, automation.sources AS automation_sources
+			FROM automations automation
+			JOIN automation_versions version
+			  ON version.id = COALESCE(
+			    ${params.payload.version_id}::bigint,
+			    automation.current_version_id
+			  )
+			 AND version.automation_id = automation.automation_group_id
+			WHERE automation.id = ${params.automation.id}
+			  AND automation.organization_id = ${params.automation.organization_id}
+			LIMIT 1
+		`;
+		if (sourceRows.length === 0) {
+			throw new AutomationSourceConfigurationError(
+				`Automation ${params.automation.id} has no runnable source version.`,
+			);
+		}
+		const parseSources = (value: unknown): AutomationSource[] => {
+			if (Array.isArray(value)) return value as AutomationSource[];
+			if (typeof value !== "string") return [];
+			try {
+				const parsed = JSON.parse(value);
+				return Array.isArray(parsed) ? (parsed as AutomationSource[]) : [];
+			} catch {
+				return [];
+			}
+		};
+		const versionSources = parseSources(sourceRows[0]?.version_sources);
+		const sources =
+			versionSources.length > 0
+				? versionSources
+				: parseSources(sourceRows[0]?.automation_sources);
+		await normalizeAutomationSources(
+			tx,
+			params.automation.organization_id,
+			sources,
+		);
+
+		if (params.payload.source_fingerprint_required !== true) {
+			const ready = await tx`
+				UPDATE runs
+				SET approved_input = COALESCE(approved_input, '{}'::jsonb)
+				      - 'source_preflight_pending'
+				WHERE id = ${params.runId}
+				  AND status = 'claimed'
+				  AND claimed_by = ${params.claimToken}
+				RETURNING id
+			`;
+			if (ready.length === 0) return { kind: "requeued" };
+			return { kind: "ready" };
+		}
+
+		const sourceState = await fingerprintAutomationSources({
+			sql: tx,
+			automationId: params.automation.id,
+			versionId: params.payload.version_id,
+			windowStart: windowStart.toISOString(),
+			windowEnd: windowEnd.toISOString(),
+		});
+		const previous = await tx`
+			SELECT approved_input->>'source_fingerprint' AS fingerprint
+			FROM runs
+			WHERE automation_id = ${params.automation.id}
+			  AND run_type = 'automation'
+			  AND status = 'completed'
+			  AND approved_input->>'source_fingerprint' IS NOT NULL
+			ORDER BY completed_at DESC NULLS LAST, id DESC
+			LIMIT 1
+		`;
+		if (
+			sourceState.empty ||
+			previous[0]?.fingerprint === sourceState.fingerprint
+		) {
+			const completed = await completeSkippedAutomationRun(
+				tx,
+				params.automation.id,
+				params.runId,
+				windowStart,
+				granularity,
+				sourceState.fingerprint,
+				Boolean(params.automation.device_worker_id),
+				params.claimToken,
+			);
+			if (!completed) return { kind: "requeued" };
+			logger.info(
+				{ automationId: params.automation.id, empty: sourceState.empty },
+				"[automation] Skipped unchanged Automation sources before agent dispatch",
+			);
+			return { kind: "skipped" };
+		}
+		const ready = await tx`
+			UPDATE runs
+			SET approved_input = (
+			      COALESCE(approved_input, '{}'::jsonb)
+			      - 'source_preflight_pending'
+			    ) || jsonb_build_object(
+			      'source_fingerprint', ${sourceState.fingerprint}::text
+			    )
+			WHERE id = ${params.runId}
+			  AND status = 'claimed'
+			  AND claimed_by = ${params.claimToken}
+			RETURNING id
+		`;
+		if (ready.length === 0) return { kind: "requeued" };
+		return { kind: "ready" };
+		});
+	} catch (error) {
+		const message = `Automation source preflight failed: ${getErrorMessage(error)}`;
+		if (error instanceof AutomationSourceConfigurationError) {
+			await failAutomationRun(params.sql, params.runId, message, {
+				permanent: true,
+				claimedBy: params.claimToken,
+			});
+			return { kind: "failed" };
+		}
+		const retry = await requeueAutomationRunAfterTransientDispatchFailure(
+			params.sql,
+			params.runId,
+			message,
+			params.claimToken,
+		);
+		return { kind: retry === "failed" ? "failed" : "requeued" };
+	}
 }
 
 async function enqueueAutomationRunForAutomationWithClient(
@@ -388,24 +580,39 @@ export async function enqueueAutomationRunForAutomationInTransaction(
 async function markAutomationRunFailedIdempotent(
 	sql: DbClient,
 	runId: number,
-	message: string
+	message: string,
+	errorCode?: string,
+	permanentConfigurationFailure = false,
+	claimedBy?: string,
 ): Promise<void> {
 	await sql.begin(async (tx) => {
+		await lockOwningAutomationForRun(tx, runId);
 		const [failed] = await tx<{
 			automation_id: string | number | null;
+			organization_id: string | null;
 			run_type: string;
 			dispatch_source: string | null;
 		}>`
       UPDATE runs
       SET status = 'failed',
-          outcome = ${classifyRunOutcome({ status: "failed", errorMessage: message })},
+          outcome = ${classifyRunOutcome({ status: "failed", errorCode, errorMessage: message })},
           completed_at = current_timestamp,
           error_message = ${message}
       WHERE id = ${runId}
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-      RETURNING automation_id, run_type, approved_input->>'dispatch_source' AS dispatch_source
+		AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
+	  RETURNING automation_id, organization_id, run_type,
+	            approved_input->>'dispatch_source' AS dispatch_source
     `;
 		if (!failed) return;
+		if (failed.organization_id) {
+			await cleanupAutomationParentLineageInTransaction(
+				tx,
+				runId,
+				failed.organization_id,
+				failed.automation_id == null ? null : Number(failed.automation_id),
+			);
+		}
 		// Same gate as the twin in run-completion.ts. The dispatch lane claims
 		// both run types, so every failure here — session-create, embedded Lobu
 		// unavailable, preflight, message POST — can be an eval. An eval clones
@@ -413,6 +620,19 @@ async function markAutomationRunFailedIdempotent(
 		// cursor of the Automation it is only replaying, or park it entirely when
 		// the schedule does not parse.
 		if (failed.run_type === AUTOMATION_RUN_TYPE) {
+			if (permanentConfigurationFailure) {
+				await recordScheduledConfigurationFailure(
+					tx,
+					failed.automation_id == null ? null : Number(failed.automation_id),
+					failed.dispatch_source,
+				);
+			} else {
+				await recordScheduledExecutionFailure(
+					tx,
+					failed.automation_id == null ? null : Number(failed.automation_id),
+					failed.dispatch_source,
+				);
+			}
 			await advanceScheduleAfterTerminalFailure(
 				tx,
 				failed.automation_id == null ? null : Number(failed.automation_id),
@@ -584,6 +804,14 @@ export async function sweepStaleAutomationRuns(
 			coarseErrorMessage: `Automation run exceeded ${coarseStaleInterval} without reaching terminal state`,
 		});
 		for (const row of rows) {
+			if (row.organization_id) {
+				await cleanupAutomationParentLineageInTransaction(
+					tx,
+					row.id,
+					row.organization_id,
+					row.automation_id,
+				);
+			}
 			if (
 				row.previous_status === "running" &&
 				row.run_type === AUTOMATION_RUN_TYPE
@@ -644,12 +872,37 @@ async function finalizeStalePendingAutomationRuns(
 			timezone: string | null;
 			dispatch_source: string | null;
 			device_worker_id: string | null;
+			organization_id: string;
 		}>`
-      SELECT r.id, r.automation_id, w.schedule, w.timezone,
+	  WITH automation_locks AS MATERIALIZED (
+	    SELECT w.id
+	    FROM automations w
+	    WHERE w.id IN (
+	      SELECT r.automation_id
+	      FROM runs r
+	      WHERE r.run_type = 'automation'
+	        AND r.status = 'pending'
+	        AND r.created_at < current_timestamp - ${staleInterval}::interval
+	        AND NOT (
+	          COALESCE(r.approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
+	          AND NULLIF(r.approved_input->>'device_worker_id', '') IS NOT NULL
+	          AND EXISTS (
+	            SELECT 1 FROM device_workers dw
+	            WHERE dw.id::text = r.approved_input->>'device_worker_id'
+	          )
+	        )
+	      ORDER BY r.created_at ASC
+	      LIMIT 100
+	    )
+	    ORDER BY w.id
+	    FOR UPDATE
+	  )
+      SELECT r.id, r.automation_id, r.organization_id, w.schedule, w.timezone,
              r.approved_input->>'dispatch_source' AS dispatch_source,
              NULLIF(r.approved_input->>'device_worker_id', '') AS device_worker_id
       FROM runs r
       JOIN automations w ON w.id = r.automation_id
+	  JOIN automation_locks locked ON locked.id = w.id
       WHERE r.run_type = 'automation'
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
@@ -661,9 +914,9 @@ async function finalizeStalePendingAutomationRuns(
             SELECT 1 FROM device_workers dw
             WHERE dw.id::text = r.approved_input->>'device_worker_id'
           )
-        )
+      )
       ORDER BY r.created_at ASC
-      FOR UPDATE OF r, w SKIP LOCKED
+	  FOR UPDATE OF r SKIP LOCKED
       LIMIT 100
     `;
 
@@ -680,6 +933,12 @@ async function finalizeStalePendingAutomationRuns(
       `;
 			if (Number(result.count ?? 0) === 0) continue;
 			finalized++;
+			await cleanupAutomationParentLineageInTransaction(
+				tx,
+				candidate.id,
+				candidate.organization_id,
+				candidate.automation_id,
+			);
 
 			// Only scheduled deliveries own the next_run_at projection. Timing out
 			// a stale event run must free the active-run slot without advancing
@@ -758,7 +1017,7 @@ async function resetOrphanedAutomationRuns(
         error_message = NULL
     WHERE run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
       AND status = 'claimed'
-      AND claimed_by = 'lobu-dispatcher'
+	  AND (claimed_by = 'lobu-dispatcher' OR claimed_by LIKE 'lobu-dispatcher:%')
       AND claimed_at < now() - ${intervals.automationOrphanedClaimThreshold}::interval
       AND COALESCE(approved_input->>'dispatch_source', 'scheduled')
           IN ('scheduled', 'event')
@@ -871,73 +1130,14 @@ export async function materializeDueAutomationRuns(
 			const scheduleTrigger = automation.triggers?.find(
 				(trigger) => trigger.kind === "schedule"
 			);
-			let sourceFingerprint: string | undefined;
-			if (scheduleTrigger?.skip_if_unchanged === true) {
-				const granularity = inferAutomationGranularityFromSchedule(
-					automation.schedule
-				);
-				const { windowStart, windowEnd } = await computePendingWindow(
-					sql,
-					automation.id,
-					granularity
-				);
-				const sourceState = await fingerprintAutomationSources({
-					sql,
-					automationId: automation.id,
-					windowStart: windowStart.toISOString(),
-					windowEnd: windowEnd.toISOString(),
-				});
-				sourceFingerprint = sourceState.fingerprint;
-				const previous = await sql`
-					SELECT approved_input->>'source_fingerprint' AS fingerprint
-					FROM runs
-					WHERE automation_id = ${automation.id}
-					  AND run_type = 'automation'
-					  AND status = 'completed'
-					  AND approved_input->>'source_fingerprint' IS NOT NULL
-					ORDER BY completed_at DESC NULLS LAST, id DESC
-					LIMIT 1
-				`;
-				if (
-					sourceState.empty ||
-					previous[0]?.fingerprint === sourceState.fingerprint
-				) {
-					const skippedRun = await enqueueAutomationRunForRecord(
-						sql,
-						automation,
-						"scheduled",
-						sourceFingerprint,
-					);
-					// `created: false` means this reused an already-active run that a
-					// concurrent replica materialized for real work. Completing that
-					// row as "skipped" would silently kill a live dispatch.
-					if (skippedRun.created) {
-						await completeSkippedAutomationRun(
-							sql,
-							automation.id,
-							skippedRun.runId,
-							windowStart,
-							granularity,
-						);
-					}
-					await advanceAutomationScheduleAfterSuccessfulWindow(
-						sql,
-						automation.id,
-						Boolean(automation.device_worker_id),
-						granularity
-					);
-					logger.info(
-						{ automationId: automation.id, empty: sourceState.empty },
-						"[automation] Skipped unchanged Automation sources before agent dispatch"
-					);
-					return "skipped";
-				}
-			}
 			const result = await enqueueAutomationRunForRecord(
 				sql,
 				automation,
 				"scheduled",
-				sourceFingerprint
+				undefined,
+				undefined,
+				true,
+				scheduleTrigger?.skip_if_unchanged === true,
 			);
 			return result.created ? "created" : "skipped";
 		},
@@ -1185,9 +1385,124 @@ async function getAutomationInstructions(
 async function failAutomationRun(
 	sql: DbClient,
 	runId: number,
-	message: string
+	message: string,
+	options?: { errorCode?: string; permanent?: boolean; claimedBy?: string },
 ): Promise<void> {
-	await markAutomationRunFailedIdempotent(sql, runId, message);
+	await markAutomationRunFailedIdempotent(
+		sql,
+		runId,
+		message,
+		options?.errorCode,
+		options?.permanent ?? false,
+		options?.claimedBy,
+	);
+}
+
+async function requeueAutomationRunAfterTransientDispatchFailure(
+	sql: DbClient,
+	runId: number,
+	message: string,
+	claimedBy: string,
+): Promise<"requeued" | "failed" | "lost-claim"> {
+	return sql.begin(async (tx) => {
+		await lockOwningAutomationForRun(tx, runId);
+		const [state] = await tx<{
+			attempts: number | string;
+			max_attempts: number | string;
+			automation_id: number | string | null;
+			organization_id: string | null;
+			run_type: string;
+			dispatch_source: string | null;
+		}>`
+			SELECT attempts, max_attempts, automation_id, organization_id, run_type,
+			       approved_input->>'dispatch_source' AS dispatch_source
+			FROM runs
+			WHERE id = ${runId}
+			  AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+			  AND claimed_by = ${claimedBy}
+			FOR UPDATE
+		`;
+		if (!state) return "lost-claim";
+		const nextAttempt = Number(state.attempts) + 1;
+		const maxAttempts = Math.max(1, Number(state.max_attempts) || 3);
+		if (nextAttempt >= maxAttempts) {
+			const exhaustedMessage = `${message} Dispatch retry budget exhausted after ${nextAttempt} attempts.`;
+			await tx`
+				UPDATE runs
+				SET status = 'failed', attempts = ${nextAttempt},
+				    completed_at = current_timestamp,
+				    outcome = ${classifyRunOutcome({ status: "failed", errorMessage: exhaustedMessage })},
+				    error_message = ${exhaustedMessage}
+				WHERE id = ${runId} AND claimed_by = ${claimedBy}
+			`;
+			if (state.organization_id) {
+				await cleanupAutomationParentLineageInTransaction(
+					tx,
+					runId,
+					state.organization_id,
+					state.automation_id == null ? null : Number(state.automation_id),
+				);
+			}
+			if (state.run_type === AUTOMATION_RUN_TYPE) {
+				const automationId =
+					state.automation_id == null ? null : Number(state.automation_id);
+				await recordScheduledExecutionFailure(
+					tx,
+					automationId,
+					state.dispatch_source,
+				);
+				await advanceScheduleAfterTerminalFailure(
+					tx,
+					automationId,
+					state.dispatch_source,
+				);
+			}
+			return "failed";
+		}
+		const delaySeconds = Math.min(30 * 2 ** Math.max(0, nextAttempt - 1), 120);
+		const updated = await tx`
+		UPDATE runs
+		SET status = 'pending',
+		    claimed_by = NULL,
+		    claimed_at = NULL,
+		    attempts = ${nextAttempt},
+		    run_at = current_timestamp + (${delaySeconds}::int * interval '1 second'),
+		    error_message = ${message},
+		    approved_input = jsonb_set(
+		      jsonb_set(
+		        COALESCE(approved_input, '{}'::jsonb),
+		        '{dispatch_retry_count}',
+		        to_jsonb(${nextAttempt}::int)
+		      ),
+		      '{dispatch_retry_not_before}',
+		      to_jsonb(current_timestamp + (${delaySeconds}::int * interval '1 second'))
+		    )
+		WHERE id = ${runId}
+		  AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+		  AND claimed_by = ${claimedBy}
+		RETURNING id
+	`;
+		return updated.length > 0 ? "requeued" : "lost-claim";
+	});
+}
+
+async function releaseDeviceAutomationAfterSourcePreflight(
+	sql: DbClient,
+	runId: number,
+	claimToken: string,
+): Promise<void> {
+	await sql`
+		UPDATE runs
+		SET status = 'pending',
+		    claimed_by = NULL,
+		    claimed_at = NULL,
+		    error_message = NULL
+		WHERE id = ${runId}
+		  AND status = 'claimed'
+		  AND claimed_by = ${claimToken}
+		  AND NULLIF(approved_input->>'device_worker_id', '') IS NOT NULL
+		  AND COALESCE(approved_input->>'source_preflight_pending', 'false') <> 'true'
+	`;
 }
 
 async function claimAutomationRun(
@@ -1208,6 +1523,11 @@ async function claimAutomationRun(
       FROM runs r
       WHERE r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
         AND r.status = 'pending'
+		AND r.run_at <= current_timestamp
+        AND COALESCE(
+          (r.approved_input->>'dispatch_retry_not_before')::timestamptz,
+          '-infinity'::timestamptz
+        ) <= current_timestamp
         -- Same-type guard: see claimPendingAutomationRun.
         AND NOT EXISTS (
           SELECT 1
@@ -1216,15 +1536,22 @@ async function claimAutomationRun(
             AND active.run_type = r.run_type
             AND active.status IN ('claimed', 'running')
         )
-        AND (
-          r.approved_input->>'device_worker_id' IS NULL
-          OR r.approved_input->>'device_worker_id' = ''
-        )
-        -- Runs with NO agent and NO device pin are manual-open: any connected
-        -- MCP client may execute and complete them (write-tier
-        -- complete_window). The server dispatcher must leave them pending.
-        AND r.approved_input->>'agent_id' IS NOT NULL
-        AND r.approved_input->>'agent_id' <> ''
+		AND (
+		  -- Source readiness belongs to the server even when execution is pinned
+		  -- to a device. Once ready, the dispatcher releases the row for the pin.
+		  COALESCE(r.approved_input->>'source_preflight_pending', 'false') = 'true'
+		  OR (
+		    (
+		      r.approved_input->>'device_worker_id' IS NULL
+		      OR r.approved_input->>'device_worker_id' = ''
+		    )
+		    -- Runs with NO agent and NO device pin are manual-open: any connected
+		    -- MCP client may execute and complete them (write-tier
+		    -- complete_window). The server dispatcher must leave them pending.
+		    AND r.approved_input->>'agent_id' IS NOT NULL
+		    AND r.approved_input->>'agent_id' <> ''
+		  )
+		)
         ${specificRunClause}
       ORDER BY r.created_at ASC
       FOR UPDATE SKIP LOCKED
@@ -1240,10 +1567,11 @@ async function claimAutomationRun(
 		};
 		const candidateId = Number(candidate.id);
 		const automationId = Number(candidate.automation_id);
+		const claimToken = `lobu-dispatcher:${randomUUID()}`;
 		const claimed = await claimPendingAutomationRun(tx, {
 			runId: candidateId,
 			automationId,
-			claimedBy: "lobu-dispatcher",
+			claimedBy: claimToken,
 			status: "claimed",
 		});
 		if (!claimed) return null;
@@ -1253,6 +1581,7 @@ async function claimAutomationRun(
 			organization_id: String(candidate.organization_id),
 			automation_id: automationId,
 			approved_input: candidate.approved_input,
+			claim_token: claimToken,
 		};
 	});
 }
@@ -1304,7 +1633,9 @@ export async function preflightAutomationMemoryTools(params: {
 	organizationId: string;
 	agentId: string;
 	runId: number;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
+}): Promise<
+	{ ok: true } | { ok: false; error: string; retryable: boolean }
+> {
 	const conversationId = `${params.agentId}_automation_${params.runId}_preflight`;
 	const token = generateWorkerToken(
 		params.agentId,
@@ -1336,6 +1667,11 @@ export async function preflightAutomationMemoryTools(params: {
 			return {
 				ok: false,
 				error: `${LOBU_MEMORY_MCP_ID} tools preflight failed (${response.status}): ${detail}`,
+				retryable:
+					response.status === 408 ||
+					response.status === 425 ||
+					response.status === 429 ||
+					response.status >= 500,
 			};
 		}
 
@@ -1351,6 +1687,7 @@ export async function preflightAutomationMemoryTools(params: {
 			return {
 				ok: false,
 				error: `${LOBU_MEMORY_MCP_ID} tools preflight failed: missing ${missing.join(", ")}`,
+				retryable: false,
 			};
 		}
 
@@ -1359,65 +1696,178 @@ export async function preflightAutomationMemoryTools(params: {
 		return {
 			ok: false,
 			error: `${LOBU_MEMORY_MCP_ID} tools preflight failed: ${getErrorMessage(error)}`,
+			retryable: true,
 		};
 	}
+}
+
+interface GatewayDispatchFailure {
+	error: string;
+	retryable: boolean;
+	errorCode?: string;
+}
+
+async function describeGatewayDispatchFailure(
+	response: Response,
+	prefix: string,
+): Promise<GatewayDispatchFailure> {
+	const raw = await response.text();
+	type GatewayErrorBody = {
+		error?: unknown;
+		retryable?: unknown;
+		errorCode?: unknown;
+	};
+	let body: GatewayErrorBody | null = null;
+	try {
+		body = JSON.parse(raw) as GatewayErrorBody;
+	} catch {
+		// Non-JSON gateway/proxy failures still retain their raw response below.
+	}
+	const detail =
+		typeof body?.error === "string" && body.error.trim()
+			? body.error.trim()
+			: raw.trim() || "unknown error";
+	return {
+		error: `${prefix} (${response.status}): ${detail}`,
+		retryable:
+			typeof body?.retryable === "boolean"
+				? body.retryable
+				: response.status === 408 ||
+					response.status === 425 ||
+					response.status === 429 ||
+					response.status >= 500,
+		...(typeof body?.errorCode === "string"
+			? { errorCode: body.errorCode }
+			: {}),
+	};
 }
 
 async function dispatchAutomationRun(
 	sql: DbClient,
 	run: ClaimedAutomationRunRow
-): Promise<"reconciled" | "dispatched" | "failed"> {
+): Promise<"reconciled" | "dispatched" | "failed" | "requeued"> {
+	let activeClaim = run.claim_token;
+	const retryDispatch = async (
+		message: string,
+	): Promise<"reconciled" | "failed" | "requeued"> => {
+		const outcome = await requeueAutomationRunAfterTransientDispatchFailure(
+			sql,
+			run.id,
+			message,
+			activeClaim,
+		);
+		return outcome === "lost-claim" ? "reconciled" : outcome;
+	};
 	const payload = parseAutomationRunPayload(run.approved_input);
 	if (!payload) {
 		await failAutomationRun(
 			sql,
 			run.id,
-			"Automation run is missing a valid dispatch payload."
+			"Automation run is missing a valid dispatch payload.",
+			{ claimedBy: run.claim_token },
 		);
 		return "failed";
 	}
 
-	if (
-		!payload.agent_id ||
-		!(await ensureAutomationAgentExists(
+	const rawPayload = run.approved_input as Record<string, unknown>;
+	if (rawPayload.source_preflight_pending === true) {
+		let automation: DueAutomationRow | null;
+		try {
+			automation = await loadAutomationForAutomation(sql, run.automation_id);
+		} catch (error) {
+			return retryDispatch(
+				`Automation source preflight could not load configuration: ${getErrorMessage(error)}`,
+			);
+		}
+		if (!automation) {
+			await failAutomationRun(
+				sql,
+				run.id,
+				`Automation ${run.automation_id} no longer exists for source preflight.`,
+				{ permanent: true, claimedBy: run.claim_token },
+			);
+			return "failed";
+		}
+		const prepared = await prepareScheduledSourceFingerprint({
 			sql,
-			run.organization_id,
-			payload.agent_id
-		))
-	) {
+			automation,
+			runId: run.id,
+			payload,
+			claimToken: run.claim_token,
+		});
+		if (prepared.kind === "skipped") return "reconciled";
+		if (prepared.kind === "failed") return "failed";
+		if (prepared.kind === "requeued") return "requeued";
+		if (payload.device_worker_id) {
+			await releaseDeviceAutomationAfterSourcePreflight(
+				sql,
+				run.id,
+				run.claim_token,
+			);
+			return "requeued";
+		}
+	}
+
+	const agentId = payload.agent_id;
+	let agentExists = false;
+	try {
+		agentExists = Boolean(
+			agentId &&
+				(await ensureAutomationAgentExists(
+					sql,
+					run.organization_id,
+					agentId,
+				)),
+		);
+	} catch (error) {
+		return retryDispatch(
+			`Automation agent readiness is temporarily unavailable: ${getErrorMessage(error)}`,
+		);
+	}
+	if (!agentId || !agentExists) {
 		await failAutomationRun(
 			sql,
 			run.id,
-			payload.agent_id
-				? `Assigned agent "${payload.agent_id}" does not exist in this organization.`
-				: "Automation run has no assigned agent (device-pinned and manual-open runs do not dispatch server-side)."
+			agentId
+				? `Assigned agent "${agentId}" does not exist in this organization.`
+				: "Automation run has no assigned agent (device-pinned and manual-open runs do not dispatch server-side).",
+			{ claimedBy: run.claim_token },
 		);
 		return "failed";
 	}
 
 	if (!isLobuGatewayRunning()) {
-		await failAutomationRun(sql, run.id, "Embedded Lobu is not available.");
-		return "failed";
+		return retryDispatch("Embedded Lobu is not available.");
 	}
 
-	const serviceToken = await getLobuServiceToken(run.organization_id);
+	let serviceToken: string | null;
+	try {
+		serviceToken = await getLobuServiceToken(run.organization_id);
+	} catch (error) {
+		return retryDispatch(
+			`Failed to load an embedded Lobu service token: ${getErrorMessage(error)}`,
+		);
+	}
 	if (!serviceToken) {
-		await failAutomationRun(
-			sql,
-			run.id,
+		return retryDispatch(
 			"Failed to generate an embedded Lobu service token."
 		);
-		return "failed";
 	}
 
 	if (payload.trigger_execution !== "turn") {
 		const preflight = await preflightAutomationMemoryTools({
 			organizationId: run.organization_id,
-			agentId: payload.agent_id,
+			agentId,
 			runId: run.id,
 		});
 		if (!preflight.ok) {
-			await failAutomationRun(sql, run.id, preflight.error);
+			if (preflight.retryable) {
+				return retryDispatch(preflight.error);
+			}
+			await failAutomationRun(sql, run.id, preflight.error, {
+				permanent: true,
+				claimedBy: run.claim_token,
+			});
 			return "failed";
 		}
 	}
@@ -1426,22 +1876,54 @@ async function dispatchAutomationRun(
 	// `provider/model` ref or "auto"). When set it rides the dispatch message so
 	// agent.ts reads it into baseOptions.model and it wins the layered fallback
 	// (automation → agent → org default); when absent the agent/org default resolves.
-	const automationModel = await getAutomationModelOverride(sql, run.automation_id);
-	const automationInstructions = await getAutomationInstructions(
-		sql,
-		run.automation_id,
-		payload.version_id
-	);
+	let automationModel: string | undefined;
+	let automationInstructions: string | undefined;
+	try {
+		automationModel = await getAutomationModelOverride(sql, run.automation_id);
+		automationInstructions = await getAutomationInstructions(
+			sql,
+			run.automation_id,
+			payload.version_id,
+		);
+	} catch (error) {
+		return retryDispatch(
+			`Automation dispatch configuration is temporarily unavailable: ${getErrorMessage(error)}`,
+		);
+	}
 
 	const baseUrl = `${getInternalGatewayUrl()}/api/v1/agents`;
 	const headers = {
 		Authorization: `Bearer ${serviceToken}`,
 		"Content-Type": "application/json",
 	};
-	const messageId = randomUUID();
+	const approvedInput =
+		run.approved_input && typeof run.approved_input === "object"
+			? (run.approved_input as Record<string, unknown>)
+			: {};
+	const priorMessageId = approvedInput.dispatch_message_id;
+	const messageId =
+		typeof priorMessageId === "string" && priorMessageId.trim()
+			? priorMessageId.trim()
+			: randomUUID();
+	if (priorMessageId !== messageId) {
+		const persisted = await sql`
+      UPDATE runs
+      SET approved_input = jsonb_set(
+            COALESCE(approved_input, '{}'::jsonb),
+            '{dispatch_message_id}',
+            to_jsonb(${messageId}::text)
+          )
+      WHERE id = ${run.id}
+        AND status = 'claimed'
+		AND claimed_by = ${run.claim_token}
+	  RETURNING id
+    `;
+		if (persisted.length === 0) return "reconciled";
+	}
 
+	let sessionResponse: Response;
 	try {
-		const sessionResponse = await fetch(baseUrl, {
+		sessionResponse = await fetch(baseUrl, {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
@@ -1458,44 +1940,71 @@ async function dispatchAutomationRun(
 			}),
 		});
 
-		if (!sessionResponse.ok) {
-			const body = await sessionResponse.text();
-			await failAutomationRun(
-				sql,
-				run.id,
-				`Failed to create or resume Lobu agent session (${sessionResponse.status}): ${body || "unknown error"}`
-			);
-			return "failed";
-		}
+	} catch (error) {
+		return retryDispatch(
+			`Failed to reach embedded Lobu for session creation: ${getErrorMessage(error)}`,
+		);
+	}
 
-		const sessionBody = (await sessionResponse.json()) as {
+	if (!sessionResponse.ok) {
+		const failure = await describeGatewayDispatchFailure(
+			sessionResponse,
+			"Failed to create or resume Lobu agent session",
+		);
+		if (failure.retryable) {
+			return retryDispatch(failure.error);
+		}
+		await failAutomationRun(sql, run.id, failure.error, {
+			errorCode: failure.errorCode,
+			permanent: isPermanentAutomationAgentError(
+				failure.errorCode,
+				failure.error,
+			),
+			claimedBy: run.claim_token,
+		});
+		return "failed";
+	}
+
+	let sessionBody: {
 			agentId?: string;
 			messagesUrl?: string;
-		};
-		const sessionAgentId = sessionBody.agentId?.trim();
-		const messagesUrl = sessionBody.messagesUrl?.trim();
+	};
+	try {
+		sessionBody = (await sessionResponse.json()) as typeof sessionBody;
+	} catch (error) {
+		return retryDispatch(
+			`Embedded Lobu returned an unreadable agent session: ${getErrorMessage(error)}`,
+		);
+	}
+	const sessionAgentId = sessionBody.agentId?.trim();
+	const messagesUrl = sessionBody.messagesUrl?.trim();
 
-		if (!sessionAgentId || !messagesUrl) {
-			await failAutomationRun(
-				sql,
-				run.id,
-				"Embedded Lobu returned an incomplete agent session."
-			);
-			return "failed";
-		}
+	if (!sessionAgentId || !messagesUrl) {
+		return retryDispatch(
+			"Embedded Lobu returned an incomplete agent session.",
+		);
+	}
 
 		// Mark the run 'running' with a durable message correlation BEFORE posting,
 		// so a late completion event arriving mid-POST has somewhere to land.
-		await sql`
+	const runningClaim = `lobu:${agentId}:${run.claim_token}`;
+	const promoted = await sql`
       UPDATE runs
       SET status = 'running',
-          claimed_by = ${`lobu:${payload.agent_id}`},
+		  claimed_by = ${runningClaim},
           dispatched_message_id = ${messageId},
           error_message = NULL
-      WHERE id = ${run.id}
+	  WHERE id = ${run.id}
+		AND status = 'claimed'
+		AND claimed_by = ${run.claim_token}
+	  RETURNING id
     `;
+	if (promoted.length === 0) return "reconciled";
+	activeClaim = runningClaim;
 
-		const messageResponse = await fetch(messagesUrl, {
+	let messageResponse: Response;
+	try {
+		messageResponse = await fetch(messagesUrl, {
 			method: "POST",
 			headers,
 			body: JSON.stringify({
@@ -1512,27 +2021,32 @@ async function dispatchAutomationRun(
 			}),
 		});
 
-		if (!messageResponse.ok) {
-			const body = await messageResponse.text();
-			await failAutomationRun(
-				sql,
-				run.id,
-				`Failed to enqueue Lobu Automation message (${messageResponse.status}): ${body || "unknown error"}`
-			);
-			return "failed";
-		}
-
-		return "dispatched";
 	} catch (error) {
-		await failAutomationRun(
-			sql,
-			run.id,
-			error instanceof Error
-				? error.message
-				: "Unexpected Lobu dispatch failure."
+		return retryDispatch(
+			`Failed to reach embedded Lobu while enqueueing the Automation message: ${getErrorMessage(error)}`,
 		);
+	}
+
+	if (!messageResponse.ok) {
+		const failure = await describeGatewayDispatchFailure(
+			messageResponse,
+			"Failed to enqueue Lobu Automation message",
+		);
+		if (failure.retryable) {
+			return retryDispatch(failure.error);
+		}
+		await failAutomationRun(sql, run.id, failure.error, {
+			errorCode: failure.errorCode,
+			permanent: isPermanentAutomationAgentError(
+				failure.errorCode,
+				failure.error,
+			),
+			claimedBy: activeClaim,
+		});
 		return "failed";
 	}
+
+	return "dispatched";
 }
 
 export async function dispatchPendingAutomationRuns(options?: {

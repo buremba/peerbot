@@ -78,7 +78,7 @@ export function buildCreateDeferral(args: {
 			attribution: args.attribution,
 			proposal: args.proposal,
 		},
-		queue: (ctx) =>
+		queue: (ctx, _env, options) =>
 			proposeEntityCreate(ctx, {
 				entity_data: args.entityData,
 				proposal: args.proposal,
@@ -93,7 +93,7 @@ export function buildCreateDeferral(args: {
 						args.entityData.entity_type,
 						name,
 					),
-			}, args.parentRunId ?? null),
+			}, args.parentRunId ?? null, options),
 	};
 }
 
@@ -120,7 +120,7 @@ export function buildFieldChangeDeferral(args: {
 			fields: args.fields,
 			current: args.current,
 		},
-		queue: (ctx) =>
+		queue: (ctx, _env, options) =>
 			proposeEntityFieldChange(ctx, {
 				entity_id: args.entityId,
 				fields: args.fields,
@@ -131,7 +131,7 @@ export function buildFieldChangeDeferral(args: {
 				reason:
 					args.reason ??
 					fieldChangeReason(args.attribution, Object.keys(args.fields)),
-			}, args.parentRunId ?? null),
+			}, args.parentRunId ?? null, options),
 	};
 }
 

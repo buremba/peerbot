@@ -1,7 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import { manageAutomations } from "../../../tools/admin/manage_automations";
-import { materializeDueAutomationRuns } from "../../../automations/automation";
+import {
+	dispatchPendingAutomationRuns,
+	materializeDueAutomationRuns,
+} from "../../../automations/automation";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import { createTestAgent, seedOwnerContext } from "../../setup/test-fixtures";
@@ -63,9 +66,11 @@ describe("scheduled Automation unchanged gate", () => {
 
 		expect(result).toMatchObject({
 			dueAutomations: 1,
-			runsCreated: 0,
-			skipped: 1,
+			runsCreated: 1,
+			skipped: 0,
 		});
+		const dispatched = await dispatchPendingAutomationRuns({ db: sql });
+		expect(dispatched).toMatchObject({ claimed: 1, reconciled: 1 });
 		const runs = await sql`
 			SELECT id, approved_input->>'window_start' AS window_start,
 			       approved_input->>'window_end' AS window_end, run_metadata,
@@ -117,6 +122,7 @@ describe("scheduled Automation unchanged gate", () => {
 			runsCreated: 1,
 			skipped: 0,
 		});
+		await dispatchPendingAutomationRuns({ db: sql });
 		const [nextRun] = await sql`
 			SELECT approved_input
 			FROM runs
@@ -166,11 +172,13 @@ describe("scheduled Automation unchanged gate", () => {
 
 		await makeDue();
 		const first = await materializeDueAutomationRuns({} as Env, sql);
+		await dispatchPendingAutomationRuns({ db: sql });
 		await makeDue();
 		const second = await materializeDueAutomationRuns({} as Env, sql);
+		await dispatchPendingAutomationRuns({ db: sql });
 
-		expect(first).toMatchObject({ runsCreated: 0, skipped: 1 });
-		expect(second).toMatchObject({ runsCreated: 0, skipped: 1 });
+		expect(first).toMatchObject({ runsCreated: 1, skipped: 0 });
+		expect(second).toMatchObject({ runsCreated: 1, skipped: 0 });
 		const runs = await sql`
 			SELECT id, status, run_metadata FROM runs
 			WHERE automation_id = ${automationId} AND run_type = 'automation'

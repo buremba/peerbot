@@ -287,7 +287,12 @@ describe('extractAuthContext adminTools — only the verified worker allowlist r
   // the uniform surface model (no internal-tool axis) no allowlist is ever
   // DERIVED for external admin callers — role x scope already grant them every
   // tool. Only the builder worker token's per-run allowlist is carried.
-  function ctxFor(opts: { scopes?: string[]; adminTools?: string[] | null; url?: string }) {
+  function ctxFor(opts: {
+    scopes?: string[];
+    adminTools?: string[] | null;
+    automationRunId?: number | null;
+    url?: string;
+  }) {
     const fake = {
       req: {
         url: opts.url ?? 'http://localhost/mcp/acme',
@@ -299,6 +304,7 @@ describe('extractAuthContext adminTools — only the verified worker allowlist r
           userId: 'u1',
           scopes: opts.scopes,
           adminTools: opts.adminTools ?? null,
+          automationRunId: opts.automationRunId ?? null,
         },
         mcpIsAuthenticated: true,
         organizationId: 'org_1',
@@ -326,6 +332,11 @@ describe('extractAuthContext adminTools — only the verified worker allowlist r
       adminTools: ['manage_agents'],
     });
     expect(ctx.adminTools).toEqual(['manage_agents']);
+  });
+
+  it('carries signed Automation parent provenance through unchanged', () => {
+    const ctx = ctxFor({ automationRunId: 874626 });
+    expect(ctx.automationRunId).toBe(874626);
   });
 
   it('leaves adminTools null for a non-admin /mcp caller', () => {

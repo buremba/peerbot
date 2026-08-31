@@ -625,13 +625,11 @@ describe("a terminally failed Automation run advances next_run_at", () => {
     expect(after.getTime()).toBe(expectedNotBefore);
   });
 
-  it("parks an hourly Automation for a day when the provider balance is empty", async () => {
+  it("auto-pauses an hourly Automation when the provider balance is empty without a reset", async () => {
     const { automationId, runId } = await createDueAutomationWithDispatchedRun({
       slug: "park-empty-balance-for-a-day",
       messageId: "msg-empty-balance",
     });
-    const before = Date.now();
-
     await resolveAutomationRunsByMessageIds(["msg-empty-balance"], {
       ok: false,
       error:
@@ -643,15 +641,16 @@ describe("a terminally failed Automation run advances next_run_at", () => {
     const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
     expect(run.status).toBe("failed");
 
-    // Without the park this lands on the next hourly tick (< 1h out), which is
-    // exactly the one-failed-run-per-tick burn the park exists to stop.
-    const after = await cursorOf(automationId);
-    expect(after.getTime()).toBeGreaterThanOrEqual(
-      before + 24 * 60 * 60 * 1000
-    );
-    expect(after.getTime()).toBeLessThanOrEqual(
-      Date.now() + 24 * 60 * 60 * 1000
-    );
+    const [automation] = await sql<{
+      schedule_auto_paused_at: Date | null;
+      next_run_at: Date | null;
+    }>`
+      SELECT schedule_auto_paused_at, next_run_at
+      FROM automations
+      WHERE id = ${automationId}
+    `;
+    expect(automation.schedule_auto_paused_at).not.toBeNull();
+    expect(automation.next_run_at).toBeNull();
   });
 
   it("does not shorten a quota park when another run finishes later", async () => {
@@ -907,6 +906,47 @@ describe("a terminally failed Automation run advances next_run_at", () => {
 });
 
 describe("finalize-miss diagnostics", () => {
+	it("fails before any nudge and cancels a pending connector approval child", async () => {
+		const { sql, organizationId, runId } =
+			await createDueAutomationWithDispatchedRun({
+				slug: "finalize-miss-connector-approval",
+				messageId: "msg-connector-approval",
+				nudgeCount: 0,
+			});
+		const [child] = await sql`
+			INSERT INTO runs (
+				organization_id, run_type, parent_run_id, status,
+				approval_status, action_key, action_input
+			) VALUES (
+				${organizationId}, 'action', ${runId}, 'pending',
+				'pending', 'send_report', '{}'::jsonb
+			)
+			RETURNING id
+		`;
+
+		await resolveAutomationRunsByMessageIds(
+			["msg-connector-approval"],
+			{ ok: true },
+		);
+
+		const [parent] = await sql`
+			SELECT status, error_message,
+			       approved_input->>'finalize_nudge_count' AS nudge_count
+			FROM runs WHERE id = ${runId}
+		`;
+		expect(parent.status).toBe("failed");
+		expect(parent.error_message).toMatch(/blocked on tool approval/);
+		expect(parent.error_message).toMatch(/send_report/);
+		expect(Number(parent.nudge_count)).toBe(0);
+		const [cancelled] = await sql`
+			SELECT status, approval_status FROM runs WHERE id = ${Number(child.id)}
+		`;
+		expect(cancelled).toMatchObject({
+			status: "cancelled",
+			approval_status: "rejected",
+		});
+	});
+
   it("names the pending tool approval instead of blaming the agent", async () => {
     const { sql, organizationId, automationId, runId } =
       await createDueAutomationWithDispatchedRun({

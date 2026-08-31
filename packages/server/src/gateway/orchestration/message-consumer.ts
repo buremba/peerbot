@@ -548,6 +548,14 @@ export class MessageConsumer {
         return;
       }
 
+	  // Automation turns are unattended, so their current configured tool
+	  // approvals must be durable before a warm worker can consume the thread
+	  // job. The normal background worker-ensure path is intentionally async and
+	  // therefore too late for this headless readiness guarantee.
+	  if (data.parentRunId) {
+		await this.deploymentManager.syncNetworkConfigGrants(data);
+	  }
+
       // Arm the turn-liveness marker BEFORE the message is deliverable to the
       // worker. The marker is the durable record that this turn owes the client
       // a terminal event; it is discharged on the worker's reply and otherwise
@@ -672,12 +680,16 @@ export class MessageConsumer {
       Sentry.captureException(error);
       logger.error({ traceId, jobId, error }, "Message job failed");
 
-      // Re-throw for queue retry handling
+      // Preserve a deterministic non-retryable classification. Re-wrapping
+      // every failure as retryable made the durable queue burn its full retry
+      // budget even when the original OrchestratorError explicitly said a
+      // replay could not help.
       throw new OrchestratorError(
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
         `Failed to process message job: ${getErrorMessage(error)}`,
         { jobId, data, error },
-        true
+        error instanceof OrchestratorError ? error.shouldRetry : true,
+        error instanceof Error ? error : undefined
       );
     }
   }
@@ -723,6 +735,14 @@ export class MessageConsumer {
         { requestedModel: requested },
         "Enqueue-time model gate: missing agentId — dropping the requested model (fail-closed)"
       );
+	  if (data.parentRunId) {
+		throw new OrchestratorError(
+		  ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+		  "Automation model policy cannot be verified without an agent id",
+		  { parentRunId: data.parentRunId, requestedModel: requested },
+		  true,
+		);
+	  }
       if (data.agentOptions) delete data.agentOptions.model;
       return;
     }
@@ -732,6 +752,14 @@ export class MessageConsumer {
         { agentId: data.agentId, requestedModel: requested },
         "Enqueue-time model gate: ProviderCatalogService not wired — dropping the requested model (fail-closed)"
       );
+	  if (data.parentRunId) {
+		throw new OrchestratorError(
+		  ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+		  "Automation model policy catalog is temporarily unavailable",
+		  { parentRunId: data.parentRunId, requestedModel: requested },
+		  true,
+		);
+	  }
       if (data.agentOptions) delete data.agentOptions.model;
       return;
     }
@@ -745,6 +773,14 @@ export class MessageConsumer {
         { agentId: data.agentId, requestedModel: requested },
         "Enqueue-time model gate: missing organizationId — dropping the requested model (fail-closed, cross-tenant guard)"
       );
+	  if (data.parentRunId) {
+		throw new OrchestratorError(
+		  ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+		  "Automation model policy cannot be verified without organization scope",
+		  { parentRunId: data.parentRunId, requestedModel: requested },
+		  true,
+		);
+	  }
       if (data.agentOptions) delete data.agentOptions.model;
       return;
     }
@@ -756,6 +792,18 @@ export class MessageConsumer {
         data.userId
       );
       if (!resolved.replaced) return;
+	  if (data.parentRunId) {
+		throw new OrchestratorError(
+		  ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+		  "Automation model changed after preflight; retrying before worker enqueue",
+		  {
+			parentRunId: data.parentRunId,
+			requestedModel: requested,
+			effectiveModel: resolved.model ?? null,
+		  },
+		  true,
+		);
+	  }
       logger.warn(
         {
           agentId: data.agentId,
@@ -771,6 +819,15 @@ export class MessageConsumer {
         else delete data.agentOptions.model;
       }
     } catch (err) {
+	  if (data.parentRunId) {
+		throw new OrchestratorError(
+		  ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+		  `Automation model policy verification failed: ${getErrorMessage(err)}`,
+		  { parentRunId: data.parentRunId, requestedModel: requested },
+		  true,
+		  err instanceof Error ? err : undefined,
+		);
+	  }
       // FAIL CLOSED: never leave an unvalidated requested model on the payload.
       // The warm path won't re-gate at deployment time, so a lookup failure must
       // drop the model rather than let a possibly-disallowed/sentinel model run.
@@ -828,7 +885,7 @@ export class MessageConsumer {
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
         `Failed to send message to thread queue: ${getErrorMessage(error)}`,
         { deploymentName, data, error },
-        true
+		error instanceof OrchestratorError ? error.shouldRetry : true
       );
     }
   }

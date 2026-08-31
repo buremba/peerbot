@@ -145,7 +145,7 @@ describe("enqueued payload carries the resolved nixConfig", () => {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ message: "hi" }),
+        body: JSON.stringify({ message: "hi", parentRunId: 999 }),
       },
     );
 
@@ -153,8 +153,141 @@ describe("enqueued payload carries the resolved nixConfig", () => {
     expect(enqueued).toHaveLength(1);
     const payload = enqueued[0]!;
     expect(payload.nixConfig?.packages).toEqual(["request-pkg", "agent-pkg"]);
+    expect(payload.parentRunId).toBeUndefined();
     expect(
       (payload.agentOptions as Record<string, unknown> | undefined)?.nixConfig,
     ).toBeUndefined();
+  });
+
+  test("verified Automation sessions lift approvals and link the queue child", async () => {
+    setAuthProvider(null);
+    const app = createAgentApi({
+      queueProducer: {
+        enqueueMessage: mock(async (payload: MessagePayload) => {
+          enqueued.push(payload);
+          return "job-automation";
+        }),
+      } as never,
+      sessionManager: {
+        getSession: async () => ({
+          agentId: AGENT_ID,
+          conversationId: "automation-321",
+          channelId: "api_automation-321",
+          userId: "automation-321",
+          organizationId: ORG_ID,
+          intent: { kind: "automation_run", runId: 321, automationId: 12 },
+        }),
+        touchSession: async () => {},
+        setSession: async () => {},
+      } as never,
+      sseManager: { hasClients: () => false } as never,
+      publicGatewayUrl: "http://localhost:8787/lobu",
+      artifactStore: {} as never,
+      agentSettingsStore: {
+        getSettings: async () => ({
+          models: ["openai/gpt-5"],
+          preApprovedTools: ["/mcp/lobu-memory/tools/*"],
+        }),
+      } as never,
+      providerCatalogService: {
+        resolveDispatchModel: async () => ({
+          model: "openai/gpt-5",
+          replaced: false,
+          modules: [],
+          allowedRefs: null,
+        }),
+        findProviderForModel: async () => ({
+          providerId: "openai",
+          hasSystemKey: () => true,
+          hasCredentials: async () => true,
+          getProxyBaseUrlMappings: (baseUrl: string) => ({ openai: baseUrl }),
+        }),
+      } as never,
+		grantStore: {
+		isExactDeniedStrict: async () => false,
+	  } as never,
+      agentMetadataStore: {
+        async getMetadata() {
+          return { owner: { platform: "api", userId: "user-1" } };
+        },
+      } as never,
+    });
+
+    const token = generateWorkerToken(AGENT_ID, "automation-321", "deploy-1", {
+      channelId: "api_automation-321",
+      agentId: AGENT_ID,
+      organizationId: ORG_ID,
+    });
+    const res = await app.request(`/api/v1/agents/${AGENT_ID}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message: "run" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]?.parentRunId).toBe(321);
+    expect(enqueued[0]?.preApprovedTools).toEqual([
+      "/mcp/lobu-memory/tools/*",
+    ]);
+    expect(
+      (enqueued[0]?.agentOptions as Record<string, unknown>).preApprovedTools,
+    ).toBeUndefined();
+  });
+
+  test("an Automation with no effective model is rejected before enqueue", async () => {
+    setAuthProvider(null);
+    const app = createAgentApi({
+      queueProducer: {
+        enqueueMessage: mock(async (payload: MessagePayload) => {
+          enqueued.push(payload);
+          return "must-not-enqueue";
+        }),
+      } as never,
+      sessionManager: {
+        getSession: async () => ({
+          agentId: AGENT_ID,
+          conversationId: "automation-654",
+          channelId: "api_automation-654",
+          userId: "automation-654",
+          organizationId: ORG_ID,
+          intent: { kind: "automation_run", runId: 654, automationId: 13 },
+        }),
+        touchSession: async () => {},
+      } as never,
+      sseManager: { hasClients: () => false } as never,
+      publicGatewayUrl: "http://localhost:8787/lobu",
+      artifactStore: {} as never,
+      agentMetadataStore: {
+        async getMetadata() {
+          return { owner: { platform: "api", userId: "user-1" } };
+        },
+      } as never,
+    });
+    const token = generateWorkerToken(AGENT_ID, "automation-654", "deploy-1", {
+      channelId: "api_automation-654",
+      agentId: AGENT_ID,
+      organizationId: ORG_ID,
+    });
+
+    const res = await app.request(`/api/v1/agents/${AGENT_ID}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message: "run" }),
+    });
+
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({
+      success: false,
+      retryable: false,
+      errorCode: "NO_MODEL_CONFIGURED",
+    });
+    expect(enqueued).toHaveLength(0);
   });
 });

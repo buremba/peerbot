@@ -130,14 +130,14 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
 			args.platformMetadata?.executionMode === "capture"
 				? "capture"
 				: undefined,
-		// Capture only: nothing reads it on a live run, and leaving live tokens
-		// byte-identical keeps this off the rollout risk surface. The id comes
-		// from `intent`, already checked against the runs row by
-		// `verifyAutomationRunIntent` — not caller-authored.
-		automationRunId:
-			args.platformMetadata?.executionMode === "capture"
-				? automationRunIdFromIntent(args.platformMetadata?.intent)
-				: undefined,
+		// Trusted Automation provenance for both live and capture runs. `intent`
+		// is installed only after `verifyAutomationRunIntent` has matched this
+		// run to its Automation, organization, and agent. The embedded MCP auth
+		// path carries this signed id into tool execution, where the Automation id
+		// is re-derived from persistence before any descendant run is created.
+		automationRunId: automationRunIdFromIntent(
+			args.platformMetadata?.intent,
+		),
 		runtimeProviderId,
 		sandboxId: runtimeProviderId ? args.sandboxId : undefined,
 		// Non-empty only; an empty list is equivalent to absent (deny-all) and

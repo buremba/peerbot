@@ -1320,7 +1320,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const pending = await sql`
-      SELECT id, parent_run_id FROM runs
+      SELECT id, parent_run_id, run_metadata FROM runs
       WHERE organization_id = ${workspace.org.id}
         AND run_type = 'internal' AND action_key = 'entity_field_change'
         AND approval_status = 'pending'
@@ -1328,6 +1328,13 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     `;
     expect(pending.length).toBe(2);
     expect(pending.every((r) => Number(r.parent_run_id) === proposalRunId)).toBe(true);
+    expect(
+      pending.every(
+        (r) =>
+          (r.run_metadata as Record<string, unknown> | null)
+            ?.automation_review_artifact === true
+      )
+    ).toBe(true);
 
     // A UI-pinned batch fails closed if another proposal appeared after review.
     const pendingIds = pending.map((row) => Number(row.id));

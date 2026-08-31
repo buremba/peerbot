@@ -120,17 +120,36 @@ export class GrantStore {
     pattern: string,
     organizationId?: string
   ): Promise<boolean> {
+    try {
+      return await this.hasGrantStrict(agentId, pattern, organizationId);
+    } catch (error) {
+      logger.error("Failed to check grant", { agentId, pattern, error });
+      return false;
+    }
+  }
+
+  /**
+   * Strict grant lookup for readiness gates that must distinguish a definitive
+   * missing grant from a temporarily unavailable permissions store. Normal
+   * interactive permission checks use {@link hasGrant}'s fail-closed boolean;
+   * unattended Automation preflight uses this method so a DB outage is retried
+   * instead of permanently pausing the Automation as misconfigured.
+   */
+  async hasGrantStrict(
+    agentId: string,
+    pattern: string,
+    organizationId?: string
+  ): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
-    const orgId = requireOrgId(organizationId, "GrantStore.hasGrant");
+    const orgId = requireOrgId(organizationId, "GrantStore.hasGrantStrict");
 
     // Build the candidate pattern set (exact + wildcards) and look them
     // up in a single query.
     const candidates = buildGrantCandidates(pattern, kind);
 
     const sql = getDb();
-    try {
-      const rows = await sql<GrantRow>`
+    const rows = await sql<GrantRow>`
         SELECT pattern, granted_at, expires_at, denied
         FROM grants
         WHERE agent_id = ${agentId}
@@ -138,25 +157,21 @@ export class GrantStore {
           AND pattern = ANY(${pgTextArray(candidates)}::text[])
           AND (expires_at IS NULL OR expires_at > now())
           ${orgScope(sql, orgId)}
-      `;
+    `;
 
-      if (rows.length === 0) return false;
+    if (rows.length === 0) return false;
 
-      // Prefer exact-match (highest specificity); if none, prefer rows in
-      // candidate order — i.e. earlier candidates beat later ones. This makes
-      // the wildcard precedence deterministic regardless of row insertion
-      // order.
-      const exact = rows.find((r) => r.pattern === pattern);
-      if (exact) return !exact.denied;
-      for (const candidate of candidates) {
-        const match = rows.find((r) => r.pattern === candidate);
-        if (match) return !match.denied;
-      }
-      return !rows[0]?.denied;
-    } catch (error) {
-      logger.error("Failed to check grant", { agentId, pattern, error });
-      return false;
+    // Prefer exact-match (highest specificity); if none, prefer rows in
+    // candidate order — i.e. earlier candidates beat later ones. This makes
+    // the wildcard precedence deterministic regardless of row insertion
+    // order.
+    const exact = rows.find((r) => r.pattern === pattern);
+    if (exact) return !exact.denied;
+    for (const candidate of candidates) {
+      const match = rows.find((r) => r.pattern === candidate);
+      if (match) return !match.denied;
     }
+    return !rows[0]?.denied;
   }
 
   /**
@@ -167,14 +182,31 @@ export class GrantStore {
     pattern: string,
     organizationId?: string
   ): Promise<boolean> {
+	try {
+		return await this.isDeniedStrict(agentId, pattern, organizationId);
+	} catch (error) {
+		logger.error("Failed to check denied grant", {
+			agentId,
+			pattern,
+			error,
+		});
+		return false;
+	}
+	}
+
+	/** Strict deny lookup for unattended readiness checks. */
+	async isDeniedStrict(
+		agentId: string,
+		pattern: string,
+		organizationId?: string,
+	): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
     const candidates = buildGrantCandidates(pattern, kind);
     const orgId = requireOrgId(organizationId, "GrantStore.isDenied");
 
     const sql = getDb();
-    try {
-      const rows = await sql<{ denied: boolean }>`
+    const rows = await sql<{ denied: boolean }>`
         SELECT denied
         FROM grants
         WHERE agent_id = ${agentId}
@@ -184,17 +216,36 @@ export class GrantStore {
           AND denied = true
           ${orgScope(sql, orgId)}
         LIMIT 1
-      `;
-      return rows.length > 0;
-    } catch (error) {
-      logger.error("Failed to check denied grant", {
-        agentId,
-        pattern,
-        error,
-      });
-      return false;
-    }
+	`;
+	return rows.length > 0;
   }
+
+	/** Exact-row deny lookup; configured wildcards must not mask this override. */
+	async isExactDeniedStrict(
+		agentId: string,
+		pattern: string,
+		organizationId?: string,
+	): Promise<boolean> {
+		pattern = normalizeDomainPattern(pattern);
+		const kind = inferGrantKind(pattern);
+		const orgId = requireOrgId(
+			organizationId,
+			"GrantStore.isExactDeniedStrict",
+		);
+		const sql = getDb();
+		const rows = await sql`
+			SELECT 1
+			FROM grants
+			WHERE agent_id = ${agentId}
+			  AND kind = ${kind}
+			  AND pattern = ${pattern}
+			  AND denied = true
+			  AND (expires_at IS NULL OR expires_at > now())
+			  ${orgScope(sql, orgId)}
+			LIMIT 1
+		`;
+		return rows.length > 0;
+	}
 
   /**
    * List all active grants for an agent.

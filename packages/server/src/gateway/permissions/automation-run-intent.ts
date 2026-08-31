@@ -22,7 +22,6 @@ import {
 	type ExecutionMode,
 	executionModeForRunType,
 } from "../../runs/run-types.js";
-import logger from "../../utils/logger.js";
 
 /**
  * `claimPendingAutomationRun`'s `claimedBy` for the server-side Automation
@@ -81,7 +80,7 @@ export async function verifyAutomationRunIntent(
 		accessToken: string | null;
 	},
 	db?: DbClient,
-): Promise<ExecutionMode | null> {
+): Promise<{ executionMode: ExecutionMode; completionRequired: boolean } | null> {
 	if (!args.organizationId || !args.accessToken) return null;
 	const { runId, automationId } = args.intent;
 	if (
@@ -92,11 +91,11 @@ export async function verifyAutomationRunIntent(
 	) {
 		return null;
 	}
-	try {
-		const sql = db ?? getDb();
-		const tokenHash = hashToken(args.accessToken);
-		const rows = (await sql`
-	      SELECT automation_run.run_type
+	const sql = db ?? getDb();
+	const tokenHash = hashToken(args.accessToken);
+	const rows = (await sql`
+	      SELECT automation_run.run_type,
+	             automation_run.approved_input->>'trigger_execution' AS trigger_execution
 	      FROM runs automation_run
 	      JOIN oauth_tokens service_token
 	        ON service_token.token_hash = ${tokenHash}
@@ -104,7 +103,10 @@ export async function verifyAutomationRunIntent(
 	        AND automation_run.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
 	        AND automation_run.automation_id = ${automationId}
 	        AND automation_run.organization_id = ${args.organizationId}
-	        AND automation_run.claimed_by = ${SERVER_DISPATCHER}
+	        AND (
+	          automation_run.claimed_by = ${SERVER_DISPATCHER}
+	          OR automation_run.claimed_by LIKE ${`${SERVER_DISPATCHER}:%`}
+	        )
 	        AND automation_run.status = 'claimed'
 	        AND service_token.token_type = 'access'
 	        AND service_token.client_id = ${INTERNAL_SERVICE_CLIENT}
@@ -112,14 +114,10 @@ export async function verifyAutomationRunIntent(
 	        AND service_token.revoked_at IS NULL
 	        AND service_token.expires_at > NOW()
 	      LIMIT 1
-	    `) as unknown as Array<{ run_type: string }>;
-		if (rows.length === 0) return null;
-		return executionModeForRunType(rows[0].run_type);
-	} catch (error) {
-		logger.warn(
-			{ error, runId, automationId, organizationId: args.organizationId },
-			"[agent] Could not verify an Automation run intent — refusing the session",
-		);
-		return null;
-	}
+	  `) as unknown as Array<{ run_type: string; trigger_execution: string | null }>;
+	if (rows.length === 0) return null;
+	return {
+		executionMode: executionModeForRunType(rows[0].run_type),
+		completionRequired: rows[0].trigger_execution !== "turn",
+	};
 }

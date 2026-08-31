@@ -60,6 +60,7 @@ import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execut
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { selectedConnectorVersionArtifactSql } from '../utils/connector-execution-placement';
+import { assertCustomConnectorCloudAllowed } from '../utils/custom-connector-cloud-gate';
 import {
   classifySelectedConnectorExecution,
   deviceExecutesConnectorNatively,
@@ -945,6 +946,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.config AS connection_config,
         conn.device_worker_id AS connection_device_worker_id,
         cv.artifact_row_id AS connector_version_row_id,
+        cv.artifact_organization_id,
         cv.artifact_compiled_code AS compiled_code,
         cv.artifact_compile_config_hash AS compile_config_hash,
         cv.artifact_hash AS connector_manifest_hash,
@@ -1111,6 +1113,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connection_config: Record<string, unknown> | null;
     connection_device_worker_id: string | null;
     connector_version_row_id: number | null;
+    artifact_organization_id: string | null;
     compiled_code: string | null;
     compile_config_hash: string | null;
     connector_manifest_hash: string | null;
@@ -1619,6 +1622,31 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //     worker image — see worker-side resolver in
   //     connector-worker/src/compile-connector.ts) to decide whether the
   //     fleet path applies.
+  try {
+    assertCustomConnectorCloudAllowed({
+      provenance: row.connector_manifest_backed
+        ? 'device-manifest'
+        : row.artifact_organization_id
+          ? 'organization'
+          : row.compiled_code
+            ? 'shared'
+            : 'bundled',
+      hasExecutableBytes: Boolean(row.compiled_code),
+      hasMatchingBundledSource: row.connector_key
+        ? findBundledConnectorFile(row.connector_key) !== null
+        : false,
+    });
+  } catch (err) {
+    const message = errorMessage(err);
+    await failClaimedWorkerRun({ runId: row.run_id, workerId: worker_id, errorMessage: message });
+    return c.json({
+      next_poll_seconds: 1,
+      skipped_run_id: row.run_id,
+      error: message,
+      ...pollMetadata,
+    });
+  }
+
   // Execution-time cloud gate: a raw-DB connector (postgres) opens outbound TCP
   // with no tenant-URL egress hardening yet, so it must not run under
   // LOBU_CLOUD_MODE — fail the already-claimed run rather than hand it to a
@@ -1655,7 +1683,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // compiled_code on the version row. Fleet workers normally compile bundled
   // sources locally, but an explicit override must still ship inline so prod
   // picks up connector code before the next image deploy.
-  const hasStoredCompiledCode = Boolean(row.compiled_code);
+  const hasStoredCompiledCode = Boolean(row.compiled_code) &&
+    !(isCloudMode() && row.artifact_organization_id === null && gatewayHasLocalSource);
   const workerWillResolveLocally =
     !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
   // Only a native-bridge run is implemented by the device itself. Manifest
@@ -1674,6 +1703,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, {
         id: row.connector_version_row_id,
+        organization_id: row.artifact_organization_id,
         version: row.connector_version,
         compiled_code: row.compiled_code,
         compile_config_hash: row.compile_config_hash,

@@ -33,10 +33,11 @@ import { getDb } from '../db/client';
 import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../config/intervals';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
+import { assertCustomConnectorCloudAllowed } from '../utils/custom-connector-cloud-gate';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
-import { ToolUserError } from '../utils/errors';
+import { ToolUserError, errorMessage } from '../utils/errors';
 import { stableJson } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
@@ -230,7 +231,7 @@ async function softDeleteOrphanFeed(
  * own automation (sync soft-deletes the orphan feed; auth/action throw).
  */
 type ConnectorVersionResolution =
-  | { ok: true; version: string; compiledCode: string | null; sourcePath: string | null }
+  | { ok: true; version: string; compiledCode: string | null; sourcePath: string | null; artifactScope: 'organization' | 'shared' | 'bundled' }
   | { ok: false; reason: 'no-definition' }
   | { ok: false; reason: 'no-version'; version: string }
   | { ok: false; reason: 'not-runnable'; version: string };
@@ -263,11 +264,11 @@ async function resolveActiveConnectorVersion(
   }
 
   if (!params.requireRunnable) {
-    return { ok: true, version, compiledCode: null, sourcePath: null };
+    return { ok: true, version, compiledCode: null, sourcePath: null, artifactScope: 'bundled' };
   }
 
   const versionRows = await sql`
-    SELECT compiled_code, source_path FROM connector_versions
+    SELECT compiled_code, source_path, organization_id FROM connector_versions
     WHERE connector_key = ${params.connectorKey} AND version = ${version}
       AND (organization_id = ${params.orgId} OR organization_id IS NULL)
     ORDER BY organization_id NULLS LAST
@@ -279,6 +280,7 @@ async function resolveActiveConnectorVersion(
   const { compiled_code, source_path } = versionRows[0] as {
     compiled_code: string | null;
     source_path: string | null;
+    organization_id: string | null;
   };
   // Runnable if ANY runtime code source exists: stored compiled code, a
   // source_path the runtime can compile on demand, or a bundled connector
@@ -291,7 +293,12 @@ async function resolveActiveConnectorVersion(
   ) {
     return { ok: false, reason: 'not-runnable', version };
   }
-  return { ok: true, version, compiledCode: compiled_code, sourcePath: source_path };
+  const artifactScope = (versionRows[0] as { organization_id: string | null }).organization_id
+    ? 'organization'
+    : compiled_code
+      ? 'shared'
+      : 'bundled';
+  return { ok: true, version, compiledCode: compiled_code, sourcePath: source_path, artifactScope };
 }
 
 /**
@@ -472,6 +479,19 @@ async function createSyncRunWithClient(
     return { ok: false, reason: 'connector_version_unrunnable' };
   }
   const connectorVersion = resolved.version;
+  try {
+    assertCustomConnectorCloudAllowed({
+      provenance: resolved.artifactScope,
+      hasExecutableBytes: Boolean(resolved.compiledCode),
+      hasMatchingBundledSource: findBundledConnectorFile(feed.connector_key) !== null,
+    });
+  } catch (error) {
+    logger.warn(
+      { feedId, connector_key: feed.connector_key, error: errorMessage(error) },
+      '[queue] Skipping sync run for custom executable connector under LOBU_CLOUD_MODE'
+    );
+    return { ok: false, reason: 'cloud_restricted' };
+  }
 
   // Manual feeds (schedule null) keep next_run_at null after enqueue so they
   // are not re-picked by the due-feed scheduler.
@@ -1224,6 +1244,11 @@ export async function createConnectorOperationRun(params: {
     );
   }
   const connectorVersion = resolved.version;
+  assertCustomConnectorCloudAllowed({
+    provenance: resolved.artifactScope,
+    hasExecutableBytes: Boolean(resolved.compiledCode),
+    hasMatchingBundledSource: findBundledConnectorFile(params.connectorKey) !== null,
+  });
 
   const inserted = await sql<{
     id: number;

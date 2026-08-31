@@ -79,7 +79,8 @@ fi
 #    /chat/completions request body (JSONL) so gates can assert on what
 #    actually reached the model (step 5d.4's `!!` context-exclusion proof).
 MOCK_REQLOG="$RUN_DIR/model-requests.jsonl"
-MOCK_PORT="$MOCK_PORT" MOCK_REPLY="$MOCK_REPLY" MOCK_REQLOG="$MOCK_REQLOG" node "$HARNESS/mock-openai.mjs" > "$MOCK_LOG" 2>&1 &
+MOCK_PORT="$MOCK_PORT" MOCK_REPLY="$MOCK_REPLY" MOCK_REQLOG="$MOCK_REQLOG" \
+  MOCK_AUTOMATION_DELAY_MS=5000 node "$HARNESS/mock-openai.mjs" > "$MOCK_LOG" 2>&1 &
 MOCK_PID=$!
 disown "$MOCK_PID" 2>/dev/null || true  # silence job-control "Killed" on cleanup
 for _ in $(seq 1 20); do

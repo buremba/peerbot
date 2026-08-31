@@ -14,8 +14,49 @@ const REQLOG = process.env.MOCK_REQLOG || "";
 // quota exhaustion does: on the chat call, mid-turn. Default ("") is the
 // happy-path reply the SDK lifecycle gate relies on — unchanged.
 const MODE = process.env.MOCK_MODE || "";
+// Optional deterministic pause for window-mode Automation turns. The lifecycle
+// gate uses this to complete a run out-of-band after proving the queue was
+// claimed, but before the fixed text reply can finish and terminalize the run
+// for omitting completeWindow.
+const AUTOMATION_DELAY_MS = Number(process.env.MOCK_AUTOMATION_DELAY_MS || 0);
 const QUOTA_BODY =
   "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-10 04:32:47";
+
+function sendReply(res, stream) {
+  if (stream) {
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+    });
+    const id = "chatcmpl-mock";
+    const chunk = (delta, finish) =>
+      `data: ${JSON.stringify({ id, object: "chat.completion.chunk", model: "mock-model", choices: [{ index: 0, delta, finish_reason: finish ?? null }] })}\n\n`;
+    res.write(chunk({ role: "assistant" }));
+    res.write(chunk({ content: REPLY }));
+    res.write(chunk({}, "stop"));
+    res.write("data: [DONE]\n\n");
+    res.end();
+    return;
+  }
+
+  res.writeHead(200, { "content-type": "application/json" });
+  res.end(
+    JSON.stringify({
+      id: "chatcmpl-mock",
+      object: "chat.completion",
+      model: "mock-model",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: REPLY },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    })
+  );
+}
+
 const server = createServer((req, res) => {
   let body = "";
   req.on("data", (c) => (body += c));
@@ -56,36 +97,13 @@ const server = createServer((req, res) => {
       } catch {
         // non-JSON body → default to non-streaming
       }
-      if (stream) {
-        res.writeHead(200, {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache",
-        });
-        const id = "chatcmpl-mock";
-        const chunk = (delta, finish) =>
-          `data: ${JSON.stringify({ id, object: "chat.completion.chunk", model: "mock-model", choices: [{ index: 0, delta, finish_reason: finish ?? null }] })}\n\n`;
-        res.write(chunk({ role: "assistant" }));
-        res.write(chunk({ content: REPLY }));
-        res.write(chunk({}, "stop"));
-        res.write("data: [DONE]\n\n");
-        res.end();
+      const isWindowAutomation = body.includes(
+        "Run this Automation now using the lobu-memory MCP tools."
+      );
+      if (isWindowAutomation && AUTOMATION_DELAY_MS > 0) {
+        setTimeout(() => sendReply(res, stream), AUTOMATION_DELAY_MS);
       } else {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            id: "chatcmpl-mock",
-            object: "chat.completion",
-            model: "mock-model",
-            choices: [
-              {
-                index: 0,
-                message: { role: "assistant", content: REPLY },
-                finish_reason: "stop",
-              },
-            ],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          })
-        );
+        sendReply(res, stream);
       }
       return;
     }

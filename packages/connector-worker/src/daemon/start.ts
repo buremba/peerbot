@@ -8,11 +8,9 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { hostname } from 'node:os';
 import { isKnownPlatform } from '@lobu/core';
-import { assertExternalDepsResolvable } from '../compile/index.js';
 import { buildConnectorWorkerEnv } from '../env.js';
-import { assertConnectorRuntimeLoadable } from '../self-check/index.js';
 import { DEVICE_MANIFESTS_BY_PLATFORM } from './device-manifests.js';
-import { startDaemon, type WorkerDaemon } from './index.js';
+import { startDaemon, type WorkerDaemon } from './worker.js';
 import { log, setDebug } from './log.js';
 import {
   attachInteractiveSession,
@@ -163,6 +161,10 @@ export async function startDaemonCommand(
   // advertise os.shell when the optional connector SDK/compiler graph is broken;
   // compiled connector capacity remains closed by the poll/executor backend gate.
   if (platform !== 'headless') {
+    const [{ assertExternalDepsResolvable }, { assertConnectorRuntimeLoadable }] = await Promise.all([
+      import('../compile/index.js'),
+      import('../self-check/index.js'),
+    ]);
     assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
     await assertConnectorRuntimeLoadable();
   }

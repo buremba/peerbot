@@ -624,6 +624,7 @@ describe('automation arm e2e', () => {
 describe('automation arm drain deadline', () => {
   const hangBinary = path.join(tmp, 'pi-orphan-pipe');
   const bothPipesBinary = path.join(tmp, 'pi-orphan-both');
+  const trailingOutputBinary = path.join(tmp, 'pi-trailing-output');
 
   beforeAll(() => {
     writeFileSync(
@@ -633,6 +634,12 @@ describe('automation arm drain deadline', () => {
       `#!/usr/bin/env node\nconst { spawn } = require('node:child_process');\nspawn(${JSON.stringify(heartbeatConflictGrandchildBinary)}, [], { detached: true, env: process.env, stdio: ['ignore', 'inherit', 'inherit'] });\nprocess.on('SIGTERM', () => {});\nconsole.log('PARTIAL_OUTPUT');\nsetTimeout(() => {}, 20_000);\n`
     );
     chmodSync(bothPipesBinary, 0o755);
+
+    writeFileSync(
+      trailingOutputBinary,
+      `#!/usr/bin/env node\nconst { spawn } = require('node:child_process');\nconst child = spawn(process.execPath, ['-e', "setTimeout(() => process.stdout.write('TRAILING_OUTPUT'), 100); setTimeout(() => {}, 20_000)"], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });\nchild.unref();\nconsole.log('INITIAL_OUTPUT');\n`
+    );
+    chmodSync(trailingOutputBinary, 0o755);
 
     writeFileSync(
       hangBinary,
@@ -663,6 +670,18 @@ describe('automation arm drain deadline', () => {
     expect(completions[0].body.output).toContain('PARTIAL_OUTPUT');
     // Well under the 15s the grandchild holds the pipe: the deadline fired.
     expect(elapsedMs).toBeLessThan(12_000);
+  }, 30_000);
+
+  test('captures output written after the target exits before the drain bound', async () => {
+    completions = [];
+    script = [{ status: 'completed' }];
+    const trailing = cfg();
+    trailing.binaryOverrides = { pi: trailingOutputBinary };
+
+    await executeAutomationRun(client(), automationJob(), trailing);
+
+    expect(completions[0].body.output).toContain('INITIAL_OUTPUT');
+    expect(completions[0].body.output).toContain('TRAILING_OUTPUT');
   }, 30_000);
 
   /**

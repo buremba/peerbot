@@ -27,6 +27,7 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 // bounded network/server grace.
 const MAX_TIMEOUT_MS = 150_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+const OUTPUT_DRAIN_GRACE_MS = 2_000;
 const TRUNCATED_MARKER = '\n... (output truncated)';
 function appendCapped(current: string, chunk: string): string {
   if (current.endsWith(TRUNCATED_MARKER)) return current;
@@ -106,7 +107,7 @@ export async function runShellBuiltin(
     };
 
     const abortHandler = () => {
-      if (!settled) void terminateChild(child).finally(() => finish(child.exitCode ?? -1));
+      if (!settled) void terminateChild(child).finally(() => finishAfterOutputDrain(child.exitCode ?? -1));
     };
     // Let the finish closure initialize before handling an already-aborted
     // signal; this path is common during daemon shutdown.
@@ -118,7 +119,9 @@ export async function runShellBuiltin(
       finishing = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
       shutdownSignal?.removeEventListener('abort', abortHandler);
-      await Promise.all([stdoutClosed, stderrClosed]);
+      if (!child.stdout?.destroyed && !child.stderr?.destroyed) {
+        await Promise.all([stdoutClosed, stderrClosed]);
+      }
       if (settled) return;
       settled = true;
       resolve({
@@ -129,6 +132,16 @@ export async function runShellBuiltin(
         timed_out: timedOut,
         duration_ms: Date.now() - startedAt,
       });
+    };
+
+    const finishAfterOutputDrain = async (exitCode: number): Promise<void> => {
+      await Promise.race([
+        Promise.all([stdoutClosed, stderrClosed]),
+        new Promise((resolve) => setTimeout(resolve, OUTPUT_DRAIN_GRACE_MS).unref()),
+      ]);
+      if (!settled) child.stdout?.destroy();
+      if (!settled) child.stderr?.destroy();
+      await finish(exitCode);
     };
 
     child.stdout?.setEncoding('utf8');
@@ -146,17 +159,17 @@ export async function runShellBuiltin(
 
     timeoutTimer = setTimeout(() => {
       timedOut = true;
-      void terminateChild(child).finally(() => finish(child.exitCode ?? -1));
+      void terminateChild(child).finally(() => finishAfterOutputDrain(child.exitCode ?? -1));
     }, timeoutMs);
 
     supervised.targetExit.then((target) => {
       if (process.platform !== 'win32') killOwnedProcessGroup('SIGKILL');
       else void terminateChild(child);
-      void releaseSupervisor(child).finally(() => finish(target.exitCode ?? -1));
+      void releaseSupervisor(child).finally(() => finishAfterOutputDrain(target.exitCode ?? -1));
     });
     child.on('error', (error) => {
       stderr = appendCapped(stderr, `spawn error: ${error.message}`);
-      finish(-1);
+      void finishAfterOutputDrain(-1);
     });
   });
 }

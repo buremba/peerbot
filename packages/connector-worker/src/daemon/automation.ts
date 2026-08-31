@@ -186,6 +186,7 @@ const EXIT_REPORT_RETRY_DELAY_MS = 2000;
 const TRANSCRIPT_DELIVERY_ATTEMPTS = 3;
 const TRANSCRIPT_RETRY_DELAY_MS = 250;
 const TERMINAL_HEARTBEAT_GRACE_MS = 15_000;
+const POST_TARGET_DRAIN_MS = 2_000;
 
 /** Sentinel for "binary not on PATH" so it maps to a distinct exit reason. */
 class ExecutableNotFoundError extends Error {
@@ -208,8 +209,13 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** Drain a child stream to a byte-capped buffer; stop at EOF. */
-function drain(stream: Readable, capBytes: number): Promise<{ data: Buffer; truncated: boolean }> {
-  return new Promise((resolve) => {
+function drain(stream: Readable, capBytes: number): {
+  pending: Promise<{ data: Buffer; truncated: boolean }>;
+  snapshot: () => { data: Buffer; truncated: boolean };
+} {
+  let settled = false;
+  let result: { data: Buffer; truncated: boolean } = { data: Buffer.alloc(0), truncated: false };
+  const pending = new Promise<{ data: Buffer; truncated: boolean }>((resolve) => {
     const chunks: Buffer[] = [];
     let total = 0;
     let truncated = false;
@@ -227,13 +233,20 @@ function drain(stream: Readable, capBytes: number): Promise<{ data: Buffer; trun
       } else {
         truncated = true;
       }
+      result = { data: Buffer.concat(chunks), truncated };
     });
-    const settle = () => resolve({ data: Buffer.concat(chunks), truncated });
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      result = { data: Buffer.concat(chunks), truncated };
+      resolve(result);
+    };
     stream.on('end', settle);
     stream.on('error', settle);
     // `close` covers the forced-destroy path below, which emits neither.
     stream.on('close', settle);
   });
+  return { pending, snapshot: () => result };
 }
 
 /**
@@ -277,20 +290,21 @@ function openCodeTerminalRetryDiagnostic(output: string): string | null {
  * Past the deadline, force-close the pipe and take what was flushed.
  */
 async function awaitDrain(
-  pending: Promise<{ data: Buffer; truncated: boolean }>,
+  drainState: ReturnType<typeof drain>,
   stream: Readable,
   deadlineMs: number
 ): Promise<{ data: Buffer; truncated: boolean }> {
   const expired = Symbol('drain-deadline');
   const outcome = await Promise.race([
-    pending,
+    drainState.pending,
     new Promise<typeof expired>((resolve) => {
       setTimeout(() => resolve(expired), deadlineMs).unref?.();
     }),
   ]);
   if (outcome !== expired) return outcome;
+  const flushed = drainState.snapshot();
   stream.destroy();
-  return pending;
+  return flushed;
 }
 
 /** Assemble argv from the spec + execution config, mirroring `SpecExecutor`. */
@@ -498,8 +512,8 @@ export async function runCli(
       throw new Error('automation supervisor spawned without stdio pipes');
     }
 
-    const stdoutPromise = drain(stdout, STDOUT_CAP);
-    const stderrPromise = drain(stderr, STDERR_CAP);
+    const stdoutDrain = drain(stdout, STDOUT_CAP);
+    const stderrDrain = drain(stderr, STDERR_CAP);
 
     // OpenCode can sleep for the provider's full account reset window and
     // otherwise emits no headless progress. Observe its error-level diagnostic
@@ -594,24 +608,18 @@ export async function runCli(
       supervisorSettled = true;
     }
 
-    // A SIGKILLed child gets a short flush window; a clean exit gets a long one.
-    const drainDeadlineMs =
-      cancelled ||
-      killedSignal === 'SIGKILL' ||
-      cleanupSignal === 'SIGKILL' ||
-      diagnosticSignal === 'SIGKILL'
-        ? 2000
-        : 60_000;
+    // Every post-target pipe drain has the same small bound. A detached
+    // descriptor holder must not extend settlement after the target is gone.
+    const drainDeadlineMs = POST_TARGET_DRAIN_MS;
     // Both pipes must race the SAME clock. Awaiting them in sequence gave
     // stderr a fresh deadline only after stdout's had expired, so a grandchild
-    // holding both ends cost 2x the deadline (measured: 120s for a child that
-    // had already exited cleanly), not the one window the constant describes.
+    // holding both ends costs 2x the deadline, not the one window above.
     const [
       { data: stdoutData, truncated: stdoutTruncated },
       { data: stderrData },
     ] = await Promise.all([
-      awaitDrain(stdoutPromise, stdout, drainDeadlineMs),
-      awaitDrain(stderrPromise, stderr, drainDeadlineMs),
+      awaitDrain(stdoutDrain, stdout, drainDeadlineMs),
+      awaitDrain(stderrDrain, stderr, drainDeadlineMs),
     ]);
 
     const label = spec.binaryName;

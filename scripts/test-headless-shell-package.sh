@@ -99,30 +99,33 @@ test ! -L "$smoke_dir/prefix/node_modules" || {
   echo "published install unexpectedly uses a node_modules symlink" >&2
   exit 1
 }
+find "$smoke_dir/prefix/node_modules" -path '*/@lobu/connector-sdk' -prune -exec rm -rf {} +
+find "$smoke_dir/prefix/node_modules" -name 'connector-sdk' -prune -exec rm -rf {} +
+find "$smoke_dir/prefix/node_modules" -path '*/@lobu/connector-worker/dist/compile' -prune -exec rm -rf {} +
 PUBLISHED_PREFIX="$smoke_dir/prefix" node --input-type=module <<'NODE'
-import { access, readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { access, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const prefix = process.env.PUBLISHED_PREFIX;
 const bin = resolve(prefix, 'node_modules/.bin/lobu');
 await access(bin);
 const workerBuiltins = resolve(prefix, 'node_modules/@lobu/connector-worker/dist/daemon/builtins/index.js');
 await access(workerBuiltins);
-const cliRequire = createRequire(bin);
-const workerRequire = createRequire(workerBuiltins);
-for (const [label, require_] of [['installed CLI', cliRequire], ['installed worker', workerRequire]]) {
+const probe = resolve(prefix, 'dependency-isolation-probe.mjs');
+await writeFile(probe, `for (const specifier of ['@lobu/connector-sdk', '@lobu/connector-worker/compile']) {
   try {
-    require_.resolve('@lobu/connector-sdk');
+    await import(specifier);
+    throw new Error('resolved removed ' + specifier);
   } catch (error) {
-    throw new Error(`${label} cannot resolve local @lobu/connector-sdk: ${error.message}`);
+    if (error.message.includes('resolved removed')) throw error;
   }
-  try {
-    require_.resolve('@lobu/connector-worker/compile');
-    throw new Error(`${label} resolved compiler-only @lobu/connector-worker/compile`);
-  } catch (error) {
-    if (error.message.includes('resolved compiler-only')) throw error;
-  }
+}
+`);
+try {
+  await import(pathToFileURL(probe).href);
+} finally {
+  await rm(probe, { force: true });
 }
 const builtinsSource = await readFile(workerBuiltins, 'utf8');
 for (const forbidden of ['/compile/index']) {

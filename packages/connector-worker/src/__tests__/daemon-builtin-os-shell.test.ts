@@ -123,7 +123,7 @@ describe('daemon-builtin os.shell', () => {
     try {
       const started = Date.now();
       const output = await runShellBuiltin({
-        command: `setsid bash -c 'trap "" TERM; sleep 10' & echo $!; wait`,
+        command: `setsid bash -c 'trap "" TERM; (sleep 0.1; printf detached-trailing-output >&2) & sleep 10' & echo $!; wait`,
         cwd: process.cwd(),
         timeout_ms: 300,
       });
@@ -131,6 +131,7 @@ describe('daemon-builtin os.shell', () => {
 
       expect(output.timed_out).toBe(true);
       expect(Date.now() - started).toBeLessThan(5_500);
+      expect(output.stderr).toContain('detached-trailing-output');
       expect(Number.isInteger(escapedPid)).toBe(true);
       // A deliberately new session is outside the supervisor's owned group;
       // the test owns this exact PID/group and cleans it up below.

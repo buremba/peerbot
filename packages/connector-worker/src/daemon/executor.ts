@@ -7,10 +7,6 @@
 
 import type { Env, EventEnvelope } from '@lobu/connector-sdk';
 import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
-import { compileConnectorFromFile, findBundledConnectorFile } from '../compile-connector.js';
-import { batchGenerateEmbeddings } from '../embeddings.js';
-import { executeCompiledConnector } from '../executor/runtime.js';
-import { SubprocessExecutor } from '../executor/subprocess.js';
 import { executeAutomationRun } from './automation.js';
 import { executeDaemonBuiltin } from './builtins/index.js';
 import { executeDeviceChatRun } from './device-chat.js';
@@ -42,6 +38,7 @@ import { reportTerminalFailure } from './terminal-failure.js';
 type JobCodeResult = { ok: true; code: string } | { ok: false; error: string };
 
 async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
+  const { compileConnectorFromFile, findBundledConnectorFile } = await import('../compile-connector.js');
   if (job.compiled_code) return { ok: true, code: job.compiled_code };
   if (!job.connector_key) {
     return { ok: false, error: 'No compiled_code and no connector_key — gateway sent neither.' };
@@ -252,6 +249,10 @@ async function executeSyncRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await Promise.all([
+    import('../executor/subprocess.js'),
+    import('../executor/runtime.js'),
+  ]);
   const subprocessExecutor = new SubprocessExecutor({
     timeoutMs: cfg.timeoutMs,
     maxOldSpaceSize: cfg.maxOldSpaceSize,
@@ -500,10 +501,6 @@ async function executeActionRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
-  const subprocessExecutor = new SubprocessExecutor({
-    timeoutMs: cfg.timeoutMs,
-    maxOldSpaceSize: cfg.maxOldSpaceSize,
-  });
   const { run_id, connector_key, action_key, action_input, credentials } = job;
 
   if (!run_id || !connector_key || !action_key) {
@@ -513,6 +510,15 @@ async function executeActionRun(
   if (job.execution_backend === 'daemon_builtin') {
     return await executeDaemonBuiltinActionRun(client, job, cfg);
   }
+
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await Promise.all([
+    import('../executor/subprocess.js'),
+    import('../executor/runtime.js'),
+  ]);
+  const subprocessExecutor = new SubprocessExecutor({
+    timeoutMs: cfg.timeoutMs,
+    maxOldSpaceSize: cfg.maxOldSpaceSize,
+  });
 
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) {
@@ -694,6 +700,10 @@ async function executeAuthRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await Promise.all([
+    import('../executor/subprocess.js'),
+    import('../executor/runtime.js'),
+  ]);
   // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
   // redirects) — a fixed subprocess timeout would kill the pairing mid-flow.
   // Terminate via the UI cancel signal instead.
@@ -921,6 +931,7 @@ async function executeEmbedBackfillRun(
     }> = [];
     let batchError: string | undefined;
     try {
+      const { batchGenerateEmbeddings } = await import('../embeddings.js');
       const { embeddings, model } = await batchGenerateEmbeddings(pending.map((p) => p.text));
       for (let i = 0; i < pending.length; i++) {
         const embedding = embeddings[i];
@@ -1062,6 +1073,7 @@ async function processEventChunk(
   }
 
   try {
+    const { batchGenerateEmbeddings } = await import('../embeddings.js');
     const { embeddings, model } = await batchGenerateEmbeddings(texts);
     for (let j = 0; j < targets.length; j++) {
       const embedding = embeddings[j];

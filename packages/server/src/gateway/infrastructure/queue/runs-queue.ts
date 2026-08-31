@@ -835,7 +835,12 @@ export class RunsQueue implements IMessageQueue {
           AND run_at <= now()
           AND (expires_at IS NULL OR expires_at > now())
 		  AND (
-		    parent_run_id IS NULL
+		    -- Task parents are causal provenance, not a liveness lease. In
+		    -- particular, complete_window commits an Automation's terminal state
+		    -- and its durable reaction task together; requiring that completed
+		    -- parent to remain active would strand every reaction forever.
+		    run_type = 'task'
+		    OR parent_run_id IS NULL
 		    OR EXISTS (
 		      SELECT 1
 		      FROM public.runs parent

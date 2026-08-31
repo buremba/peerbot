@@ -680,8 +680,7 @@ api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2],r=N
 grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
 echo "✓ automation trigger dispatched and completed one run (run_id=$TRIG_RUN_ID)"
 
-# Wait for the durable reaction task itself, rather than racing its 30-second
-# scheduler poll with a separate 30-second event-query loop. Once the task is
+# Wait for the durable reaction task itself. Once the task is
 # completed its event transaction is committed; a failed/cancelled task should
 # surface its own diagnostic instead of looking like a missing side effect.
 REACTION_RUN_ID="$(jget reaction_task_run_id < "$CW")"

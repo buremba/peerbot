@@ -17,6 +17,7 @@ import { clearInMemoryMcpSessionsForTests } from "../../../mcp-handler";
 import { getNextNumericId } from "../../../tools/admin/helpers/db-helpers";
 import { manageEntitySchema } from "../../../tools/admin/manage_entity_schema";
 import type { ToolContext } from "../../../tools/registry";
+import { insertEvent } from "../../../utils/insert-event";
 import {
 	addUserToOrganization,
 	createTestAgent,
@@ -463,6 +464,17 @@ describe("MCP entitySchema.createType approval", () => {
 			)
 			RETURNING id
 		`;
+		await insertEvent({
+			entityIds: [],
+			organizationId: org.id,
+			originId: `connector-agent-ask-approval-${child.id}`,
+			title: "Connector action — pending approval",
+			content: "Approve the connector action.",
+			semanticType: "operation",
+			runId: Number(child.id),
+			interactionType: "approval",
+			interactionStatus: "pending",
+		});
 
 		const { response } = await resolveInApp(Number(child.id), "approve");
 		expect(response.result?.isError).toBe(true);

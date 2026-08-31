@@ -1215,6 +1215,7 @@ describe("manage_entity merge action", () => {
 			agentId: "personal-agent",
 			actingAutomationId: seed,
 			actingRunId: automationRun.id,
+			isAutomationReaction: true,
 		} as ToolContext;
 		return { org, user, sql, winner, loser, agentCtx };
 	}
@@ -1754,6 +1755,7 @@ export default (row) => {
 				agentId: "personal-agent",
 				actingAutomationId: 6014,
 				actingRunId: runId,
+				isAutomationReaction: true,
 			}) as ToolContext;
 		const first = (await manageEntity(
 			{ action: "merge", entity_id: loser.id, winner_entity_id: winner.id },

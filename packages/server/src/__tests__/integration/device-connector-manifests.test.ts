@@ -1193,6 +1193,24 @@ describe('device connector manifests', () => {
       RETURNING id
     `) as unknown as Array<{ id: number }>;
 
+    // A valid retained manifest has exact daemon authorization even when no
+    // exact active definition runtime is available. Authorization alone must
+    // not bypass the daemon backend capacity gate.
+    const noCapacityPoll = await poll(
+      workerId,
+      [HEADLESS_OS_SHELL_MANIFEST],
+      'headless',
+      { 'os.shell': true },
+      { capacityAvailable: 0 },
+    );
+    expect(noCapacityPoll.status).toBe(200);
+    const noCapacityBody = (await noCapacityPoll.json()) as Record<string, unknown>;
+    expect(noCapacityBody.run_id).toBeUndefined();
+    const [afterNoCapacity] = (await sql`
+      SELECT status, claimed_by FROM runs WHERE id = ${run.id}
+    `) as unknown as Array<Record<string, unknown>>;
+    expect(afterNoCapacity).toEqual({ status: 'pending', claimed_by: null });
+
     const downgraded = { ...HEADLESS_OS_SHELL_MANIFEST, version: '0.1.0', runtime: { platforms: ['headless'] } };
     expect((await poll(workerId, [downgraded], 'headless', { 'os.shell': true }, { capacityAvailable: 1 })).status).toBe(200);
     const [afterRejected] = (await sql`SELECT status, claimed_by FROM runs WHERE id = ${run.id}`) as unknown as Array<Record<string, unknown>>;

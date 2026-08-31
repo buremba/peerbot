@@ -22,6 +22,7 @@ import { getDb } from "../../db/client.js";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
+  seedAgentRow,
 } from "./helpers/db-setup.js";
 
 let queue: RunsQueue | null = null;
@@ -273,18 +274,21 @@ describe("RunsQueue — task parent provenance", () => {
   test("claims a durable task after its Automation parent has completed", async () => {
     if (!queue) throw new Error("queue not started");
     const sql = getDb();
+    const organizationId = await seedAgentRow("task-parent-agent", {
+      organizationId: "task-parent-org",
+    });
     const [parent] = await sql<{ id: number }>`
-      INSERT INTO runs (run_type, status, completed_at)
-      VALUES ('automation', 'completed', now())
+      INSERT INTO runs (organization_id, run_type, status, completed_at)
+      VALUES (${organizationId}, 'automation', 'completed', now())
       RETURNING id
     `;
     const queueName = "task:test-completed-parent";
     const [task] = await sql<{ id: number }>`
       INSERT INTO runs (
-        run_type, queue_name, action_key, action_input, parent_run_id,
-        status, run_at
+        organization_id, run_type, queue_name, action_key, action_input,
+        parent_run_id, status, run_at
       ) VALUES (
-        'task', ${queueName}, 'test-completed-parent',
+        ${organizationId}, 'task', ${queueName}, 'test-completed-parent',
         ${sql.json({
           name: "test-completed-parent",
           payload: { sourceRunId: parent.id },

@@ -49,7 +49,7 @@ export class WorkerDaemon {
   private env: Env;
   private config: { executor: Partial<ExecutorConfig> };
   private pollLoop: WorkerPollLoop;
-  private shutdownController?: AbortController;
+  private shutdownController: AbortController;
 
   constructor(daemonConfig: DaemonConfig, env: Env) {
     const interactiveSession = attachedInteractiveSession(daemonConfig);
@@ -114,7 +114,7 @@ export class WorkerDaemon {
    */
   stop(): void {
     this.pollLoop.stop();
-    this.shutdownController?.abort();
+    this.shutdownController.abort();
   }
 
   /**

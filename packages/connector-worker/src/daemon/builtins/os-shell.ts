@@ -114,15 +114,13 @@ export async function runShellBuiltin(
     if (shutdownSignal?.aborted) queueMicrotask(abortHandler);
     else shutdownSignal?.addEventListener('abort', abortHandler, { once: true });
 
-    const finish = async (exitCode: number): Promise<void> => {
+    // Synchronous by construction: the only caller drains and destroys both
+    // pipes before calling this, so there is nothing left to await here.
+    const finish = (exitCode: number): void => {
       if (settled || finishing) return;
       finishing = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
       shutdownSignal?.removeEventListener('abort', abortHandler);
-      if (!child.stdout?.destroyed && !child.stderr?.destroyed) {
-        await Promise.all([stdoutClosed, stderrClosed]);
-      }
-      if (settled) return;
       settled = true;
       resolve({
         stdout,
@@ -141,7 +139,7 @@ export async function runShellBuiltin(
       ]);
       if (!settled) child.stdout?.destroy();
       if (!settled) child.stderr?.destroy();
-      await finish(exitCode);
+      finish(exitCode);
     };
 
     child.stdout?.setEncoding('utf8');

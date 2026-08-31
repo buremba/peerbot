@@ -46,7 +46,11 @@ const SIGTERM_GRACE_MS = 3000;
 // The outer shell remains the live process-group owner until Node's grace
 // timer fires, so its numeric pgid cannot be recycled before SIGKILL. The
 // inner login shell and command still receive SIGTERM normally.
-const SHELL_GROUP_ANCHOR = `trap 'sleep 4' TERM
+//
+// The trap must outlive the grace timer, so derive it rather than restating
+// it: a hardcoded sleep silently reopens the recycle window the moment
+// SIGTERM_GRACE_MS is raised past it, and nothing would fail to say so.
+const SHELL_GROUP_ANCHOR = `trap 'sleep ${(SIGTERM_GRACE_MS + 1000) / 1000}' TERM
 bash --noprofile --norc -lc "$1"
 status=$?
 exit "$status"`;

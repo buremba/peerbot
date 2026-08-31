@@ -439,7 +439,10 @@ export class WorkerClient implements ExecutorClient {
       '/api/workers/complete-action',
       req
     );
-    if (response?.success === true || response?.success === false && response?.reason === 'already_finalized') {
+    if (
+      response?.success === true ||
+      (response?.success === false && response?.reason === 'already_finalized')
+    ) {
       return;
     }
     throw new WorkerDecodeError('Invalid /api/workers/complete-action response');

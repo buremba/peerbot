@@ -59,7 +59,7 @@ NODE
 ln -s "$repo_root/node_modules" "$smoke_dir/node_modules"
 
 PACKAGE_ROOT="$smoke_dir/package" DAEMON_CWD="$daemon_cwd" node --input-type=module <<'NODE'
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -120,7 +120,7 @@ const server = createServer(async (request, response) => {
           action_input: {
             ...(midCommandPidFile
               ? {
-                  command: `echo $$ > ${JSON.stringify(midCommandPidFile)}; trap '' TERM; sleep 30`,
+                  command: `trap '' TERM; sleep 30 & child_pid=$!; printf '%s\\n' "$PPID" "$$" "$child_pid" > ${JSON.stringify(midCommandPidFile)}; wait "$child_pid"`,
                 }
               : { command: "printf 'lobu-shell-ok\\n'" }),
             cwd: midCommandPidFile ? daemonCwd : process.cwd(),
@@ -243,30 +243,6 @@ async function runAttempt(attempt) {
   process.stdout.write(`packaged queue os.shell attempt ${attempt}: ok\n`);
 }
 
-function processInfo(pid) {
-  let line;
-  try {
-    line = execFileSync('ps', ['-o', 'pid=,ppid=,pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim();
-  } catch (error) {
-    // A PID file can become visible before macOS has published the process in
-    // ps, and a short-lived process can disappear between the probe and ps.
-    // Observation must retry within the bounded wait rather than turn that
-    // race into a false smoke failure.
-    if (error?.status === 1 || error?.code === 'ESRCH') return null;
-    throw error;
-  }
-  if (!line) return null;
-  const [value, parent, group] = line.split(/\s+/).map(Number);
-  return { pid: value, ppid: parent, pgid: group };
-}
-
-function childPids(parentPid) {
-  return execFileSync('ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n')
-    .map((line) => line.trim().split(/\s+/).map(Number))
-    .filter(([pid, ppid]) => ppid === parentPid && pid > 0)
-    .map(([pid]) => pid);
-}
-
 function isAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) {
     return error?.code !== 'ESRCH';
@@ -301,38 +277,44 @@ async function runMidCommandCrashAttempt() {
   daemon.stderr.on('data', (chunk) => { logs += chunk.toString(); });
   const daemonExit = new Promise((resolveExit) => daemon.once('exit', (code, signal) => resolveExit({ code, signal })));
   let supervisorPid = 0;
+  let shellPid = 0;
+  let childPid = 0;
   let groupPid = 0;
-  let descendantPid = 0;
-  const runnerPgid = processInfo(process.pid)?.pgid ?? 0;
   try {
     try {
       await waitUntil(() => {
         if (!isAlive(daemon.pid)) return false;
-        try { descendantPid = Number(readFileSync(pidFile, 'utf8')); } catch { descendantPid = 0; }
-        let current = descendantPid ? processInfo(descendantPid) : null;
-        groupPid = current?.pgid ?? 0;
-        while (current && current.ppid && current.ppid !== 1 && current.ppid !== daemon.pid) current = processInfo(current.ppid);
-        supervisorPid = current?.ppid === daemon.pid ? current.pid : childPids(daemon.pid)[0] ?? 0;
-        if (!descendantPid) {
-          supervisorPid = childPids(daemon.pid)[0] ?? 0;
-          descendantPid = supervisorPid ? childPids(supervisorPid)[0] ?? 0 : 0;
-          if (descendantPid) groupPid = processInfo(supervisorPid).pgid;
+        let recordedPids;
+        try {
+          recordedPids = readFileSync(pidFile, 'utf8').trim().split(/\s+/).map(Number);
+        } catch {
+          return false;
         }
-        return descendantPid > 0 && supervisorPid > 0 && groupPid > 0;
-      }, 'daemon supervisor and descendant PIDs');
+        if (
+          recordedPids.length !== 3 ||
+          recordedPids.some((pid) => !Number.isInteger(pid) || pid <= 0) ||
+          new Set(recordedPids).size !== recordedPids.length ||
+          recordedPids.some((pid) => pid === process.pid || pid === daemon.pid)
+        ) return false;
+        [supervisorPid, shellPid, childPid] = recordedPids;
+        groupPid = supervisorPid;
+        return isAlive(supervisorPid) && isAlive(shellPid) && isAlive(childPid) && groupIsAlive(groupPid);
+      }, 'daemon supervisor, shell target, child, and owned group');
     } catch (error) {
       throw new Error(`${error.message}\n${logs}`);
     }
     daemon.kill('SIGKILL');
     await Promise.race([daemonExit, new Promise((_, reject) => setTimeout(() => reject(new Error(`daemon SIGKILL did not exit\n${logs}`)), 5_000))]);
-    await waitUntil(() => !isAlive(supervisorPid) && !isAlive(descendantPid), 'owned group cleanup after daemon SIGKILL');
-    if (groupIsAlive(groupPid)) throw new Error(`owned process group ${groupPid} survived daemon SIGKILL`);
-    process.stdout.write(`packaged mid-command SIGKILL cleanup: daemon=${daemon.pid} supervisor=${supervisorPid} group=${groupPid} descendant=${descendantPid} ok\n`);
+    await waitUntil(
+      () => !isAlive(supervisorPid) && !isAlive(shellPid) && !isAlive(childPid) && !groupIsAlive(groupPid),
+      'owned supervisor, shell target, child, and group cleanup after daemon SIGKILL',
+    );
+    process.stdout.write(`packaged mid-command SIGKILL cleanup: daemon=${daemon.pid} supervisor=${supervisorPid} shell=${shellPid} child=${childPid} group=${groupPid} ok\n`);
   } finally {
-    for (const pid of [descendantPid, supervisorPid, daemon.pid]) {
+    for (const pid of [childPid, shellPid, supervisorPid, daemon.pid]) {
       if (pid && isAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch {} }
     }
-    if (groupPid && groupPid !== runnerPgid && groupIsAlive(groupPid)) {
+    if (groupPid && groupPid !== process.pid && groupIsAlive(groupPid)) {
       try { process.kill(-groupPid, 'SIGKILL'); } catch {}
     }
     midCommandPidFile = null;

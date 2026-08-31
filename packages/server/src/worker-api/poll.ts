@@ -752,9 +752,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           )
           AND (r.approval_status = 'auto' OR r.approval_status = 'approved')
           AND (
-            -- (1) Connector-worker lanes: sync / action / embed_backfill / auth.
+            -- (1) Connector-worker lanes: sync / action / auth.
             (
-              r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
+              r.run_type IN ('sync', 'action', 'auth')
               AND ${connectorClaimLaneSql(tx, connectorClaimContext, {
                 connectorKey: tx`r.connector_key`,
                 connectorVersion: tx`r.connector_version`,
@@ -770,6 +770,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 runArtifactCompiledCode: tx`run_cv.artifact_compiled_code`,
                 runRuntime: tx`cd.run_runtime`,
               })}
+            )
+            -- (1b) Embedding backfills have no connector identity. They are
+            -- server-side work and may only be claimed by the trusted fleet.
+            OR (
+              ${!isUserScopedWorker}
+              AND r.run_type = 'embed_backfill'
             )
             -- (2) Automation lane: an automation run with approved_input.device_worker_id
             --     matching this device. Automations don't carry a connection_id and
@@ -1089,7 +1095,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_type: string;
     feed_id: number | null;
     connection_id: number | null;
-    connector_key: string;
+    connector_key: string | null;
     connector_version: string | null;
     action_key: string | null;
     action_input: Record<string, unknown> | null;
@@ -1759,7 +1765,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const selectedActionInput = row.approved_input ?? row.action_input ?? undefined;
   const isChromeAction =
     row.run_type === 'action' &&
-    (row.connector_key === 'chrome' || row.connector_key.startsWith('chrome.'));
+    (row.connector_key === 'chrome' || row.connector_key?.startsWith('chrome.'));
   const actionInput = isChromeAction
     ? trustedChromeActionInput(
         selectedActionInput ?? {},
@@ -1772,7 +1778,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     ...pollMetadata,
     run_id: row.run_id,
     run_type: row.run_type,
-    connector_key: row.connector_key,
+    connector_key: row.connector_key ?? undefined,
     connector_version: row.connector_version ?? undefined,
     ...(isNativeBridgeRun
       ? {

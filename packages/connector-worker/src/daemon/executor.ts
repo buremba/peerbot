@@ -129,7 +129,11 @@ async function completeActionOnce(
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     try {
-      await withTerminalDeliveryTimeout(client.completeAction(payload), remaining);
+      const attemptsLeft = 2 - attempt;
+      await withTerminalDeliveryTimeout(
+        client.completeAction(payload),
+        Math.max(1, Math.floor(remaining / attemptsLeft)),
+      );
       return;
     } catch (error) {
       if (error instanceof WorkerDecodeError) throw error;
@@ -642,7 +646,7 @@ async function executeDaemonBuiltinActionRun(
   if (job.compiled_code) {
     const message =
       'operation_backend_unavailable: daemon_builtin payload must not contain compiled_code';
-    await client.completeAction({
+    await completeActionOnce(client, {
       run_id,
       worker_id: client.id,
       status: 'failed',

@@ -1,5 +1,36 @@
 import type { PollResponse, ExecutorClient } from './client.js';
 
+const TERMINAL_DELIVERY_DEADLINE_MS = 15_000;
+
+async function completeActionWithBoundedRetry(
+  client: ExecutorClient,
+  payload: Parameters<ExecutorClient['completeAction']>[0],
+): Promise<void> {
+  const deadline = Date.now() + TERMINAL_DELIVERY_DEADLINE_MS;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const budget = Math.max(1, Math.floor(remaining / (2 - attempt)));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        client.completeAction(payload),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('terminal completion deadline exceeded')), budget);
+          timer.unref?.();
+        }),
+      ]);
+      return;
+    } catch (error) {
+      lastError = error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 export async function reportTerminalFailure(
   client: ExecutorClient,
   job: PollResponse,
@@ -8,7 +39,7 @@ export async function reportTerminalFailure(
 ): Promise<void> {
   if (job.run_id == null) return;
   if (job.run_type === 'action') {
-    await client.completeAction({
+    await completeActionWithBoundedRetry(client, {
       run_id: job.run_id,
       worker_id: client.id,
       status: 'failed',

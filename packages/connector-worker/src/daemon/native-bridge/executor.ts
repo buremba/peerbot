@@ -25,12 +25,13 @@ export async function executeNativeBridgeRun(
   let terminalDelivered = false;
   let terminalReporter: (() => Promise<void>) | undefined;
   let terminalAttempts = 0;
-  const terminalDeadline = Date.now() + TERMINAL_DELIVERY_BUDGET_MS;
+  let terminalDeadline: number | undefined;
   let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
 
   const deliverTerminal = async (reporter: () => Promise<void>): Promise<void> => {
     if (terminalDelivered) return;
     terminalReporter ??= reporter;
+    terminalDeadline ??= Date.now() + TERMINAL_DELIVERY_BUDGET_MS;
     let lastError: unknown;
     while (terminalAttempts < 2) {
       const remaining = terminalDeadline - Date.now();

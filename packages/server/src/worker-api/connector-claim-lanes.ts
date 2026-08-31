@@ -96,7 +96,7 @@ export function connectorClaimLaneSql(
       NOT COALESCE(${refs.runManifestBacked}, false)
       OR ${refs.runRuntime} IS NOT NULL
     )
-    AND ${context.workerPlatform ?? ''}::text <> 'chrome-extension'
+    AND ${context.workerPlatform ?? ''}::text NOT IN ('headless', 'chrome-extension')
     AND COALESCE(
       ${refs.runRuntime}->'platforms' ? ${context.workerPlatform ?? ''}::text,
       false
@@ -163,15 +163,20 @@ export function connectorClaimLaneSql(
       OR (
         COALESCE(${refs.runManifestBacked}, false)
         AND (
-          ${refs.runRuntime}->>'execution' = 'daemon_builtin'
-          AND ${daemonBuiltinReady}
+          (
+            ${refs.runRuntime}->>'execution' = 'daemon_builtin'
+            AND ${daemonBuiltinReady}
+          )
           OR ${refs.runRuntime}->>'execution' = 'bridge'
           OR (
             ${refs.runRuntime} IS NULL
             AND (${exactDaemonBuiltinAuthorization})
             AND ${daemonBuiltinReady}
           )
-          OR (${refs.runRuntime} IS NULL AND (${exactNativeBridgeAuthorization}))
+          OR (
+            ${refs.runRuntime} IS NULL
+            AND (${exactNativeBridgeAuthorization})
+          )
         )
       )
     )
@@ -180,10 +185,10 @@ export function connectorClaimLaneSql(
   return sql`
     (
       ${selectedBackendReady}
-      AND
-      -- Trusted/anonymous fleet worker. Execution-pinned connections stay on
-      -- their exact device; browser-affinity parent runs stay on fleet.
-      (
+      AND (
+        -- Trusted/anonymous fleet worker. Execution-pinned connections stay on
+        -- their exact device; browser-affinity parent runs stay on fleet.
+        (
         ${!context.isUserScopedWorker}
         AND (
           COALESCE(${refs.runRequiredCapability}, '') = ANY(
@@ -213,10 +218,10 @@ export function connectorClaimLaneSql(
             ${delegatedBrowserAffinity}
           )
         )
-      )
-      -- User-scoped worker claiming an unpinned capability connector in its
-      -- base org scope. Page-activated work is handled by the fleet parent.
-      OR (
+        )
+        -- User-scoped worker claiming an unpinned capability connector in its
+        -- base org scope. Page-activated work is handled by the fleet parent.
+        OR (
         ${context.isUserScopedWorker}
         AND ${refs.connectionDeviceWorkerId} IS NULL
         AND (
@@ -235,11 +240,11 @@ export function connectorClaimLaneSql(
         )
         AND NOT COALESCE(${pageActivated}, false)
         AND ${refs.organizationId} = ANY(${pgTextArray(context.baseOrgScopeIds)}::text[])
-      )
-      -- Exact execution pin. A chrome-extension pin on a connector that does
-      -- not execute natively in the extension is delegated browser affinity,
-      -- so its parent connector work stays on fleet instead.
-      OR (
+        )
+        -- Exact execution pin. A chrome-extension pin on a connector that does
+        -- not execute natively in the extension is delegated browser affinity,
+        -- so its parent connector work stays on fleet instead.
+        OR (
         ${context.isUserScopedWorker}
         AND ${context.deviceWorkerId}::uuid IS NOT NULL
         AND ${refs.connectionDeviceWorkerId} = ${context.deviceWorkerId}::uuid
@@ -256,6 +261,7 @@ export function connectorClaimLaneSql(
         )
         AND ${refs.organizationId} = ANY(${pgTextArray(context.orgScopeIds)}::text[])
         AND NOT (${delegatedBrowserAffinity})
+        )
       )
     )
   `;

@@ -93,8 +93,35 @@ test "${#published_archives[@]}" -eq 6 || {
   echo "expected six transformed local @lobu tarballs" >&2
   exit 1
 }
-(cd "$smoke_dir/prefix" && bun init -y >/dev/null && bun add --no-save --exact \
-  "${published_archives[@]}" >/dev/null)
+(cd "$smoke_dir/prefix" && bun init -y >/dev/null)
+# Bun otherwise satisfies a workspace-rewritten dependency from the registry
+# and nests it beneath the CLI when the same package is also a direct local
+# archive. Pin the complete @lobu graph to these exact local archives so this
+# proof cannot accidentally exercise a published worker from another build.
+PUBLISHED_PREFIX="$smoke_dir/prefix" PUBLISHED_ARCHIVES="${published_archives[*]}" node --input-type=module <<'NODE'
+import { readFile, writeFile } from 'node:fs/promises';
+
+const prefix = process.env.PUBLISHED_PREFIX;
+const archives = process.env.PUBLISHED_ARCHIVES.split(' ');
+const names = [
+  '@lobu/core',
+  '@lobu/connector-sdk',
+  '@lobu/embeddings',
+  '@lobu/connector-worker',
+  '@lobu/worker',
+  '@lobu/cli',
+];
+const archiveFor = (name) => {
+  const stem = name.slice('@lobu/'.length);
+  const archive = archives.find((candidate) => candidate.includes(`/lobu-${stem}-`));
+  if (!archive) throw new Error(`missing local archive for ${name}`);
+  return archive;
+};
+const packageJson = JSON.parse(await readFile(`${prefix}/package.json`, 'utf8'));
+packageJson.overrides = Object.fromEntries(names.map((name) => [name, `file:${archiveFor(name)}`]));
+await writeFile(`${prefix}/package.json`, `${JSON.stringify(packageJson, null, 2)}\n`);
+NODE
+(cd "$smoke_dir/prefix" && bun add --no-save --exact "${published_archives[@]}" >/dev/null)
 test ! -L "$smoke_dir/prefix/node_modules" || {
   echo "published install unexpectedly uses a node_modules symlink" >&2
   exit 1
@@ -112,6 +139,13 @@ const bin = resolve(prefix, 'node_modules/.bin/lobu');
 await access(bin);
 const workerBuiltins = resolve(prefix, 'node_modules/@lobu/connector-worker/dist/daemon/builtins/index.js');
 await access(workerBuiltins);
+const nestedWorker = resolve(prefix, 'node_modules/@lobu/cli/node_modules/@lobu/connector-worker');
+try {
+  await access(nestedWorker);
+  throw new Error(`published install used a nested connector-worker: ${nestedWorker}`);
+} catch (error) {
+  if (error.message.includes('used a nested')) throw error;
+}
 const probe = resolve(prefix, 'dependency-isolation-probe.mjs');
 await writeFile(probe, `for (const specifier of ['@lobu/connector-sdk', '@lobu/connector-worker/compile']) {
   try {

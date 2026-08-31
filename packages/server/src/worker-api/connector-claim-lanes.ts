@@ -106,6 +106,28 @@ export function connectorClaimLaneSql(
     (${exactManifestAuthorization})
     OR (${legacyHashlessManifestAuthorization})
   `;
+  const exactDaemonBuiltinAuthorization = sql`
+    EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(${sql.json(context.manifestClaimAuthorizations)}::jsonb) auth_item
+      WHERE auth_item->>'connectorKey' = ${refs.connectorKey}
+        AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
+        AND auth_item->>'manifestHash' = ${refs.runManifestHash}
+        AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
+        AND auth_item->>'runtimeExecution' = 'daemon_builtin'
+    )
+  `;
+  const exactNativeBridgeAuthorization = sql`
+    EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(${sql.json(context.manifestClaimAuthorizations)}::jsonb) auth_item
+      WHERE auth_item->>'connectorKey' = ${refs.connectorKey}
+        AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
+        AND auth_item->>'manifestHash' = ${refs.runManifestHash}
+        AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
+        AND auth_item->>'runtimeExecution' = 'bridge'
+    )
+  `;
   const delegatedBrowserAffinity = delegatedBrowserAffinitySql(sql, {
     platform: refs.pinPlatform,
     connectorKey: refs.connectorKey,
@@ -127,18 +149,33 @@ export function connectorClaimLaneSql(
   // any claim lane unless that backend was explicitly advertised as ready.
   const compiledBackendReady = hasPositiveBackendCapacity(context.backendCapacity, 'compiled_connector');
   const daemonBuiltinReady = hasPositiveBackendCapacity(context.backendCapacity, 'daemon_builtin');
+  // Keep this guard outside the individual lanes: every lane must advertise
+  // the backend that the selected artifact actually needs. Historical
+  // manifest artifacts have no run_runtime, so daemon_builtin is derived only
+  // from the exact retained authorization above; unknown headless artifacts
+  // therefore fail closed.
+  const selectedBackendReady = sql`
+    (
+      (
+        NOT COALESCE(${refs.runManifestBacked}, false)
+        AND ${compiledBackendReady}
+      )
+      OR (
+        COALESCE(${refs.runManifestBacked}, false)
+        AND (
+          ${refs.runRuntime}->>'execution' = 'daemon_builtin'
+          AND ${daemonBuiltinReady}
+          OR ${refs.runRuntime}->>'execution' = 'bridge'
+          OR (${refs.runRuntime} IS NULL AND (${exactDaemonBuiltinAuthorization}))
+          OR (${refs.runRuntime} IS NULL AND (${exactNativeBridgeAuthorization}))
+        )
+      )
+    )
+  `;
 
   return sql`
     (
-      (
-        COALESCE(${refs.runManifestBacked}, false)
-        OR ${compiledBackendReady}
-      )
-      AND (
-        NOT COALESCE(${refs.runManifestBacked}, false)
-        OR COALESCE(${refs.runRuntime}->>'execution', '') <> 'daemon_builtin'
-        OR ${daemonBuiltinReady}
-      )
+      ${selectedBackendReady}
       AND
       -- Trusted/anonymous fleet worker. Execution-pinned connections stay on
       -- their exact device; browser-affinity parent runs stay on fleet.

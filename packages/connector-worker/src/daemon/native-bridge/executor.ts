@@ -7,6 +7,7 @@ import { NativeBridgeClient, type NativeBridgeRunResult } from './client.js';
 const FEED_READ_ACTION = '__lobu_feed_read';
 const NATIVE_BRIDGE_HEARTBEAT_INTERVAL_MS = 30_000;
 export const NATIVE_BRIDGE_EXECUTION_TIMEOUT_MS = 600_000;
+const TERMINAL_DELIVERY_BUDGET_MS = 15_000;
 
 export async function executeNativeBridgeRun(
   client: WorkerClient,
@@ -24,6 +25,7 @@ export async function executeNativeBridgeRun(
   let terminalDelivered = false;
   let terminalReporter: (() => Promise<void>) | undefined;
   let terminalAttempts = 0;
+  const terminalDeadline = Date.now() + TERMINAL_DELIVERY_BUDGET_MS;
   let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
 
   const deliverTerminal = async (reporter: () => Promise<void>): Promise<void> => {
@@ -31,9 +33,27 @@ export async function executeNativeBridgeRun(
     terminalReporter ??= reporter;
     let lastError: unknown;
     while (terminalAttempts < 2) {
+      const remaining = terminalDeadline - Date.now();
+      if (remaining <= 0) break;
       terminalAttempts += 1;
       try {
-        await terminalReporter();
+        const attemptsLeft = 3 - terminalAttempts;
+        const attemptBudget = Math.max(1, Math.floor(remaining / attemptsLeft));
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            terminalReporter(),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error('native bridge terminal delivery timed out')),
+                attemptBudget,
+              );
+              timer.unref?.();
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
         terminalDelivered = true;
         return;
       } catch (error) {

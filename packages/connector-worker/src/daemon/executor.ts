@@ -38,8 +38,9 @@ import { reportTerminalFailure } from './terminal-failure.js';
 type JobCodeResult = { ok: true; code: string } | { ok: false; error: string };
 
 async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
-  const { compileConnectorFromFile, findBundledConnectorFile } = await import('../compile-connector.js');
   if (job.compiled_code) return { ok: true, code: job.compiled_code };
+  // Inline compiled jobs must not load the optional compiler/SDK graph.
+  const { compileConnectorFromFile, findBundledConnectorFile } = await import('../compile-connector.js');
   if (!job.connector_key) {
     return { ok: false, error: 'No compiled_code and no connector_key — gateway sent neither.' };
   }
@@ -59,6 +60,17 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `esbuild failed for '${job.connector_key}' (${localPath}): ${msg}` };
   }
+}
+
+async function loadCompiledRuntime() {
+  // These are the only production imports retained for source-backed jobs:
+  // the published-package isolation smoke runs inline and daemon_builtin jobs
+  // with compiler/SDK source artifacts absent, while source-backed jobs still
+  // need the compiler and subprocess runtime together.
+  return Promise.all([
+    import('../executor/subprocess.js'),
+    import('../executor/runtime.js'),
+  ]);
 }
 
 export interface ExecutorConfig {
@@ -249,10 +261,7 @@ async function executeSyncRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
-  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await Promise.all([
-    import('../executor/subprocess.js'),
-    import('../executor/runtime.js'),
-  ]);
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
   const subprocessExecutor = new SubprocessExecutor({
     timeoutMs: cfg.timeoutMs,
     maxOldSpaceSize: cfg.maxOldSpaceSize,
@@ -511,10 +520,7 @@ async function executeActionRun(
     return await executeDaemonBuiltinActionRun(client, job, cfg);
   }
 
-  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await Promise.all([
-    import('../executor/subprocess.js'),
-    import('../executor/runtime.js'),
-  ]);
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
   const subprocessExecutor = new SubprocessExecutor({
     timeoutMs: cfg.timeoutMs,
     maxOldSpaceSize: cfg.maxOldSpaceSize,
@@ -700,10 +706,7 @@ async function executeAuthRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
-  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await Promise.all([
-    import('../executor/subprocess.js'),
-    import('../executor/runtime.js'),
-  ]);
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
   // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
   // redirects) — a fixed subprocess timeout would kill the pairing mid-flow.
   // Terminate via the UI cancel signal instead.

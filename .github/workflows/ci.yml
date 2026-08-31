@@ -1719,7 +1719,7 @@ jobs:
             echo "mac=false" >> "$GITHUB_OUTPUT"
             echo "::notice::No paths affecting the Mac build changed — skipping mac-build-smoke."
           fi
-          if echo "$changed" | grep -E '^(docker/|packages/connector-worker/|packages/connector-sdk/|packages/connectors/|packages/core/|packages/embeddings/|packages/cli/|scripts/test-headless-shell-package\.sh$|package\.json$|bun\.lock$|\.github/workflows/ci\.yml$|\.github/workflows/build-images\.yml$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(docker/|packages/connector-worker/|packages/connector-sdk/|packages/connectors/|packages/core/|packages/embeddings/|packages/cli/|scripts/publish-packages\.mjs$|scripts/test-headless-shell-package\.sh$|package\.json$|bun\.lock$|\.github/workflows/ci\.yml$|\.github/workflows/build-images\.yml$)' >/dev/null; then
             echo "connector=true" >> "$GITHUB_OUTPUT"
           else
             echo "connector=false" >> "$GITHUB_OUTPUT"

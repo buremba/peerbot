@@ -21,10 +21,7 @@ export {
 } from './native-bridge/protocol.js';
 export { NativeBridgeClient } from './native-bridge/client.js';
 export type { ExecutorConfig } from './executor.js';
-export async function executeRun(...args: Parameters<typeof import('./executor.js')['executeRun']>) {
-  const { executeRun: run } = await import('./executor.js');
-  return run(...args);
-}
+export { executeRun } from './executor.js';
 export type { DaemonConfig } from './worker.js';
 export { startDaemon, WorkerDaemon } from './worker.js';
 export {

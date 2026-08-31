@@ -93,8 +93,8 @@ test "${#published_archives[@]}" -eq 6 || {
   echo "expected six transformed local @lobu tarballs" >&2
   exit 1
 }
-npm install --prefix "$smoke_dir/prefix" --no-audit --no-fund \
-  "${published_archives[@]}" >/dev/null
+(cd "$smoke_dir/prefix" && bun init -y >/dev/null && bun add --no-save --exact \
+  "${published_archives[@]}" >/dev/null)
 test ! -L "$smoke_dir/prefix/node_modules" || {
   echo "published install unexpectedly uses a node_modules symlink" >&2
   exit 1

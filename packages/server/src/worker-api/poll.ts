@@ -650,7 +650,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     capabilityMatchSet,
     manifestClaimAuthorizations,
     allowLegacyManifestCapabilityClaims:
-      isUserScopedWorker && !connectorManifestsProvided && effectivePlatform !== 'chrome-extension',
+      isUserScopedWorker &&
+      !connectorManifestsProvided &&
+      effectivePlatform !== 'chrome-extension' &&
+      effectivePlatform !== 'headless',
     orgScopeIds,
     baseOrgScopeIds,
     workerHardensDbEgress,

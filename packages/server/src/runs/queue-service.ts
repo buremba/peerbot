@@ -1247,7 +1247,10 @@ export async function createConnectorOperationRun(params: {
       FROM runs
       WHERE id = ${params.parentRunId ?? null}
         AND organization_id = ${params.organizationId}
-        AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+        AND (
+          run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+          OR run_type = ANY('{action,sync}'::text[])
+        )
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
       FOR SHARE
     ), authorized_parent AS (

@@ -368,6 +368,14 @@ describe('automation CRUD', () => {
       windowEnd: new Date('2026-01-02').toISOString(),
       dispatchSource: 'manual',
     }, sql);
+    // Durable reactions are claimed only after complete_window commits the
+    // source run. Keep this test on that production lifecycle boundary rather
+    // than executing the reaction against the fixture's initial pending row.
+    await sql`
+      UPDATE runs
+      SET status = 'completed', outcome = 'scoreable', completed_at = NOW()
+      WHERE id = ${sourceRun.runId}
+    `;
     const res = await executeReaction({
       compiledScript: installed?.reaction_script_compiled as string,
       context: {
@@ -406,9 +414,10 @@ describe('automation CRUD', () => {
         parent_run_id: number | null;
         approval_status: string;
         status: string;
+				run_metadata: Record<string, unknown> | null;
       }[]
     >`
-      SELECT automation_id, parent_run_id, approval_status, status
+      SELECT automation_id, parent_run_id, approval_status, status, run_metadata
       FROM runs
       WHERE organization_id = ${ownerOrgId}
         AND run_type = 'internal'
@@ -420,6 +429,7 @@ describe('automation CRUD', () => {
     expect(Number(pending[0].parent_run_id)).toBe(sourceRun.runId);
     expect(pending[0].approval_status).toBe('pending');
     expect(pending[0].status).toBe('pending');
+    expect(pending[0].run_metadata?.automation_review_artifact).toBe(true);
 
     const [pendingInput] = await sql<{ entity_ids: number[] }[]>`
       SELECT action_input->'entity_ids' AS entity_ids

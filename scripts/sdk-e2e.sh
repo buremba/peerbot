@@ -678,7 +678,31 @@ api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2],r=N
 grep -q '"action":"complete_window"\|"action": "complete_window"' "$CW" || { cat "$CW" >&2; fail "complete_window did not return the expected action"; }
 echo "✓ automation trigger dispatched and completed one run (run_id=$TRIG_RUN_ID)"
 
-# Assert the reaction's side effect: a SDKE2E_REACTION_OK knowledge event exists.
+# Wait for the durable reaction task itself, rather than racing its 30-second
+# scheduler poll with a separate 30-second event-query loop. Once the task is
+# completed its event transaction is committed; a failed/cancelled task should
+# surface its own diagnostic instead of looking like a missing side effect.
+REACTION_RUN_ID="$(jget reaction_task_run_id < "$CW")"
+[ -n "$REACTION_RUN_ID" ] || { cat "$CW" >&2; fail "complete_window did not return a reaction task run id"; }
+REACTION_RUN="$RUN_DIR/reaction-run.json"
+REACTION_STATUS=""
+for _ in $(seq 1 75); do
+  api manage_operations "{\"action\":\"get_run\",\"run_id\":$REACTION_RUN_ID}" > "$REACTION_RUN" 2>/dev/null \
+    || { sleep 1; continue; }
+  REACTION_STATUS="$(jget run.status < "$REACTION_RUN" 2>/dev/null || echo)"
+  case "$REACTION_STATUS" in
+    completed) break ;;
+    failed|cancelled)
+      cat "$REACTION_RUN" >&2
+      fail "automation reaction task $REACTION_RUN_ID became $REACTION_STATUS"
+      ;;
+  esac
+  sleep 1
+done
+[ "$REACTION_STATUS" = "completed" ] \
+  || { cat "$REACTION_RUN" >&2; fail "automation reaction task $REACTION_RUN_ID did not complete (status=${REACTION_STATUS:-unknown})"; }
+
+# Assert the completed reaction's side effect: a SDKE2E_REACTION_OK knowledge event exists.
 # query_sql auto-scopes to the org and auto-adds ORDER BY/LIMIT, so we pass a
 # bare SELECT (no ORDER BY/LIMIT) plus the required sort_by, and count rows
 # script-side.
@@ -687,7 +711,7 @@ echo "✓ automation trigger dispatched and completed one run (run_id=$TRIG_RUN_
 REACT="$RUN_DIR/reaction-check.json"
 REACT_QUERY="$(node -e 'process.stdout.write(JSON.stringify({sql:"SELECT id FROM events WHERE payload_text = '"'"'SDKE2E_REACTION_OK'"'"'",sort_by:"id"}))')"
 REACT_OK=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 10); do
   api query_sql "$REACT_QUERY" > "$REACT" 2>/dev/null || { sleep 1; continue; }
   N="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{process.stdout.write("0");return}const rows=j.rows||j.result||j.data||(Array.isArray(j)?j:[]);process.stdout.write(String(Array.isArray(rows)?rows.length:0))})' < "$REACT")"
   if [ "${N:-0}" -ge 1 ] 2>/dev/null; then REACT_OK=1; break; fi

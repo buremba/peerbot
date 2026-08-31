@@ -230,7 +230,7 @@ async function evaluate(
 					force_delete_tree: req.forceDeleteTree ?? false,
 				},
 			},
-			queue: (ctx) =>
+			queue: (ctx, _env, options) =>
 				proposeEntityDelete(ctx, {
 					entity_id: req.entityId,
 					force_delete_tree: req.forceDeleteTree ?? false,
@@ -250,7 +250,7 @@ async function evaluate(
 						req.entityTypeSlug,
 						name,
 					),
-				}, req.parentRunId ?? null),
+				}, req.parentRunId ?? null, options),
 		},
 	};
 }

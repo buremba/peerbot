@@ -14,7 +14,7 @@ import {
 } from "../automations/workspace-event-contract";
 import { intervals } from "../config/intervals";
 import type { DbClient } from "../db/client";
-import { getDb, pgTextArray } from "../db/client";
+import { getDb, getSourceReadDb, pgTextArray } from "../db/client";
 import { getInternalGatewayUrl } from "../gateway/config/index";
 import { AUTOMATION_RUN_SOURCE } from "../gateway/automation-run-session";
 import { incrementCounter, setGauge } from "../gateway/metrics/prometheus";
@@ -458,8 +458,12 @@ async function prepareScheduledSourceFingerprint(params: {
 			return { kind: "ready" };
 		}
 
+		// Source execution owns a connection-pinned READ ONLY transaction. Use
+		// its dedicated pool while retaining this lifecycle lock so the selected
+		// version and normalized source configuration cannot change underneath
+		// the fingerprint. Reusing the main pool here deadlocks at DB_POOL_MAX=1.
 		const sourceState = await fingerprintAutomationSources({
-			sql: tx,
+			sql: getSourceReadDb(),
 			automationId: params.automation.id,
 			versionId: params.payload.version_id,
 			windowStart: windowStart.toISOString(),

@@ -67,6 +67,9 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     // autonomous even for surfaces that read only sourceContext.
     actingAutomationId: context.window.automation_id,
     actingRunId: context.window.run_id,
+    // Internal-only capability: durable reactions execute after their source
+    // run completes, but their entity proposals remain human-review artifacts.
+    isAutomationReaction: true,
     sourceContext: { source: 'automation-run' as const },
   };
 

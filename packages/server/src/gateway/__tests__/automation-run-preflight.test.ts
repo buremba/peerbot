@@ -69,6 +69,12 @@ describe("Automation run preflight", () => {
 		"Headless Automation requires interactive approval",
 	  ),
 	).toBe(true);
+		expect(
+			isPermanentAutomationAgentError(
+				undefined,
+				"No active tool approval was found, so check the agent configuration.",
+			),
+		).toBe(false);
   });
 
   test("accepts exact and wildcard standing tool approvals", () => {

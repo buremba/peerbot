@@ -38,6 +38,7 @@ describe("Automation run WorkerToken parity", () => {
     expect(claims.organizationId).toBe("org-team");
     expect(claims.conversationId).toBe(access.conversationId);
     expect(claims.runId).toBe(456);
+		expect(claims.automationRunId).toBe(456);
     expect(claims.channelId).toBe("api_automation_120");
     expect(claims.platform).toBe("api");
     expect(claims.source).toBe(AUTOMATION_RUN_SOURCE);

@@ -537,8 +537,14 @@ export async function proposeEntityDelete(
 	ctx: ToolContext,
 	proposal: Omit<EntityDeleteProposal, "operation">,
 	parentRunId: number | null = null,
+	options?: EntityApprovalQueueOptions,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(ctx, { ...proposal, operation: "delete" }, parentRunId);
+	return proposeEntityChange(
+		ctx,
+		{ ...proposal, operation: "delete" },
+		parentRunId,
+		options,
+	);
 }
 
 export async function proposeEntityCreate(
@@ -612,18 +618,24 @@ export async function proposeEntityMerge(
 	},
 	resolutionKeys: readonly ResolutionKeySet[],
 	parentRunId: number | null = null,
+	options?: EntityApprovalQueueOptions,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
 	const current = await buildMergeReviewSnapshot(ctx, {
 		entityIds: proposal.entity_ids,
 		winnerEntityId: proposal.winner_entity_id,
 		resolutionKeys,
 	});
-	return proposeEntityChange(ctx, {
-		...proposal,
-		entity_id: current.loser.id as number,
-		operation: "merge",
-		current,
-	}, parentRunId);
+	return proposeEntityChange(
+		ctx,
+		{
+			...proposal,
+			entity_id: current.loser.id as number,
+			operation: "merge",
+			current,
+		},
+		parentRunId,
+		options,
+	);
 }
 
 /**
@@ -936,8 +948,14 @@ export async function proposeEntityChange(
 	const reuseExisting = async (row: ExistingChangeRun, db: DbClient) => {
 		await db`
 			UPDATE runs
-			SET idempotency_key = ${idempotencyKey}
-			WHERE id = ${row.id} AND idempotency_key IS NULL
+			SET idempotency_key = COALESCE(idempotency_key, ${idempotencyKey}),
+			    run_metadata = CASE
+			      WHEN ${options?.automationReviewArtifact === true}
+			      THEN COALESCE(run_metadata, '{}'::jsonb)
+			           || jsonb_build_object('automation_review_artifact', true)
+			      ELSE run_metadata
+			    END
+			WHERE id = ${row.id}
 		`;
 		const isPending =
 			row.approval_status === "pending" && row.status === "pending";

@@ -163,6 +163,28 @@ function attributionFor(actor: ActingPrincipal): ApprovalAttributionType {
 		: ApprovalAttribution.Agent;
 }
 
+/**
+ * Completed-parent entity proposals are legal only for the trusted in-process
+ * reaction executor. Matching both signed-in-memory identities to the resolved
+ * attribution keeps caller-declared `automation_source` input on the ordinary
+ * active-parent path.
+ */
+function reactionReviewQueueOptions(
+	ctx: ToolContext,
+	attribution: { automationId: number | null; runId: number | null },
+): { automationReviewArtifact: true } | undefined {
+	if (
+		ctx.isAutomationReaction !== true ||
+		ctx.actingAutomationId == null ||
+		ctx.actingRunId == null ||
+		attribution.automationId !== ctx.actingAutomationId ||
+		attribution.runId !== ctx.actingRunId
+	) {
+		return undefined;
+	}
+	return { automationReviewArtifact: true };
+}
+
 /** A write-rule refusal, in the shape the denial audit records. */
 function ruleDenialFrom(error: unknown): EntityWriteDenialDescription | null {
 	if (
@@ -416,6 +438,10 @@ async function handleCreate(
 		ctx,
 		args.automation_source
 	);
+	const createReviewOptions = reactionReviewQueueOptions(
+		ctx,
+		createAttribution,
+	);
 	const attribution = attributionFor(actor);
 	const createDecision = await runMutationGate({
 		action: "create",
@@ -450,7 +476,11 @@ async function handleCreate(
 		throw new ToolUserError(createDecision.reason, 403);
 	}
 	if (createDecision.outcome === "defer") {
-		const res = await createDecision.deferred.queue(ctx, env);
+		const res = await createDecision.deferred.queue(
+			ctx,
+			env,
+			createReviewOptions,
+		);
 		return {
 			action: "create",
 			approval_queued: true,
@@ -511,7 +541,7 @@ async function handleCreate(
 			escalatedFields: err.verdict.fields,
 			automationId: createAttribution.automationId,
 			parentRunId: createAttribution.runId,
-		}).queue(ctx, env);
+		}).queue(ctx, env, createReviewOptions);
 		return {
 			action: "create",
 			approval_queued: true,
@@ -668,6 +698,10 @@ async function handleUpdate(
 		ctx,
 		args.automation_source
 	);
+	const updateReviewOptions = reactionReviewQueueOptions(
+		ctx,
+		updateAttribution,
+	);
 	const denialAttemptId = randomUUID();
 	const updatedEntity = await updateEntity(entityId, updateData, env, ctx, {
 		policyPrincipalKind: updateActor.kind,
@@ -774,7 +808,7 @@ async function handleUpdate(
 	let approvalFields: Record<string, unknown> | undefined;
 	let approvalCurrent: Record<string, unknown> | undefined;
 	if (deferred) {
-		const res = await deferred.queue(ctx, env);
+		const res = await deferred.queue(ctx, env, updateReviewOptions);
 		approvalQueued = true;
 		approvalUrl = res.approvalUrl;
 		approvalRunId = res.runId;
@@ -853,6 +887,7 @@ async function handleMerge(
 		ctx,
 		args.automation_source
 	);
+	const mergeReviewOptions = reactionReviewQueueOptions(ctx, mergeAttribution);
 	const loserIds = [
 		...new Set(
 			args.duplicate_entity_ids ?? (args.entity_id ? [args.entity_id] : []),
@@ -1022,6 +1057,7 @@ async function handleMerge(
 			},
 			policy.resolutionKeys,
 			mergeAttribution.runId,
+			mergeReviewOptions,
 		);
 		return {
 			action: "merge",
@@ -1622,6 +1658,10 @@ async function handleDelete(
 		ctx,
 		args?.automation_source
 	);
+	const deleteReviewOptions = reactionReviewQueueOptions(
+		ctx,
+		deleteAttribution,
+	);
 	const attribution = attributionFor(deleteActor);
 	const current = {
 		id: entity.id,
@@ -1689,7 +1729,11 @@ async function handleDelete(
 		};
 	}
 	if (deleteDecision.outcome === "defer") {
-		const res = await deleteDecision.deferred.queue(ctx, env);
+		const res = await deleteDecision.deferred.queue(
+			ctx,
+			env,
+			deleteReviewOptions,
+		);
 		return {
 			action: "delete",
 			success: false,
@@ -1739,15 +1783,19 @@ async function handleDelete(
 		) {
 			throw err;
 		}
-		const queued = await proposeEntityDelete(ctx, {
-			entity_id: entityId,
-			force_delete_tree: force,
-			current,
-			automation_id:
-				ctx.actingAutomationId ?? args?.automation_source?.automation_id ?? null,
-			attribution,
-			reason: err.verdict.reason,
-		}, deleteAttribution.runId);
+		const queued = await proposeEntityDelete(
+			ctx,
+			{
+				entity_id: entityId,
+				force_delete_tree: force,
+				current,
+				automation_id: deleteAttribution.automationId,
+				attribution,
+				reason: err.verdict.reason,
+			},
+			deleteAttribution.runId,
+			deleteReviewOptions,
+		);
 		return {
 			action: "delete",
 			success: false,

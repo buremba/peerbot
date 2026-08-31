@@ -20,6 +20,7 @@ function buildRunWorkerAccess(args: {
 	userId: string;
 	channelId: string;
 	source: string;
+	automationRunId?: number;
 }): RunWorkerAccess {
 	const issuedAt = Date.now();
 	return {
@@ -35,6 +36,7 @@ function buildRunWorkerAccess(args: {
 				organizationId: args.organizationId,
 				platform: "api",
 				runId: args.runId,
+				automationRunId: args.automationRunId,
 				source: args.source,
 				sessionKey: args.userId,
 			},
@@ -71,6 +73,7 @@ export function buildAutomationRunWorkerAccess(args: {
 		userId,
 		channelId: `api_${userId}`,
 		source: AUTOMATION_RUN_SOURCE,
+		automationRunId: args.runId,
 	});
 }
 

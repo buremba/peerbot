@@ -211,6 +211,16 @@ async function blockHeadlessAutomationApproval(
 			run_metadata: Record<string, unknown> | null;
 			parent_status: string;
 		};
+		// Answering an agent-authored question records human input; it does not
+		// resume unattended execution or apply a held mutation. Keep asks usable
+		// as durable Automation review artifacts while the generic headless gate
+		// continues to block connector and builder continuations.
+		if (
+			row.run_type === "internal" &&
+			row.action_key === AGENT_ASK_ACTION_KEY
+		) {
+			return null;
+		}
 		// Keyed-output Automations intentionally finish before presenting their
 		// entity-field proposals for durable human review. Those completed-parent
 		// proposals are review artifacts, not unattended execution continuations.

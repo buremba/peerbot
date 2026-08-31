@@ -16,6 +16,8 @@ import {
   buildAutomationRunWorkerAccess,
   buildDeviceChatRunWorkerAccess,
 } from '../../../gateway/services/run-worker-access';
+import { getDb } from '../../../db/client';
+import { getNextNumericId } from '../../../tools/admin/helpers/db-helpers';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -42,6 +44,8 @@ describe('worker-token MCP auth without the direct-auth header', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let otherOrg: Awaited<ReturnType<typeof createTestOrganization>>;
   let workerToken: string;
+	let automationId: number;
+	let automationRunId: number;
 
   beforeAll(async () => {
     await cleanupTestDatabase();
@@ -62,10 +66,32 @@ describe('worker-token MCP auth without the direct-auth header', () => {
       agentId: AGENT_ID,
       ownerUserId: user.id,
     });
+		automationId = (await getDb().begin(async (tx) => {
+			const id = await getNextNumericId(tx, "automations");
+			await tx`
+        INSERT INTO automations (
+          id, automation_group_id, organization_id, created_by,
+          agent_id, name, slug
+        ) VALUES (
+          ${id}, ${id}, ${org.id}, ${user.id},
+          ${AGENT_ID}, 'Headerless Automation', 'headerless-automation'
+        )
+      `;
+			return id;
+		})) as number;
+		const [automationRun] = await getDb()`
+      INSERT INTO runs (
+        organization_id, run_type, automation_id, status, approval_status
+      ) VALUES (
+        ${org.id}, 'automation', ${automationId}, 'running', 'auto'
+      )
+      RETURNING id
+    `;
+		automationRunId = Number(automationRun.id);
     workerToken = buildAutomationRunWorkerAccess({
       agentId: AGENT_ID,
-      automationId: 1,
-      runId: 1,
+			automationId,
+			runId: automationRunId,
       organizationId: org.id,
     }).token;
   });
@@ -175,6 +201,29 @@ describe('worker-token MCP auth without the direct-auth header', () => {
     expect(response.status).toBe(401);
     const body = (await response.json()) as { error?: string };
     expect(body.error).toBe('invalid_token');
+  });
+
+  it('refuses a legacy Automation token with no signed parent-run provenance', async () => {
+    const legacyToken = generateWorkerToken(
+      AGENT_ID,
+      `${AGENT_ID}_automation_${automationId}_run_${automationRunId}`,
+      `api-${AGENT_ID.slice(0, 8)}`,
+      {
+        channelId: `api_automation_${automationId}`,
+        agentId: AGENT_ID,
+        organizationId: org.id,
+        platform: 'api',
+        runId: automationRunId,
+        source: 'automation-run',
+        sessionKey: `automation_${automationId}`,
+      },
+    );
+    const response = await post(`/mcp/${org.slug}`, {
+      body: INITIALIZE_BODY,
+      token: legacyToken,
+    });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ error: 'invalid_token' });
   });
 
   it('refuses a chat deployment token with or without the request-controlled direct-auth header', async () => {

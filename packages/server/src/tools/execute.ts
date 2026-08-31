@@ -447,7 +447,8 @@ export async function executeTool(
       ? null
       : await verifiedAutomationSource(
           declaredAutomationSource(args),
-          toolContext.organizationId
+          toolContext.organizationId,
+          toolContext.agentId ?? null
         );
   const runHandler = () =>
     runWithActingAutomation(

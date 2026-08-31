@@ -17,8 +17,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import type { AuthContext } from '../../../tools/execute';
 import { executeTool } from '../../../tools/execute';
+import { manageEntity } from '../../../tools/admin/manage_entity';
+import { proposeEntityDelete } from '../../../tools/admin/entity-field-approval';
+import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
-import { createAutomationResultRun, createTestAgent, createTestEntity } from '../../setup/test-fixtures';
+import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { TestWorkspace } from '../../setup/test-mcp-client';
 
 const TEST_ENV: Env = {
@@ -51,6 +54,32 @@ function humanCtx(orgId: string, userId: string): AuthContext {
 /** Agent auth context — same org/user but attributed to an agent run. */
 function agentCtx(orgId: string, userId: string, agentId = 'test-agent-1'): AuthContext {
   return { ...humanCtx(orgId, userId), agentId, requestedAgentId: agentId };
+}
+
+/** Trusted in-process context used only by the durable reaction executor. */
+function reactionCtx(
+	orgId: string,
+	automationId: number,
+	runId: number,
+): ToolContext {
+	return {
+		organizationId: orgId,
+		userId: null,
+		memberRole: null,
+		agentId: null,
+		actingAutomationId: automationId,
+		actingRunId: runId,
+		isAutomationReaction: true,
+		sourceContext: { source: "automation-run" },
+		isAuthenticated: true,
+		clientId: null,
+		scopes: null,
+		tokenType: "session",
+		scopedToOrg: true,
+		allowCrossOrg: false,
+		grantedOrganizationIds: null,
+		directSearchFederation: false,
+	};
 }
 
 async function manageEntityUpdate(
@@ -86,8 +115,12 @@ async function manageEntityUpdate(
   }>;
 }
 
-/** Seed an automation result run (real FKs for automation_source / reactions). */
-async function seedAutomationAndRun(workspace: TestWorkspace, suffix: string) {
+/** Seed an Automation plus a real parent run for attribution/lifecycle tests. */
+async function seedAutomationAndRun(
+	workspace: TestWorkspace,
+	suffix: string,
+	status: "running" | "completed" = "running",
+) {
   const entity = await createTestEntity({
     name: `Gate Reaction Entity ${suffix}`,
     organization_id: workspace.org.id,
@@ -104,16 +137,18 @@ async function seedAutomationAndRun(workspace: TestWorkspace, suffix: string) {
     prompt: 'Analyze inputs.',
     agent_id: agent.agentId,
   })) as { automation_id: string };
-  const runId = await createAutomationResultRun({
-    automationId: Number(automation.automation_id),
-    organizationId: workspace.org.id,
-    granularity: 'weekly',
-    windowStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-    windowEnd: new Date(),
-    extractedData: { problems: [] },
-    createdBy: workspace.users.owner.id,
-    entityIds: [entity.id],
-  });
+  const [run] = await getTestDb()`
+    INSERT INTO runs (
+      organization_id, run_type, automation_id, status, approval_status,
+      created_by_user_id, created_at, completed_at
+    ) VALUES (
+      ${workspace.org.id}, 'automation', ${Number(automation.automation_id)},
+      ${status}, 'auto', ${workspace.users.owner.id}, NOW(),
+      ${status === "completed" ? new Date() : null}
+    )
+    RETURNING id
+  `;
+  const runId = Number(run.id);
   return {
     entity,
     automationId: Number(automation.automation_id),
@@ -238,7 +273,7 @@ describe('ownership gate on agent entity writes', () => {
     expect(result.approval_queued).toBeFalsy();
   });
 
-  it('attributes the proposal to the automation on the reaction path', async () => {
+  it('attributes an active caller-declared source to the agent-owned Automation', async () => {
     const org = workspace.org.id;
     const user = workspace.users.owner.id;
     const {
@@ -253,9 +288,8 @@ describe('ownership gate on agent entity writes', () => {
       severity: 'high',
     });
 
-    // The reaction acts as its OWN automation: the explicit automation_source names an
-    // automation owned by this agent, so the tag is honored (an agent can only tag
-    // its own automation — a foreign tag is ignored, see resolveActingPrincipal).
+		// The explicit source names an Automation owned by this agent, so the tag is
+		// honored while its causal parent is still active.
     const result = await manageEntityUpdate(
       agentCtx(org, user, agentId),
       reactionEntity.id,
@@ -280,6 +314,139 @@ describe('ownership gate on agent entity writes', () => {
     // "An automation proposes…" instead of "An agent proposes…".
     expect(result.approval_attribution).toBe('automation');
   });
+
+	it("queues a trusted reaction entity review artifact after its source run completed", async () => {
+		const org = workspace.org.id;
+		const user = workspace.users.owner.id;
+		const {
+			entity: target,
+			automationId,
+			runId,
+		} = await seedAutomationAndRun(
+			workspace,
+			"completed-reaction",
+			"completed",
+		);
+
+		await manageEntityUpdate(humanCtx(org, user), target.id, {
+			severity: "high",
+		});
+		const result = (await manageEntity(
+			{
+				action: "update",
+				entity_id: target.id,
+				metadata: { severity: "critical" },
+			},
+			TEST_ENV,
+			reactionCtx(org, automationId, runId),
+		)) as {
+			approval_queued?: boolean;
+			approval_attribution?: "agent" | "automation";
+		};
+
+		expect(result.approval_queued).toBe(true);
+		expect(result.approval_attribution).toBe("automation");
+		const [proposal] = await getTestDb()`
+      SELECT automation_id, parent_run_id, run_metadata
+      FROM runs
+      WHERE organization_id = ${org}
+        AND run_type = 'internal'
+        AND action_key = 'entity_field_change'
+        AND approval_status = 'pending'
+    `;
+		expect(Number(proposal.automation_id)).toBe(automationId);
+		expect(Number(proposal.parent_run_id)).toBe(runId);
+		expect(
+			(proposal.run_metadata as Record<string, unknown> | null)
+				?.automation_review_artifact,
+		).toBe(true);
+	});
+
+	it("queues a trusted reaction delete review artifact after its source run completed", async () => {
+		const org = workspace.org.id;
+		const { entity: target, automationId, runId } =
+			await seedAutomationAndRun(workspace, "completed-delete-reaction", "completed");
+
+		const result = (await manageEntity(
+			{ action: "delete", entity_id: target.id },
+			TEST_ENV,
+			reactionCtx(org, automationId, runId),
+		)) as { approval_queued?: boolean; approval_run_id?: number };
+
+		expect(result.approval_queued).toBe(true);
+		const [proposal] = await getTestDb()`
+      SELECT automation_id, parent_run_id, run_metadata, action_input
+      FROM runs
+      WHERE id = ${result.approval_run_id ?? -1}
+    `;
+		expect(Number(proposal.automation_id)).toBe(automationId);
+		expect(Number(proposal.parent_run_id)).toBe(runId);
+		expect((proposal.action_input as { operation: string }).operation).toBe("delete");
+		expect(
+			(proposal.run_metadata as Record<string, unknown> | null)
+				?.automation_review_artifact,
+		).toBe(true);
+	});
+
+	it("upgrades a reused delete proposal into a trusted reaction review artifact", async () => {
+		const org = workspace.org.id;
+		const { entity: target, automationId, runId } =
+			await seedAutomationAndRun(workspace, "reused-delete-reaction");
+		const ctx = reactionCtx(org, automationId, runId);
+		const proposal = {
+			entity_id: target.id,
+			force_delete_tree: false,
+			current: {
+				id: target.id,
+				entity_type: "entity",
+				name: "Reused delete target",
+				metadata: {},
+			},
+			automation_id: automationId,
+		};
+		const first = await proposeEntityDelete(ctx, proposal, runId);
+		await getTestDb()`
+      UPDATE runs SET status = 'completed', completed_at = NOW() WHERE id = ${runId}
+    `;
+		const reused = await proposeEntityDelete(ctx, proposal, runId, {
+			automationReviewArtifact: true,
+		});
+		expect(reused.runId).toBe(first.runId);
+		const [row] = await getTestDb()`
+      SELECT run_metadata FROM runs WHERE id = ${first.runId}
+    `;
+		expect(
+			(row.run_metadata as Record<string, unknown> | null)
+				?.automation_review_artifact,
+		).toBe(true);
+	});
+
+	it("rejects a late caller-declared source after its parent completed", async () => {
+		const org = workspace.org.id;
+		const user = workspace.users.owner.id;
+		const {
+			entity: target,
+			automationId,
+			runId,
+			agentId,
+		} = await seedAutomationAndRun(
+			workspace,
+			"completed-declaration",
+			"completed",
+		);
+		await manageEntityUpdate(humanCtx(org, user), target.id, {
+			severity: "high",
+		});
+
+		await expect(
+			manageEntityUpdate(
+				agentCtx(org, user, agentId),
+				target.id,
+				{ severity: "critical" },
+				{ automation_source: { automation_id: automationId, run_id: runId } },
+			),
+		).rejects.toThrow(/parent run .* no longer active/i);
+	});
 
   it("ignores a caller-supplied automation_source that is NOT the acting agent's own automation", async () => {
     const org = workspace.org.id;
@@ -306,6 +473,16 @@ describe('ownership gate on agent entity writes', () => {
     );
 
     expect(result.approval_attribution).toBe('agent');
+    const [proposal] = await getTestDb()`
+      SELECT automation_id, parent_run_id
+      FROM runs
+      WHERE organization_id = ${org}
+        AND run_type = 'internal'
+        AND action_key = 'entity_field_change'
+        AND approval_status = 'pending'
+    `;
+    expect(proposal.automation_id).toBeNull();
+    expect(proposal.parent_run_id).toBeNull();
   });
 
   it('collapses an identical repeated agent edit into a single pending approval', async () => {

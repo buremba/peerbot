@@ -259,6 +259,7 @@ export function createDbClientFromEnv(_env: Env): DbClient {
 
 let dbSingleton: DbClient | null = null;
 let rawDbSingleton: Sql | null = null;
+let sourceReadDbSingleton: CreatedDbClient | null = null;
 
 function ensureSingleton(): void {
   if (dbSingleton) return;
@@ -297,6 +298,21 @@ export async function closeDbSingleton(): Promise<void> {
     await lockDbSingleton.end();
     lockDbSingleton = null;
   }
+  if (sourceReadDbSingleton) {
+    await sourceReadDbSingleton.raw.end();
+    sourceReadDbSingleton = null;
+  }
+}
+
+/** Small pool reserved for connection-pinned READ ONLY source execution. */
+export function getSourceReadDb(): DbClient {
+  if (!sourceReadDbSingleton) {
+    const url = process.env.DATABASE_URL;
+    if (!url) throw new Error('DATABASE_URL is required');
+    sourceReadDbSingleton = createDbClient(url, 2);
+    logger.info('[DB] PostgreSQL source-read pool created');
+  }
+  return sourceReadDbSingleton.wrapped;
 }
 
 // =========================================================

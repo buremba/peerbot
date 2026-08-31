@@ -16,6 +16,7 @@ import { getDb } from "../../../../db/client";
 import type { Env } from "../../../../index";
 import {
 	isDelegatedBrowserAffinityConnector,
+	isHeadlessConnectorRuntime,
 	isLegacyNonManifestConnector,
 } from "../../../../utils/connector-execution-placement";
 import { currentMcpActivityAttribution, currentMcpActivityEventMetadata } from "../../../../lobu/stores/mcp-client-conversations";
@@ -917,7 +918,11 @@ export async function handleExecute(
 			runId,
 			ctx.organizationId,
 			ctx.abortSignal,
-			connection.connector_key === "os.shell"
+			// Keyed on the DECLARED execution backend, never on a connector slug:
+			// the longer budget exists because a daemon-builtin action runs
+			// in-process on the device after claim, which is a property of the
+			// backend, not of any one connector.
+			isHeadlessConnectorRuntime(connection.connector_runtime)
 				? DAEMON_BUILTIN_POST_CLAIM_BUDGET_MS
 				: undefined,
 		);

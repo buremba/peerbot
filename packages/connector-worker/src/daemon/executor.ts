@@ -938,6 +938,9 @@ async function executeEmbedBackfillRun(
     }> = [];
     let batchError: string | undefined;
     try {
+      // Dynamic: the headless shell package ships without the embeddings
+      // provider stack, so a static import would pull it into every daemon
+      // bundle. Loaded only when a feed actually has text to embed.
       const { batchGenerateEmbeddings } = await import('../embeddings.js');
       const { embeddings, model } = await batchGenerateEmbeddings(pending.map((p) => p.text));
       for (let i = 0; i < pending.length; i++) {
@@ -1080,6 +1083,8 @@ async function processEventChunk(
   }
 
   try {
+    // Dynamic for the same reason as above: keeps the embeddings provider
+    // stack out of the headless shell bundle.
     const { batchGenerateEmbeddings } = await import('../embeddings.js');
     const { embeddings, model } = await batchGenerateEmbeddings(texts);
     for (let j = 0; j < targets.length; j++) {

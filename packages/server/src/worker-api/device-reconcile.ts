@@ -1080,21 +1080,14 @@ export async function reconcileDeviceCapabilities(
       (key) => !reconciledAuthorizations.some((authorization) => authorization.connectorKey === key)
     )
   );
-  const validatedReconciledAuthorizations = reconciledAuthorizations.filter((authorization) =>
-    pollingDeviceAuthorizations.some(
-      (validated) =>
-        validated.connectorKey === authorization.connectorKey &&
-        validated.connectorVersion === authorization.connectorVersion &&
-        validated.manifestHash === authorization.manifestHash &&
-        validated.sourcePath === authorization.sourcePath,
-    ),
+  // Built from the polling advertisement alone. Intersecting it with the
+  // reconciled set first added nothing: an entry surviving that intersection
+  // is by definition a reconciled authorization, so its key can never be in
+  // failedCurrentWinnerKeys, so it always reappears below under the same
+  // (key, version, hash) -- and the later entry is the one the Map keeps.
+  const all = pollingDeviceAuthorizations.filter(
+    (authorization) => !failedCurrentWinnerKeys.has(authorization.connectorKey)
   );
-  const all = [
-    ...validatedReconciledAuthorizations,
-    ...pollingDeviceAuthorizations.filter(
-      (authorization) => !failedCurrentWinnerKeys.has(authorization.connectorKey)
-    ),
-  ];
   return [...new Map(
     all.map((authorization) => [
       `${authorization.connectorKey}\u0000${authorization.connectorVersion}\u0000${authorization.manifestHash}`,

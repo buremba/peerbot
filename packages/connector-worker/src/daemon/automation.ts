@@ -215,10 +215,13 @@ function drain(stream: Readable, capBytes: number): {
 } {
   let settled = false;
   let result: { data: Buffer; truncated: boolean } = { data: Buffer.alloc(0), truncated: false };
+  // Declared out here so snapshot() can concatenate on demand. Concatenating
+  // per chunk instead made a chatty CLI quadratic -- and past the cap it kept
+  // re-copying the full capped buffer for every further chunk, forever.
+  const chunks: Buffer[] = [];
+  let truncated = false;
   const pending = new Promise<{ data: Buffer; truncated: boolean }>((resolve) => {
-    const chunks: Buffer[] = [];
     let total = 0;
-    let truncated = false;
     stream.on('data', (chunk: Buffer) => {
       if (total < capBytes) {
         const room = capBytes - total;
@@ -233,7 +236,6 @@ function drain(stream: Readable, capBytes: number): {
       } else {
         truncated = true;
       }
-      result = { data: Buffer.concat(chunks), truncated };
     });
     const settle = () => {
       if (settled) return;
@@ -246,7 +248,10 @@ function drain(stream: Readable, capBytes: number): {
     // `close` covers the forced-destroy path below, which emits neither.
     stream.on('close', settle);
   });
-  return { pending, snapshot: () => result };
+  return {
+    pending,
+    snapshot: () => (settled ? result : { data: Buffer.concat(chunks), truncated }),
+  };
 }
 
 /**

@@ -46,9 +46,9 @@ export function captureServerError(
     tags: {
       source,
       http_method: c.req.method,
-      // Passed in, not read from `c.res`: every caller reports the error before
-      // returning its response, and hono mints a placeholder 200 on that first
-      // `c.res` access — which tagged every 500 in this path as a 200.
+      // Passed in, not read from `c.res`: every caller reports the error
+      // before returning its response, and hono mints a placeholder 200 on
+      // that first `c.res` access.
       http_status: String(httpStatus),
     },
     extra: {

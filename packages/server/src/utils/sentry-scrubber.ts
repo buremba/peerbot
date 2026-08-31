@@ -42,10 +42,10 @@ function squashKey(key: string): string {
 function isSecretObjectKey(key: string): boolean {
 	if (isSecretKey(key)) return true;
 	if (isSecretKey(squashKey(key))) return true;
+	if (SECRET_KEY_EXACT.has(squashKey(key))) return true;
 	// Matched per separated segment, not against the squashed whole:
 	// `X-Hub-Signature-256` squashes to `xhubsignature256`, which no exact set
 	// can ever hold, so every real signature header would slip through.
-	if (SECRET_KEY_EXACT.has(squashKey(key))) return true;
 	return key
 		.replace(/[^a-z0-9]+/gi, '_')
 		.toLowerCase()
@@ -57,8 +57,10 @@ const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
  * A relative URL (`/api/v1/files/a?token=…`) and Sentry's own
  * `request.query_string` (`token=…`, no scheme and no path) never match
  * URL_PATTERN, so the signed-download token would survive a URL-only scrub.
+ * The separator absorbs trailing whitespace because cookie serialization is
+ * `a=b; c=d`: without it every pair after the first space goes unredacted.
  */
-const QUERY_PAIR_PATTERN = /([?&;]|^)([A-Za-z0-9_.\-%[\]]+)=([^&;\s"'<>]*)/g;
+const QUERY_PAIR_PATTERN = /([?&;]\s*|^)([A-Za-z0-9_.\-%[\]]+)=([^&;\s"'<>]*)/g;
 
 function decodeKey(raw: string): string {
 	try {

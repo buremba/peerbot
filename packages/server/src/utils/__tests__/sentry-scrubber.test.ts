@@ -75,6 +75,18 @@ describe('Sentry credential scrubber', () => {
 		expect(queryString.request.query_string).toContain('limit=10');
 	});
 
+	it('redacts cookie pairs written with a space after the separator', () => {
+		// Cookie serialization is `a=b; c=d`. Without whitespace in the
+		// separator, only the first pair anchors and every later credential
+		// survives in a raw string headed for Sentry.
+		const scrubbed = scrubSentryValue(
+			`set-cookie rejected: theme=dark; token=${SECRET}; limit=10`,
+		) as string;
+		expect(scrubbed).not.toContain(SECRET);
+		expect(scrubbed).toContain('theme=dark');
+		expect(scrubbed).toContain('limit=10');
+	});
+
 	it('keeps triage fields whose names merely contain a secret word', () => {
 		const result = scrubSentryValue({
 			status_code: 500,

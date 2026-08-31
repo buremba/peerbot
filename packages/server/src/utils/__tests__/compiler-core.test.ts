@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { compileSource } from '../compiler-core';
+import type { Plugin } from 'esbuild';
+import { compileSource, SourceCompileError } from '../compiler-core';
 
 /**
  * #2043 — dependency restrictions must apply only to real module declarations
@@ -35,6 +36,35 @@ async function compileErr(source: string): Promise<string> {
 }
 
 describe('compileSource import validation (#2043)', () => {
+  test('marks source diagnostics but not esbuild output failures', async () => {
+    await expect(compileSource('export default = ;', CONFIG)).rejects.toBeInstanceOf(
+      SourceCompileError
+    );
+
+    const outputFailure = compileSource('export default 1;', {
+      ...CONFIG,
+      buildOptions: { ...CONFIG.buildOptions, outfile: process.cwd() },
+    });
+    await expect(outputFailure).rejects.not.toBeInstanceOf(SourceCompileError);
+  });
+
+  test('does not mark located plugin infrastructure failures as source errors', async () => {
+    const brokenPlugin: Plugin = {
+      name: 'broken-test-plugin',
+      setup(build) {
+        build.onResolve({ filter: /^broken$/ }, () => {
+          throw new Error('plugin infrastructure failed');
+        });
+      },
+    };
+    const pluginFailure = compileSource(`import value from 'broken'; export default value;`, {
+      ...CONFIG,
+      buildOptions: { ...CONFIG.buildOptions, plugins: [brokenPlugin] },
+    });
+
+    await expect(pluginFailure).rejects.not.toBeInstanceOf(SourceCompileError);
+  });
+
   test('rejects a real relative import with a source location', async () => {
     const message = await compileErr(
       `import { sleep } from './scraper-utils.ts';\nexport default sleep;`

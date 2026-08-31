@@ -15,13 +15,22 @@
  * `orgPath` so the host re-walks org swaps without holding refs.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ClientSDK } from "./client-sdk";
+import {
+	classifyToolError,
+	isRetryable,
+	isToolError,
+	toToolErrorCode,
+	type ToolErrorCode,
+} from "@lobu/core";
 import { ClientSdkActionError } from "./namespaces/action-call";
 import { METHOD_METADATA, type MethodAccess } from "./method-metadata";
 import type { ToolAccessLevel } from "../auth/tool-access";
 import { enumerateSDKManifest, type SDKMode } from "./sdk-manifest";
 import { McpScopeRequiredError } from "../tools/access-control";
 import { getSdkPreflight } from "./sdk-preflight";
+import { ToolUserError } from "../utils/errors";
 
 export interface RunLimits {
 	memoryMb?: number;
@@ -148,6 +157,8 @@ interface RunScriptResult {
 	error?: {
 		name: string;
 		message: string;
+		code?: ToolErrorCode;
+		retryable?: boolean;
 		details?: unknown;
 		stack?: string;
 		line?: number;
@@ -171,6 +182,9 @@ export const MAX_SCRIPT_TIMEOUT_MS = 180_000;
 export const MAX_SLEEP_MS = 30_000;
 const MAX_TRACE_ARGS_BYTES = 8192;
 const MAX_ERROR_DETAILS_BYTES = 16_384;
+export const MAX_SCRIPT_ERROR_NAME_BYTES = 256;
+export const MAX_SCRIPT_ERROR_MESSAGE_BYTES = 16_384;
+export const MAX_SCRIPT_ERROR_STACK_BYTES = 32_768;
 const SENSITIVE_TRACE_KEY =
 	/(api[_-]?key|apikey|auth[_-]?data|auth[_-]?values|authorization|cookie|credential|password|private[_-]?key|secret|token)/i;
 
@@ -261,6 +275,25 @@ function byteBoundedPrefix(value: string, maxBytes: number): string {
 	return value.slice(0, lo);
 }
 
+function errorFieldText(value: unknown, fallback: string): string {
+	if (typeof value === "string") return value;
+	if (value == null) return fallback;
+	try {
+		return String(value);
+	} catch {
+		return fallback;
+	}
+}
+
+/** Bound one SDK script error field without cutting a UTF-16 surrogate pair. */
+export function boundScriptErrorText(value: unknown, maxBytes: number): string {
+	const text = errorFieldText(value, "");
+	if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+	const suffixBytes = Buffer.byteLength(PREVIEW_SUFFIX, "utf8");
+	if (maxBytes <= suffixBytes) return byteBoundedPrefix(text, maxBytes);
+	return `${byteBoundedPrefix(text, Math.max(0, maxBytes - suffixBytes))}${PREVIEW_SUFFIX}`;
+}
+
 /**
  * Build the preview for an oversized interactive return value: a UTF-8-safe
  * head of the serialized JSON (a preview the model reads to decide what to
@@ -286,43 +319,131 @@ function buildReturnPreview(
 	};
 }
 
-function classifyRuntimeError(error: {
-	name?: string;
-	message?: string;
-	stack?: string;
-	details?: unknown;
-}): NonNullable<RunScriptResult["error"]> {
-	const message = error.message ?? "Script execution failed";
+type TrustedErrorClassification = {
+	code: ToolErrorCode;
+	retryable: boolean;
+};
+
+function classifyToolUserError(error: ToolUserError): ToolErrorCode {
+	const directCode = toToolErrorCode(error.code);
+	if (directCode) return directCode;
+	if (error.httpStatus === 403) return "PERMISSION";
+	return classifyToolError({ httpStatus: error.httpStatus });
+}
+
+function classifyClientSdkActionResult(
+	result: Readonly<Record<string, unknown>>,
+): ToolErrorCode {
+	const directCode =
+		toToolErrorCode(result.error_code) ?? toToolErrorCode(result.code);
+	if (directCode) return directCode;
+	if (result.status === "timeout" || result.status === "timed_out") {
+		return "UPSTREAM_TIMEOUT";
+	}
+	const httpStatus =
+		typeof result.http_status === "number"
+			? result.http_status
+			: typeof result.httpStatus === "number"
+				? result.httpStatus
+				: undefined;
+	if (httpStatus !== undefined) return classifyToolError({ httpStatus });
+	const failedItem = Array.isArray(result.results)
+		? result.results.find(
+				(item): item is Record<string, unknown> =>
+					item !== null &&
+					typeof item === "object" &&
+					!Array.isArray(item) &&
+					(item as Record<string, unknown>).success === false,
+			)
+		: undefined;
+	const message = [
+		result.error,
+		result.error_message,
+		result.message,
+		result.reason,
+		failedItem?.error,
+		failedItem?.error_message,
+		failedItem?.message,
+		failedItem?.reason,
+	].find(
+		(value): value is string =>
+			typeof value === "string" && value.trim().length > 0,
+	);
+	return classifyToolError({ message });
+}
+
+function trustedRuntimeClassification(
+	error: Record<string, unknown>,
+	trustedClassifications?: ReadonlyMap<string, TrustedErrorClassification>,
+): TrustedErrorClassification | undefined {
+	const token = error.classificationToken;
+	return typeof token === "string"
+		? trustedClassifications?.get(token)
+		: undefined;
+}
+
+function classifyRuntimeError(
+	error: unknown,
+	trustedClassifications?: ReadonlyMap<string, TrustedErrorClassification>,
+): NonNullable<RunScriptResult["error"]> {
+	const record =
+		error !== null && typeof error === "object"
+			? (error as Record<string, unknown>)
+			: {};
+	const rawName = errorFieldText(record.name, "Error");
+	const rawMessage = errorFieldText(record.message, "Script execution failed");
+	const message = boundScriptErrorText(
+		rawMessage,
+		MAX_SCRIPT_ERROR_MESSAGE_BYTES,
+	);
+	const classification = trustedRuntimeClassification(
+		record,
+		trustedClassifications,
+	);
 	// Expected user-input errors (bad SDK args, business-rule failures) must NOT
 	// leak a server-bundle stack to the client — the message already carries the
 	// actionable "Invalid arguments for client.x.y: …" guidance, and the full
 	// stack stays in server logs/observability. An unexpected ScriptError keeps
 	// its stack (a genuine bug the developer needs to trace).
 	const isExpectedUserError =
-		error.name === "ClientSdkActionError" ||
-		error.name === "McpScopeRequiredError" ||
-		error.name === "ToolUserError" ||
-		/^Invalid arguments for /.test(message);
-	if (error.name === "ClientSdkActionError") {
+		rawName === "ClientSdkActionError" ||
+		rawName === "McpScopeRequiredError" ||
+		rawName === "ToolUserError" ||
+		rawMessage === "Script must `export default` an async function" ||
+		/^Invalid arguments for /.test(rawMessage);
+	if (rawName === "ClientSdkActionError") {
 		return {
 			name: "ClientSdkActionError",
 			message,
-			...(error.details === undefined ? {} : { details: error.details }),
+			...classification,
+			...(record.details === undefined
+				? {}
+				: { details: safeErrorDetails(record.details) }),
 		};
 	}
-	if (error.name === "McpScopeRequiredError") {
-		return { name: "McpScopeRequiredError", message };
+	if (rawName === "McpScopeRequiredError") {
+		return { name: "McpScopeRequiredError", message, ...classification };
+	}
+	if (rawName === "ToolUserError") {
+		return {
+			name:
+				classification?.code === "VALIDATION"
+					? "ValidationError"
+					: "ToolUserError",
+			message,
+			...classification,
+		};
 	}
 	if (isExpectedUserError) {
-		return { name: "ValidationError", message };
+		return { name: "ValidationError", message, ...classification };
 	}
 
-	const isTimeout = /script execution timed out|TimeoutError/i.test(message);
-	const isQuota = /QuotaExceeded/.test(message);
-	const isSleepLimit = /SleepLimitExceeded/.test(message);
-	const isInvalidSleep = /InvalidSleepDuration/.test(message);
-	const isOversize = /OutputSizeExceeded/.test(message);
-	const isOom = /memory|allocation|isolate was disposed/i.test(message);
+	const isTimeout = /script execution timed out|TimeoutError/i.test(rawMessage);
+	const isQuota = /QuotaExceeded/.test(rawMessage);
+	const isSleepLimit = /SleepLimitExceeded/.test(rawMessage);
+	const isInvalidSleep = /InvalidSleepDuration/.test(rawMessage);
+	const isOversize = /OutputSizeExceeded/.test(rawMessage);
+	const isOom = /memory|allocation|isolate was disposed/i.test(rawMessage);
 	const name = isTimeout
 		? "TimeoutError"
 		: isQuota
@@ -339,7 +460,15 @@ function classifyRuntimeError(error: {
 	return {
 		name,
 		message,
-		...(error.stack ? { stack: error.stack } : {}),
+		...classification,
+		...(record.stack != null
+			? {
+					stack: boundScriptErrorText(
+						record.stack,
+						MAX_SCRIPT_ERROR_STACK_BYTES,
+					),
+				}
+			: {}),
 	};
 }
 
@@ -520,13 +649,25 @@ async function loadIsolatedVm(): Promise<IsolatedVmRuntime | null> {
 	}
 }
 
-const GUEST_PREAMBLE = `
+function guestPreamble(errorTokenReader: string): string {
+	return `
 const __ctxData = JSON.parse(__ctx_json);
 const ctx = Object.freeze({
   ...__ctxData,
   sleep: async (ms) => __sleep.apply(undefined, [ms], { result: { promise: true, copy: true } }),
 });
-const __manifest = JSON.parse(__sdk_manifest_json);
+const { client, takeErrorToken: ${errorTokenReader} } = (() => {
+const __hostSdkDispatch = __sdk_dispatch;
+try {
+  globalThis.__sdk_dispatch = undefined;
+  delete globalThis.__sdk_dispatch;
+} catch {}
+const __parseJson = JSON.parse.bind(JSON);
+const __trustedErrors = new WeakMap();
+const __rememberTrustedError = WeakMap.prototype.set.bind(__trustedErrors);
+const __readTrustedError = WeakMap.prototype.get.bind(__trustedErrors);
+const __forgetTrustedError = WeakMap.prototype.delete.bind(__trustedErrors);
+const __manifest = __parseJson(__sdk_manifest_json);
 const __namespaceMethods = __manifest.byNamespace;
 const __topLevelKeys = new Set(__manifest.topLevel);
 const __namespaceKeys = new Set(Object.keys(__namespaceMethods));
@@ -550,9 +691,9 @@ function __isReservedKey(k) {
 function __dispatchCall(path, orgPath) {
   return async (...args) => {
     const payload = JSON.stringify({ args, orgPath });
-    const r = await __sdk_dispatch.apply(undefined, [path, payload], { result: { promise: true, copy: true } });
+    const r = await __hostSdkDispatch.apply(undefined, [path, payload], { result: { promise: true, copy: true } });
     if (r === undefined) return undefined;
-    const envelope = JSON.parse(r);
+    const envelope = __parseJson(r);
     if (!envelope || envelope.__lobu_sdk_dispatch !== 1) {
       throw new Error('InvalidSDKDispatchEnvelope');
     }
@@ -560,6 +701,9 @@ function __dispatchCall(path, orgPath) {
       const error = new Error(envelope.error?.message || 'ClientSDK call failed');
       error.name = envelope.error?.name || 'ClientSdkActionError';
       if (envelope.error?.details !== undefined) error.details = envelope.error.details;
+      if (typeof envelope.error?.classificationToken === 'string') {
+		__rememberTrustedError(error, envelope.error.classificationToken);
+      }
       throw error;
     }
     return envelope.has_value ? envelope.value : undefined;
@@ -626,7 +770,15 @@ function __makeClient(orgPath) {
   });
 }
 
-const client = __makeClient([]);
+return {
+  client: __makeClient([]),
+  takeErrorToken(error) {
+    const trusted = __readTrustedError(error);
+    __forgetTrustedError(error);
+	return trusted;
+  },
+};
+})();
 
 let __console_enabled = true;
 function __emitConsole(level, args) {
@@ -645,8 +797,10 @@ const console = {
 const module = { exports: {} };
 const exports = module.exports;
 `;
+}
 
-const GUEST_RUNNER = `
+function guestRunner(errorTokenReader: string): string {
+	return `
 (async () => {
   try {
   const __entry = module.exports.default
@@ -662,19 +816,42 @@ const GUEST_RUNNER = `
       value: __result === undefined ? null : __result,
     });
   } catch (error) {
+	const __safeErrorField = (key, fallback) => {
+	  try {
+		const value = error?.[key];
+		if (typeof value === 'string') return value;
+		if (value == null) return fallback;
+		try { return String(value); } catch { return fallback; }
+	  } catch { return fallback; }
+	};
+	const __safeErrorDetails = () => {
+	  try {
+		if (error?.details === undefined) return undefined;
+		return JSON.parse(JSON.stringify(error.details));
+	  } catch { return undefined; }
+	};
+	const __safeThrownValue = () => {
+	  try { return String(error); } catch { return 'Unknown error'; }
+	};
+	const __details = __safeErrorDetails();
+	const __classificationToken = ${errorTokenReader}(error);
     return JSON.stringify({
       __lobu_script_result: 1,
       ok: false,
       error: {
-        name: error?.name || 'Error',
-        message: error?.message || String(error),
-        stack: error?.stack,
-        ...(error?.details === undefined ? {} : { details: error.details }),
+		name: __safeErrorField('name', 'Error'),
+		message: __safeErrorField('message', __safeThrownValue()),
+		stack: __safeErrorField('stack', undefined),
+		...(__details === undefined ? {} : { details: __details }),
+		...(__classificationToken === undefined
+		  ? {}
+		  : { classificationToken: __classificationToken }),
       },
     });
   }
 })()
 `;
+}
 
 // Read a named export instead of invoking the handler — the module top-level
 // runs (constructing exports), then we serialize the requested export. `__name`
@@ -757,6 +934,18 @@ export async function runScript(
 	 */
 	const startedSideEffects = new Map<string, { access: MethodAccess; count: number }>();
 	const requiredMcpScopes = new Set<"mcp:admin">();
+	const trustedErrorClassifications = new Map<
+		string,
+		TrustedErrorClassification
+	>();
+	const trustErrorClassification = (code: ToolErrorCode): string => {
+		const token = randomUUID();
+		trustedErrorClassifications.set(token, {
+			code,
+			retryable: isRetryable(code),
+		});
+		return token;
+	};
 	let sdkCalls = 0;
 	// Total calls skipped under dry-run, independent of preview retention so a
 	// truncated preview never undercounts the dry-run surface.
@@ -874,12 +1063,16 @@ export async function runScript(
 	}
 
 	let compiled: string;
+	let SourceCompileErrorClass:
+		| typeof import("../utils/compiler-core").SourceCompileError
+		| undefined;
 	try {
 		// Deferred: `compiler-core` pulls in esbuild and resolves the connector
 		// SDK entry at module scope, neither of which a run-free process needs.
-		const { compileSource, computeCodeHash } = await import(
+		const { compileSource, computeCodeHash, SourceCompileError } = await import(
 			"../utils/compiler-core"
 		);
+		SourceCompileErrorClass = SourceCompileError;
 		// Compilation is `mkdtemp` + `writeFile` + a full esbuild bundle + read
 		// back — filesystem I/O and a bundler per call. Measured locally, a cold
 		// `runScript` costs 6–25ms end to end where a memo hit costs ~3ms, so
@@ -932,16 +1125,24 @@ export async function runScript(
 		}
 	} catch (err) {
 		clearTimeout(abortTimer);
-		const e = err as Error & {
-			errors?: Array<{ location?: { line?: number; column?: number } }>;
-		};
-		const loc = e.errors?.[0]?.location;
+		const isSourceCompileFailure =
+			SourceCompileErrorClass !== undefined &&
+			err instanceof SourceCompileErrorClass;
+		const loc = isSourceCompileFailure
+			? err.diagnostics[0]?.location
+			: undefined;
+		const message = boundScriptErrorText(
+			err instanceof Error ? err.message : err,
+			MAX_SCRIPT_ERROR_MESSAGE_BYTES,
+		);
 		return {
 			success: false,
 			logs,
 			error: {
-				name: "CompileError",
-				message: e.message,
+				name: isSourceCompileFailure ? "ValidationError" : "CompileError",
+				message,
+				code: isSourceCompileFailure ? "VALIDATION" : "INTERNAL",
+				retryable: false,
 				line: loc?.line,
 				column: loc?.column,
 			},
@@ -1131,21 +1332,51 @@ export async function runScript(
 						const json = JSON.stringify({
 							__lobu_sdk_dispatch: 1,
 							ok: false,
-							error: {
-								name: error.name,
-								message: error.message,
+								error: {
+									name: error.name,
+									message: error.message,
+									classificationToken:
+										trustErrorClassification("PERMISSION"),
 							},
 						});
 						return guardMessage(json) ? json : terminalEnvelope();
 					}
 					if (error instanceof ClientSdkActionError) {
+						const code = classifyClientSdkActionResult(error.result);
 						const json = JSON.stringify({
 							__lobu_sdk_dispatch: 1,
 							ok: false,
 							error: {
-								name: error.name,
-								message: error.message,
-								details: safeErrorDetails(error.result),
+									name: error.name,
+									message: error.message,
+									details: safeErrorDetails(error.result),
+									classificationToken: trustErrorClassification(code),
+							},
+						});
+						return guardMessage(json) ? json : terminalEnvelope();
+					}
+					if (error instanceof ToolUserError) {
+						const code = classifyToolUserError(error);
+						const json = JSON.stringify({
+							__lobu_sdk_dispatch: 1,
+							ok: false,
+							error: {
+									name: error.name,
+									message: error.message,
+									classificationToken: trustErrorClassification(code),
+							},
+						});
+						return guardMessage(json) ? json : terminalEnvelope();
+					}
+					if (isToolError(error)) {
+						const json = JSON.stringify({
+							__lobu_sdk_dispatch: 1,
+							ok: false,
+							error: {
+									name: error.name,
+									message: error.message,
+									classificationToken:
+										trustErrorClassification(error.code),
 							},
 						});
 						return guardMessage(json) ? json : terminalEnvelope();
@@ -1206,8 +1437,9 @@ export async function runScript(
 			await jail.set("__extract_name", options.extractExport);
 		}
 
+		const errorTokenReader = `__lobu_take_error_token_${randomUUID().replaceAll("-", "")}`;
 		const script = await isolate.compileScript(
-			`${GUEST_PREAMBLE}\n${compiled}\n${options.extractExport ? EXTRACT_RUNNER : GUEST_RUNNER}`,
+			`${guestPreamble(errorTokenReader)}\n${compiled}\n${options.extractExport ? EXTRACT_RUNNER : guestRunner(errorTokenReader)}`,
 		);
 		const returnJson = (await withTimeout(
 			script.run(context, {
@@ -1252,12 +1484,16 @@ export async function runScript(
 							message?: string;
 							stack?: string;
 							details?: unknown;
+							classificationToken?: string;
 					  }
 					| undefined;
 				return {
 					success: false,
 					logs,
-					error: classifyRuntimeError(scriptError ?? {}),
+					error: classifyRuntimeError(
+						scriptError ?? {},
+						trustedErrorClassifications,
+					),
 					durationMs: Date.now() - started,
 					sdkCalls,
 					skippedCalls,

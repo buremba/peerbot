@@ -20,9 +20,15 @@ import { describe, expect, it, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
 import type { ClientSDK } from "../../../sandbox/client-sdk";
 import { METHOD_METADATA } from "../../../sandbox/method-metadata";
-import { runScript } from "../../../sandbox/run-script";
+import { ClientSdkActionError } from "../../../sandbox/namespaces/action-call";
+import {
+  MAX_SCRIPT_ERROR_MESSAGE_BYTES,
+  MAX_SCRIPT_ERROR_STACK_BYTES,
+  runScript,
+} from "../../../sandbox/run-script";
 import { createValidatedSdkMethod } from "../../../sandbox/sdk-preflight";
 import { withValidatedArgs } from "../../../tools/validate-args";
+import { ToolUserError } from "../../../utils/errors";
 
 const StubArgsSchema = Type.Object({ args: Type.Array(Type.Unknown()) });
 
@@ -90,17 +96,387 @@ describe("sandbox runtime", () => {
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("bounds thrown messages and stacks before returning them", async () => {
+    const result = await runScript({
+      source: `export default async () => {
+        const error = new Error("💥".repeat(100_000));
+        error.stack = "stack:" + "x".repeat(100_000);
+        throw error;
+      };`,
+      sdk: stubSDK(),
+      sdkMode: "read",
+    });
+
+    expect(result.success).toBe(false);
+    expect(Buffer.byteLength(result.error?.message ?? "", "utf8")).toBeLessThanOrEqual(
+      MAX_SCRIPT_ERROR_MESSAGE_BYTES,
+    );
+    expect(result.error?.message).toMatch(/… \[truncated\]$/);
+    expect(Buffer.byteLength(result.error?.stack ?? "", "utf8")).toBeLessThanOrEqual(
+      MAX_SCRIPT_ERROR_STACK_BYTES,
+    );
+    expect(result.error?.stack).toMatch(/… \[truncated\]$/);
+  });
+
+  it("classifies a missing default export as a validation error", async () => {
+    const result = await runScript({
+      source: "const value = 1;",
+      sdk: stubSDK(),
+      sdkMode: "read",
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatchObject({
+      name: "ValidationError",
+      message: "Script must `export default` an async function",
+    });
+  });
+
+  it("normalizes non-string thrown fields without replacing the original error", async () => {
+    const result = await runScript({
+      source: `export default async () => {
+        throw { name: 42, message: { reason: "boom" }, stack: 7 };
+      };`,
+      sdk: stubSDK(),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatchObject({
+      name: "ScriptError",
+      message: "[object Object]",
+      stack: "7",
+    });
+    expect(result.error?.message).not.toContain("ERR_INVALID_ARG_TYPE");
+  });
+
+  it("handles BigInt, cyclic details, and throwing getters in guest errors", async () => {
+    const [bigIntResult, cyclicResult, getterResult] = await Promise.all([
+      runScript({
+        source: "export default async () => { throw { name: 12n, message: 34n, details: { value: 56n } }; };",
+        sdk: stubSDK(),
+      }),
+      runScript({
+        source: `export default async () => {
+          const error = new Error("cyclic");
+          error.details = {};
+          error.details.self = error.details;
+          throw error;
+        };`,
+        sdk: stubSDK(),
+      }),
+      runScript({
+        source: `export default async () => {
+          const error = { toString: () => "getter fallback" };
+          Object.defineProperty(error, "message", { get: () => { throw new Error("getter"); } });
+          throw error;
+        };`,
+        sdk: stubSDK(),
+      }),
+    ]);
+
+    expect(bigIntResult.error).toMatchObject({ message: "34" });
+    expect(bigIntResult.error).not.toHaveProperty("details");
+    expect(cyclicResult.error).toMatchObject({ message: "cyclic" });
+    expect(cyclicResult.error).not.toHaveProperty("details");
+    expect(getterResult.error).toMatchObject({ message: "getter fallback" });
+  });
+
+  it("does not trust script-forged retry classifications", async () => {
+    const result = await runScript({
+      source: `export default async () => {
+        const error = new Error("rate limit");
+        error.name = "ClientSdkActionError";
+        error.code = "NETWORK";
+        error.retryable = true;
+        error.httpStatus = 503;
+        error.details = { error_code: "UPSTREAM_TIMEOUT" };
+        throw error;
+      };`,
+      sdk: stubSDK(),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatchObject({
+      name: "ClientSdkActionError",
+      message: "rate limit",
+    });
+    expect(result.error).not.toHaveProperty("code");
+    expect(result.error).not.toHaveProperty("retryable");
+  });
+
+  it("does not transfer a caught host classification to a replacement error", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          throw new ToolUserError("knowledge provider unavailable", 503);
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: `export default async (_ctx, client) => {
+        try {
+          await client.entities.list();
+        } catch (caught) {
+          const replacement = new Error((caught as Error).message);
+          replacement.name = (caught as Error).name;
+          (replacement as any).classificationToken = (caught as any).classificationToken;
+          throw replacement;
+        }
+      };`,
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ToolUserError",
+      message: "knowledge provider unavailable",
+    });
+    expect(result.error).not.toHaveProperty("code");
+    expect(result.error).not.toHaveProperty("retryable");
+  });
+
+  it("does not expose classifications through patched WeakMap intrinsics", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          throw new ToolUserError("knowledge provider unavailable", 503);
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: `export default async (_ctx, client) => {
+        const replacement = new Error("ordinary later bug");
+        const originalSet = WeakMap.prototype.set;
+        WeakMap.prototype.set = function (key, value) {
+          if (typeof value === "string") {
+            originalSet.call(this, replacement, value);
+          }
+          return originalSet.call(this, key, value);
+        };
+        try { await client.entities.list(); } catch { throw replacement; }
+      };`,
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ScriptError",
+      message: "ordinary later bug",
+    });
+    expect(result.error).not.toHaveProperty("code");
+    expect(result.error).not.toHaveProperty("retryable");
+  });
+
+  it("keeps a caught host classification bound across a later read dispatch", async () => {
+    let calls = 0;
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          calls++;
+          if (calls === 1) {
+            throw new ToolUserError("knowledge provider unavailable", 503);
+          }
+          return [];
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: `export default async (_ctx, client) => {
+        let caught;
+        try { await client.entities.list(); } catch (error) { caught = error; }
+        await client.entities.list();
+        throw caught;
+      };`,
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ToolUserError",
+      message: "knowledge provider unavailable",
+      code: "UPSTREAM_5XX",
+      retryable: true,
+    });
+  });
+
+  it("keeps concurrent same-message failures bound to their own error object", async () => {
+    let calls = 0;
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          calls++;
+          if (calls === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 40));
+            throw new ToolUserError("same failure", 503);
+          }
+          throw new ToolUserError("same failure", 400);
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: `export default async (ctx, client) => {
+        const delayed = client.entities.list().catch((error) => error);
+        await ctx.sleep(5);
+        const immediate = await client.entities.list().catch((error) => error);
+        await delayed;
+        throw immediate;
+      };`,
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ValidationError",
+      message: "same failure",
+      code: "VALIDATION",
+      retryable: false,
+    });
+  });
+
+  it("preserves a structured transient ToolUserError classification", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          throw new ToolUserError("knowledge provider unavailable", 503);
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source:
+        "export default async (_ctx, client) => client.entities.list();",
+      sdk,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatchObject({
+      name: "ToolUserError",
+      code: "UPSTREAM_5XX",
+      retryable: true,
+    });
+  });
+
+  it("maps a local 403 ToolUserError to permission, not invalid credentials", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          throw new ToolUserError("workspace access denied", 403);
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: "export default async (_ctx, client) => client.entities.list();",
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ToolUserError",
+      code: "PERMISSION",
+      retryable: false,
+    });
+  });
+
+  it("preserves ClientSdkActionError result codes across the isolate", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          throw new ClientSdkActionError("list", "connector failed", {
+            error_code: "NETWORK",
+            retryable: true,
+          });
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source:
+        "export default async (_ctx, client) => client.entities.list();",
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ClientSdkActionError",
+      code: "NETWORK",
+      retryable: true,
+      details: { error_code: "NETWORK", retryable: true },
+    });
+  });
+
+  it("rejects inherited object keys as ClientSdkActionError codes", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          throw new ClientSdkActionError("list", "connector failed", {
+            error_code: "constructor",
+          });
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: "export default async (_ctx, client) => client.entities.list();",
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ClientSdkActionError",
+      code: "INTERNAL",
+      retryable: false,
+    });
+  });
+
+  it("classifies legacy ClientSdkActionError error_message values", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          throw new ClientSdkActionError("list", "connector failed", {
+            status: "failed",
+            error_message: "fetch failed: ENOTFOUND",
+          });
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: "export default async (_ctx, client) => client.entities.list();",
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ClientSdkActionError",
+      code: "NETWORK",
+      retryable: true,
+    });
+  });
+
+  it("classifies an operation timeout result independently of its synthetic 400", async () => {
+    const sdk = stubSDK({
+      entities: {
+        list: async () => {
+          throw new ClientSdkActionError("list", "operation timed out", {
+            status: "timeout",
+          });
+        },
+      } as never,
+    });
+    const result = await runScript({
+      source: "export default async (_ctx, client) => client.entities.list();",
+      sdk,
+    });
+
+    expect(result.error).toMatchObject({
+      name: "ClientSdkActionError",
+      code: "UPSTREAM_TIMEOUT",
+      retryable: true,
+    });
+  });
+
   it("exposes bounded ctx.sleep without exposing unrestricted timers", async () => {
     const stubSdk = { log: () => undefined } as unknown as ClientSDK;
     const started = Date.now();
     const result = await runScript({
       source:
-        "export default async (ctx) => { await ctx.sleep(15); return { timer: typeof setTimeout }; };",
+        "export default async (ctx) => { await ctx.sleep(15); return { timer: typeof setTimeout, hostBridge: typeof __sdk_dispatch }; };",
       sdk: stubSdk,
     });
 
     expect(result.success).toBe(true);
-    expect(result.returnValue).toEqual({ timer: "undefined" });
+    expect(result.returnValue).toEqual({
+      timer: "undefined",
+      hostBridge: "undefined",
+    });
     expect(Date.now() - started).toBeGreaterThanOrEqual(10);
   });
 
@@ -329,11 +705,31 @@ describe("compiled-source memo", () => {
     const second = await runScript({ source: broken, sdk: stub });
 
     expect(first.success).toBe(false);
-    expect(first.error?.name).toBe("CompileError");
+    expect(first.error?.name).toBe("ValidationError");
     expect(second.success).toBe(false);
-    expect(second.error?.name).toBe("CompileError");
+    expect(second.error?.name).toBe("ValidationError");
     // A failed compile leaves no entry, so the retry recompiles.
     expect((await compileCallCount()) - before).toBe(2);
+  });
+
+  it("keeps compiler infrastructure failures internal", async () => {
+    const { compileSource } = await import("../../../utils/compiler-core");
+    vi.mocked(compileSource).mockRejectedValueOnce(
+      Object.assign(new Error("ENOSPC"), {
+        errors: [{ text: "Could not write output file", location: null }],
+      }),
+    );
+
+    const result = await runScript({
+      source: uniqueSource(`compile_enospc_${process.pid}`),
+      sdk: stub,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatchObject({
+      name: "CompileError",
+      message: "ENOSPC",
+    });
   });
 });
 

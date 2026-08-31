@@ -1,12 +1,22 @@
 import { type Static, Type } from "@sinclair/typebox";
-import { classifyToolError, isRetryable } from "@lobu/core";
+import {
+  isRetryable,
+  toToolErrorCode,
+  type ToolErrorCode,
+} from "@lobu/core";
 import { resolveSdkMaxAccessLevel } from "../auth/tool-access";
 import { buildMcpBearerChallenge } from "../auth/oauth/resource-indicator";
 import { DISCOVERY_SCOPES } from "../auth/oauth/scopes";
 import { isAdminOrOwnerRole } from "./access-control";
 import type { Env } from "../index";
 import { buildClientSDK, type SDKMode } from "../sandbox/client-sdk";
-import { MAX_SCRIPT_TIMEOUT_MS, runScript } from "../sandbox/run-script";
+import {
+  boundScriptErrorText,
+  MAX_SCRIPT_ERROR_MESSAGE_BYTES,
+  MAX_SCRIPT_ERROR_NAME_BYTES,
+  MAX_SCRIPT_TIMEOUT_MS,
+  runScript,
+} from "../sandbox/run-script";
 import type { ToolContext } from "./registry";
 import { withValidatedArgs } from "./validate-args";
 import { mcpResourceLinksForSdkReturnValue } from "../mcp-media-resources";
@@ -139,8 +149,8 @@ export const SdkScriptResultSchema = Type.Object({
   error: Type.Optional(
     Type.Object(
       {
-        name: Type.String(),
-        message: Type.String(),
+        name: Type.String({ maxLength: MAX_SCRIPT_ERROR_NAME_BYTES }),
+        message: Type.String({ maxLength: MAX_SCRIPT_ERROR_MESSAGE_BYTES }),
         code: Type.Optional(Type.String()),
         retryable: Type.Optional(Type.Boolean()),
       },
@@ -297,8 +307,14 @@ export function toMcpPublicSdkScriptResult(result: unknown): unknown {
     const error = row.error as Record<string, unknown>;
     if (typeof error.message === "string") {
       out.error = {
-        name: typeof error.name === "string" ? error.name : "Error",
-        message: error.message,
+        name: boundScriptErrorText(
+          typeof error.name === "string" ? error.name : "Error",
+          MAX_SCRIPT_ERROR_NAME_BYTES,
+        ),
+        message: boundScriptErrorText(
+          error.message,
+          MAX_SCRIPT_ERROR_MESSAGE_BYTES,
+        ),
         ...(typeof error.code === "string" ? { code: error.code } : {}),
         ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
       };
@@ -339,6 +355,27 @@ export function resolveSandboxDryRun(args: {
 }): boolean {
   const captureSideEffects = args.executionMode === "capture";
   return captureSideEffects || (args.sdkMode === "full" && args.agentDryRun);
+}
+
+export function classifySdkScriptError(error: {
+  name: string;
+  message: string;
+  code?: unknown;
+}): { code: ToolErrorCode; retryable: boolean } {
+  const structuredCode = toToolErrorCode(error.code);
+  if (structuredCode) {
+    return { code: structuredCode, retryable: isRetryable(structuredCode) };
+  }
+
+  let code: ToolErrorCode;
+  if (error.name === "ValidationError") {
+    code = "VALIDATION";
+  } else if (error.name === "McpScopeRequiredError") {
+    code = "PERMISSION";
+  } else {
+    code = "INTERNAL";
+  }
+  return { code, retryable: isRetryable(code) };
 }
 
 /**
@@ -398,8 +435,8 @@ async function runSandbox(
   // is purely advisory.
   const error = result.error
     ? (() => {
-        const code = classifyToolError({ message: result.error?.message });
-        return { ...result.error, code, retryable: isRetryable(code) };
+        const classification = classifySdkScriptError(result.error);
+        return { ...result.error, ...classification };
       })()
     : result.error;
   const title = args.title?.trim() || undefined;

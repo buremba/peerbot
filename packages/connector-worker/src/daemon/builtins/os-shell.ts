@@ -17,6 +17,10 @@ export interface ShellRunOutput {
   duration_ms: number;
 }
 
+// The owned process group is cleaned up automatically. Deliberately detached
+// new sessions are outside that ownership contract and must be cleaned up by
+// their creator; never signal a detached numeric PGID after ownership ends.
+
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 300_000;
 const MAX_OUTPUT_BYTES = 1024 * 1024;

@@ -342,6 +342,7 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [''],
       baseOrgScopeIds: [''],
       workerHardensDbEgress: true,
+      backendCapacity: { compiled_connector: 1 },
     };
     const macContext: DueFeedClaimContext = {
       isUserScopedWorker: true,
@@ -354,6 +355,7 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [org.id],
       baseOrgScopeIds: [org.id],
       workerHardensDbEgress: false,
+      backendCapacity: { compiled_connector: 1 },
     };
     const chromeContext: DueFeedClaimContext = {
       isUserScopedWorker: true,
@@ -366,6 +368,7 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [org.id],
       baseOrgScopeIds: [org.id],
       workerHardensDbEgress: false,
+      backendCapacity: { daemon_builtin: 1 },
     };
 
     // Production incident shape: the Mac is recently seen but busy, so it is not

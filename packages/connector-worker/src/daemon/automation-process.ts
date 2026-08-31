@@ -26,11 +26,6 @@ const PROCESS_REAP_GRACE_MS = 5000;
  */
 function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): void {
   const supervisorArgs = process.argv.slice(1);
-  const targetEnvIndex = supervisorArgs.indexOf('--lobu-target-env');
-  const targetEnv = targetEnvIndex >= 0
-    ? JSON.parse(supervisorArgs[targetEnvIndex + 1] ?? '{}') as NodeJS.ProcessEnv
-    : process.env;
-  if (targetEnvIndex >= 0) supervisorArgs.splice(targetEnvIndex, 2);
   const [binary, ...args] = supervisorArgs;
   let targetFinished = false;
   let parentLost = false;
@@ -106,11 +101,14 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
   } else {
     try {
       target = spawnChild(binary, args, {
-        env: targetEnv,
+        env: process.env,
         stdio: ['pipe', 'inherit', 'inherit'],
         windowsHide: true,
       });
-      if (target.stdin) process.stdin.pipe(target.stdin);
+      if (target.stdin) {
+        target.stdin.on('error', () => {});
+        process.stdin.pipe(target.stdin);
+      }
     } catch (error) {
       finish(127, null, error instanceof Error ? error.message : String(error));
     }
@@ -328,8 +326,12 @@ export function spawnSupervisedCli(
   options: { stdin?: 'ignore' | 'pipe'; cwd?: string } = {}
 ): SupervisedCli {
   const supervisor = spawn(
-    process.execPath,
-    ['-e', CLI_SUPERVISOR_SOURCE, '--', '--lobu-target-env', JSON.stringify(env), binary, ...args],
+    // Bun's node:child_process compatibility layer merges env with the
+    // parent environment. Use the installed Node runtime there so the
+    // spawn-options contract remains an actual replacement environment; the
+    // packaged/runtime path uses its own executable unchanged.
+    process.versions.bun ? 'node' : process.execPath,
+    ['-e', CLI_SUPERVISOR_SOURCE, '--', binary, ...args],
     {
       detached: SUPPORTS_PROCESS_GROUPS,
       env,

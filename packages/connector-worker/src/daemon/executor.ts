@@ -93,6 +93,21 @@ const DEFAULT_CONFIG: ExecutorConfig = {
 
 const TERMINAL_DELIVERY_DEADLINE_MS = 15_000;
 
+async function withTerminalDeliveryTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('terminal completion deadline exceeded')), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Retry one immutable terminal payload without changing its outcome. */
 async function completeActionOnce(
   client: ExecutorClient,
@@ -104,10 +119,7 @@ async function completeActionOnce(
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     try {
-      await Promise.race([
-        client.completeAction(payload),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('terminal completion deadline exceeded')), remaining)),
-      ]);
+      await withTerminalDeliveryTimeout(client.completeAction(payload), remaining);
       return;
     } catch (error) {
       lastError = error;

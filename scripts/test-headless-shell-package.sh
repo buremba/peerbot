@@ -19,7 +19,7 @@ smoke_dir="$(mktemp -d)"
 daemon_cwd="$(mktemp -d)"
 trap 'rm -rf "$smoke_dir" "$daemon_cwd"' EXIT
 
-npm pack "$package_root" --pack-destination "$smoke_dir" --silent >/dev/null
+(cd "$package_root" && bun pm pack --destination "$smoke_dir" --quiet) >/dev/null
 archives=("$smoke_dir"/*.tgz)
 test "${#archives[@]}" -eq 1 || {
   echo "expected one connector-worker tarball, found ${#archives[@]}" >&2
@@ -59,8 +59,9 @@ NODE
 ln -s "$repo_root/node_modules" "$smoke_dir/node_modules"
 
 PACKAGE_ROOT="$smoke_dir/package" DAEMON_CWD="$daemon_cwd" node --input-type=module <<'NODE'
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const packageRoot = process.env.PACKAGE_ROOT;
@@ -68,6 +69,7 @@ const daemonCwd = process.env.DAEMON_CWD;
 const entry = resolve(packageRoot, 'dist/bin.js');
 const token = 'owl_pat_packaged_shell_smoke';
 let activeAttempt = null;
+let midCommandPidFile = null;
 
 function json(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json' });
@@ -106,6 +108,7 @@ const server = createServer(async (request, response) => {
       }
       if (activeAttempt && !activeAttempt.claimed) {
         activeAttempt.claimed = true;
+        if (midCommandPidFile) process.stderr.write(`mid-command claimed ${activeAttempt.runId}\n`);
         json(response, 200, {
           run_id: activeAttempt.runId,
           run_type: 'action',
@@ -115,8 +118,12 @@ const server = createServer(async (request, response) => {
           execution_backend: 'daemon_builtin',
           action_key: 'run',
           action_input: {
-            command: "printf 'lobu-shell-ok\\n'",
-            cwd: process.cwd(),
+            ...(midCommandPidFile
+              ? {
+                  command: `echo $$ > ${JSON.stringify(midCommandPidFile)}; trap '' TERM; sleep 30`,
+                }
+              : { command: "printf 'lobu-shell-ok\\n'" }),
+            cwd: midCommandPidFile ? daemonCwd : process.cwd(),
           },
         });
         return;
@@ -223,15 +230,105 @@ async function runAttempt(attempt) {
     clearTimeout(timeoutHandle);
   }
   child.kill('SIGTERM');
-  const exit = await exitResult;
+  const exit = await Promise.race([
+    exitResult,
+    new Promise((_, reject) => setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`packaged daemon shutdown timed out\n${logs}`));
+    }, 5_000)),
+  ]);
   if (exit.code !== 0) {
     throw new Error(`packaged daemon shutdown failed (${exit.code ?? exit.signal})\n${logs}`);
   }
   process.stdout.write(`packaged queue os.shell attempt ${attempt}: ok\n`);
 }
 
+function processInfo(pid) {
+  const line = execFileSync('ps', ['-o', 'pid=,ppid=,pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+  const [value, parent, group] = line.split(/\s+/).map(Number);
+  return { pid: value, ppid: parent, pgid: group };
+}
+
+function childPids(parentPid) {
+  return execFileSync('ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n')
+    .map((line) => line.trim().split(/\s+/).map(Number))
+    .filter(([pid, ppid]) => ppid === parentPid && pid > 0)
+    .map(([pid]) => pid);
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) {
+    return error?.code !== 'ESRCH';
+  }
+}
+
+function groupIsAlive(pgid) {
+  try { process.kill(-pgid, 0); return true; } catch (error) {
+    return error?.code !== 'ESRCH';
+  }
+}
+
+async function waitUntil(predicate, label, timeoutMs = 8_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+async function runMidCommandCrashAttempt() {
+  const pidFile = resolve(daemonCwd, 'mid-command-descendant.pid');
+  midCommandPidFile = pidFile;
+  activeAttempt = { runId: 466, claimed: false, resolve() {}, reject(error) { throw error; } };
+  const daemon = spawn(process.execPath, [
+    entry, 'daemon', '--api-url', apiUrl, '--platform', 'headless',
+    '--worker-id', 'headless:package-smoke', '--capabilities', 'os.shell', '--version', 'package-smoke',
+  ], { cwd: daemonCwd, env: { ...process.env, WORKER_API_TOKEN: token, WORKER_MAX_CONCURRENT_JOBS: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let logs = '';
+  daemon.stdout.on('data', (chunk) => { logs += chunk.toString(); });
+  daemon.stderr.on('data', (chunk) => { logs += chunk.toString(); });
+  const daemonExit = new Promise((resolveExit) => daemon.once('exit', (code, signal) => resolveExit({ code, signal })));
+  let supervisorPid = 0;
+  let groupPid = 0;
+  let descendantPid = 0;
+  try {
+    try {
+      await waitUntil(() => {
+        if (!isAlive(daemon.pid)) return false;
+        try { descendantPid = Number(readFileSync(pidFile, 'utf8')); } catch { descendantPid = 0; }
+        let current = descendantPid ? processInfo(descendantPid) : null;
+        groupPid = current?.pgid ?? 0;
+        while (current && current.ppid && current.ppid !== 1 && current.ppid !== daemon.pid) current = processInfo(current.ppid);
+        supervisorPid = current?.ppid === daemon.pid ? current.pid : childPids(daemon.pid)[0] ?? 0;
+        if (!descendantPid) {
+          supervisorPid = childPids(daemon.pid)[0] ?? 0;
+          descendantPid = supervisorPid ? childPids(supervisorPid)[0] ?? 0 : 0;
+          if (descendantPid) groupPid = processInfo(supervisorPid).pgid;
+        }
+        return descendantPid > 0 && supervisorPid > 0 && groupPid > 0;
+      }, 'daemon supervisor and descendant PIDs');
+    } catch (error) {
+      throw new Error(`${error.message}\n${logs}`);
+    }
+    daemon.kill('SIGKILL');
+    await Promise.race([daemonExit, new Promise((_, reject) => setTimeout(() => reject(new Error(`daemon SIGKILL did not exit\n${logs}`)), 5_000))]);
+    await waitUntil(() => !isAlive(supervisorPid) && !isAlive(descendantPid), 'owned group cleanup after daemon SIGKILL');
+    if (groupIsAlive(groupPid)) throw new Error(`owned process group ${groupPid} survived daemon SIGKILL`);
+    process.stdout.write(`packaged mid-command SIGKILL cleanup: daemon=${daemon.pid} supervisor=${supervisorPid} group=${groupPid} descendant=${descendantPid} ok\n`);
+  } finally {
+    for (const pid of [descendantPid, supervisorPid, daemon.pid]) {
+      if (pid && isAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    }
+    if (groupPid && groupIsAlive(groupPid)) { try { process.kill(-groupPid, 'SIGKILL'); } catch {} }
+    midCommandPidFile = null;
+    activeAttempt = null;
+  }
+}
+
 try {
   await runAttempt(1);
+  await runMidCommandCrashAttempt();
   await runAttempt(2);
 } finally {
   activeAttempt = null;

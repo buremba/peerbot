@@ -17,6 +17,8 @@ import {
 } from '../daemon/automation.js';
 import {
   signalOwnedPosixProcessGroup,
+  spawnSupervisedCli,
+  releaseSupervisor,
   terminateWindowsProcessTree,
   waitForTargetExitAfterTermination,
 } from '../daemon/automation-process.js';
@@ -39,6 +41,31 @@ function okResult(): ExecutorResult {
 }
 
 describe('POSIX process-group ownership', () => {
+  test('passes the supplied target environment without serializing it in argv', async () => {
+    const supplied = 'target-env-secret';
+    const supervised = spawnSupervisedCli(
+      process.execPath,
+      ['-e', "process.stdout.write(JSON.stringify({ argv: process.argv, value: process.env.TARGET_ENV }))"],
+      { TARGET_ENV: supplied, PATH: process.env.PATH },
+      { stdin: 'ignore' },
+    );
+    let stdout = '';
+    supervised.supervisor.stdout?.setEncoding('utf8');
+    supervised.supervisor.stdout?.on('data', (chunk) => { stdout += chunk; });
+    try {
+      await waitForTargetExitAfterTermination(supervised.targetExit, 2_000);
+      await releaseSupervisor(supervised.supervisor);
+      const result = JSON.parse(stdout) as { argv: string[]; value: string };
+      expect(result.value).toBe(supplied);
+      expect(result.argv).not.toContain(supplied);
+      expect(result.argv.join(' ')).not.toContain('lobu-target-env');
+    } finally {
+      if (supervised.supervisor.exitCode === null && supervised.supervisor.signalCode === null) {
+        supervised.supervisor.kill('SIGKILL');
+      }
+    }
+  });
+
   test('shutdown abort terminates the supervised CLI and reports cancellation', async () => {
     if (process.platform === 'win32') return;
     const dir = mkdtempSync(path.join(tmpdir(), 'lobu-shutdown-cli-'));

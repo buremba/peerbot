@@ -116,7 +116,7 @@ describe('daemon-builtin os.shell', () => {
     }
   });
 
-  test('kills a session-detached descendant before settlement', async () => {
+  test('bounds settlement without claiming ownership of a detached session', async () => {
     if (process.platform !== 'linux') return;
 
     let escapedPid = 0;
@@ -132,7 +132,9 @@ describe('daemon-builtin os.shell', () => {
       expect(output.timed_out).toBe(true);
       expect(Date.now() - started).toBeLessThan(5_500);
       expect(Number.isInteger(escapedPid)).toBe(true);
-      expect(processGroupExists(escapedPid)).toBe(false);
+      // A deliberately new session is outside the supervisor's owned group;
+      // the test owns this exact PID/group and cleans it up below.
+      expect(processGroupExists(escapedPid)).toBe(true);
     } finally {
       if (escapedPid > 0) forceKill(escapedPid, true);
     }
@@ -301,6 +303,32 @@ describe('daemon-builtin os.shell', () => {
     expect(payloads).toHaveLength(2);
     expect(payloads[0]).toEqual(payloads[1]);
     expect(payloads[0]).toMatchObject({ status: 'success', action_output: { stdout: 'success' } });
+  });
+
+  test('retries one immutable failed payload after terminal delivery loss', async () => {
+    const payloads: Array<Record<string, unknown>> = [];
+    let attempts = 0;
+    const client = {
+      id: 'headless:test',
+      async heartbeat() {},
+      async completeAction(input: Record<string, unknown>) {
+        payloads.push(structuredClone(input));
+        attempts += 1;
+        if (attempts === 1) throw new Error('response lost');
+      },
+    };
+    await expect(executeRun(client as never, {
+      run_id: 470,
+      run_type: 'action',
+      connector_key: 'os.shell',
+      connector_version: '0.2.0',
+      execution_backend: 'daemon_builtin',
+      action_key: 'run',
+      action_input: { command: 'printf err >&2; exit 7', cwd: process.cwd() },
+    }, {}, { heartbeatIntervalMs: 5_000 })).resolves.toMatchObject({ itemsCollected: 0, error: expect.stringContaining('exited with code 7') });
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toEqual(payloads[1]);
+    expect(payloads[0]).toMatchObject({ status: 'failed', action_output: { stderr: 'err', exit_code: 7 } });
   });
 
   test('ignores poisoned Bash function state while enforcing timeout reaping', async () => {

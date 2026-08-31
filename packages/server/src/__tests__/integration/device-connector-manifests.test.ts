@@ -656,7 +656,7 @@ describe('device connector manifests', () => {
     );
   });
 
-  it('keeps a persisted pre-operations bridge manifest as inventory but not claim authority', async () => {
+  it('fails closed when the current bridge manifest is omitted', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const sql = getTestDb();
     const currentManifest = manifest({
@@ -708,12 +708,11 @@ describe('device connector manifests', () => {
     expect(reconcileResponse.status).toBe(200);
 
     const definition = await readDefinition(orgId);
-    expect(definition?.feeds_schema).toEqual(
-      expect.objectContaining({
-        snapshots: expect.objectContaining({ operations: ['sync'] }),
-        live_snapshots: expect.objectContaining({ operations: ['read'] }),
-      }),
-    );
+    // An omitted current advertisement is not authority to create or retain an
+    // active definition. Historical connector_versions, when present, remain
+    // inventory only; this fixture has none because it never advertised a
+    // valid current manifest.
+    expect(definition).toBeNull();
     const feeds = (await sql`
       SELECT f.feed_key, f.next_run_at
       FROM feeds f
@@ -723,10 +722,7 @@ describe('device connector manifests', () => {
         AND f.feed_key IN ('snapshots', 'live_snapshots')
       ORDER BY f.feed_key
     `) as unknown as Array<{ feed_key: string; next_run_at: Date | string | null }>;
-    expect(feeds).toEqual([
-      { feed_key: 'live_snapshots', next_run_at: null },
-      { feed_key: 'snapshots', next_run_at: expect.anything() },
-    ]);
+    expect(feeds).toEqual([]);
 
     const claimResponse = await pollPersistedInventory(1);
     expect(claimResponse.status).toBe(200);

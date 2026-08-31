@@ -53,7 +53,7 @@ export async function joinPublicOrganization({
   if (userRows.length === 0) return { status: 'not_found' };
   const user = userRows[0];
 
-  // $member projection + role cache must run whenever membership is known to
+  // $member projection must run whenever membership is known to
   // exist — including already_member and concurrent ON CONFLICT paths. Across
   // replicas the winner may have crashed after committing the member row; the
   // loser (or a later retry) is the repair path. Only audit emission is gated
@@ -99,7 +99,7 @@ export async function joinPublicOrganization({
   // ON CONFLICT DO NOTHING + RETURNING: when a concurrent request wins the
   // race and already inserted this member, no row is returned and we must NOT
   // emit an audit event for a phantom (never-inserted) member id. Projection
-  // repair + cache invalidation still run below for the losing replica.
+  // repair still runs below for the losing replica.
   const inserted = (await sql`
     INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt")
     VALUES (${memberId}, ${organizationId}, ${userId}, 'member', NOW())

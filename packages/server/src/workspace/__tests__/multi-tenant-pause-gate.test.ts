@@ -145,16 +145,21 @@ async function request(opts: {
   rollbackOf?: string;
   orgSlug?: string;
   auth?: 'pat' | 'oauth' | 'session' | 'settings-cookie' | 'invalid-pat-with-session';
+  provider?: InstanceType<typeof import('../multi-tenant.js').MultiTenantProvider>;
 }): Promise<{ status: number; body: Record<string, unknown>; reached: boolean }> {
   const { MultiTenantProvider } = await import('../multi-tenant.js');
-  const provider = new MultiTenantProvider();
+  const provider = opts.provider ?? new MultiTenantProvider();
 
   let reached = false;
   const app = new Hono<{ Bindings: Env }>();
   app.use('/api/:orgSlug/*', (c, next) => provider.resolveAuth(c, next));
   app.all('/api/:orgSlug/probe', (c) => {
     reached = true;
-    return c.json({ ok: true });
+    return c.json({
+      ok: true,
+      organizationId: c.get('organizationId'),
+      memberRole: c.get('memberRole'),
+    });
   });
 
   const headers: Record<string, string> = {};
@@ -230,6 +235,44 @@ describe('promotions pause is enforced in the auth funnel', () => {
       status: 403,
       reached: false,
     });
+  });
+
+  test('a demotion is visible on the next request from a sibling provider instance', async () => {
+    const firstReplica = new (await import('../multi-tenant.js')).MultiTenantProvider();
+    const secondReplica = new (await import('../multi-tenant.js')).MultiTenantProvider();
+    expect(await request({ method: 'GET', auth: 'session', provider: firstReplica })).toMatchObject({
+      status: 200,
+      body: { memberRole: 'owner' },
+    });
+
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`
+      UPDATE "member" SET role = 'member'
+      WHERE "organizationId" = ${ORG} AND "userId" = ${USER}
+    `;
+
+    expect(await request({ method: 'GET', auth: 'session', provider: secondReplica })).toMatchObject({
+      status: 200,
+      body: { memberRole: 'member' },
+    });
+  });
+
+  test('owner resolution follows rename and owner removal without invalidation', async () => {
+    const { getDb } = await import('../../db/client.js');
+    const { MultiTenantProvider } = await import('../multi-tenant.js');
+    const sql = getDb();
+    const firstReplica = new MultiTenantProvider();
+    const secondReplica = new MultiTenantProvider();
+    const oldOwner = await firstReplica.resolveOwner(ORG, 'organization');
+    expect(oldOwner?.id).toBe(ORG);
+
+    const renamed = `${ORG}-owner-renamed`;
+    await sql`UPDATE organization SET slug = ${renamed} WHERE id = ${ORG}`;
+    expect((await secondReplica.resolveOwner(renamed, 'organization'))?.id).toBe(ORG);
+    expect(await secondReplica.resolveOwner(ORG, 'organization')).toBeNull();
+
+    await sql`DELETE FROM "member" WHERE "organizationId" = ${ORG} AND role = 'owner'`;
+    expect((await secondReplica.resolveOwner(renamed, 'organization'))?.id).toBe(ORG);
   });
 
   test('session revocation takes effect on the next request', async () => {

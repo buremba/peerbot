@@ -177,28 +177,35 @@ export async function deleteConnectionAclRow(
   `;
 }
 
-
 /**
- * Release a connection's ACL materialization and its ACL-owned error text.
+ * Clear the ACL-owned error text on a connection, leaving every other piece
+ * of ACL state alone.
  *
  * For a connection a source deliberately EXCLUDES from its sweep (a
  * consent-only grant-holder), {@link clearConnectionAclError} can never fire:
  * it only clears behind a `fresh` state, and an excluded connection never syncs
- * to reach one. Without this, a failure recorded by an earlier tick — or by any
- * tick before the exclusion existed — stays on a healthy row forever.
+ * to reach one. Without this, a failure message recorded by an earlier tick —
+ * or by any tick before the exclusion existed — stays on a healthy row forever.
  *
- * The state row is a pure materialization with no FK dependents (same rationale
- * as {@link deleteConnectionAclRow}), and only `acl:`-prefixed text is cleared,
- * so another subsystem's error message survives untouched.
+ * Deliberately does NOT touch `authz_source_acl_state`. Dropping that row moves
+ * a graphed connection to `not-graphed`, which is the PASSTHROUGH branch of
+ * `compileResourceVisibility` — so its already-synced resource-linked events
+ * would go from fail-closed to readable. `resource-visibility.ts` states the
+ * invariant directly: once a connection is graphed it never falls back to the
+ * legacy per-connection fence, because a stalled sync must hide data rather
+ * than leak it. Retaining a `failed` row keeps exactly that fail-closed
+ * posture; only the operator-facing message is stale, and only it is cleared.
+ *
+ * Only `acl:`-prefixed text is cleared, so another subsystem's error message
+ * survives untouched.
  */
-export async function releaseConnectionAclState(
+export async function clearRetainedAclErrorMessage(
 	sql: DbClient,
 	params: {
 		organizationId: string;
 		connectionId: string | number;
 	},
 ): Promise<void> {
-	await deleteConnectionAclRow(sql, params);
 	await sql`
     UPDATE connections
     SET error_message = NULL, updated_at = current_timestamp

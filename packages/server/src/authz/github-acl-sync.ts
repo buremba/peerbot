@@ -26,10 +26,9 @@ import {
 } from '@lobu/connectors/github-identity';
 import {
   ACL_ERROR_MESSAGE_PREFIX,
-  aclConnectionIdSql,
   clearConnectionAclError,
+  clearRetainedAclErrorMessage,
   markConnectionAclFailed,
-  releaseConnectionAclState,
 } from './acl-observability.js';
 import { buildAccessGraph } from './access-graph.js';
 import { captureAclSyncFence } from './acl-generation.js';
@@ -209,7 +208,10 @@ export async function runGithubAclSyncTick(coreServices: CoreServices): Promise<
   // cannot undo old ones: `clearConnectionAclError` only clears behind a
   // `fresh` state, which an excluded row can never reach, so a failure written
   // by an earlier tick (or by any tick before this exclusion existed) would sit
-  // on a healthy connection forever. Matches only rows that actually carry
+  // on a healthy connection forever. Keyed on the residue itself, not on "an
+  // ACL state row exists": a consent-only connection can legitimately hold a
+  // `fresh` or `stale` enforcement row, and that row is what keeps its
+  // already-synced events fenced. Matches only rows that actually carry
   // residue, so the steady state does no work.
   const stale = await sql<{ id: string; organization_id: string }>`
 		SELECT c.id::text AS id, c.organization_id
@@ -217,17 +219,10 @@ export async function runGithubAclSyncTick(coreServices: CoreServices): Promise<
 		WHERE c.connector_key = 'github'
 		  AND c.deleted_at IS NULL
 		  AND c.config->>'consent_only' = 'true'
-		  AND (
-		    left(c.error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
-		    OR EXISTS (
-		      SELECT 1 FROM authz_source_acl_state a
-		      WHERE a.organization_id = c.organization_id
-		        AND a.connection_id = ${sql.unsafe(aclConnectionIdSql('c'))}
-		    )
-		  )
+		  AND left(c.error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
 	`;
   for (const row of stale) {
-    await releaseConnectionAclState(sql, {
+    await clearRetainedAclErrorMessage(sql, {
       organizationId: row.organization_id,
       connectionId: row.id,
     });

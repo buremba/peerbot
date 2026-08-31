@@ -333,7 +333,14 @@ async function loadConnectionHealthRows(
       -- failure mode with no feed symptom. Select the connection's actual ACL
       -- id shape so a data slug cannot collide with a chat runtime id. The
       -- cleanup migration mirrors this predicate.
-      EXISTS (
+      -- Consent-only grant-holders are excluded: runGithubAclSyncTick does not
+      -- sweep them, so a retained failed row is frozen history, not a live
+      -- refresh failure. The row is deliberately kept -- it is what keeps any
+      -- already-synced events fenced -- but it can never clear, so alerting on
+      -- it would mark a healthy connection unhealthy forever with nothing an
+      -- operator could do about it.
+      c.config ->> 'consent_only' IS DISTINCT FROM 'true'
+      AND EXISTS (
         SELECT 1
         FROM public.authz_source_acl_state a
         WHERE a.organization_id = c.organization_id

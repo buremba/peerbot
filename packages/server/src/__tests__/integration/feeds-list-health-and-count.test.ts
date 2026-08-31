@@ -169,6 +169,11 @@ describe("list_feeds health filter and true total", () => {
 		expect(lastPage.has_more).toBe(false);
 	});
 
+	it("executes list_feeds against the connector version artifact projection", async () => {
+		const res = await list({ limit: 1 });
+		expect(res.feeds).toHaveLength(1);
+	});
+
 	it("does not leak the internal count column onto feed rows", async () => {
 		const res = await list({ limit: 10 });
 		for (const feed of res.feeds) {

@@ -387,7 +387,7 @@ async function handleListFeeds(
            COALESCE(p.pinned_version, cd.version) AS connector_version,
            COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
            cv.artifact_hash AS connector_manifest_hash,
-           cv.artifact_runtime AS connector_runtime,
+           cd.runtime AS connector_runtime,
            ap.profile_kind AS auth_profile_kind,
            ap.status AS auth_profile_status,
            (
@@ -412,7 +412,7 @@ async function handleListFeeds(
     JOIN "organization" o ON o.id = c.organization_id
     LEFT JOIN device_workers dw ON dw.id = c.device_worker_id
     LEFT JOIN LATERAL (
-      SELECT name, version
+      SELECT name, version, runtime
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'

@@ -170,7 +170,6 @@ export function selectedConnectorVersionArtifactSql<TFragment>(
         AND cv.source_code IS NULL
       ) AS manifest_backed,
       cv.compiled_code_hash AS artifact_hash,
-      cv.runtime AS artifact_runtime,
       cv.source_path AS artifact_source_path,
       cv.compiled_code AS artifact_compiled_code,
       cv.compile_config_hash AS artifact_compile_config_hash,

@@ -23,6 +23,7 @@ export class MessageBatcher {
   private readonly batchWindowMs: number;
   private readonly onBatchReady?: (messages: QueuedMessage[]) => Promise<void>;
   private hasProcessedInitialBatch = false;
+  private stopped = false;
 
   constructor(config: BatcherConfig = {}) {
     this.batchWindowMs = config.batchWindowMs ?? 2000; // 2 second window by default
@@ -67,6 +68,8 @@ export class MessageBatcher {
   async addPriorityMessage(message: QueuedMessage): Promise<void> {
     this.messageQueue.push(message);
 
+    if (this.stopped) return;
+
     // A turn is in flight: queue only. processBatch()'s tail picks it up when
     // the active turn finishes, so we never start a second concurrent turn.
     if (this.isProcessing) {
@@ -89,6 +92,8 @@ export class MessageBatcher {
   /** Queue a message whose ID was already reserved by claimMessageId(). */
   async addClaimedMessage(message: QueuedMessage): Promise<void> {
     this.messageQueue.push(message);
+
+    if (this.stopped) return;
 
     // If already processing, message will be picked up in next batch
     if (this.isProcessing) {
@@ -135,6 +140,8 @@ export class MessageBatcher {
     if (messages.length === 0) return;
     this.messageQueue = [...messages, ...this.messageQueue];
 
+    if (this.stopped) return;
+
     // Production calls this from onBatchReady while isProcessing is true, and
     // processBatch() schedules the restored suffix in its finally block. Keep
     // the method safe for direct callers too.
@@ -148,6 +155,8 @@ export class MessageBatcher {
   }
 
   private async processBatch(): Promise<void> {
+    if (this.stopped) return;
+
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
@@ -178,7 +187,7 @@ export class MessageBatcher {
       // message happened to arrive stranded a durable user turn indefinitely.
       // `batchTimer` is null here: processBatch cleared it before setting
       // isProcessing, and addMessage never starts one while a batch is active.
-      if (this.messageQueue.length > 0) {
+      if (!this.stopped && this.messageQueue.length > 0) {
         logger.info(
           `Starting new batch window for ${this.messageQueue.length} queued messages`
         );
@@ -192,6 +201,8 @@ export class MessageBatcher {
   }
 
   stop(): void {
+    this.stopped = true;
+
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;

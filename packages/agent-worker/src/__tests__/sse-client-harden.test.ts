@@ -612,6 +612,22 @@ describe("stop() mid-run cleanup", () => {
     const client = makeClient();
     await expect(client.stop()).resolves.toBeUndefined();
   });
+
+  test("does not recreate a worker when a queued drain runs after stop", async () => {
+    const client = makeClient();
+    await client.stop();
+
+    const workerConstructor = (client as any).currentWorker;
+    await (client as any).processSingleMessage({
+      payload: {
+        ...JSON.parse(makeJobEvent()).payload,
+        messageId: "after-stop",
+      },
+      timestamp: 1,
+    });
+
+    expect((client as any).currentWorker).toBe(workerConstructor);
+  });
 });
 
 describe("live steering classification", () => {

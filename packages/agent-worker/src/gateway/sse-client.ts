@@ -895,6 +895,8 @@ export class GatewayClient {
     message: QueuedMessage,
     processedIds?: string[]
   ): Promise<void> {
+    if (!this.isRunning) return;
+
     // Get traceparent for distributed tracing
     const traceparent =
       (message.payload.platformMetadata?.traceparent as string) ||

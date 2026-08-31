@@ -188,6 +188,59 @@ describe("MessageBatcher — stop()", () => {
     // The timer was cleared; the queued message is still in the queue
     expect(batcher.getPendingCount()).toBe(1);
   });
+
+  test("stop during a failed batch leaves the queued suffix pending", async () => {
+    const processed: string[] = [];
+    let releaseFirst: (() => void) | null = null;
+    let firstStarted: (() => void) | null = null;
+    const started = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+
+    const batcher = new MessageBatcher({
+      batchWindowMs: 10,
+      onBatchReady: async (messages) => {
+        if (messages[0]?.payload.messageId === "fails") {
+          firstStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+          throw new Error("turn failed");
+        }
+        processed.push(...messages.map((message) => message.payload.messageId));
+      },
+    });
+
+    const failed = batcher.addMessage(makeMsg("fails", "first", 1));
+    await started;
+    await batcher.addMessage(makeMsg("suffix", "second", 2));
+    batcher.stop();
+    releaseFirst?.();
+    await failed.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(processed).toEqual([]);
+    expect(batcher.getPendingCount()).toBe(1);
+  });
+
+  test("idle direct requeue and priority delivery cannot drain after stop", async () => {
+    const processed: string[] = [];
+    const batcher = new MessageBatcher({
+      batchWindowMs: 10,
+      onBatchReady: async (messages) => {
+        processed.push(...messages.map((message) => message.payload.messageId));
+      },
+    });
+
+    await batcher.addMessage(makeMsg("warm", "warmup", 1));
+    batcher.stop();
+    batcher.requeueClaimedMessages([makeMsg("suffix", "suffix", 2)]);
+    await batcher.addPriorityMessage(makeMsg("priority", "priority", 3));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(processed).toEqual(["warm"]);
+    expect(batcher.getPendingCount()).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------

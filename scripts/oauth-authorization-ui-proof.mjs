@@ -125,7 +125,7 @@ try {
 		results.workspaces_created.push({ id: organization?.id, name, slug });
 	}
 
-	const redirectUri = "http://localhost:18788/oauth-proof/callback";
+	const redirectUri = "http://localhost:8787/oauth-proof/callback";
 	const consentClient = await postJson("/oauth/register", {
 		client_name: "Lobu MCP Client",
 		redirect_uris: [redirectUri],

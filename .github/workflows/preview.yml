@@ -311,7 +311,7 @@ jobs:
         id: oauth-ui-proof
         if: steps.oauth-ui-scope.outputs.capture == 'true'
         env:
-          PROOF_BASE_URL: http://127.0.0.1:18788
+          PROOF_BASE_URL: http://127.0.0.1:8787
           PROOF_OUTPUT_DIR: ${{ runner.temp }}/oauth-authorization-ui
           PLAYWRIGHT_RUNTIME: ${{ runner.temp }}/oauth-playwright
         run: |
@@ -319,7 +319,7 @@ jobs:
           mkdir -p "$PROOF_OUTPUT_DIR" "$PLAYWRIGHT_RUNTIME"
 
           kubectl -n "$PREVIEW_NS" port-forward \
-            service/"$PREVIEW_NAME" 18788:80 \
+            service/"$PREVIEW_NAME" 8787:80 \
             >"$PROOF_OUTPUT_DIR/port-forward.log" 2>&1 &
           port_forward_pid=$!
           trap 'kill "$port_forward_pid" 2>/dev/null || true' EXIT

@@ -8,7 +8,7 @@
 import { type DbClient, getDb } from "../db/client.js";
 import { bumpAclGeneration } from "./acl-generation.js";
 
-const ACL_ERROR_MESSAGE_PREFIX = "acl: ";
+export const ACL_ERROR_MESSAGE_PREFIX = "acl: ";
 
 /** Maximum length of the complete persisted message, including its prefix. */
 const ACL_ERROR_MESSAGE_MAX_LENGTH = 500;
@@ -174,5 +174,44 @@ export async function deleteConnectionAclRow(
       AND c.organization_id = ${params.organizationId}
       AND a.organization_id = c.organization_id
       AND a.connection_id = ${sql.unsafe(aclConnectionIdSql("c"))}
+  `;
+}
+
+/**
+ * Clear the ACL-owned error text on a connection, leaving every other piece
+ * of ACL state alone.
+ *
+ * For a connection a source deliberately EXCLUDES from its sweep (a
+ * consent-only grant-holder), {@link clearConnectionAclError} can never fire:
+ * it only clears behind a `fresh` state, and an excluded connection never syncs
+ * to reach one. Without this, a failure message recorded by an earlier tick —
+ * or by any tick before the exclusion existed — stays on a healthy row forever.
+ *
+ * Deliberately does NOT touch `authz_source_acl_state`. Dropping that row moves
+ * a graphed connection to `not-graphed`, which is the PASSTHROUGH branch of
+ * `compileResourceVisibility` — so its already-synced resource-linked events
+ * would go from fail-closed to readable. `resource-visibility.ts` states the
+ * invariant directly: once a connection is graphed it never falls back to the
+ * legacy per-connection fence, because a stalled sync must hide data rather
+ * than leak it. Retaining a `failed` row keeps exactly that fail-closed
+ * posture; only the operator-facing message is stale, and only it is cleared.
+ *
+ * Only `acl:`-prefixed text is cleared, so another subsystem's error message
+ * survives untouched.
+ */
+export async function clearRetainedAclErrorMessage(
+	sql: DbClient,
+	params: {
+		organizationId: string;
+		connectionId: string | number;
+	},
+): Promise<void> {
+	await sql`
+    UPDATE connections
+    SET error_message = NULL, updated_at = current_timestamp
+    WHERE id = ${params.connectionId}
+      AND organization_id = ${params.organizationId}
+      AND deleted_at IS NULL
+      AND left(error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
   `;
 }

@@ -612,6 +612,9 @@ describe('checkToolAccess', () => {
       /may not perform admin actions/
     );
     expect(() =>
+      checkToolAccess('manage_agents', { action: 'update' }, { ...agentAuth, adminTools: null })
+    ).toThrow(/may not perform admin actions/);
+    expect(() =>
       checkToolAccess('manage_agents', { action: 'update' }, { ...agentAuth, adminTools: [] })
     ).toThrow(/may not perform admin actions/);
     expect(() =>

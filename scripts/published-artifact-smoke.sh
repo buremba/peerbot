@@ -108,6 +108,17 @@ pass "installed, bin present"
 RESOLVED="$("$LOBU_BIN" --version 2>&1 | tr -d '[:space:]')"
 if [ -n "$RESOLVED" ]; then pass "lobu --version -> $RESOLVED"; else fail "lobu --version produced nothing"; fi
 
+# Run from a directory that is deliberately outside the npm install tree. A
+# compiled connector must load the SDK from connector-worker's package graph,
+# not from an operator cwd that happens to contain a compatible node_modules.
+RUNTIME_CHECK_LOG="$WORK/connector-runtime-self-check.log"
+if (cd "$HOME" && "$LOBU_BIN" connector runtime-self-check --json >"$RUNTIME_CHECK_LOG" 2>&1); then
+  pass "connector runtime self-check from unrelated cwd"
+else
+  fail "connector runtime self-check from unrelated cwd"
+  tail -40 "$RUNTIME_CHECK_LOG" >&2
+fi
+
 # The worker bundle is the artifact that actually has to load under node.
 WORKER_BUNDLE="$INSTALL_DIR/node_modules/@lobu/worker/dist/index.bundle.mjs"
 if [ -f "$WORKER_BUNDLE" ]; then

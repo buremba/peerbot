@@ -1,3 +1,5 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   printSelfCheckResult,
   runConnectorRuntimeSelfCheck,
@@ -22,10 +24,20 @@ export async function connectorRunCommand(
  * compile + default `SubprocessExecutor` path. Internal/CI-only — not user
  * facing (no auth, no network), so it's registered hidden in index.ts.
  */
+const HERE = dirname(fileURLToPath(import.meta.url));
+
 export async function connectorRuntimeSelfCheckCommand(options: {
   json?: boolean;
 }): Promise<void> {
-  const result = await runConnectorRuntimeSelfCheck({ surface: "cli" });
+  const result = await runConnectorRuntimeSelfCheck({
+    surface: "cli",
+    connectorSourceCandidates: [
+      // Published CLI: build.cjs vendors connector sources under dist/connectors.
+      resolve(HERE, "../connectors"),
+      // Source/workspace execution.
+      resolve(HERE, "../../../connectors/src"),
+    ],
+  });
   if (options.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } else {

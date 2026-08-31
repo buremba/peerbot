@@ -124,9 +124,15 @@ describe("lobu daemon", () => {
       undefined as never
     );
 
-    await daemonCommand({ apiUrl: "http://127.0.0.1:9564" });
+    await daemonCommand({
+      apiUrl: "http://127.0.0.1:9564",
+      cliVersion: "17.2.3-test",
+    });
 
-    expect(start.mock.calls[0]?.[0]?.apiUrl).toBe("http://127.0.0.1:9564");
+    expect(start.mock.calls[0]?.[0]).toMatchObject({
+      apiUrl: "http://127.0.0.1:9564",
+      version: "17.2.3-test",
+    });
     expect(load).not.toHaveBeenCalled();
     expect(wizard).not.toHaveBeenCalled();
   });

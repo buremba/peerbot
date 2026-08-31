@@ -6,19 +6,28 @@
  * authenticate() using the V1 SDK shapes directly — no magic-key adapter.
  */
 
-import { randomBytes } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { EventEnvelope, SyncResult } from '@lobu/connector-sdk';
 import { extractHttpStatus } from './http-status.js';
+import {
+  isConnectorRuntimeDependency,
+  registerConnectorRuntimeDependencyLoader,
+  stageConnectorRuntimeDependencies,
+} from './runtime-dependency-loader.js';
 import type { ExecutorJob, ExecutorResult } from './interface.js';
 
 const EVENT_CHUNK_SIZE = 100;
+const INTERNAL_RUNTIME_TEMP_DIR_ENV = 'LOBU_INTERNAL_RUNTIME_TEMP_DIR';
+let activeRuntimeTempDir = process.env[INTERNAL_RUNTIME_TEMP_DIR_ENV] ?? null;
+delete process.env[INTERNAL_RUNTIME_TEMP_DIR_ENV];
 
 interface ChildMessage {
   compiledCode: string;
   job: ExecutorJob;
+  runtimeTempDir: string;
 }
 
 /**
@@ -447,10 +456,27 @@ function installUncaughtHandlers(): void {
  * or a Playwright session) — leaving zombie subprocesses behind that nothing
  * cleans up until OOM. Exit promptly on parent disconnect so the OS reaps us.
  */
+function cleanupActiveRuntimeTempDir(): void {
+  if (!activeRuntimeTempDir) return;
+  try {
+    rmSync(activeRuntimeTempDir, { recursive: true, force: true });
+  } catch {
+    // The parent normally owns cleanup. If it died and the host refuses
+    // removal (for example, a transient Windows file lock), exit promptly
+    // rather than keeping unowned connector code running indefinitely.
+  }
+  activeRuntimeTempDir = null;
+}
+
 function installParentDeathHandlers(): void {
+  // Also covers connector-authored process.exit() and uncaught-handler exits.
+  process.on('exit', cleanupActiveRuntimeTempDir);
   // Best-effort: don't bother flushing IPC, the channel is already gone.
   // Exit code 143 = 128 + SIGTERM, conventional for "killed externally".
-  process.on('disconnect', () => process.exit(143));
+  process.on('disconnect', () => {
+    cleanupActiveRuntimeTempDir();
+    process.exit(143);
+  });
 }
 
 async function main() {
@@ -498,19 +524,23 @@ async function main() {
     if (started) return;
     started = true;
 
-    // Keep temp module under cwd so bare imports (e.g. lobu) resolve via local node_modules.
-    // Use a cryptographically random suffix (not pid+Date.now()) so a co-tenant
-    // can't pre-create or guess the path. Combined with the `wx` open flag below
-    // this prevents both symlink-swap (pointing tmpFile at another file the
-    // worker can write) and pre-creation of a malicious .mjs that the worker
-    // would otherwise overwrite then import.
-    const tmpFile = join(
-      process.cwd(),
-      `.connector-child-${process.pid}-${randomBytes(16).toString('hex')}.mjs`
-    );
+    let tempDir: string | null = null;
 
     try {
-      const { compiledCode, job } = msg as ChildMessage;
+      const { compiledCode, job, runtimeTempDir } = msg as ChildMessage;
+
+      if (typeof runtimeTempDir !== 'string' || runtimeTempDir.length === 0) {
+        throw new Error('Connector subprocess received no runtime temp directory.');
+      }
+      if (runtimeTempDir !== activeRuntimeTempDir) {
+        throw new Error('Connector subprocess runtime temp directory mismatch.');
+      }
+      // The parent creates and owns this private writable directory so it can
+      // clean up even when a timeout SIGKILL prevents this child's finally.
+      // The staged facade supports ESM and createRequire()/CommonJS bundles.
+      tempDir = runtimeTempDir;
+      const tmpFile = join(tempDir, 'connector.mjs');
+      await stageConnectorRuntimeDependencies(tempDir);
 
       // Write compiled code to temp file for dynamic import.
       // - `flag: 'wx'` fails if the file already exists (no symlink follow,
@@ -520,6 +550,11 @@ async function main() {
       //   process memory referenced by the bundle) unreadable by other
       //   local users on shared hosts. Umask cannot widen this.
       await writeFile(tmpFile, compiledCode, { encoding: 'utf-8', flag: 'wx', mode: 0o600 });
+
+      // Rebase runtime-provided bare imports (SDK, native deps, Playwright)
+      // to connector-worker's installation before loading code staged under
+      // an arbitrary operator cwd.
+      registerConnectorRuntimeDependencyLoader();
 
       // Import the compiled module
       const mod = await import(pathToFileURL(tmpFile).href);
@@ -537,14 +572,29 @@ async function main() {
       // Send result back to parent (wait for IPC flush before exiting)
       await sendIPC({ type: 'result', result });
     } catch (error: any) {
-      if (error.code === 'ERR_MODULE_NOT_FOUND') {
-        const pkgMatch = error.message.match(/Cannot find package '([^']+)'/);
-        const pkg = pkgMatch?.[1] ?? 'unknown';
-        error.message =
-          `Connector requires '${pkg}' but it's not installed in the runtime image. ` +
-          `'${pkg}' is declared as an external dependency in EXTERNAL_RUNTIME_DEPS ` +
-          `(packages/connector-worker/src/runtime-deps.ts). ` +
-          `Add it to packages/connector-worker/package.json and rebuild the runtime image.`;
+      if (
+        error.code === 'ERR_MODULE_NOT_FOUND' ||
+        error.code === 'MODULE_NOT_FOUND'
+      ) {
+        const pkgMatch = error.message.match(
+          /Cannot find (?:package|module) '([^']+)'/
+        );
+        const pkg = pkgMatch?.[1];
+        const isBareSpecifier =
+          pkg &&
+          !pkg.startsWith('.') &&
+          !pkg.startsWith('/') &&
+          !pkg.startsWith('\\') &&
+          !pkg.startsWith('#') &&
+          !/^[A-Za-z]:[\\/]/.test(pkg);
+        if (pkg && isBareSpecifier) {
+          error.message = isConnectorRuntimeDependency(pkg)
+            ? `Connector runtime is missing required package '${pkg}'. ` +
+              `It must resolve from @lobu/connector-worker's installed dependency graph; ` +
+              `reinstall the matching runtime artifact before advertising connector capabilities.`
+            : `Connector requires '${pkg}' but it is not installed in the runtime image. ` +
+              `Add the connector's declared package to the runtime image and rebuild it.`;
+        }
       }
       await sendIPC({
         type: 'error',
@@ -558,9 +608,12 @@ async function main() {
         },
       });
     } finally {
-      // Clean up temp file
+      // Clean up the compiled module and its private dependency facade.
       try {
-        await rm(tmpFile, { force: true });
+        if (tempDir) {
+          await rm(tempDir, { recursive: true, force: true });
+          activeRuntimeTempDir = null;
+        }
       } catch {
         // Ignore cleanup errors
       }

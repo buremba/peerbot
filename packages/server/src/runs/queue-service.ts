@@ -34,7 +34,7 @@ import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../config/intervals';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
 import { assertCustomConnectorCloudAllowed } from '../utils/custom-connector-cloud-gate';
-import { findBundledConnectorFile, resolveBundledConnectorFile } from '../utils/connector-catalog';
+import { resolveBundledConnectorFile } from '../utils/connector-catalog';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
 import { ToolUserError, errorMessage } from '../utils/errors';
@@ -290,10 +290,6 @@ async function resolveActiveConnectorVersion(
     version = (defRows[0] as { version: string }).version;
   }
 
-  if (!params.requireRunnable) {
-    return { ok: true, version, compiledCode: null, sourceCode: null, sourcePath: null, compileConfigHash: null, artifactRowCount: 0, artifactScope: 'bundled' };
-  }
-
   const versionRows = await sql`
     SELECT compiled_code, source_code, source_path, compile_config_hash, organization_id,
            COUNT(*) OVER ()::int AS artifact_row_count
@@ -304,6 +300,22 @@ async function resolveActiveConnectorVersion(
     LIMIT 1
   `;
   if (versionRows.length === 0) {
+    // A missing stored row is only a bundled artifact when the image itself
+    // attests the exact selected key@version. Never manufacture a row-shaped
+    // bundled fact for metadata-only or non-runnable work.
+    const bundled = await resolveBundledConnectorFile(params.connectorKey, version);
+    if (bundled) {
+      return {
+        ok: true,
+        version,
+        compiledCode: null,
+        sourceCode: null,
+        sourcePath: null,
+        compileConfigHash: null,
+        artifactRowCount: 0,
+        artifactScope: 'bundled',
+      };
+    }
     return { ok: false, reason: 'no-version', version };
   }
   const { compiled_code, source_code, source_path, compile_config_hash } = versionRows[0] as {
@@ -321,7 +333,7 @@ async function resolveActiveConnectorVersion(
   if (
     !compiled_code &&
     !source_path &&
-    !findBundledConnectorFile(params.connectorKey)
+    !(await resolveBundledConnectorFile(params.connectorKey, version))
   ) {
     return { ok: false, reason: 'not-runnable', version };
   }

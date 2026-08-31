@@ -557,7 +557,12 @@ export async function resolveAgentTooling(params: {
         continue;
       }
 
-      const subject = buildLeaseSubject(row, connectionId, organizationId);
+      const subject = buildLeaseSubject(
+        row,
+        connectionId,
+        organizationId,
+        authSchema,
+      );
       const lease = await params.leaseRegistry.mintFor(subject, scope);
       if (!lease) continue;
       env[entry.name] = lease.token;
@@ -609,7 +614,8 @@ export async function resolveAgentTooling(params: {
 function buildLeaseSubject(
   row: ToolingConnectionRow,
   connectionId: number,
-  organizationId: string
+  organizationId: string,
+  trustedAuthSchema: unknown = row.auth_schema,
 ): LeaseSubject {
   const config = parseJsonObject(row.config);
   const rawRef = config.installation_ref;
@@ -625,7 +631,7 @@ function buildLeaseSubject(
       : null;
 
   const method = getAppInstallationAuthMethods(
-    normalizeConnectorAuthSchema(row.auth_schema)
+    normalizeConnectorAuthSchema(trustedAuthSchema)
   )[0];
 
   return {

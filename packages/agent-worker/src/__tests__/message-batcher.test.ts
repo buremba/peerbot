@@ -244,6 +244,44 @@ describe("MessageBatcher — error resilience", () => {
     // After any error path, isProcessing must be false
     expect(batcher.isCurrentlyProcessing()).toBe(false);
   });
+
+  test("messages queued during a failed batch are still processed", async () => {
+    const processed: string[] = [];
+    let releaseFirst: (() => void) | null = null;
+    let signalFirstStarted: (() => void) | null = null;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirstStarted = resolve;
+    });
+
+    const batcher = new MessageBatcher({
+      batchWindowMs: 10,
+      onBatchReady: async (messages) => {
+        const id = messages[0]?.payload.messageId;
+        if (id === "fails") {
+          signalFirstStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+          throw new Error("turn failed");
+        }
+        if (id) processed.push(id);
+      },
+    });
+
+    const failedBatch = batcher.addMessage(makeMsg("fails", "first", 1));
+    await firstStarted;
+    await batcher.addMessage(makeMsg("must-survive", "second", 2));
+    releaseFirst?.();
+    await failedBatch.catch(() => undefined);
+
+    const deadline = Date.now() + 500;
+    while (processed.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(processed).toEqual(["must-survive"]);
+    batcher.stop();
+  });
 });
 
 describe("MessageBatcher — addPriorityMessage (`!`-bash)", () => {

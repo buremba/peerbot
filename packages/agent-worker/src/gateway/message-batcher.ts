@@ -124,6 +124,29 @@ export class MessageBatcher {
     }
   }
 
+  /**
+   * Restore the never-attempted suffix of a batch whose callback failed.
+   * These IDs were reserved before the original batch was captured, so this
+   * deliberately bypasses claimMessageId(). Prepend them ahead of messages
+   * that arrived while the failed callback was running to preserve delivery
+   * order without replaying the already-attempted prefix.
+   */
+  requeueClaimedMessages(messages: QueuedMessage[]): void {
+    if (messages.length === 0) return;
+    this.messageQueue = [...messages, ...this.messageQueue];
+
+    // Production calls this from onBatchReady while isProcessing is true, and
+    // processBatch() schedules the restored suffix in its finally block. Keep
+    // the method safe for direct callers too.
+    if (!this.isProcessing && !this.batchTimer) {
+      this.batchTimer = setTimeout(() => {
+        void this.processBatch().catch((error) => {
+          logger.error("Error during requeued batch processing:", error);
+        });
+      }, this.batchWindowMs);
+    }
+  }
+
   private async processBatch(): Promise<void> {
     if (this.batchTimer) {
       clearTimeout(this.batchTimer);
@@ -146,10 +169,15 @@ export class MessageBatcher {
       if (this.onBatchReady) {
         await this.onBatchReady(messagesToProcess);
       }
+    } finally {
+      this.isProcessing = false;
 
-      // If more messages arrived during processing, start new batch.
-      // `batchTimer` is always null here — it was cleared at the top of
-      // processBatch() and addMessage() can't set it while isProcessing.
+      // Always schedule messages that arrived during this batch, including
+      // when onBatchReady failed. The queue job was already acknowledged on
+      // SSE receipt, so leaving these messages only in memory until a third
+      // message happened to arrive stranded a durable user turn indefinitely.
+      // `batchTimer` is null here: processBatch cleared it before setting
+      // isProcessing, and addMessage never starts one while a batch is active.
       if (this.messageQueue.length > 0) {
         logger.info(
           `Starting new batch window for ${this.messageQueue.length} queued messages`
@@ -160,8 +188,6 @@ export class MessageBatcher {
           });
         }, this.batchWindowMs);
       }
-    } finally {
-      this.isProcessing = false;
     }
   }
 

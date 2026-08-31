@@ -1,6 +1,6 @@
 import * as Sentry from '@sentry/node';
 import { isSecretKey } from '@lobu/core';
-import { scrubSentryValue } from './sentry-scrubber';
+import { scrubSentryValue } from '@lobu/core';
 import pino from 'pino';
 
 type SentryExtras = Record<string, unknown>;

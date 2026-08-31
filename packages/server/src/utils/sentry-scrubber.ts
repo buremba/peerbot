@@ -1,5 +1,5 @@
 import { isSecretKey, redactUriCredentials } from '@lobu/core';
-import type { Breadcrumb, ErrorEvent, TransactionEvent } from '@sentry/node';
+import type { Breadcrumb, ErrorEvent, Event } from '@sentry/node';
 
 /**
  * Secret as a QUERY PARAMETER name, and only there. `code` is an OAuth
@@ -149,8 +149,11 @@ export function scrubSentryErrorEvent(event: ErrorEvent): ErrorEvent {
  * attributes carry the request URL, which is the very `?token=` vector the
  * error path scrubs. Without this they reach Sentry unscrubbed.
  */
-export function scrubSentryTransactionEvent(event: TransactionEvent): TransactionEvent {
-	return scrubSentryValue(event) as TransactionEvent;
+// Generic over Event rather than naming TransactionEvent: @sentry/node does
+// not re-export that type, and @sentry/core is not a direct dependency here.
+// Inference recovers it exactly at the beforeSendTransaction call site.
+export function scrubSentryTransactionEvent<T extends Event>(event: T): T {
+	return scrubSentryValue(event) as T;
 }
 
 /** Never drops a breadcrumb; it only rewrites credential material in place. */

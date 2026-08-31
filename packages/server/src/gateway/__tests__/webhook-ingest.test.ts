@@ -846,7 +846,7 @@ describe("ChatInstanceManager webhook wiring", () => {
 			"../../lobu/gateway.js"
 		);
 		const { manageConnections } = await import(
-			"../../tools/admin/manage_connections/index.js"
+			"../../tools/admin/manage_connections.js"
 		);
 		const { manageAutomations } = await import(
 			"../../tools/admin/manage_automations.js"

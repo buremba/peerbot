@@ -107,7 +107,7 @@ export function isRetryable(code: ToolErrorCode): boolean {
 /** Parse a `ToolErrorCode` from an unknown value (payload/DB boundary). */
 export function toToolErrorCode(value: unknown): ToolErrorCode | undefined {
   if (typeof value !== "string") return undefined;
-  return Object.prototype.hasOwnProperty.call(TOOL_ERRORS, value)
+  return Object.getOwnPropertyDescriptor(TOOL_ERRORS, value) !== undefined
     ? (value as ToolErrorCode)
     : undefined;
 }

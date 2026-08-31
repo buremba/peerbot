@@ -116,6 +116,31 @@ describe("validateConnectionAgainstConnector — chat capability", () => {
     ).not.toThrow();
   });
 
+  test("accepts an explicitly declared adapterless BYO connection", () => {
+    expect(() =>
+      validateConnectionAgainstConnector(
+        {
+          slug: "alerts",
+          connector: "webhook",
+          credentialMode: "byo",
+          config: { token: "webhook-token-at-least-32-characters" },
+          feeds: [],
+          sourceFile: "lobu.config.ts",
+        },
+        new Map(),
+        {
+          ...chatSchemas,
+          optionsSchema: {
+            type: "object",
+            "x-lobu-adapterless-platform": "webhook",
+            properties: { token: { type: "string", minLength: 32 } },
+            required: ["token"],
+          },
+        }
+      )
+    ).not.toThrow();
+  });
+
   test("rejects a chat connection that omits credentialMode", () => {
     expect(() =>
       validateConnectionAgainstConnector(

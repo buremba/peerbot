@@ -38,15 +38,20 @@ describe('deriveConnectionFacets', () => {
     ).toEqual({ data: true, chat: false, actions: false, audience: false });
   });
 
-  it('data lights from live feeds even when the connector declares none', () => {
+  it('a generic webhook is data, not chat, without a feed row', () => {
     const f = deriveConnectionFacets({
       connectorKey: 'webhook',
       isChat: false,
-      feedCount: 2,
+      feedCount: 0,
       connectorHasFeeds: false,
       hasOperations: false,
     });
-    expect(f.data).toBe(true);
+    expect(f).toEqual({
+      data: true,
+      chat: false,
+      actions: false,
+      audience: false,
+    });
   });
 
   it('GitHub lights data + actions + audience but not chat', () => {

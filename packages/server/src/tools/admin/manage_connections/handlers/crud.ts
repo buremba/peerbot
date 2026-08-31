@@ -751,13 +751,19 @@ export async function handleCreate(
 		authSchema: connector.auth_schema,
 	});
 
-	const chatPlatform =
+	const connectionPlatform =
 		connector.options_schema &&
 		typeof connector.options_schema === "object" &&
-		(connector.options_schema as Record<string, unknown>)[
+		((connector.options_schema as Record<string, unknown>)[
 			"x-lobu-chat-platform"
-		];
-	if (chatPlatform === args.connector_key) {
+		] ??
+			(connector.options_schema as Record<string, unknown>)[
+				"x-lobu-adapterless-platform"
+			]);
+	if (connectionPlatform === args.connector_key) {
+		if (args.connector_key === "webhook" && !args.slug) {
+			return { error: "Webhook connections require a non-numeric slug." };
+		}
 		try {
 			const stableId = args.slug || randomUUID().replace(/-/g, "").slice(0, 16);
 			const created = await upsertByoChatConnection({

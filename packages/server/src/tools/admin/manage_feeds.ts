@@ -387,7 +387,10 @@ async function handleListFeeds(
            COALESCE(p.pinned_version, cd.version) AS connector_version,
            COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
            cv.artifact_hash AS connector_manifest_hash,
-           cd.runtime AS connector_runtime,
+           CASE
+             WHEN p.pinned_version IS NULL OR cd.version = p.pinned_version
+             THEN cd.runtime
+           END AS connector_runtime,
            ap.profile_kind AS auth_profile_kind,
            ap.status AS auth_profile_status,
            (

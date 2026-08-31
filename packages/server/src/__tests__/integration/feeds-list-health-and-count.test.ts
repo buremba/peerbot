@@ -19,6 +19,7 @@ import type { Env } from "../../index";
 import { manageFeeds } from "../../tools/admin/manage_feeds";
 import type { ToolContext } from "../../tools/registry";
 import { initWorkspaceProvider } from "../../workspace";
+import { deviceManifestHash } from "../../worker-api/device-manifests";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import {
 	createTestConnection,
@@ -169,9 +170,89 @@ describe("list_feeds health filter and true total", () => {
 		expect(lastPage.has_more).toBe(false);
 	});
 
-	it("executes list_feeds against the connector version artifact projection", async () => {
-		const res = await list({ limit: 1 });
-		expect(res.feeds).toHaveLength(1);
+	it("does not derive readiness from a mismatched active connector runtime", async () => {
+		const connectorKey = "test.headless-runtime-regression";
+		const historicalVersion = "1.0.0";
+		const activeVersion = "2.0.0";
+		const sql = getTestDb();
+		await createTestConnectorDefinition({
+			key: connectorKey,
+			name: "Headless Runtime Regression",
+			version: historicalVersion,
+			organization_id: orgId,
+			feeds_schema: { default: {} },
+		});
+		await sql`
+			UPDATE connector_definitions
+			SET status = 'archived'
+			WHERE organization_id = ${orgId} AND key = ${connectorKey}
+			  AND version = ${historicalVersion}
+		`;
+		await createTestConnectorDefinition({
+			key: connectorKey,
+			name: "Headless Runtime Regression",
+			version: activeVersion,
+			organization_id: orgId,
+			feeds_schema: { default: {} },
+		});
+		await sql`
+			UPDATE connector_definitions
+			SET runtime = ${sql.json({
+				platforms: ["headless"],
+				execution: "daemon_builtin",
+			})}
+			WHERE organization_id = ${orgId} AND key = ${connectorKey}
+			  AND version = ${activeVersion}
+		`;
+
+		const manifest = (version: string) => ({
+			key: connectorKey,
+			version,
+			name: "Headless Runtime Regression",
+			required_capability: "test.headless",
+			runtime: { platforms: ["headless"], execution: "daemon_builtin" },
+			feeds_schema: { default: { operations: ["sync"] } },
+		});
+		const storedManifests = Object.fromEntries(
+			[historicalVersion, activeVersion].map((version) => {
+				const value = manifest(version);
+				return [version, {
+					manifest_hash: deviceManifestHash(value),
+					received_at: new Date().toISOString(),
+					manifest: value,
+				}];
+			}),
+		);
+		const [device] = (await sql`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, app_version, capabilities, label,
+				organization_id, connector_manifests, last_seen_at
+			) VALUES (
+				${ctx.userId}, ${`regression-${Date.now()}`}, 'headless', 'test',
+				${sql.json([])}, 'Headless Runtime Regression', ${orgId},
+				${sql.json(storedManifests)}, NOW()
+			)
+			RETURNING id
+		`) as unknown as Array<{ id: number }>;
+		const conn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: connectorKey,
+			createDefaultFeed: false,
+		});
+		await sql`UPDATE connections SET device_worker_id = ${device.id} WHERE id = ${conn.id}`;
+		await sql`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, status, entity_ids,
+				pinned_version, created_at, updated_at
+			) VALUES
+				(${orgId}, ${conn.id}, 'historical', 'active', ARRAY[]::bigint[], ${historicalVersion}, NOW(), NOW()),
+				(${orgId}, ${conn.id}, 'active', 'active', ARRAY[]::bigint[], NULL, NOW(), NOW())
+		`;
+
+		const res = await list({ connection_id: conn.id, limit: 10 });
+		const byKey = new Map(res.feeds.map((feed) => [feed.feed_key, feed]));
+		expect(byKey.get("historical")?.attention).toBe("never_run");
+		expect(byKey.get("active")?.attention).toBe("setup_required");
 	});
 
 	it("does not leak the internal count column onto feed rows", async () => {

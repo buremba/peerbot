@@ -371,15 +371,20 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // below, so platform binding / capability authorization / org-scoped claiming
   // all apply exactly as for a signed-in device.
   const isUserScopedWorker = c.var.workerAuthMode === 'user' || anonLocalUserId != null;
-  // Absence of a backend_capacity advertisement means the worker declares no
-  // backend restriction — every claim lane stays open to it. Only the headless
-  // daemon must advertise: its compiler/SDK runtime may be unavailable, so
-  // absent an explicit map it stays compiled-incapable. The headless client is
-  // identified by its self-reported platform, not by token scope — user-scoped
-  // device workers (macOS app, Chrome extension) never send the field and must
-  // stay claimable.
-  if (!backendCapacityProvided && platform !== 'headless') {
-    backendCapacity = { compiled_connector: 1 };
+  // A daemon built after the per-backend signal always advertises its own map
+  // (connector-worker/src/daemon/start.ts). An omitted map therefore means a
+  // client that predates the field, or one that never runs the daemon at all
+  // (the Chrome extension and the macOS app poll directly). Mirror what the
+  // daemon would have advertised for that platform rather than inventing a
+  // wider or narrower grant: headless keeps its compiler/SDK runtime gated off
+  // while still owning the daemon backend, and every other platform is
+  // compiled-capable. Keyed on the self-reported platform, not on token scope:
+  // user-scoped device workers are compiled-capable too.
+  if (!backendCapacityProvided) {
+    backendCapacity =
+      platform === 'headless'
+        ? { daemon_builtin: 1, compiled_connector: 0 }
+        : { compiled_connector: 1 };
   }
   // Effective device identity: the token's user/org when user-scoped, else the
   // re-anchored local owner.

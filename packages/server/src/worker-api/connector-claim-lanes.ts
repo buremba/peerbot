@@ -136,42 +136,42 @@ export function connectorClaimLaneSql(
   });
   // A worker may be able to run the daemon-owned backend while its connector
   // compiler/SDK runtime is unavailable. Never let a compiled artifact enter
-  // any claim lane unless that backend was advertised as ready — explicitly
-  // via backend_capacity, or via the poll default in worker-api/poll.ts
-  // (absence of an advertisement means the worker declares no backend
-  // restriction; headless must advertise because its compiler/SDK runtime may
-  // be unavailable).
+  // any claim lane unless that backend was explicitly advertised as ready.
   const compiledBackendReady = hasPositiveBackendCapacity(context.backendCapacity, 'compiled_connector');
   const daemonBuiltinReady = hasPositiveBackendCapacity(context.backendCapacity, 'daemon_builtin');
+  // A chrome-namespace execution runs inside the advertising extension, so it
+  // needs no server-side backend at all. The helper is narrow by construction:
+  // a reserved chrome key, or a legacy key only while the selected artifact is
+  // exactly its validated Chrome manifest.
+  const nativeChromeExecution = nativeChromeExtensionConnectorSql(sql, {
+    connectorKey: refs.connectorKey,
+    connectorVersion: refs.connectorVersion,
+    manifestBacked: refs.runManifestBacked,
+    artifactSourcePath: refs.runArtifactSourcePath,
+  });
   // Keep this guard outside the individual lanes: every lane must advertise
-  // the backend that the selected artifact actually needs. Native
-  // chrome-namespace executions run inside the advertising extension and need
-  // no server-side backend at all. A manifest-backed artifact likewise needs
-  // no server-side backend by itself — the device executes the manifest it
-  // advertised — so only a daemon_builtin execution is backend-restricted
-  // here, and an exact advertisement of that manifest attests the daemon
-  // backend on its own (a headless manifest cannot even validate without
-  // runtime.execution='daemon_builtin'; bridge executions run natively in the
-  // advertising extension).
+  // the backend that the selected artifact actually needs. A manifest-backed
+  // artifact executes on the device that advertised the manifest, so the only
+  // server-side backend it can need is the daemon-owned one. Historical
+  // manifest artifacts carry no run_runtime, so daemon_builtin is derived from
+  // the exact retained authorization; an unrecognised execution kind fails
+  // closed rather than inheriting the unrestricted branch.
   const selectedBackendReady = sql`
     (
-      ${nativeChromeExtensionConnectorSql(sql, {
-        connectorKey: refs.connectorKey,
-        connectorVersion: refs.connectorVersion,
-        manifestBacked: refs.runManifestBacked,
-        artifactSourcePath: refs.runArtifactSourcePath,
-      })}
+      ${nativeChromeExecution}
       OR (
         NOT COALESCE(${refs.runManifestBacked}, false)
         AND ${compiledBackendReady}
       )
       OR (
         COALESCE(${refs.runManifestBacked}, false)
-        AND (
-          COALESCE(${refs.runRuntime}->>'execution', '') <> 'daemon_builtin'
-          OR ${daemonBuiltinReady}
-          OR (${exactDaemonBuiltinAuthorization})
-        )
+        AND CASE
+          WHEN ${refs.runRuntime}->>'execution' = 'daemon_builtin' THEN ${daemonBuiltinReady}
+          WHEN ${refs.runRuntime}->>'execution' = 'bridge' THEN true
+          WHEN ${refs.runRuntime}->>'execution' IS NULL
+            THEN NOT (${exactDaemonBuiltinAuthorization}) OR ${daemonBuiltinReady}
+          ELSE false
+        END
       )
     )
   `;

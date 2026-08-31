@@ -27,6 +27,9 @@ export interface FeedRecord {
   connector_version: string | null;
   compiled_code: string | null;
   compile_config_hash: string | null;
+  source_code: string | null;
+  source_path: string | null;
+  connector_version_organization_id: string | null;
   auth_profile_id: number | null;
   app_auth_profile_id: number | null;
 }
@@ -55,6 +58,9 @@ export async function fetchFeeds(filter?: FeedFilter): Promise<FeedRecord[]> {
       cv.version AS connector_version,
       cv.compiled_code,
       cv.compile_config_hash,
+      cv.source_code,
+      cv.source_path,
+      cv.organization_id AS connector_version_organization_id,
       c.auth_profile_id,
       c.app_auth_profile_id
     FROM feeds f
@@ -69,7 +75,8 @@ export async function fetchFeeds(filter?: FeedFilter): Promise<FeedRecord[]> {
       LIMIT 1
     ) resolved_def ON TRUE
     LEFT JOIN LATERAL (
-      SELECT id, version, compiled_code, compile_config_hash
+      SELECT id, version, compiled_code, compile_config_hash, source_code, source_path,
+             organization_id
       FROM connector_versions
       WHERE connector_key = c.connector_key
         AND version = COALESCE(f.pinned_version, resolved_def.version)
@@ -120,9 +127,12 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
 
   const compiledCode = await resolveConnectorCode(feed.connector_key, {
     id: feed.connector_version_row_id,
+    organization_id: feed.connector_version_organization_id,
     version: feed.connector_version,
     compiled_code: feed.compiled_code,
     compile_config_hash: feed.compile_config_hash,
+    source_code: feed.source_code,
+    source_path: feed.source_path,
   });
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({

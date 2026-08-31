@@ -49,7 +49,7 @@ import {
   materializeDueFeeds,
 } from '../scheduled/check-due-feeds';
 import { reconcileDeviceCapabilities } from './device-reconcile';
-import { findBundledConnectorFile } from '../utils/connector-catalog';
+import { findBundledConnectorFile, resolveBundledConnectorFile } from '../utils/connector-catalog';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
@@ -947,11 +947,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.device_worker_id AS connection_device_worker_id,
         cv.artifact_row_id AS connector_version_row_id,
         cv.artifact_organization_id,
+        cv.artifact_row_count,
         cv.artifact_compiled_code AS compiled_code,
         cv.artifact_compile_config_hash AS compile_config_hash,
         cv.artifact_hash AS connector_manifest_hash,
         cv.artifact_source_path AS artifact_source_path,
         cv.artifact_has_source_code AS artifact_has_source_code,
+        cv.artifact_source_code AS source_code,
         COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
         CASE WHEN cd.version = r.connector_version THEN cd.runtime ELSE NULL END
           AS connector_runtime,
@@ -1114,11 +1116,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connection_device_worker_id: string | null;
     connector_version_row_id: number | null;
     artifact_organization_id: string | null;
+    artifact_row_count: number;
     compiled_code: string | null;
     compile_config_hash: string | null;
     connector_manifest_hash: string | null;
     artifact_source_path: string | null;
     artifact_has_source_code: boolean;
+    source_code: string | null;
     connector_manifest_backed: boolean;
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
     connector_required_capability: string | null;
@@ -1632,10 +1636,23 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             ? 'shared'
             : 'bundled',
       hasExecutableBytes: Boolean(row.compiled_code),
-      hasMatchingBundledSource: row.connector_key
-        ? findBundledConnectorFile(row.connector_key) !== null
-        : false,
+      hasSourceCode: Boolean(row.source_code),
+      sourcePath: row.artifact_source_path,
+      hasMatchingBundledSource: false,
     });
+    if (isCloudMode() && row.connector_key && row.connector_version) {
+      const exactBundled = await resolveBundledConnectorFile(row.connector_key, row.connector_version);
+      if (
+        row.artifact_organization_id !== null ||
+        row.artifact_row_count !== 1 ||
+        row.compiled_code ||
+        row.source_code ||
+        row.compile_config_hash ||
+        !row.artifact_source_path ||
+        row.artifact_source_path.startsWith('device-manifest://') ||
+        !exactBundled
+      ) throw new Error('Cloud connector artifact is not an exact shared bundled source.');
+    }
   } catch (err) {
     const message = errorMessage(err);
     await failClaimedWorkerRun({ runId: row.run_id, workerId: worker_id, errorMessage: message });
@@ -1676,8 +1693,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   }
 
   let compiledCode: string | undefined;
-  const gatewayHasLocalSource = row.connector_key
-    ? findBundledConnectorFile(row.connector_key) !== null
+  const gatewayHasLocalSource = row.connector_key && row.connector_version
+    ? (isCloudMode()
+      ? (await resolveBundledConnectorFile(row.connector_key, row.connector_version)) !== null
+      : findBundledConnectorFile(row.connector_key) !== null)
     : false;
   // Org-installed overrides (install_connector / source_url) persist
   // compiled_code on the version row. Fleet workers normally compile bundled
@@ -1707,6 +1726,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         version: row.connector_version,
         compiled_code: row.compiled_code,
         compile_config_hash: row.compile_config_hash,
+        source_code: row.source_code,
+        source_path: row.artifact_source_path,
       });
     } catch (err) {
       const message = errorMessage(err);

@@ -25,10 +25,16 @@ function denied(): never {
 export function assertCustomConnectorCloudAllowed(params: {
 	provenance: ConnectorArtifactProvenance | null | undefined;
 	hasExecutableBytes?: boolean;
+	hasSourceCode?: boolean;
+	sourcePath?: string | null;
 	hasMatchingBundledSource?: boolean;
 }): void {
 	if (!isCloudMode()) return;
-	if (!params.hasExecutableBytes) return;
+	const hasExecutableSource =
+		params.hasExecutableBytes === true ||
+		params.hasSourceCode === true ||
+		(params.sourcePath != null && !params.sourcePath.startsWith('device-manifest://'));
+	if (!hasExecutableSource) return;
 	if (!params.provenance) denied();
 	if (params.provenance === 'bundled' || params.provenance === 'metadata-only' || params.provenance === 'device-manifest') return;
 	if (params.provenance === 'shared' && params.hasMatchingBundledSource) return;

@@ -24,6 +24,7 @@ import type {
 } from "@lobu/connector-sdk";
 import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
 import {
+	resolveBundledConnectorFile,
   resolveBundledAgentToolingMetadata,
 } from "../../utils/connector-catalog";
 import { isCloudMode } from "../../utils/cloud-mode";
@@ -262,14 +263,18 @@ async function loadToolingConnections(
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
     LEFT JOIN LATERAL (
-      SELECT id, organization_id, compiled_code, source_code, source_path,
-             compile_config_hash,
-             COUNT(*) OVER ()::int AS artifact_row_count
-      FROM connector_versions
-      WHERE connector_key = cd.key
-        AND version = cd.version
-        AND (organization_id = cd.organization_id OR organization_id IS NULL)
-      ORDER BY organization_id NULLS LAST
+      SELECT *
+      FROM (
+        SELECT id, organization_id, compiled_code, source_code, source_path,
+               compile_config_hash,
+               COUNT(*) OVER ()::int AS artifact_row_count,
+               ROW_NUMBER() OVER (ORDER BY organization_id NULLS LAST) AS artifact_rank
+        FROM connector_versions
+        WHERE connector_key = cd.key
+          AND version = cd.version
+          AND (organization_id = cd.organization_id OR organization_id IS NULL)
+      ) candidates
+      WHERE artifact_row_count = 1 OR artifact_rank = 1
       LIMIT 1
     ) cv ON TRUE
     LEFT JOIN app_installations ai
@@ -357,14 +362,21 @@ async function resolveToolingMetadata(
     row.artifact_id == null ||
     row.artifact_row_count !== 1 ||
     row.artifact_organization_id !== null ||
-    !row.artifact_has_compiled_code ||
-    (row.artifact_has_source_path &&
-      row.artifact_source_path?.startsWith("device-manifest://"))
+    row.artifact_has_compiled_code ||
+    row.artifact_has_source_code ||
+    row.artifact_has_compile_config_hash ||
+    !row.artifact_has_source_path ||
+    row.artifact_source_path?.startsWith("device-manifest://")
   ) {
     return null;
   }
 
   try {
+    const bundledFile = await resolveBundledConnectorFile(
+      row.connector_key,
+      row.definition_version,
+    );
+    if (!bundledFile) return null;
     const metadata = await resolveBundledAgentToolingMetadata(
       row.connector_key,
       row.definition_version,

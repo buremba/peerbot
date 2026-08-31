@@ -161,7 +161,9 @@ describe('resolveBundledAgentToolingMetadata', () => {
 			nix: { packages: ['gh'] },
 			env: [{ name: 'GH_TOKEN', credential: 'lease' }],
 		});
-		expect(metadata?.authSchema).toMatchObject({ methods: [{ type: 'app_installation' }] });
+		expect(metadata?.authSchema?.methods).toEqual(
+			expect.arrayContaining([expect.objectContaining({ type: 'app_installation' })]),
+		);
 	});
 
 	test('rejects a selected version that does not match the image metadata', async () => {

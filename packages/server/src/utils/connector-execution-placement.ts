@@ -152,6 +152,7 @@ export function selectedConnectorVersionArtifactSql<TFragment>(
     SELECT
       cv.id AS artifact_row_id,
       cv.organization_id AS artifact_organization_id,
+      COUNT(*) OVER ()::int AS artifact_row_count,
       (
         cv.source_path LIKE 'device-manifest://%'
         AND cv.compiled_code IS NULL
@@ -162,6 +163,7 @@ export function selectedConnectorVersionArtifactSql<TFragment>(
       cv.source_path AS artifact_source_path,
       cv.compiled_code AS artifact_compiled_code,
       cv.compile_config_hash AS artifact_compile_config_hash,
+      cv.source_code AS artifact_source_code,
       (cv.source_code IS NOT NULL) AS artifact_has_source_code
     FROM connector_versions cv
     WHERE cv.connector_key = ${refs.connectorKey}

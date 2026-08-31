@@ -96,9 +96,48 @@ const bundledMetadataCache = new Map<
 >();
 const MAX_BUNDLED_METADATA_CACHE = 32;
 
+const bundledResolutionCache = new Map<
+	string,
+	{ mtimeMs: number; filePath: string | null }
+>();
+const MAX_BUNDLED_RESOLUTION_CACHE = 64;
+
 export interface BundledAgentToolingMetadata {
 	authSchema: Record<string, unknown> | null;
 	agentTooling: ConnectorAgentTooling | null;
+}
+
+/** Resolve a connector only when the on-image file attests the exact key/version. */
+export async function resolveBundledConnectorFile(
+	connectorKey: string,
+	selectedVersion: string,
+): Promise<string | null> {
+	const filePath = findBundledConnectorFile(connectorKey);
+	if (!filePath) return null;
+	const fileStat = await stat(filePath);
+	const cacheKey = `${filePath}\0${selectedVersion}`;
+	const cached = bundledResolutionCache.get(cacheKey);
+	if (cached?.mtimeMs === fileStat.mtimeMs) return cached.filePath;
+
+	let resolved: string | null = null;
+	try {
+		const compiledCode = await compileConnectorFromFile(filePath);
+		const metadata = await extractConnectorMetadata(compiledCode);
+		if (metadata.key === connectorKey && metadata.version === selectedVersion) {
+			resolved = filePath;
+		}
+	} catch (error) {
+		logger.warn(
+			{ connector_key: connectorKey, version: selectedVersion, error: getErrorMessage(error) },
+			"Bundled connector resolution failed",
+		);
+	}
+	if (bundledResolutionCache.size >= MAX_BUNDLED_RESOLUTION_CACHE) {
+		const oldest = bundledResolutionCache.keys().next().value;
+		if (oldest) bundledResolutionCache.delete(oldest);
+	}
+	bundledResolutionCache.set(cacheKey, { mtimeMs: fileStat.mtimeMs, filePath: resolved });
+	return resolved;
 }
 
 function normalizeLocalPath(pathValue: string): string {
@@ -220,7 +259,7 @@ export async function resolveBundledAgentToolingMetadata(
 	connectorKey: string,
 	selectedVersion: string,
 ): Promise<BundledAgentToolingMetadata | null> {
-	const filePath = findBundledConnectorFile(connectorKey);
+	const filePath = await resolveBundledConnectorFile(connectorKey, selectedVersion);
 	if (!filePath) return null;
 	const fileStat = await stat(filePath);
 	const cacheKey = `${filePath}\0${selectedVersion}`;

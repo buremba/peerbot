@@ -481,7 +481,7 @@ describe("approval-run transition atomicity", () => {
 			INSERT INTO runs (
 				organization_id, run_type, status, approval_status, created_at
 			) VALUES (
-				${orgId}, 'automation', 'executing', 'auto', NOW()
+				${orgId}, 'automation', 'running', 'auto', NOW()
 			)
 			RETURNING id
 		`;

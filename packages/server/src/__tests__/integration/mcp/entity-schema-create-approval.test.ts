@@ -105,6 +105,12 @@ describe("MCP entitySchema.createType approval", () => {
 	});
 
 	beforeEach(async () => {
+		await getDb()`
+			UPDATE runs
+			SET status = 'cancelled', completed_at = COALESCE(completed_at, NOW())
+			WHERE automation_id = ${automationId}
+				AND status IN ('pending', 'claimed', 'running')
+		`;
 		await getDb()`DELETE FROM write_approval_policies WHERE organization_id = ${org.id}`;
 		await getDb()`UPDATE automations SET agent_id = NULL, status = 'active' WHERE id = ${automationId}`;
 	});
@@ -443,6 +449,24 @@ describe("MCP entitySchema.createType approval", () => {
 		expect(response.result?.isError).toBe(true);
 		expect(response.result?.content?.[0]?.text).toMatch(/Headless Automation/i);
 		expect(await entityTypeExists("reassigned-automation-held-type")).toBe(false);
+	});
+
+	it("does not treat a connector action named agent_ask as an internal ask", async () => {
+		const parentRunId = await createActiveAutomationRun();
+		const [child] = await getDb()`
+			INSERT INTO runs (
+				organization_id, run_type, action_key, action_input,
+				parent_run_id, approval_status, status, created_at
+			) VALUES (
+				${org.id}, 'action', 'agent_ask', '{}'::jsonb,
+				${parentRunId}, 'pending', 'pending', NOW()
+			)
+			RETURNING id
+		`;
+
+		const { response } = await resolveInApp(Number(child.id), "approve");
+		expect(response.result?.isError).toBe(true);
+		expect(response.result?.content?.[0]?.text).toMatch(/Headless Automation/i);
 	});
 
 	it("requires policy approval and applies only after embedded human approval", async () => {

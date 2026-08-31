@@ -46,13 +46,17 @@ interface DeclaredAutomationSource {
 /** The parts of a ToolContext this resolution reads. */
 interface ActingAutomationSession {
   organizationId: string;
+	/** Authenticated agent making a caller-declared attribution, when any. */
+	agentId?: string | null;
   actingAutomationId?: number | null;
   actingRunId?: number | null;
 }
 
 /**
- * Drop a declared source unless the Automation belongs to this organization AND
- * the run belongs to that Automation.
+ * Drop a declared source unless the Automation belongs to this organization,
+ * the run belongs to that Automation, and an authenticated agent declaration
+ * names that agent's own Automation. System/no-agent callers retain the
+ * organization-scoped attribution used by keyed promotion.
  *
  * The pairing is the half that is easy to miss: an org member can name their own
  * Automation next to someone else's `run_id` and land the proposal in that
@@ -64,7 +68,8 @@ interface ActingAutomationSession {
  */
 export async function verifiedAutomationSource(
   declared: { automationId: number; runId: number } | null,
-  organizationId: string
+  organizationId: string,
+  declaringAgentId?: string | null
 ): Promise<{ automationId: number; runId: number } | null> {
   if (!declared) return null;
   // `getDb()` is reached only AFTER the guard, and never as a default parameter:
@@ -81,6 +86,10 @@ export async function verifiedAutomationSource(
      AND run.run_type = 'automation'
     WHERE a.id = ${declared.automationId}
       AND a.organization_id = ${organizationId}
+      AND (
+        ${declaringAgentId ?? null}::text IS NULL
+        OR a.agent_id = ${declaringAgentId ?? null}
+      )
     LIMIT 1
   `;
   return rows[0] ? declared : null;
@@ -94,8 +103,9 @@ export async function verifiedAutomationSource(
  * its deferral into another Automation's approval batch, which is the precedence
  * every call site's comment already claimed without the code enforcing it.
  *
- * Off-session, the declared source is honored only once verified. An unverified
- * declaration yields no attribution at all rather than a half-applied one.
+ * Off-session, the declared source is honored only once verified. A bound agent
+ * may declare only an Automation it owns; an unverified declaration yields no
+ * attribution at all rather than a half-applied one.
  */
 export async function resolveAutomationAttribution(
   ctx: ActingAutomationSession,
@@ -110,7 +120,8 @@ export async function resolveAutomationAttribution(
   if (!declared) return { automationId: null, runId: null };
   const verified = await verifiedAutomationSource(
     { automationId: declared.automation_id, runId: declared.run_id },
-    ctx.organizationId
+    ctx.organizationId,
+    ctx.agentId ?? null
   );
   return verified ?? { automationId: null, runId: null };
 }

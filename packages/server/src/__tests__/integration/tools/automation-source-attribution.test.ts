@@ -73,6 +73,32 @@ describe('declared automation_source verification', () => {
     ).resolves.toEqual({ automationId: org.automationId, runId: org.runId });
   });
 
+  it('accepts a declared Automation owned by the authenticated agent', async () => {
+    const org = await orgWithAutomation('Agent Owner Org', 'agent-owned');
+    await expect(
+      verifiedAutomationSource(
+        { automationId: org.automationId, runId: org.runId },
+        org.organizationId,
+        org.agentId
+      )
+    ).resolves.toEqual({ automationId: org.automationId, runId: org.runId });
+  });
+
+  it('rejects a same-organization Automation owned by another authenticated agent', async () => {
+    const org = await orgWithAutomation('Foreign Agent Org', 'foreign-agent');
+    const otherAgent = await createTestAgent({
+      organizationId: org.organizationId,
+      agentId: 'foreign-declaring-agent',
+    });
+    await expect(
+      verifiedAutomationSource(
+        { automationId: org.automationId, runId: org.runId },
+        org.organizationId,
+        otherAgent.agentId
+      )
+    ).resolves.toBeNull();
+  });
+
   it('rejects an Automation belonging to another organization', async () => {
     const victim = await orgWithAutomation('Victim Org', 'victim');
     const attacker = await orgWithAutomation('Attacker Org', 'attacker');
@@ -167,6 +193,20 @@ describe('resolveAutomationAttribution precedence', () => {
         { automation_id: org.automationId, run_id: org.runId }
       )
     ).resolves.toEqual({ automationId: org.automationId, runId: org.runId });
+  });
+
+  it('drops a declared source owned by another agent in the same organization', async () => {
+    const org = await orgWithAutomation('Agent Attribution Org', 'agent-attribution');
+    const otherAgent = await createTestAgent({
+      organizationId: org.organizationId,
+      agentId: 'attribution-foreign-agent',
+    });
+    await expect(
+      resolveAutomationAttribution(
+        { organizationId: org.organizationId, agentId: otherAgent.agentId },
+        { automation_id: org.automationId, run_id: org.runId }
+      )
+    ).resolves.toEqual({ automationId: null, runId: null });
   });
 
   it('yields no attribution for a foreign declared source', async () => {

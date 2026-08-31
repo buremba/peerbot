@@ -109,6 +109,14 @@ export interface ToolContext {
   actingAutomationId?: number | null;
   /** Durable automation run driving this reaction and its child work. */
   actingRunId?: number | null;
+	/**
+	 * True only for the in-process Automation reaction executor. Reactions run
+	 * after their source run has completed, so entity changes they defer for
+	 * human review may be persisted as completed-parent review artifacts. This
+	 * is intentionally absent from AuthContext and is never populated from a
+	 * request or worker token.
+	 */
+	isAutomationReaction?: boolean;
   /** Verified source conversation for worker-originated tool calls, when any. */
   sourceContext?: ToolSourceContext | null;
   /** `x-lobu-apply-id` when this call belongs to a `lobu apply` run (REST proxy only). */

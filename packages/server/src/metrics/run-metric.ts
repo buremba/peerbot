@@ -10,7 +10,7 @@
  */
 
 import type { EntityMetrics } from "@lobu/connector-sdk";
-import { getDb } from "../db/client";
+import { type DbClient, getDb } from "../db/client";
 import { validateAndScopeQuery } from "../utils/execute-data-sources";
 import { type ColumnDef, SAFE_COLUMN_DEFS } from "../utils/table-schema";
 import { compileDerivedMetricSql, compileMetricSql } from "./compiler";
@@ -50,8 +50,10 @@ interface RunMetricInput {
   excludeWorkspaceAudit?: boolean;
 }
 
-export async function runMetric(input: RunMetricInput): Promise<Record<string, unknown>[]> {
-  const sql = getDb();
+export async function runMetric(
+  input: RunMetricInput,
+  sql: DbClient = getDb()
+): Promise<Record<string, unknown>[]> {
   const found = await sql`
     SELECT id, metrics_config, backing_sql
     FROM entity_types

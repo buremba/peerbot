@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ApiResponseRenderer } from "../../../gateway/api/response-renderer";
 import { ChatResponseBridge } from "../../../gateway/connections/chat-response-bridge";
-import { materializeDueAutomationRuns } from "../../../automations/automation";
+import {
+	dispatchPendingAutomationRuns,
+	materializeDueAutomationRuns,
+} from "../../../automations/automation";
 import { resolveAutomationRunsByMessageIds } from "../../../automations/run-completion";
 import {
   advanceAutomationSchedule,
@@ -825,6 +828,20 @@ describe("a terminally failed Automation run advances next_run_at", () => {
 
     try {
       await expect(materializeDueAutomationRuns()).resolves.toBeDefined();
+
+			// skip_if_unchanged source reconciliation is intentionally deferred until
+			// dispatch, after the durable parent run exists. Drive that phase before
+			// asserting the schedule cursor outcome.
+			const [pending] = await sql`
+		SELECT id FROM runs
+		WHERE automation_id = ${automationId} AND status = 'pending'
+		ORDER BY id DESC
+		LIMIT 1
+	  `;
+			expect(pending).toBeDefined();
+			await expect(
+				dispatchPendingAutomationRuns({ runIds: [Number(pending.id)] }),
+			).resolves.toMatchObject({ claimed: 1, reconciled: 1 });
 
       // Asserting the PARK is what makes this bite: without it the tick still
       // resolves (materializeDueItems catches per item), so a bare

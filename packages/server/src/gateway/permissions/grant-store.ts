@@ -120,8 +120,9 @@ export class GrantStore {
     pattern: string,
     organizationId?: string
   ): Promise<boolean> {
+		const orgId = requireOrgId(organizationId, "GrantStore.hasGrant");
     try {
-      return await this.hasGrantStrict(agentId, pattern, organizationId);
+			return await this.hasGrantStrict(agentId, pattern, orgId);
     } catch (error) {
       logger.error("Failed to check grant", { agentId, pattern, error });
       return false;
@@ -182,8 +183,9 @@ export class GrantStore {
     pattern: string,
     organizationId?: string
   ): Promise<boolean> {
+		const orgId = requireOrgId(organizationId, "GrantStore.isDenied");
 	try {
-		return await this.isDeniedStrict(agentId, pattern, organizationId);
+		return await this.isDeniedStrict(agentId, pattern, orgId);
 	} catch (error) {
 		logger.error("Failed to check denied grant", {
 			agentId,

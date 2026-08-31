@@ -250,13 +250,16 @@ async function queryContentData(
   await Promise.all(
     metricSources.map(async (source) => {
       try {
-        results[source.name] = await runMetric({
-          organizationId: params.organizationId,
-          entityType: source.ref.entityType,
-          measure: source.ref.measure,
-          userId: params.userId,
-          excludeWorkspaceAudit: params.excludeWorkspaceAudit,
-        });
+        results[source.name] = await runMetric(
+          {
+            organizationId: params.organizationId,
+            entityType: source.ref.entityType,
+            measure: source.ref.measure,
+            userId: params.userId,
+            excludeWorkspaceAudit: params.excludeWorkspaceAudit,
+          },
+          sql
+        );
       } catch (err) {
         if (params.throwOnSourceError) throw err;
         logger.warn(

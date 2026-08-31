@@ -69,7 +69,9 @@ describe('dispatchChromeAction parent run authorization', () => {
     });
   });
 
-  it('inherits trusted context and changes Chrome flow ownership to the parent run', async () => {
+  it.each(['action', 'sync'] as const)(
+    'inherits trusted context from an active %s parent and changes Chrome flow ownership',
+    async (runType) => {
     const org = await createTestOrganization({ name: 'Chrome context parent' });
     const user = await createTestUser({ email: 'chrome-context-parent@test.com' });
     await addUserToOrganization(user.id, org.id);
@@ -88,7 +90,7 @@ describe('dispatchChromeAction parent run authorization', () => {
       )
       RETURNING id
     `;
-    await sql`
+			await sql`
       INSERT INTO connections (
         organization_id, connector_key, slug, display_name, status,
         created_by, visibility, device_worker_id, created_at, updated_at
@@ -97,12 +99,12 @@ describe('dispatchChromeAction parent run authorization', () => {
         ${user.id}, 'org', ${worker.id}::uuid, NOW(), NOW()
       )
     `;
-    const [parent] = await sql`
+			const [parent] = await sql`
       INSERT INTO runs (
         organization_id, run_type, action_key, action_input, status,
         claimed_by, claimed_at, created_by_user_id, run_metadata
       ) VALUES (
-        ${org.id}, 'action', 'prepare_comment', '{}'::jsonb, 'running',
+        ${org.id}, ${runType}, 'prepare_comment', '{}'::jsonb, 'running',
         'connector-worker-context', NOW(), ${user.id},
         ${sql.json({
           unrelated: 'preserved',
@@ -171,7 +173,8 @@ describe('dispatchChromeAction parent run authorization', () => {
     const response = await responsePromise;
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ status: 'completed' });
-  });
+    },
+  );
 });
 
 /**

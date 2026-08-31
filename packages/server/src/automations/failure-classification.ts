@@ -17,7 +17,13 @@ export function isPermanentAutomationAgentError(
 	) {
 		return true;
 	}
-	if (/\b(?:interactive|tool) approval\b/i.test(message)) return true;
+	if (
+		/\brequires interactive approval\b|\bblocked on tool approval\b/i.test(
+			message,
+		)
+	) {
+		return true;
+	}
 	if (code !== AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED) return false;
 
 	// A provider-named reset or retry horizon is self-healing. Only a depleted

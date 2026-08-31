@@ -318,6 +318,45 @@ describe("RunsQueue — task parent provenance", () => {
 });
 
 describe("RunsQueue — graceful shutdown", () => {
+  test("reconnect preserves the logical worker and serializes active handlers", async () => {
+    if (!queue) throw new Error("queue not started");
+    const sql = getDb();
+    await queue.send("test-reconnect", { turn: 1 });
+    await queue.send("test-reconnect", { turn: 2 });
+    let releaseFirst: (() => void) | undefined;
+    let firstStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const order: number[] = [];
+    const first = async (job: { data: { turn: number } }) => {
+      order.push(job.data.turn);
+      firstStarted?.();
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    };
+    const replacement = async (job: { data: { turn: number } }) => {
+      order.push(job.data.turn);
+    };
+    await queue.work("test-reconnect", first);
+    await started;
+    const worker = (queue as any).workers.get("test-reconnect");
+    await queue.work("test-reconnect", replacement);
+    expect((queue as any).workers.get("test-reconnect")).toBe(worker);
+    expect(worker.generation).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(order).toEqual([1]);
+    releaseFirst?.();
+    const deadline = Date.now() + 5000;
+    let status = "";
+    while (status !== "completed" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const rows = await sql<{ status: string }>`
+        SELECT status FROM runs WHERE queue_name = 'test-reconnect' ORDER BY id DESC LIMIT 1
+      `;
+      status = rows[0]?.status ?? "";
+    }
+    expect(order).toEqual([1, 2]);
+    expect(worker.active).toBe(0);
+  });
+
   test("stop() releases claimed rows back to pending", async () => {
     if (!queue) throw new Error("queue not started");
     await queue.send("test-graceful", { tag: "hold" });

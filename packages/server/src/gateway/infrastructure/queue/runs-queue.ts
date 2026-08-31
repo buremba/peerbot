@@ -63,9 +63,6 @@ export function notifyChannelFor(queueName: string): string {
 const MAX_BACKOFF_SECONDS = 300;
 /** How often the stale-claim sweeper runs. */
 const STALE_SWEEP_INTERVAL_MS = 30_000;
-/** Max time to wait for in-flight handlers during graceful stop. */
-const SHUTDOWN_DRAIN_MS = 30_000;
-
 function queueBreadcrumb(
   category: string,
   message: string,
@@ -231,6 +228,8 @@ interface QueueWorker {
   concurrency: number;
   paused: boolean;
   stopped: boolean;
+  generation: number;
+  claiming: number;
   active: number;
   wakeup: () => void;
   pendingWakeup: boolean;
@@ -281,6 +280,8 @@ export class RunsQueue implements IMessageQueue {
    * prevent cross-pod ownership corruption.
    */
   private readonly claimedBy: string;
+  /** Exact claim owners issued by this queue, including prior generations. */
+  private readonly claimOwners = new Set<string>();
 
   constructor() {
     if (!process.env.DATABASE_URL) {
@@ -353,10 +354,9 @@ export class RunsQueue implements IMessageQueue {
       w.wakeup();
     }
 
-    const drainStart = Date.now();
-    while (Date.now() - drainStart < SHUTDOWN_DRAIN_MS) {
+    while (true) {
       const inFlight = Array.from(this.workers.values()).reduce(
-        (sum, w) => sum + w.active,
+        (sum, w) => sum + w.claiming + w.active,
         0,
       );
       if (inFlight === 0) break;
@@ -368,18 +368,10 @@ export class RunsQueue implements IMessageQueue {
     // sweeper. Filter by our per-process claim identity so a sibling pod's
     // in-flight claims aren't released out from under it.
     try {
-      const sql = getDb();
-      const result = await sql`
-        UPDATE public.runs
-        SET status = 'pending',
-            claimed_at = NULL,
-            claimed_by = NULL
-        WHERE claimed_by = ${this.claimedBy}
-          AND status = 'claimed'
-      `;
-      if (result.count > 0) {
+      const released = await this.releaseAllClaims();
+      if (released > 0) {
         logger.info(
-          `Released ${result.count} claimed run(s) on shutdown`,
+          `Released ${released} claimed run(s) on shutdown`,
         );
       }
     } catch (err) {
@@ -406,6 +398,7 @@ export class RunsQueue implements IMessageQueue {
         // ignore
       }
     }
+    this.claimOwners.clear();
 
     logger.debug("Runs queue stopped");
   }
@@ -667,13 +660,18 @@ export class RunsQueue implements IMessageQueue {
       throw new Error("RunsQueue is shutting down; refusing new work");
     }
 
-    // Replace any existing worker for this queue.
+    // Re-register in place. The worker object is the serialization boundary;
+    // reconnects update future handlers but never reset active state or start
+    // a second poll loop.
     const existing = this.workers.get(queueName);
     if (existing) {
-      existing.stopped = true;
-      this.removeFromChannelIndex(existing);
+      existing.generation += 1;
+      existing.handler = handler as JobHandler<unknown>;
+      existing.concurrency = DEFAULT_WORKER_CONCURRENCY;
+      existing.paused = options?.startPaused ?? false;
       existing.wakeup();
-      this.workers.delete(queueName);
+      await this.ensureChannelListened(notifyChannelFor(queueName));
+      return;
     }
 
     const runType = classifyQueue(queueName);
@@ -685,6 +683,8 @@ export class RunsQueue implements IMessageQueue {
       concurrency: DEFAULT_WORKER_CONCURRENCY,
       paused: options?.startPaused ?? false,
       stopped: false,
+      generation: 0,
+      claiming: 0,
       active: 0,
       pendingWakeup: false,
       wakeup: () => {
@@ -729,7 +729,37 @@ export class RunsQueue implements IMessageQueue {
           continue;
         }
         try {
-          const claimed = await this.claimOne(worker);
+          const generation = worker.generation;
+          const claimOwner = this.claimOwner(worker);
+          worker.claiming += 1;
+          let claimed: Awaited<ReturnType<RunsQueue["claimOne"]>> = null;
+          try {
+            claimed = await this.claimOne(worker, claimOwner);
+          } finally {
+            worker.claiming -= 1;
+          }
+
+          if (
+            claimed &&
+            (worker.stopped ||
+              this.shuttingDown ||
+              this.workers.get(queueName) !== worker ||
+              worker.generation !== generation)
+          ) {
+            await this.releaseClaim(claimed.runId, claimed.claimOwner);
+            claimed = null;
+          }
+          // There is no await between this fence and active++/runHandler().
+          // A stale generation can therefore never cross the handler boundary.
+          if (
+            worker.stopped ||
+            this.shuttingDown ||
+            this.workers.get(queueName) !== worker ||
+            worker.generation !== generation
+          ) {
+            if (claimed) await this.releaseClaim(claimed.runId, claimed.claimOwner);
+            continue;
+          }
           if (!claimed) {
             await this.sleep(intervals.runsPollIntervalMs, worker, () => {
               resolveWake = null;
@@ -800,16 +830,22 @@ export class RunsQueue implements IMessageQueue {
 
   // ── Internals ───────────────────────────────────────────────────────────
 
+  private claimOwner(worker: QueueWorker): string {
+    const owner = `${this.claimedBy}:${worker.queueName}:${worker.generation}`;
+    this.claimOwners.add(owner);
+    return owner;
+  }
+
   /** Claim one row scoped to the worker's `queue_name`. */
-  private async claimOne(worker: QueueWorker): Promise<{
+  private async claimOne(worker: QueueWorker, claimOwner: string): Promise<{
     runId: number;
+    claimOwner: string;
     payload: unknown;
     attempts: number;
     maxAttempts: number;
     retryDelaySeconds: number | null;
   } | null> {
     const sql = getDb();
-    const claimedBy = this.claimedBy;
     const rows = await sql<{
       id: number | string;
       action_input: unknown;
@@ -858,7 +894,7 @@ export class RunsQueue implements IMessageQueue {
       UPDATE public.runs r
       SET status = 'claimed',
           claimed_at = now(),
-          claimed_by = ${claimedBy}
+          claimed_by = ${claimOwner}
       FROM next_run nr
       WHERE r.id = nr.id
       RETURNING r.id, r.action_input, r.attempts, r.max_attempts, r.retry_delay_seconds
@@ -867,11 +903,13 @@ export class RunsQueue implements IMessageQueue {
     if (!row) return null;
     queueBreadcrumb("claim", `Claimed run ${row.id}`, {
       runId: Number(row.id),
+      claimOwner,
       queueName: worker.queueName,
       attempts: Number(row.attempts ?? 0),
     });
     return {
       runId: Number(row.id),
+      claimOwner,
       payload: row.action_input,
       attempts: Number(row.attempts ?? 0),
       maxAttempts: Number(row.max_attempts ?? 3),
@@ -886,6 +924,7 @@ export class RunsQueue implements IMessageQueue {
     worker: QueueWorker,
     claimed: {
       runId: number;
+      claimOwner: string;
       payload: unknown;
       attempts: number;
       maxAttempts: number;
@@ -900,18 +939,19 @@ export class RunsQueue implements IMessageQueue {
       maxAttempts: claimed.maxAttempts,
     };
     const heartbeat = setInterval(() => {
-      void this.heartbeatClaim(claimed.runId);
+      void this.heartbeatClaim(claimed.runId, claimed.claimOwner);
     }, intervals.runsClaimHeartbeatIntervalMs);
     if (typeof heartbeat.unref === "function") heartbeat.unref();
     try {
       await worker.handler(job);
-      await this.markCompleted(claimed.runId);
+      await this.markCompleted(claimed.runId, claimed.claimOwner);
     } catch (err) {
       if (isDeferralError(err)) {
         // Waiting, not failing — reschedule without consuming an attempt
         // (see isDeferralError in types.ts for the contract).
         await this.scheduleRetry(
           claimed.runId,
+          claimed.claimOwner,
           claimed.attempts,
           claimed.retryDelaySeconds,
         );
@@ -920,10 +960,11 @@ export class RunsQueue implements IMessageQueue {
         const retryable =
           !(err instanceof OrchestratorError) || err.shouldRetry;
         if (!retryable || nextAttempt >= claimed.maxAttempts) {
-          await this.markFailed(claimed.runId, err);
+          await this.markFailed(claimed.runId, claimed.claimOwner, err);
         } else {
           await this.scheduleRetry(
             claimed.runId,
+            claimed.claimOwner,
             nextAttempt,
             claimed.retryDelaySeconds,
           );
@@ -939,7 +980,7 @@ export class RunsQueue implements IMessageQueue {
    *  so a sibling pod that has since reclaimed this row (after a heartbeat
    *  gap → sweep → re-claim cycle) doesn't have its claim silently extended
    *  by ours. */
-  private async heartbeatClaim(runId: number): Promise<void> {
+  private async heartbeatClaim(runId: number, claimOwner: string): Promise<void> {
     try {
       const sql = getDb();
       await sql`
@@ -947,14 +988,14 @@ export class RunsQueue implements IMessageQueue {
         SET claimed_at = now()
         WHERE id = ${runId}
           AND status = 'claimed'
-          AND claimed_by = ${this.claimedBy}
+          AND claimed_by = ${claimOwner}
       `;
     } catch (err) {
       logger.warn({ runId, err }, "runs-queue heartbeat failed");
     }
   }
 
-  private async markCompleted(runId: number): Promise<void> {
+  private async markCompleted(runId: number, claimOwner: string): Promise<void> {
     const sql = getDb();
     await sql`
       UPDATE public.runs
@@ -962,12 +1003,16 @@ export class RunsQueue implements IMessageQueue {
           completed_at = now()
       WHERE id = ${runId}
         AND status = 'claimed'
-        AND claimed_by = ${this.claimedBy}
+        AND claimed_by = ${claimOwner}
     `;
     queueBreadcrumb("complete", `Completed run ${runId}`, { runId });
   }
 
-  private async markFailed(runId: number, err: unknown): Promise<void> {
+  private async markFailed(
+    runId: number,
+    claimOwner: string,
+    err: unknown,
+  ): Promise<void> {
     const sql = getDb();
 	const message = getErrorMessage(err);
 	const outcome = await sql.begin(async (tx) => {
@@ -979,7 +1024,7 @@ export class RunsQueue implements IMessageQueue {
 		FROM public.runs
 		WHERE id = ${runId}
 		  AND status = 'claimed'
-		  AND claimed_by = ${this.claimedBy}
+		  AND claimed_by = ${claimOwner}
 	  `;
 	  const linkedParentId = Number(linkage?.parent_run_id);
 	  const linkedOrganizationId = linkage?.organization_id?.trim();
@@ -999,7 +1044,7 @@ export class RunsQueue implements IMessageQueue {
             attempts = attempts + 1
         WHERE id = ${runId}
           AND status = 'claimed'
-          AND claimed_by = ${this.claimedBy}
+          AND claimed_by = ${claimOwner}
 		RETURNING id, run_type, queue_name, organization_id, parent_run_id,
 		          action_input->>'messageId' AS message_id,
 		          action_input->>'agentId' AS agent_id,
@@ -1076,6 +1121,7 @@ export class RunsQueue implements IMessageQueue {
 
   private async scheduleRetry(
     runId: number,
+    claimOwner: string,
     attempt: number,
     retryDelaySeconds: number | null,
   ): Promise<void> {
@@ -1092,7 +1138,7 @@ export class RunsQueue implements IMessageQueue {
           claimed_by = NULL
       WHERE id = ${runId}
         AND status = 'claimed'
-        AND claimed_by = ${this.claimedBy}
+        AND claimed_by = ${claimOwner}
     `;
     queueBreadcrumb("retry", `Scheduled retry for run ${runId}`, {
       runId,
@@ -1101,12 +1147,36 @@ export class RunsQueue implements IMessageQueue {
     });
   }
 
-  private removeFromChannelIndex(worker: QueueWorker): void {
-    const channel = notifyChannelFor(worker.queueName);
-    const set = this.subscribersByChannel.get(channel);
-    if (!set) return;
-    set.delete(worker);
-    if (set.size === 0) this.subscribersByChannel.delete(channel);
+  /** Release only the exact owner that acquired a raced claim. */
+  private async releaseClaim(runId: number, claimOwner: string): Promise<void> {
+    const sql = getDb();
+    await sql`
+      UPDATE public.runs
+      SET status = 'pending',
+          claimed_at = NULL,
+          claimed_by = NULL
+      WHERE id = ${runId}
+        AND status = 'claimed'
+        AND claimed_by = ${claimOwner}
+    `;
+  }
+
+  /** Release all exact owners issued by this process, never another worker's. */
+  private async releaseAllClaims(): Promise<number> {
+    const sql = getDb();
+    let released = 0;
+    for (const claimOwner of this.claimOwners) {
+      const result = await sql`
+        UPDATE public.runs
+        SET status = 'pending',
+            claimed_at = NULL,
+            claimed_by = NULL
+        WHERE status = 'claimed'
+          AND claimed_by = ${claimOwner}
+      `;
+      released += result.count;
+    }
+    return released;
   }
 
   /**

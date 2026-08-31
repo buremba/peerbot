@@ -6,7 +6,7 @@
  * gated on `DATABASE_URL`.
  */
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   backoffSeconds,
   classifyQueue,
@@ -79,6 +79,83 @@ describe("RunsQueue construction", () => {
     } finally {
       if (prev !== undefined) process.env.DATABASE_URL = prev;
       else delete process.env.DATABASE_URL;
+    }
+  });
+});
+
+describe("RunsQueue lifecycle fences", () => {
+  test("re-registers one worker without resetting active state", async () => {
+    process.env.DATABASE_URL = "postgres://test:test@localhost:5432/test";
+    const queue = new RunsQueue();
+    const claimed = [
+      { runId: 1, payload: { turn: 1 }, attempts: 0, maxAttempts: 3, retryDelaySeconds: null },
+      { runId: 2, payload: { turn: 2 }, attempts: 0, maxAttempts: 3, retryDelaySeconds: null },
+    ];
+    let releaseFirst: (() => void) | undefined;
+    let firstStarted: (() => void) | undefined;
+    let secondStarted: (() => void) | undefined;
+    const started1 = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const started2 = new Promise<void>((resolve) => { secondStarted = resolve; });
+    let active = 0;
+    let maxActive = 0;
+    (queue as any).isConnected = true;
+    (queue as any).ensureChannelListened = async () => undefined;
+    (queue as any).claimOne = async () => claimed.shift() ?? null;
+    (queue as any).heartbeatClaim = async () => undefined;
+    (queue as any).markCompleted = async () => undefined;
+    const first = async () => {
+      active += 1; maxActive = Math.max(maxActive, active); firstStarted?.();
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      active -= 1;
+    };
+    const replacement = async () => {
+      active += 1; maxActive = Math.max(maxActive, active); secondStarted?.(); active -= 1;
+    };
+    try {
+      await queue.work("same-worker", first);
+      await started1;
+      const worker = (queue as any).workers.get("same-worker");
+      await queue.work("same-worker", replacement);
+      expect((queue as any).workers.get("same-worker")).toBe(worker);
+      expect(worker.generation).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(maxActive).toBe(1);
+      releaseFirst?.();
+      await Promise.race([secondStarted, new Promise((_, reject) => setTimeout(() => reject(new Error("second claim timed out")), 500))]);
+      expect(maxActive).toBe(1);
+    } finally {
+      releaseFirst?.();
+      await queue.stop();
+    }
+  });
+
+  test("stop waits for a pending claim and fences its handler", async () => {
+    process.env.DATABASE_URL = "postgres://test:test@localhost:5432/test";
+    const queue = new RunsQueue();
+    let finishClaim: (() => void) | undefined;
+    let claimStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { claimStarted = resolve; });
+    const claimMayFinish = new Promise<void>((resolve) => { finishClaim = resolve; });
+    const handler = mock(async () => undefined);
+    const release = mock(async () => undefined);
+    (queue as any).isConnected = true;
+    (queue as any).ensureChannelListened = async () => undefined;
+    (queue as any).claimOne = async () => {
+      claimStarted?.(); await claimMayFinish;
+      return { runId: 41, claimOwner: "test-owner", payload: {}, attempts: 0, maxAttempts: 3, retryDelaySeconds: null };
+    };
+    (queue as any).releaseClaim = release;
+    try {
+      await queue.work("shutdown-race", handler);
+      await started;
+      const stopping = queue.stop();
+      expect(handler).not.toHaveBeenCalled();
+      finishClaim?.();
+      await stopping;
+      expect(handler).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledWith(41, expect.any(String));
+    } finally {
+      finishClaim?.();
     }
   });
 });

@@ -245,10 +245,12 @@ export function buildWrapperApp(
 					source: "http_response",
 					http_method: c.req.method,
 					http_status: String(c.res.status),
-					host: c.req.header("host") ?? "unknown",
 				},
 				extra: {
 					path: c.req.path,
+					// `extra`, not `tags`: Host is client-supplied, so as an indexed
+					// tag its value cardinality is unbounded by anything we control.
+					host: c.req.header("host") ?? "unknown",
 					response_body: body,
 				},
 			});
@@ -264,10 +266,11 @@ export function buildWrapperApp(
 				tags: {
 					source: "app_onError",
 					http_method: c.req.method,
-					host: c.req.header("host") ?? "unknown",
 				},
 				extra: {
 					path: c.req.path,
+					// See above: client-supplied, so never an indexed tag.
+					host: c.req.header("host") ?? "unknown",
 				},
 			});
 			markSentryReported(c);

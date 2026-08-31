@@ -126,6 +126,31 @@ describe('Sentry credential scrubber', () => {
 		expect(result).toContain('db.internal:5432/lobu');
 	});
 
+	it('redacts signature headers whose squashed form no exact set can hold', () => {
+		// `X-Hub-Signature-256` squashes to `xhubsignature256`; matching the whole
+		// key against a set silently missed every real signature header.
+		const result = scrubSentryValue({
+			'X-Hub-Signature-256': SECRET,
+			'X-Amz-Signature': SECRET,
+			'x-slack-signature': SECRET,
+			design: 'kept',
+		}) as Record<string, string>;
+		expect(result['X-Hub-Signature-256']).toBe('[REDACTED]');
+		expect(result['X-Amz-Signature']).toBe('[REDACTED]');
+		expect(result['x-slack-signature']).toBe('[REDACTED]');
+		expect(result.design).toBe('kept');
+		expect(scrubSentryValue(`X-Amz-Signature=${SECRET}&limit=1`)).toBe(
+			'X-Amz-Signature=[REDACTED]&limit=1',
+		);
+	});
+
+	it('keeps trailing sentence punctuation outside the URL it strips', () => {
+		const result = scrubSentryValue(
+			`see https://example.test/a?token=${SECRET}, then retry.`,
+		) as string;
+		expect(result).toBe('see https://example.test/a, then retry.');
+	});
+
 	it('summarizes built-ins that a plain walk would flatten or explode', () => {
 		const result = scrubSentryValue({
 			at: new Date('2026-08-31T12:00:00.000Z'),

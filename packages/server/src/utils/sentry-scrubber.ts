@@ -16,7 +16,11 @@ const SECRET_QUERY_PARAMS = new Set(['state', 'code', 'key']);
  * never appear in connector config, and that denylist also feeds the CLI's
  * deployment manifest hash — widening it there would change hashes.
  */
-const EXTRA_SECRET_KEYS = new Set(['signature', 'sig', 'xhubsignature']);
+const EXTRA_SECRET_KEYS = new Set(['signature', 'sig']);
+
+/** Deep enough to outlive Sentry's own normalize(); short of unbounded work. */
+const MAX_DEPTH = 8;
+const MAX_ENTRIES = 1000;
 
 /** Separator/case-squashed form, for keys core's camel-case split can't read. */
 function squashKey(key: string): string {
@@ -30,8 +34,15 @@ function squashKey(key: string): string {
  */
 function isSecretObjectKey(key: string): boolean {
 	if (isSecretKey(key)) return true;
-	const squashed = squashKey(key);
-	return isSecretKey(squashed) || EXTRA_SECRET_KEYS.has(squashed);
+	if (isSecretKey(squashKey(key))) return true;
+	// Matched per separated segment, not against the squashed whole:
+	// `X-Hub-Signature-256` squashes to `xhubsignature256`, which no exact set
+	// can ever hold, so every real signature header would slip through.
+	return key
+		.replace(/[^a-z0-9]+/gi, '_')
+		.toLowerCase()
+		.split('_')
+		.some((segment) => EXTRA_SECRET_KEYS.has(segment));
 }
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/gi;
 /**
@@ -59,9 +70,13 @@ function scrubString(value: string): string {
 	// in a query pair or a secret-named key, so neither pass below would see it.
 	const withoutUriCredentials = redactUriCredentials(value);
 	const withoutUrlQueries = withoutUriCredentials.replace(URL_PATTERN, (candidate) => {
+		// Trailing sentence punctuation is not part of the URL, but it is part of
+		// the message: strip it to parse, then put it back.
+		const trailing = candidate.match(/[),.;]+$/)?.[0] ?? '';
+		const bare = trailing ? candidate.slice(0, -trailing.length) : candidate;
 		try {
-			const url = new URL(candidate.replace(/[),.;]+$/, ''));
-			return `${url.origin}${url.pathname}`;
+			const url = new URL(bare);
+			return `${url.origin}${url.pathname}${trailing}`;
 		} catch {
 			return candidate;
 		}
@@ -81,10 +96,14 @@ function scrubString(value: string): string {
 export function scrubSentryValue(value: unknown): unknown {
 	const seen = new WeakSet<object>();
 
-	function scrub(current: unknown): unknown {
+	function scrub(current: unknown, depth = 0): unknown {
 		if (typeof current === 'string') return scrubString(current);
 		if (current === null || typeof current !== 'object') return current;
 		if (seen.has(current)) return '[CIRCULAR]';
+		// beforeBreadcrumb runs BEFORE Sentry's own normalize(), so without a cap
+		// a single console breadcrumb carrying a huge or deeply nested object is
+		// fully deep-cloned on the hot path only to be truncated moments later.
+		if (depth >= MAX_DEPTH) return '[TRUNCATED]';
 		seen.add(current);
 
 		// An Error carries name/message/stack on its prototype, so Object.keys
@@ -96,11 +115,11 @@ export function scrubSentryValue(value: unknown): unknown {
 				message: scrubString(current.message),
 			};
 			if (current.stack) serialized.stack = scrubString(current.stack);
-			if (current.cause !== undefined) serialized.cause = scrub(current.cause);
+			if (current.cause !== undefined) serialized.cause = scrub(current.cause, depth + 1);
 			for (const key of Object.keys(current)) {
 				serialized[key] = isSecretObjectKey(key)
 					? '[REDACTED]'
-					: scrub((current as unknown as Record<string, unknown>)[key]);
+					: scrub((current as unknown as Record<string, unknown>)[key], depth + 1);
 			}
 			return serialized;
 		}
@@ -116,17 +135,19 @@ export function scrubSentryValue(value: unknown): unknown {
 		if (current instanceof Map) return `[Map ${current.size} entries]`;
 		if (current instanceof Set) return `[Set ${current.size} items]`;
 
-		if (Array.isArray(current)) return current.map((item) => scrub(item));
+		if (Array.isArray(current)) {
+			return current.slice(0, MAX_ENTRIES).map((item) => scrub(item, depth + 1));
+		}
 
 		const result: Record<string, unknown> = {};
 		try {
-			for (const key of Object.keys(current)) {
+			for (const key of Object.keys(current).slice(0, MAX_ENTRIES)) {
 				if (isSecretObjectKey(key)) {
 					result[key] = '[REDACTED]';
 					continue;
 				}
 				try {
-					result[key] = scrub((current as Record<string, unknown>)[key]);
+					result[key] = scrub((current as Record<string, unknown>)[key], depth + 1);
 				} catch {
 					result[key] = '[UNREADABLE]';
 				}
@@ -140,8 +161,27 @@ export function scrubSentryValue(value: unknown): unknown {
 	return scrub(value);
 }
 
+/**
+ * `sdkProcessingMetadata` holds the live Scope -> Client -> options graph, and
+ * @sentry/core deletes the field outright in createEventEnvelope. Deep-walking
+ * it is therefore pure per-event work on a structure that never ships, and it
+ * is the only part of a prepared event holding class instances. Detach it for
+ * the walk and put the original reference back.
+ */
+function scrubEvent<T extends Event>(event: T): T {
+	const { sdkProcessingMetadata } = event;
+	const scrubbed = scrubSentryValue({
+		...event,
+		sdkProcessingMetadata: undefined,
+	}) as T;
+	if (sdkProcessingMetadata !== undefined) {
+		scrubbed.sdkProcessingMetadata = sdkProcessingMetadata;
+	}
+	return scrubbed;
+}
+
 export function scrubSentryErrorEvent(event: ErrorEvent): ErrorEvent {
-	return scrubSentryValue(event) as ErrorEvent;
+	return scrubEvent(event);
 }
 
 /**
@@ -153,7 +193,7 @@ export function scrubSentryErrorEvent(event: ErrorEvent): ErrorEvent {
 // not re-export that type, and @sentry/core is not a direct dependency here.
 // Inference recovers it exactly at the beforeSendTransaction call site.
 export function scrubSentryTransactionEvent<T extends Event>(event: T): T {
-	return scrubSentryValue(event) as T;
+	return scrubEvent(event);
 }
 
 /** Never drops a breadcrumb; it only rewrites credential material in place. */

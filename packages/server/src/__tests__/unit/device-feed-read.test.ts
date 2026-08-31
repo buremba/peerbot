@@ -25,6 +25,16 @@ import {
   validateDeviceConnectorManifests,
 } from '../../worker-api/device-manifests';
 import { classifyDeviceConnectorReadiness } from '../../worker-api/device-connector-readiness';
+import { isHeadlessConnectorRuntime } from '../../utils/connector-execution-placement';
+
+describe('headless runtime readiness target selection', () => {
+  it('recognizes only runtimes that advertise the headless platform', () => {
+    expect(isHeadlessConnectorRuntime({ platforms: ['headless'], execution: 'daemon_builtin' })).toBe(true);
+    expect(isHeadlessConnectorRuntime({ platforms: ['macos'], execution: 'daemon_builtin' })).toBe(false);
+    expect(isHeadlessConnectorRuntime({ platforms: ['headless'] })).toBe(true);
+    expect(isHeadlessConnectorRuntime(null)).toBe(false);
+  });
+});
 
 describe('device feed read — reserved action key', () => {
   it('lives in the gateway-reserved namespace so a manifest can never claim it', () => {

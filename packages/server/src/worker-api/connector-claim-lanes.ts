@@ -166,7 +166,11 @@ export function connectorClaimLaneSql(
           ${refs.runRuntime}->>'execution' = 'daemon_builtin'
           AND ${daemonBuiltinReady}
           OR ${refs.runRuntime}->>'execution' = 'bridge'
-          OR (${refs.runRuntime} IS NULL AND (${exactDaemonBuiltinAuthorization}))
+          OR (
+            ${refs.runRuntime} IS NULL
+            AND (${exactDaemonBuiltinAuthorization})
+            AND ${daemonBuiltinReady}
+          )
           OR (${refs.runRuntime} IS NULL AND (${exactNativeBridgeAuthorization}))
         )
       )

@@ -371,11 +371,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // below, so platform binding / capability authorization / org-scoped claiming
   // all apply exactly as for a signed-in device.
   const isUserScopedWorker = c.var.workerAuthMode === 'user' || anonLocalUserId != null;
-  // Trusted fleet workers predate the per-backend signal and remain compiled
-  // capable unless they explicitly advertise a backend map. Device workers
-  // must opt in because headless recovery intentionally advertises only the
-  // daemon-owned backend when its compiler/SDK runtime is unavailable.
-  if (!backendCapacityProvided && !isUserScopedWorker) {
+  // Absence of a backend_capacity advertisement means the worker declares no
+  // backend restriction — every claim lane stays open to it. Only the headless
+  // daemon must advertise: its compiler/SDK runtime may be unavailable, so
+  // absent an explicit map it stays compiled-incapable. The headless client is
+  // identified by its self-reported platform, not by token scope — user-scoped
+  // device workers (macOS app, Chrome extension) never send the field and must
+  // stay claimable.
+  if (!backendCapacityProvided && platform !== 'headless') {
     backendCapacity = { compiled_connector: 1 };
   }
   // Effective device identity: the token's user/org when user-scoped, else the

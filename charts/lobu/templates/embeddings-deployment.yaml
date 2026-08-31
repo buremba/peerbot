@@ -2,6 +2,13 @@
 {{- if and (gt (int .Values.embeddings.replicaCount) 1) .Values.embeddings.cache.enabled }}
 {{- fail "embeddings.replicaCount > 1 requires embeddings.cache.enabled=false: the embeddings cache PVC is ReadWriteOnce and cannot be mounted by multiple pods at once (a second replica would hit a Multi-Attach error). Disable the cache or keep a single embeddings replica." }}
 {{- end }}
+{{- $embeddingsEnv := default (dict) .Values.embeddings.env }}
+{{- range $key := list "PORT" "TRANSFORMERS_CACHE" "EMBEDDINGS_SERVICE_TOKEN" "EMBEDDINGS_API_KEY" }}
+{{- if hasKey $embeddingsEnv $key }}
+{{- fail (printf "embeddings.env cannot override chart-owned %s" $key) }}
+{{- end }}
+{{- end }}
+{{- $embeddingsBackend := lower (default "local" (index $embeddingsEnv "EMBEDDINGS_BACKEND")) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,6 +43,7 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      automountServiceAccountToken: false
       containers:
         - name: embeddings
           image: {{ include "lobu.embeddingsImage" . }}
@@ -57,9 +65,18 @@ spec:
               value: {{ $value | quote }}
             {{- end }}
           {{- if .Values.secretName }}
-          envFrom:
-            - secretRef:
-                name: {{ .Values.secretName }}
+            - name: EMBEDDINGS_SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: EMBEDDINGS_SERVICE_TOKEN
+                  optional: true
+            - name: EMBEDDINGS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secretName }}
+                  key: EMBEDDINGS_API_KEY
+                  optional: {{ ne $embeddingsBackend "openai" }}
           {{- end }}
           readinessProbe:
             httpGet:

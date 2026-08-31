@@ -38,14 +38,18 @@ export function isSentryReported(c: Context): boolean {
 export function captureServerError(
   c: Context,
   error: unknown,
-  source: string
+  source: string,
+  httpStatus: number
 ): void {
   if (error instanceof ToolUserError) return;
   Sentry.captureException(error, {
     tags: {
       source,
       http_method: c.req.method,
-      http_status: String(c.res.status),
+      // Passed in, not read from `c.res`: every caller reports the error before
+      // returning its response, and hono mints a placeholder 200 on that first
+      // `c.res` access — which tagged every 500 in this path as a 200.
+      http_status: String(httpStatus),
       host: c.req.header('host') ?? 'unknown',
     },
     extra: {

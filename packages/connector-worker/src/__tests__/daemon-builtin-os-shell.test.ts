@@ -161,6 +161,29 @@ describe('daemon-builtin os.shell', () => {
     expect(completions[0]?.error_message).toStartWith('operation_execution_failed: Shell command timed out after ');
   });
 
+  test('ignores poisoned Bash function state while enforcing timeout reaping', async () => {
+    const previousBashFunction = process.env['BASH_FUNC_sleep%%'];
+    const previousBashEnv = process.env.BASH_ENV;
+    process.env['BASH_FUNC_sleep%%'] = '() { :; }';
+    process.env.BASH_ENV = '/tmp/does-not-exist-lobu-shell-test';
+    try {
+      const started = Date.now();
+      const result = await runShellBuiltin({
+        command: 'trap "" TERM; sleep 30',
+        cwd: process.cwd(),
+        timeout_ms: 100,
+      });
+      expect(result.success).toBe(false);
+      expect(result.timed_out).toBe(true);
+      expect(Date.now() - started).toBeLessThan(4_000);
+    } finally {
+      if (previousBashFunction === undefined) delete process.env['BASH_FUNC_sleep%%'];
+      else process.env['BASH_FUNC_sleep%%'] = previousBashFunction;
+      if (previousBashEnv === undefined) delete process.env.BASH_ENV;
+      else process.env.BASH_ENV = previousBashEnv;
+    }
+  });
+
   test('daemon abort kills a long-lived child and grandchild process tree', async () => {
     const shutdown = new AbortController();
     const started = Date.now();

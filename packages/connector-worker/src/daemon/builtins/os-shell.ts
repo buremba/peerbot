@@ -52,7 +52,7 @@ export async function runShellBuiltin(input: Record<string, unknown>): Promise<S
 
   const startedAt = Date.now();
   return await new Promise<ShellRunOutput>((resolve) => {
-    const child = spawn('bash', ['-lc', command], {
+    const child = spawn('bash', ['--noprofile', '--norc', '-lc', command], {
       cwd,
       env: { ...process.env, LC_ALL: 'C' },
       detached: true,

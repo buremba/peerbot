@@ -44,7 +44,7 @@ const SIGTERM_GRACE_MS = 3000;
 // timer fires, so its numeric pgid cannot be recycled before SIGKILL. The
 // inner login shell and command still receive SIGTERM normally.
 const SHELL_GROUP_ANCHOR = `trap 'sleep 4' TERM
-bash -lc "$1"
+bash --noprofile --norc -lc "$1"
 status=$?
 exit "$status"`;
 // Cap captured output so a chatty command cannot balloon daemon memory.

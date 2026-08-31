@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, it, mock } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { connectorSdkMock } from './connector-sdk.mock';
 
@@ -33,6 +34,12 @@ function processIsLive(pid: number): boolean {
       return state !== 'Z';
     }
     process.kill(pid, 0);
+    if (process.platform === 'darwin') {
+      const state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+        encoding: 'utf8',
+      }).trim();
+      return !state.startsWith('Z');
+    }
     return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;

@@ -24,6 +24,7 @@ import {
   extractConnectorMetadata,
   NO_CONNECTOR_RUNTIME_ERROR,
 } from '../connector-compiler';
+import { resolveBundledAgentToolingMetadata } from '../connector-catalog';
 
 const CONNECTOR_SOURCE = `
 import { ConnectorRuntime, type RuntimeConnectorDefinition } from '@lobu/connector-sdk';
@@ -151,6 +152,23 @@ describe('formatMetadataExtractionError', () => {
     );
     expect(formatted).not.toContain('npm install');
   });
+});
+
+describe('resolveBundledAgentToolingMetadata', () => {
+	test('returns tooling and auth only for an exact bundled key and version', async () => {
+		const metadata = await resolveBundledAgentToolingMetadata('github', '1.3.0');
+		expect(metadata?.agentTooling).toMatchObject({
+			nix: { packages: ['gh'] },
+			env: [{ name: 'GH_TOKEN', credential: 'lease' }],
+		});
+		expect(metadata?.authSchema).toMatchObject({ methods: [{ type: 'app_installation' }] });
+	});
+
+	test('rejects a selected version that does not match the image metadata', async () => {
+		expect(
+			await resolveBundledAgentToolingMetadata('github', '1.0.0'),
+		).toBeNull();
+	});
 });
 
 /**

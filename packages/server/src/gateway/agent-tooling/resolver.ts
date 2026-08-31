@@ -23,8 +23,10 @@ import type {
   ConnectorAgentToolingEnv,
 } from "@lobu/connector-sdk";
 import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
-import { findBundledConnectorFile } from "../../utils/connector-catalog";
-import { assertCustomConnectorCloudAllowed } from "../../utils/custom-connector-cloud-gate";
+import {
+  resolveBundledAgentToolingMetadata,
+} from "../../utils/connector-catalog";
+import { isCloudMode } from "../../utils/cloud-mode";
 import { getDb } from "../../db/client.js";
 import {
   getAppInstallationAuthMethods,
@@ -142,8 +144,14 @@ interface ToolingConnectionRow {
   installation_app_id: string | null;
   installation_tenant: string | null;
   artifact_organization_id: string | null;
-  artifact_compiled: boolean;
+  artifact_id: string | number | null;
+  artifact_row_count: number;
+  artifact_has_compiled_code: boolean;
+  artifact_has_source_code: boolean;
+  artifact_has_source_path: boolean;
+  artifact_has_compile_config_hash: boolean;
   artifact_source_path: string | null;
+  definition_version: string;
 }
 
 /**
@@ -230,8 +238,14 @@ async function loadToolingConnections(
            c.config,
            cd.agent_tooling,
            cd.auth_schema,
+           cd.version AS definition_version,
+           cv.id AS artifact_id,
+           COALESCE(cv.artifact_row_count, 0) AS artifact_row_count,
            cv.organization_id AS artifact_organization_id,
-           (cv.compiled_code IS NOT NULL) AS artifact_compiled,
+           (cv.compiled_code IS NOT NULL) AS artifact_has_compiled_code,
+           (cv.source_code IS NOT NULL) AS artifact_has_source_code,
+           (cv.source_path IS NOT NULL) AS artifact_has_source_path,
+           (cv.compile_config_hash IS NOT NULL) AS artifact_has_compile_config_hash,
            cv.source_path AS artifact_source_path,
            -- Lease AUTHORITY, joined only for the fingerprint: revoking or
            -- transferring an installation must invalidate a warm worker that
@@ -248,7 +262,9 @@ async function loadToolingConnections(
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
     LEFT JOIN LATERAL (
-      SELECT organization_id, compiled_code, source_path
+      SELECT id, organization_id, compiled_code, source_code, source_path,
+             compile_config_hash,
+             COUNT(*) OVER ()::int AS artifact_row_count
       FROM connector_versions
       WHERE connector_key = cd.key
         AND version = cd.version
@@ -293,11 +309,12 @@ async function loadToolingConnections(
  */
 function toolingIdentityEntry(
   row: ToolingConnectionRow,
-  tooling: ConnectorAgentTooling | null
+  tooling: ConnectorAgentTooling | null,
+  authSchema: unknown = row.auth_schema,
 ): string {
   const installationRef = parseJsonObject(row.config).installation_ref;
   const method = getAppInstallationAuthMethods(
-    normalizeConnectorAuthSchema(row.auth_schema)
+    normalizeConnectorAuthSchema(authSchema)
   )[0];
   return JSON.stringify([
     String(row.connection_id),
@@ -318,6 +335,49 @@ function toolingIdentityEntry(
     row.installation_tenant,
     tooling,
   ]);
+}
+
+type TrustedToolingMetadata = {
+  tooling: ConnectorAgentTooling | null;
+  authSchema: unknown;
+};
+
+async function resolveToolingMetadata(
+  row: ToolingConnectionRow,
+): Promise<TrustedToolingMetadata | null> {
+  if (!isCloudMode()) {
+    return { tooling: parseAgentTooling(row.agent_tooling), authSchema: row.auth_schema };
+  }
+
+  // A selected org row, absent/ambiguous row, device manifest, or source-only
+  // row is never an authority for Cloud agent tooling. These facts are selected
+  // independently so contradictory legacy rows fail closed instead of being
+  // collapsed into a metadata-only provenance label.
+  if (
+    row.artifact_id == null ||
+    row.artifact_row_count !== 1 ||
+    row.artifact_organization_id !== null ||
+    !row.artifact_has_compiled_code ||
+    (row.artifact_has_source_path &&
+      row.artifact_source_path?.startsWith("device-manifest://"))
+  ) {
+    return null;
+  }
+
+  try {
+    const metadata = await resolveBundledAgentToolingMetadata(
+      row.connector_key,
+      row.definition_version,
+    );
+    if (!metadata) return null;
+    return { tooling: metadata.agentTooling, authSchema: metadata.authSchema };
+  } catch (error) {
+    logger.warn(
+      { connector_key: row.connector_key, version: row.definition_version, error },
+      "Ignoring Cloud agent tooling after bundled metadata resolution failed",
+    );
+    return null;
+  }
 }
 
 /** Digest the per-connection identity entries into a stable fingerprint. */
@@ -364,22 +424,9 @@ export async function resolveAgentToolingDeclaration(params: {
   // `loadToolingConnections` is ORDER BY c.id, so the digest is stable across
   // turns and replicas without sorting here.
   for (const row of await loadToolingConnections(params.organizationId)) {
-    try {
-      assertCustomConnectorCloudAllowed({
-        provenance: row.artifact_organization_id
-          ? 'organization'
-          : row.artifact_compiled
-            ? 'shared'
-            : row.artifact_source_path?.startsWith('device-manifest://')
-              ? 'device-manifest'
-              : 'metadata-only',
-        hasExecutableBytes: row.artifact_compiled,
-        hasMatchingBundledSource: findBundledConnectorFile(row.connector_key) !== null,
-      });
-    } catch {
-      continue;
-    }
-    const tooling = parseAgentTooling(row.agent_tooling);
+    const trusted = await resolveToolingMetadata(row);
+    if (!trusted) continue;
+    const { tooling, authSchema } = trusted;
     for (const pkg of tooling?.nix?.packages ?? []) packages.add(pkg);
     for (const domain of tooling?.domains ?? []) domains.add(domain);
 
@@ -387,7 +434,7 @@ export async function resolveAgentToolingDeclaration(params: {
     // tooling while pointing at different installations, and swapping between
     // them changes WHO the agent is. The installation ref therefore has to be
     // in the digest even though it contributes nothing to packages/domains.
-    identity.push(toolingIdentityEntry(row, tooling));
+    identity.push(toolingIdentityEntry(row, tooling, authSchema));
   }
   return {
     packages: [...packages],
@@ -430,25 +477,12 @@ export async function resolveAgentTooling(params: {
   let leaseExpiresAt: Date | null = null;
 
   for (const row of rows) {
-    try {
-      assertCustomConnectorCloudAllowed({
-        provenance: row.artifact_organization_id
-          ? 'organization'
-          : row.artifact_compiled
-            ? 'shared'
-            : row.artifact_source_path?.startsWith('device-manifest://')
-              ? 'device-manifest'
-              : 'metadata-only',
-        hasExecutableBytes: row.artifact_compiled,
-        hasMatchingBundledSource: findBundledConnectorFile(row.connector_key) !== null,
-      });
-    } catch {
-      continue;
-    }
-    const tooling = parseAgentTooling(row.agent_tooling);
+    const trusted = await resolveToolingMetadata(row);
+    if (!trusted) continue;
+    const { tooling, authSchema } = trusted;
     // Recorded for EVERY row, including ones that contribute nothing: removing
     // a malformed connection still changes the org's tooling identity.
-    identity.push(toolingIdentityEntry(row, tooling));
+    identity.push(toolingIdentityEntry(row, tooling, authSchema));
     if (!tooling) {
       // Covers both a structurally malformed value and one whose every entry
       // was filtered out (an unknown credential tier, an invalid package name,

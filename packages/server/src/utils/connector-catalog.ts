@@ -12,6 +12,7 @@ import {
 	extractConnectorMetadata,
 	NO_CONNECTOR_RUNTIME_ERROR,
 } from "./connector-compiler";
+import type { ConnectorAgentTooling } from "@lobu/connector-sdk";
 import logger from "./logger";
 
 const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
@@ -88,6 +89,17 @@ interface CatalogConnectorDefinition {
 }
 
 const metadataCache = new Map<string, CachedMetadata>();
+
+const bundledMetadataCache = new Map<
+	string,
+	{ mtimeMs: number; value: BundledAgentToolingMetadata | null }
+>();
+const MAX_BUNDLED_METADATA_CACHE = 32;
+
+export interface BundledAgentToolingMetadata {
+	authSchema: Record<string, unknown> | null;
+	agentTooling: ConnectorAgentTooling | null;
+}
 
 function normalizeLocalPath(pathValue: string): string {
 	return resolve(pathValue);
@@ -198,6 +210,46 @@ export function resolveFileSourcePath(value: string): string | null {
 // Re-exported here so existing server callers keep their import paths.
 export const compileConnectorFromFile =
 	connectorCompiler.compileConnectorFromFile;
+
+/**
+ * Resolve only agent metadata from the trusted connector file in this image.
+ * This is intentionally not part of the public catalog projection: Cloud
+ * tooling must never trust connector_definitions JSON for a shared artifact.
+ */
+export async function resolveBundledAgentToolingMetadata(
+	connectorKey: string,
+	selectedVersion: string,
+): Promise<BundledAgentToolingMetadata | null> {
+	const filePath = findBundledConnectorFile(connectorKey);
+	if (!filePath) return null;
+	const fileStat = await stat(filePath);
+	const cacheKey = `${filePath}\0${selectedVersion}`;
+	const cached = bundledMetadataCache.get(cacheKey);
+	if (cached?.mtimeMs === fileStat.mtimeMs) return cached.value;
+
+	let value: BundledAgentToolingMetadata | null = null;
+	try {
+		const compiledCode = await compileConnectorFromFile(filePath);
+		const metadata = await extractConnectorMetadata(compiledCode);
+		if (metadata.key === connectorKey && metadata.version === selectedVersion) {
+			value = {
+				authSchema: metadata.authSchema ?? null,
+				agentTooling: metadata.agentTooling ?? null,
+			};
+		}
+	} catch (error) {
+		logger.warn(
+			{ connector_key: connectorKey, version: selectedVersion, error: getErrorMessage(error) },
+			"Bundled connector metadata resolution failed",
+		);
+	}
+	if (bundledMetadataCache.size >= MAX_BUNDLED_METADATA_CACHE) {
+		const oldest = bundledMetadataCache.keys().next().value;
+		if (oldest) bundledMetadataCache.delete(oldest);
+	}
+	bundledMetadataCache.set(cacheKey, { mtimeMs: fileStat.mtimeMs, value });
+	return value;
+}
 
 async function extractConnectorCatalogMetadata(
 	filePath: string,

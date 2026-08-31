@@ -244,7 +244,18 @@ async function runAttempt(attempt) {
 }
 
 function processInfo(pid) {
-  const line = execFileSync('ps', ['-o', 'pid=,ppid=,pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+  let line;
+  try {
+    line = execFileSync('ps', ['-o', 'pid=,ppid=,pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+  } catch (error) {
+    // A PID file can become visible before macOS has published the process in
+    // ps, and a short-lived process can disappear between the probe and ps.
+    // Observation must retry within the bounded wait rather than turn that
+    // race into a false smoke failure.
+    if (error?.status === 1 || error?.code === 'ESRCH') return null;
+    throw error;
+  }
+  if (!line) return null;
   const [value, parent, group] = line.split(/\s+/).map(Number);
   return { pid: value, ppid: parent, pgid: group };
 }
@@ -292,6 +303,7 @@ async function runMidCommandCrashAttempt() {
   let supervisorPid = 0;
   let groupPid = 0;
   let descendantPid = 0;
+  const runnerPgid = processInfo(process.pid)?.pgid ?? 0;
   try {
     try {
       await waitUntil(() => {
@@ -320,7 +332,9 @@ async function runMidCommandCrashAttempt() {
     for (const pid of [descendantPid, supervisorPid, daemon.pid]) {
       if (pid && isAlive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch {} }
     }
-    if (groupPid && groupIsAlive(groupPid)) { try { process.kill(-groupPid, 'SIGKILL'); } catch {} }
+    if (groupPid && groupPid !== runnerPgid && groupIsAlive(groupPid)) {
+      try { process.kill(-groupPid, 'SIGKILL'); } catch {}
+    }
     midCommandPidFile = null;
     activeAttempt = null;
   }

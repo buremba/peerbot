@@ -63,6 +63,7 @@ import {
 } from "../../manage_entity_schema";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
+import { randomUUID } from "node:crypto";
 /**
  * Durably persist a claimed run's apply/execution output in its OWN
  * transaction, BEFORE the terminalization attempt. If the terminal card write
@@ -78,6 +79,7 @@ async function persistDurableApplyOutput(
 	runId: number,
 	organizationId: string,
 	output: Record<string, unknown>,
+	claimedBy?: string | null,
 ): Promise<void> {
 	const sql = getDb();
 	await sql`
@@ -86,6 +88,7 @@ async function persistDurableApplyOutput(
 			AND organization_id = ${organizationId}
 			AND status = 'running'
 			AND approval_status = 'approved'
+			AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
 	`;
 }
 
@@ -1611,18 +1614,21 @@ export async function handleApprove(
 	// same transaction as the claim + confirmed card — there is no separate
 	// post-claim status write to race with the card.
 	const setRunning = resolved.operation.backend !== "local_action";
+	const inlineOwner = setRunning ? `gateway-inline-${randomUUID()}` : null;
 	const claimed = await sql.begin(async (tx) => {
 		const statusSet = setRunning ? tx`, status = 'running'` : tx``;
+		const ownerSet = setRunning ? tx`, claimed_by = ${inlineOwner}, claimed_at = current_timestamp, last_heartbeat_at = current_timestamp` : tx``;
 		const rows = await tx`
 			UPDATE runs
 			SET approval_status = 'approved'
 				${statusSet},
+				${ownerSet},
 				action_input = ${args.input ? tx.json(args.input) : tx`action_input`}
 			WHERE id = ${args.run_id}
 				AND organization_id = ${ctx.organizationId}
 				AND approval_status = 'pending'
 				AND run_type = 'action'
-			RETURNING id, connection_id, action_key, action_input, created_by_user_id
+			RETURNING id, connection_id, action_key, action_input, created_by_user_id, claimed_by
 		`;
 		if (rows.length === 0) return null;
 		// The confirmed card's event id is the run's approval identity for this
@@ -1673,14 +1679,14 @@ export async function handleApprove(
 		run.created_by_user_id,
 		env,
 		undefined,
-		{ deferTerminalWrite: true },
+		{ deferTerminalWrite: true, claimedBy: inlineOwner },
 	);
 
 	if (result.status === "completed") {
 		// Phase 2a (durable): persist the execution output BEFORE the
 		// terminalization attempt so a failed completed-card write cannot lose
 		// the only durable record of an already-successful external mutation.
-		await persistDurableApplyOutput(args.run_id, ctx.organizationId, result.output);
+		await persistDurableApplyOutput(args.run_id, ctx.organizationId, result.output, inlineOwner);
 
 		// Phase 2b (atomic): terminal completed runs write + 'completed' card.
 		// The card guard runs INSIDE the tx so a missing card rolls the
@@ -1694,6 +1700,8 @@ export async function handleApprove(
 				content: `Operation completed: ${run.action_key}`,
 			},
 			reviewer,
+			getDb(),
+			{ expectedOwner: inlineOwner },
 		);
 		if (terminalCardId === null) {
 			return {

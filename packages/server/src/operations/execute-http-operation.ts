@@ -128,6 +128,7 @@ export async function executeHttpOperation(
 	actionInput: Record<string, unknown>,
 	abortSignal?: AbortSignal,
 	deferTerminalWrite = false,
+	claimedBy?: string | null,
 ): Promise<HttpOperationExecutionResult> {
 	const sql = getDb();
 	if (operation.backend_config.backend !== "http_operation") {
@@ -239,13 +240,14 @@ export async function executeHttpOperation(
 			const errorText =
 				typeof parsedBody === "string" ? parsedBody : `HTTP ${response.status}`;
 			if (!deferTerminalWrite) {
-				await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+				await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId} AND status = 'running' AND claimed_by = ${claimedBy ?? null} RETURNING id`;
 			}
 			return { status: "failed", error_message: errorText, output };
 		}
 
 		if (!deferTerminalWrite) {
-			await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+			const updated = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId} AND status = 'running' AND claimed_by = ${claimedBy ?? null} RETURNING id`;
+			if (updated.length === 0) return { status: 'failed', error_message: 'Inline execution lost its run lease; the durable run state is authoritative.' };
 		}
 		return { status: "completed", output, metadata };
 	} catch (error) {

@@ -53,6 +53,7 @@ export async function terminalizeApprovalRunCompleted(
 	card: { title: string; content: string },
 	reviewer: ApprovalReviewer | null,
 	db: DbClient = getDb(),
+	options?: { expectedOwner?: string | null },
 ): Promise<number | null> {
 	return db.begin(async (tx) => {
 		const rows = await tx`
@@ -63,6 +64,7 @@ export async function terminalizeApprovalRunCompleted(
 				AND organization_id = ${organizationId}
 				AND status = 'running'
 				AND approval_status = 'approved'
+				AND (${options?.expectedOwner ?? null}::text IS NULL OR claimed_by = ${options?.expectedOwner ?? null})
 			RETURNING id
 		`;
 		if (rows.length === 0) return null;

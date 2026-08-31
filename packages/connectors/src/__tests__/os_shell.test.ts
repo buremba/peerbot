@@ -20,6 +20,12 @@ function runContext(actionKey: string, input: Record<string, unknown>) {
 }
 
 function processIsLive(pid: number): boolean {
+  // pid 0 targets the caller's OWN process group and pid 1 is init; neither is
+  // a descendant, and process.kill reports both as live. An empty stdout parses
+  // to 0, so reject it here rather than reporting a phantom escaped process.
+  if (!Number.isInteger(pid) || pid <= 1) {
+    throw new Error(`processIsLive: ${pid} is not a descendant pid`);
+  }
   try {
     if (process.platform === 'linux') {
       const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
@@ -33,6 +39,15 @@ function processIsLive(pid: number): boolean {
     if (code === 'ENOENT' || code === 'ESRCH') return false;
     throw err;
   }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIsLive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !processIsLive(pid);
 }
 
 function forceKillProcessGroup(pid: number): void {
@@ -120,18 +135,23 @@ describe('os.shell connector', () => {
         // Print the descendant pid, then wait on a child that ignores SIGTERM
         // and owns no shell pipes. The grace timer must still SIGKILL it.
         command: `bash -c 'trap "" TERM; sleep 10' >/dev/null 2>&1 & echo $!; wait`,
-        timeout_ms: 300,
+        // Longer than the other timeout cases: this one must actually reach the
+        // echo and print a pid, and `bash -lc` profile sourcing alone can
+        // exceed 300ms on darwin. There is no elapsed-time assertion here.
+        timeout_ms: 1500,
       })
     );
     const output = result.output as Record<string, unknown>;
     const descendantPid = Number(String(output.stdout).trim());
     expect(output.timed_out).toBe(true);
-    expect(Number.isInteger(descendantPid)).toBe(true);
+    expect(descendantPid).toBeGreaterThan(1);
 
     // Some minimal PID 1 implementations reap orphans only when the test
     // process exits. A zombie is already dead; only a live state means the
-    // same-group descendant escaped cleanup.
-    expect(processIsLive(descendantPid)).toBe(false);
+    // same-group descendant escaped cleanup. SIGKILL delivery and reaping are
+    // both asynchronous, so poll rather than sampling once and racing the
+    // kernel on a loaded machine.
+    expect(await waitForProcessExit(descendantPid, 2000)).toBe(true);
   });
 
   it('settles on time when a session-detached child inherits stdio', async () => {
@@ -151,7 +171,7 @@ describe('os.shell connector', () => {
 
       expect(output.timed_out).toBe(true);
       expect(Date.now() - started).toBeLessThan(4000);
-      expect(Number.isInteger(escapedPid)).toBe(true);
+      expect(escapedPid).toBeGreaterThan(1);
       // setsid is explicitly outside process-group cleanup. The connector must
       // return on time even though the escaped session is still alive.
       expect(processGroupExists(escapedPid)).toBe(true);
@@ -177,7 +197,7 @@ describe('os.shell connector', () => {
 
       expect(output.timed_out).toBe(true);
       expect(Date.now() - started).toBeLessThan(4000);
-      expect(Number.isInteger(escapedPid)).toBe(true);
+      expect(escapedPid).toBeGreaterThan(1);
       expect(processGroupExists(escapedPid)).toBe(true);
     } finally {
       if (escapedPid > 0) forceKillProcessGroup(escapedPid);

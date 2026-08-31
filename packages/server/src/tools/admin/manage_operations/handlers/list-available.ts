@@ -1,19 +1,16 @@
-import { ListAvailableAction, type ManageOperationsResult } from "../schemas";
+import {
+	ListAvailableAction,
+	type ManageOperationsResult,
+} from "../schemas";
 import type { Static } from "@sinclair/typebox";
 import {
 	readGrantedScopesFromAuthData,
 	readRequestedScopesFromAuthData,
 } from "../../../../auth/oauth/scopes";
-import {
-	resolveMaxAccessLevel,
-	type ToolAccessLevel,
-} from "../../../../auth/tool-access";
+import { resolveMaxAccessLevel, type ToolAccessLevel } from "../../../../auth/tool-access";
 import { resolveAutomationConnectionVisibilityUserId } from "../../../../authz/automation-connection-visibility";
 import { compileConnectionRowVisibility } from "../../../../authz/connection-visibility";
-import {
-	resolveActingPrincipal,
-	resolveWriteEffects,
-} from "../../../../authz/entity-policy";
+import { resolveActingPrincipal, resolveWriteEffects } from "../../../../authz/entity-policy";
 import { authzScopeFromToolContext } from "../../../../authz/scope";
 import { getDb } from "../../../../db/client";
 import {
@@ -23,10 +20,7 @@ import {
 } from "../../../../operations/action-modes";
 import { listOperations } from "../../../../operations/connector-operations";
 import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
-import type {
-	AvailableOperation,
-	OperationDescriptor,
-} from "../../../../operations/types";
+import type { AvailableOperation, OperationDescriptor } from "../../../../operations/types";
 import { isChromeNamespaceConnectorKey } from "../../../../utils/connector-execution-placement";
 import {
 	DEVICE_ONLINE_WINDOW_SECONDS,
@@ -148,8 +142,7 @@ function executionTargetFromRow(
 			...base,
 			status: "device_offline",
 			executable: false,
-			reason:
-				"No online device is advertising the connector's selected manifest.",
+			reason: "No online device is advertising the connector's selected manifest.",
 		};
 	}
 	if (row.device_bound && !row.device_online) {
@@ -459,14 +452,7 @@ function buildAvailableOperation(args: {
 	 */
 	callerLacksMembership: boolean;
 }): AvailableOperation & Record<string, unknown> {
-	const {
-		operation,
-		internalTargets,
-		includeInputSchema,
-		viewUrl,
-		callerMax,
-		callerLacksMembership,
-	} = args;
+	const { operation, internalTargets, includeInputSchema, viewUrl, callerMax, callerLacksMembership } = args;
 	const { backend_config: _privateBackendConfig, ...publicOperation } =
 		operation;
 	const requiredScopes = operation.required_scopes ?? [];
@@ -511,11 +497,7 @@ function buildAvailableOperation(args: {
 		operation.backend === "local_action" &&
 		(operation as OperationDescriptor).supports_execute === false;
 	const base = executeUnsupported
-		? {
-				readyTarget: undefined as ExecutionTarget | undefined,
-				executable: false,
-				readiness: "unsupported",
-			}
+		? { readyTarget: undefined as ExecutionTarget | undefined, executable: false, readiness: "unsupported" }
 		: resolveOperationReadiness(targets);
 	// Caller-awareness: readiness answers "is the TARGET ready", but the same
 	// operation must not be advertised as executable to a caller whose session
@@ -529,7 +511,8 @@ function buildAvailableOperation(args: {
 	// MEMBERSHIP (authenticated/anon non-member — routeAction denies with
 	// "requires workspace membership", not a scope message) vs. a member whose
 	// session lacks mcp:write. Emit the right remediation for each.
-	const callerBlockedByMembership = callerLacksMembership && !callerCanExecute;
+	const callerBlockedByMembership =
+		callerLacksMembership && !callerCanExecute;
 	const callerReadiness = callerBlockedByMembership
 		? "membership_required"
 		: "session_scope_required";
@@ -719,41 +702,39 @@ export async function handleListAvailable(
 	const deviceReadiness = await loadDeviceConnectorReadiness({
 		sql: getDb(),
 		targets: targetRows.flatMap((row) =>
-			row.connector_manifest_backed ||
-			isChromeNamespaceConnectorKey(row.connector_key) ||
-			(Array.isArray(row.connector_runtime?.platforms) &&
-				row.connector_runtime.platforms.includes("headless"))
-				? [
-						{
-							ownerUserId: row.device_owner_user_id,
-							connectorKey: row.connector_key,
-							connectorVersion: row.connector_version,
-							manifestHash: row.connector_manifest_hash,
-							deviceWorkerId: row.device_worker_id,
-						},
-					]
+			(row.connector_manifest_backed ||
+				isChromeNamespaceConnectorKey(row.connector_key) ||
+				(Array.isArray(row.connector_runtime?.platforms) &&
+					row.connector_runtime.platforms.includes("headless")))
+				? [{
+						ownerUserId: row.device_owner_user_id,
+						connectorKey: row.connector_key,
+						connectorVersion: row.connector_version,
+						manifestHash: row.connector_manifest_hash,
+						deviceWorkerId: row.device_worker_id,
+					}]
 				: [],
 		),
 	});
 	const targetsByConnector = groupExecutionTargets(targetRows, deviceReadiness);
 
-	// A `disabled` connector_action effect turns an operation OFF for this principal
-	// — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval
-	// which surface then gate on execute). Two levels now: the BLANKET `execute` rule
-	// (operation_key NULL) can disable the whole connector, and a PER-OPERATION rule
-	// can disable a single op while the rest stay listed.
-	const actor = await resolveActingPrincipal(getDb(), {
-		organizationId: ctx.organizationId,
-		userId: ctx.userId,
-		agentId: ctx.agentId,
-		sessionAutomationId: ctx.actingAutomationId ?? null,
-	});
-	// Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
-	// ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
-	// its hidden count from the global total gives an inconsistent `total` across pages
-	// and can return a short page while visible ops remain past the offset (a client
-	// treating "short page = end" would silently truncate the catalog). Pagination must
-	// run on the post-filter list.
+  // A `disabled` connector_action effect turns an operation OFF for this principal
+  // — it shouldn't be listed at all (Disabled HIDES the action, unlike deny/approval
+  // which surface then gate on execute). Two levels now: the BLANKET `execute` rule
+  // (operation_key NULL) can disable the whole connector, and a PER-OPERATION rule
+  // can disable a single op while the rest stay listed.
+  const actor = await resolveActingPrincipal(getDb(), {
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    agentId: ctx.agentId,
+    sessionAutomationId: ctx.actingAutomationId ?? null,
+  });
+  // Fetch the FULL filtered set (offset 0, no caller limit), drop per-op-disabled
+  // ops across the WHOLE set, THEN paginate. Filtering a single page and subtracting
+  // its hidden count from the global total gives an inconsistent `total` across pages
+  // and can return a short page while visible ops remain past the offset (a client
+  // treating "short page = end" would silently truncate the catalog). Pagination must
+  // run on the post-filter list.
 	// For an explicit connection, targetRows already performed the visibility and
 	// authorization lookup. Query the connector catalog by that row's key instead
 	// of applying listOperations' legacy per-connection action-mode filter; the
@@ -763,25 +744,25 @@ export async function handleListAvailable(
 		args.connection_id !== undefined
 			? targetRows[0]?.connector_key
 			: args.connector_key;
-	const full = await listOperations({
-		organizationId: ctx.organizationId,
+  const full = await listOperations({
+    organizationId: ctx.organizationId,
 		connectorKey: catalogConnectorKey,
 		connectionId: args.connection_id,
-		entityId: args.entity_id,
-		kind: args.kind,
-		backend: args.backend,
+    entityId: args.entity_id,
+    kind: args.kind,
+    backend: args.backend,
 		// Required-input detection still needs the schema when the caller hides the
 		// descriptor copy from the public response.
 		includeInputSchema: true,
-		includeOutputSchema: args.include_output_schema ?? false,
+    includeOutputSchema: args.include_output_schema ?? false,
 		includeDisabled: true,
-		// Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
-		// would silently drop ops past index 100 and make them unreachable at any
-		// caller offset. We must filter per-op-disabled across the full set BEFORE
-		// slicing, so no internal cap here; the caller's limit/offset apply below.
-		limit: Number.MAX_SAFE_INTEGER,
-		offset: 0,
-	});
+    // Fetch the WHOLE filtered set — listOperations defaults to limit 100, which
+    // would silently drop ops past index 100 and make them unreachable at any
+    // caller offset. We must filter per-op-disabled across the full set BEFORE
+    // slicing, so no internal cap here; the caller's limit/offset apply below.
+    limit: Number.MAX_SAFE_INTEGER,
+    offset: 0,
+  });
 	const qualifiedWriteKeys = full.operations
 		.filter((operation) => operation.kind === "write")
 		.map((operation) =>
@@ -799,20 +780,20 @@ export async function handleListAvailable(
 	});
 	const blanketDisabled = policyEffects.get(null) === "disabled";
 
-	// Hide WRITE ops whose per-op (or blanket) policy is disabled. Reads are never
-	// filtered by agent write-policy. Humans always resolve auto for policy.
+  // Hide WRITE ops whose per-op (or blanket) policy is disabled. Reads are never
+  // filtered by agent write-policy. Humans always resolve auto for policy.
 	const visibleFlags = full.operations.map((op) => {
-		if (op.kind === "read") return "auto" as const;
-		if (blanketDisabled) return "disabled" as const;
-		return (
-			policyEffects.get(
-				qualifiedOperationKey(op.connector_key, op.operation_key),
-			) ?? "auto"
-		);
-	});
+			if (op.kind === "read") return "auto" as const;
+			if (blanketDisabled) return "disabled" as const;
+			return (
+				policyEffects.get(
+					qualifiedOperationKey(op.connector_key, op.operation_key),
+				) ?? "auto"
+  );
+		});
 	const policyVisible = full.operations.filter(
 		(_op, i) => visibleFlags[i] !== "disabled",
-	);
+  );
 
 	const queryTokens = (args.query ?? "")
 		.toLocaleLowerCase()
@@ -854,13 +835,13 @@ export async function handleListAvailable(
 			return operationMatchesQuery(operation, queryTokens);
 		});
 
-	const offset = args.offset ?? 0;
+  const offset = args.offset ?? 0;
 	const limit = args.limit ?? 100;
-	return {
+  return {
 		action: "list_available",
 		operations: publicOperations.slice(offset, offset + limit),
 		total: publicOperations.length,
-		limit,
-		offset,
-	};
+    limit,
+    offset,
+  };
 }

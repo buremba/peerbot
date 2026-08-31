@@ -181,7 +181,7 @@ async function readDefinition(orgId: string, key = CONNECTOR_KEY) {
 
 async function poll(
   workerId: string,
-  connectorManifests: unknown[],
+  connectorManifests: unknown[] | undefined,
   platform = 'macos',
   capabilities: Record<string, boolean> = { screentime: true },
   options: { capacityAvailable?: number; agentKinds?: string[] } = {},
@@ -192,8 +192,8 @@ async function poll(
     app_version: '9.9.0',
     label: 'Test Device',
     capabilities,
-    connector_manifests: connectorManifests,
   };
+  if (connectorManifests !== undefined) body.connector_manifests = connectorManifests;
   if (options.capacityAvailable !== undefined) {
     body.capacity_available = options.capacityAvailable;
   }
@@ -1197,6 +1197,15 @@ describe('device connector manifests', () => {
       RETURNING id
     `) as unknown as Array<{ id: number }>;
 
+    const downgraded = { ...HEADLESS_OS_SHELL_MANIFEST, version: '0.1.0', runtime: { platforms: ['headless'] } };
+    expect((await poll(workerId, [downgraded], 'headless', { 'os.shell': true }, { capacityAvailable: 1 })).status).toBe(200);
+    const [afterRejected] = (await sql`SELECT status, claimed_by FROM runs WHERE id = ${run.id}`) as unknown as Array<Record<string, unknown>>;
+    expect(afterRejected).toEqual({ status: 'pending', claimed_by: null });
+
+    expect((await poll(workerId, undefined, 'headless', { 'os.shell': true }, { capacityAvailable: 1 })).status).toBe(200);
+    const [afterOmitted] = (await sql`SELECT status, claimed_by FROM runs WHERE id = ${run.id}`) as unknown as Array<Record<string, unknown>>;
+    expect(afterOmitted).toEqual({ status: 'pending', claimed_by: null });
+
     const claimingPoll = await poll(
       workerId,
       [HEADLESS_OS_SHELL_MANIFEST],
@@ -1248,7 +1257,7 @@ describe('device connector manifests', () => {
     expect(rows[0]?.connector_manifests).toEqual({});
   });
 
-  it('preserves the last valid inventory when a later manifest payload is rejected', async () => {
+  it('clears current manifest authority when a later payload is rejected', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const sql = getTestDb();
 
@@ -1302,8 +1311,8 @@ describe('device connector manifests', () => {
       FROM device_workers
       WHERE worker_id = ${workerId}
     `) as unknown as Array<{ connector_manifests: Record<string, unknown> }>;
-    expect(Object.keys(devices[0]?.connector_manifests ?? {})).toEqual([CONNECTOR_KEY]);
-    expect(devices[0]?.connector_manifests).toEqual(before[0]?.connector_manifests);
+    expect(devices[0]?.connector_manifests).toEqual({});
+    expect(devices[0]?.connector_manifests).not.toEqual(before[0]?.connector_manifests);
   });
 
   it('registers and reconciles a zero-capacity poll without claiming an eligible run', async () => {

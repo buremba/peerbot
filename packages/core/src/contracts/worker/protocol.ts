@@ -115,6 +115,10 @@ export const PollRequestSchema = Type.Object({
   capacity_available: Type.Optional(
     Type.Integer({ minimum: 0, maximum: 1024 })
   ),
+  /** Per-execution-backend capacity. Zero means the backend is not ready. */
+  backend_capacity: Type.Optional(
+    Type.Record(Type.String(), Type.Integer({ minimum: 0, maximum: 1024 }))
+  ),
   platform: Type.Optional(Type.String()),
   app_version: Type.Optional(Type.String()),
   /**

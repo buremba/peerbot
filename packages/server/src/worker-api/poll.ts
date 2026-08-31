@@ -285,6 +285,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let app_version: string | null = null;
   let label: string | null = null;
   let capacityAvailable: number | null = null;
+  let backendCapacity: Record<string, number> = {};
+  let backendCapacityProvided = false;
   let connectorManifestsProvided = false;
   let connectorManifestsRaw: unknown;
   // Agent CLIs this device can spawn. `null` is NOT the same as `[]`: null means
@@ -313,6 +315,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     app_version = body.app_version ?? null;
     label = body.label ?? null;
     capacityAvailable = body.capacity_available ?? null;
+    backendCapacity = body.backend_capacity ?? {};
+    backendCapacityProvided = Object.hasOwn(body, 'backend_capacity');
     connectorManifestsProvided = Object.hasOwn(body, 'connector_manifests');
     connectorManifestsRaw = body.connector_manifests;
     agentKinds = normalizeAgentKinds(body.agent_kinds);
@@ -367,6 +371,13 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // below, so platform binding / capability authorization / org-scoped claiming
   // all apply exactly as for a signed-in device.
   const isUserScopedWorker = c.var.workerAuthMode === 'user' || anonLocalUserId != null;
+  // Trusted fleet workers predate the per-backend signal and remain compiled
+  // capable unless they explicitly advertise a backend map. Device workers
+  // must opt in because headless recovery intentionally advertises only the
+  // daemon-owned backend when its compiler/SDK runtime is unavailable.
+  if (!backendCapacityProvided && !isUserScopedWorker) {
+    backendCapacity = { compiled_connector: 1 };
+  }
   // Effective device identity: the token's user/org when user-scoped, else the
   // re-anchored local owner.
   const effectiveWorkerUserId = c.var.workerUserId ?? anonLocalUserId;
@@ -478,14 +489,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             manifests: connectorManifestsRaw,
           })
         : null;
-      // An explicitly empty array is an authoritative "this device serves no
-      // connectors". A payload the validator rejected is not: replacing the
-      // last good inventory with {} would make reconcile archive working
-      // definitions because a malformed poll looked like removal.
+      // The manifest field is the current execution attestation, not a
+      // heartbeat cache. Historical connector_versions remain inventory, but
+      // a rejected or omitted current advertisement must remove readiness and
+      // claim authority immediately.
       const connectorManifestsAccepted = manifestValidation?.accepted === true;
       const connectorManifestMap = connectorManifestsAccepted
         ? storedManifestMap(manifestValidation.manifests)
-        : null;
+        : {};
 
       // `xmax = 0` on the RETURNING row distinguishes a brand-new device
       // registration from a routine poll-update so we only emit the
@@ -516,13 +527,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           -- wrote it back would clobber a Devices-page rename on the next poll,
           -- since a headless daemon self-reports its hostname every time.
           organization_id = COALESCE(device_workers.organization_id, EXCLUDED.organization_id),
-          connector_manifests = CASE
-            WHEN ${connectorManifestsAccepted} THEN EXCLUDED.connector_manifests
-            ELSE device_workers.connector_manifests
-          END,
-          -- Only overwrite when the device actually advertised. A client that
-          -- stops sending the field (a downgraded build) must not erase what a
-          -- capable client already told us.
+          connector_manifests = EXCLUDED.connector_manifests,
+          -- A missing field is an explicit loss of current attestation. Do not
+          -- retain a prior manifest merely because the heartbeat is fresh.
           agent_kinds = COALESCE(EXCLUDED.agent_kinds, device_workers.agent_kinds),
           last_seen_at = now()
         RETURNING id, organization_id, (xmax = 0) AS inserted
@@ -647,6 +654,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     orgScopeIds,
     baseOrgScopeIds,
     workerHardensDbEgress,
+    backendCapacity,
   };
   const workerKind = isUserScopedWorker ? 'device' : 'fleet';
   // `platform` is self-reported in the poll body and is only pinned to the

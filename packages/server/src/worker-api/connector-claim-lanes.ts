@@ -23,6 +23,8 @@ export interface ConnectorClaimContext {
   orgScopeIds: string[];
   baseOrgScopeIds: string[];
   workerHardensDbEgress: boolean;
+  /** Capacity advertised for each execution backend by this worker. */
+  backendCapacity: Record<string, number>;
 }
 
 interface ConnectorClaimLaneRefs {
@@ -112,9 +114,19 @@ export function connectorClaimLaneSql(
     manifestBacked: refs.runManifestBacked,
     artifactCompiledCode: refs.runArtifactCompiledCode,
   });
+  // A worker may be able to run the daemon-owned backend while its connector
+  // compiler/SDK runtime is unavailable. Never let a compiled artifact enter
+  // any claim lane unless that backend was explicitly advertised as ready.
+  const compiledBackendReady =
+    (context.backendCapacity.compiled_connector ?? 0) > 0;
 
   return sql`
     (
+      (
+        COALESCE(${refs.runManifestBacked}, false)
+        OR ${compiledBackendReady}
+      )
+      AND
       -- Trusted/anonymous fleet worker. Execution-pinned connections stay on
       -- their exact device; browser-affinity parent runs stay on fleet.
       (

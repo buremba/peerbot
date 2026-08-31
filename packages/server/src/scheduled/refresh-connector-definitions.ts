@@ -29,6 +29,7 @@ interface DefRow {
   organization_id: string;
   key: string;
   mcp_config: Record<string, unknown> | null;
+  device_manifest_backed: boolean;
 }
 
 export async function refreshConnectorDefinitions(): Promise<RefreshResult> {
@@ -39,6 +40,16 @@ export async function refreshConnectorDefinitions(): Promise<RefreshResult> {
   const rows = (await sql`
     SELECT DISTINCT ON (organization_id, key)
       organization_id, key, mcp_config
+      , COALESCE((
+        SELECT cv.source_path LIKE 'device-manifest://%'
+        FROM connector_versions cv
+        WHERE (cv.organization_id = connector_definitions.organization_id
+           OR cv.organization_id IS NULL)
+          AND cv.connector_key = connector_definitions.key
+          AND cv.version = connector_definitions.version
+        ORDER BY cv.organization_id NULLS LAST, cv.id DESC
+        LIMIT 1
+      ), false) AS device_manifest_backed
     FROM connector_definitions
     WHERE status = 'active'
       AND organization_id IS NOT NULL
@@ -57,6 +68,7 @@ export async function refreshConnectorDefinitions(): Promise<RefreshResult> {
   const noSourceKeys = new Set<string>();
 
   for (const row of rows) {
+    if (row.device_manifest_backed) continue;
     // MCP definitions have no bundled source file. Atlassian Rovo gained its
     // Jira feed after existing installs were already stored, so converge those
     // snapshots here instead of requiring every user to reinstall.

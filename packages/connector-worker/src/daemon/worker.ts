@@ -32,6 +32,8 @@ export interface DaemonConfig {
   /** Fixed advertisement for an exact interactive session. */
   agentKinds?: AgentKind[];
   workerCredentialMaintenance?: (activate: (workerApiToken: string) => void) => Promise<void>;
+  /** Backend capacities advertised to the gateway. */
+  backendCapacity?: Record<string, number>;
 }
 
 const DEFAULT_CAPABILITIES: WorkerCapabilities = {};
@@ -65,6 +67,7 @@ export class WorkerDaemon {
       // binaries, or the device advertises a kind it then fails to launch.
       binaryOverrides: daemonConfig.executor?.binaryOverrides,
       agentKinds: daemonConfig.agentKinds,
+      backendCapacity: daemonConfig.backendCapacity,
     });
 
     this.env = env;

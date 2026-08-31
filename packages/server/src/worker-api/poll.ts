@@ -285,6 +285,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let app_version: string | null = null;
   let label: string | null = null;
   let capacityAvailable: number | null = null;
+  let backendCapacity: Record<string, number> = {};
+  let backendCapacityProvided = false;
   let connectorManifestsProvided = false;
   let connectorManifestsRaw: unknown;
   // Agent CLIs this device can spawn. `null` is NOT the same as `[]`: null means
@@ -313,6 +315,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     app_version = body.app_version ?? null;
     label = body.label ?? null;
     capacityAvailable = body.capacity_available ?? null;
+    backendCapacity = body.backend_capacity ?? {};
+    backendCapacityProvided = Object.hasOwn(body, 'backend_capacity');
     connectorManifestsProvided = Object.hasOwn(body, 'connector_manifests');
     connectorManifestsRaw = body.connector_manifests;
     agentKinds = normalizeAgentKinds(body.agent_kinds);
@@ -420,6 +424,26 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       }
       effectivePlatform = existing[0].platform;
     }
+  }
+  // A daemon built after the per-backend signal always advertises its own map
+  // (connector-worker/src/daemon/start.ts). An omitted map therefore means a
+  // client that predates the field, or one that never runs the daemon at all
+  // (the Chrome extension and the macOS app poll directly). Mirror what the
+  // daemon would have advertised for that platform rather than inventing a
+  // wider or narrower grant: headless keeps its compiler/SDK runtime gated off
+  // while still owning the daemon backend, and every other platform is
+  // compiled-capable. Not keyed on token scope: user-scoped device workers are
+  // compiled-capable too.
+  //
+  // Placed AFTER the binding resolution above, and keyed on effectivePlatform,
+  // because the claim lane is: a headless-bound device that omits `platform`
+  // from its body would otherwise default to compiled-only and silently lose
+  // the daemon backend it is the only worker able to run.
+  if (!backendCapacityProvided) {
+    backendCapacity =
+      effectivePlatform === 'headless'
+        ? { daemon_builtin: 1, compiled_connector: 0 }
+        : { compiled_connector: 1 };
   }
   // For user-scoped (device) workers, authorize the advertised capability set
   // against the platform-specific allowlist in @lobu/core. Anything outside
@@ -643,10 +667,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     capabilityMatchSet,
     manifestClaimAuthorizations,
     allowLegacyManifestCapabilityClaims:
-      isUserScopedWorker && !connectorManifestsProvided && effectivePlatform !== 'chrome-extension',
+      isUserScopedWorker &&
+      !connectorManifestsProvided &&
+      effectivePlatform !== 'chrome-extension' &&
+      effectivePlatform !== 'headless',
     orgScopeIds,
     baseOrgScopeIds,
     workerHardensDbEgress,
+    backendCapacity,
   };
   const workerKind = isUserScopedWorker ? 'device' : 'fleet';
   // `platform` is self-reported in the poll body and is only pinned to the

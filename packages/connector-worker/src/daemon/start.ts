@@ -145,6 +145,12 @@ export async function startDaemonCommand(
   const workerCapabilities: Record<string, boolean> = platform
     ? Object.fromEntries(capabilities.map((name) => [name, true]))
     : { db_egress_hardening: true };
+  // Headless recovery daemons own the daemon-builtin backend and deliberately
+  // keep their compiler/SDK runtime closed; everything else is compiled-capable.
+  const backendCapacity: Record<string, number> =
+    platform === 'headless'
+      ? { daemon_builtin: 1, compiled_connector: 0 }
+      : { compiled_connector: 1 };
   // Auto-discover device identity from the host when not passed: a device
   // worker defaults to `<platform>:<short-hostname>` and a hostname label. An
   // interactive daemon instead derives its id from the exact inherited
@@ -184,6 +190,7 @@ export async function startDaemonCommand(
     ...(label ? { label } : {}),
     ...(platform ? { manifests: DEVICE_MANIFESTS_BY_PLATFORM[platform] ?? [] } : {}),
     ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
+    backendCapacity,
     ...(opts.workerCredentialMaintenance
       ? { workerCredentialMaintenance: opts.workerCredentialMaintenance }
       : {}),

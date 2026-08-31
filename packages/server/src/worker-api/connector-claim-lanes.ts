@@ -5,6 +5,7 @@ import { DB_EGRESS_HARDENED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate
 import {
   delegatedBrowserAffinitySql,
   legacyNonManifestConnectorSql,
+  nativeChromeExtensionConnectorSql,
 } from '../utils/connector-execution-placement';
 import type { ManifestClaimAuthorization } from './device-manifests';
 
@@ -23,6 +24,16 @@ export interface ConnectorClaimContext {
   orgScopeIds: string[];
   baseOrgScopeIds: string[];
   workerHardensDbEgress: boolean;
+  /** Capacity advertised for each execution backend by this worker. */
+  backendCapacity?: Record<string, number>;
+}
+
+/** A backend is claimable only when this poll explicitly advertises capacity. */
+export function hasPositiveBackendCapacity(
+  capacity: Record<string, number> | undefined,
+  backend: string
+): boolean {
+  return Number.isFinite(capacity?.[backend]) && (capacity?.[backend] ?? 0) > 0;
 }
 
 interface ConnectorClaimLaneRefs {
@@ -86,7 +97,7 @@ export function connectorClaimLaneSql(
       NOT COALESCE(${refs.runManifestBacked}, false)
       OR ${refs.runRuntime} IS NOT NULL
     )
-    AND ${context.workerPlatform ?? ''}::text <> 'chrome-extension'
+    AND ${context.workerPlatform ?? ''}::text NOT IN ('headless', 'chrome-extension')
     AND COALESCE(
       ${refs.runRuntime}->'platforms' ? ${context.workerPlatform ?? ''}::text,
       false
@@ -95,6 +106,17 @@ export function connectorClaimLaneSql(
   const manifestAuthorization = sql`
     (${exactManifestAuthorization})
     OR (${legacyHashlessManifestAuthorization})
+  `;
+  const exactDaemonBuiltinAuthorization = sql`
+    EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(${sql.json(context.manifestClaimAuthorizations)}::jsonb) auth_item
+      WHERE auth_item->>'connectorKey' = ${refs.connectorKey}
+        AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
+        AND auth_item->>'manifestHash' = ${refs.runManifestHash}
+        AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
+        AND auth_item->>'runtimeExecution' = 'daemon_builtin'
+    )
   `;
   const delegatedBrowserAffinity = delegatedBrowserAffinitySql(sql, {
     platform: refs.pinPlatform,
@@ -112,12 +134,55 @@ export function connectorClaimLaneSql(
     manifestBacked: refs.runManifestBacked,
     artifactCompiledCode: refs.runArtifactCompiledCode,
   });
+  // A worker may be able to run the daemon-owned backend while its connector
+  // compiler/SDK runtime is unavailable. Never let a compiled artifact enter
+  // any claim lane unless that backend was explicitly advertised as ready.
+  const compiledBackendReady = hasPositiveBackendCapacity(context.backendCapacity, 'compiled_connector');
+  const daemonBuiltinReady = hasPositiveBackendCapacity(context.backendCapacity, 'daemon_builtin');
+  // A chrome-namespace execution runs inside the advertising extension, so it
+  // needs no server-side backend at all. The helper is narrow by construction:
+  // a reserved chrome key, or a legacy key only while the selected artifact is
+  // exactly its validated Chrome manifest.
+  const nativeChromeExecution = nativeChromeExtensionConnectorSql(sql, {
+    connectorKey: refs.connectorKey,
+    connectorVersion: refs.connectorVersion,
+    manifestBacked: refs.runManifestBacked,
+    artifactSourcePath: refs.runArtifactSourcePath,
+  });
+  // Keep this guard outside the individual lanes: every lane must advertise
+  // the backend that the selected artifact actually needs. A manifest-backed
+  // artifact executes on the device that advertised the manifest, so the only
+  // server-side backend it can need is the daemon-owned one. Historical
+  // manifest artifacts carry no run_runtime, so daemon_builtin is derived from
+  // the exact retained authorization; an unrecognised execution kind fails
+  // closed rather than inheriting the unrestricted branch.
+  const selectedBackendReady = sql`
+    (
+      ${nativeChromeExecution}
+      OR (
+        NOT COALESCE(${refs.runManifestBacked}, false)
+        AND ${compiledBackendReady}
+      )
+      OR (
+        COALESCE(${refs.runManifestBacked}, false)
+        AND CASE
+          WHEN ${refs.runRuntime}->>'execution' = 'daemon_builtin' THEN ${daemonBuiltinReady}
+          WHEN ${refs.runRuntime}->>'execution' = 'bridge' THEN true
+          WHEN ${refs.runRuntime}->>'execution' IS NULL
+            THEN NOT (${exactDaemonBuiltinAuthorization}) OR ${daemonBuiltinReady}
+          ELSE false
+        END
+      )
+    )
+  `;
 
   return sql`
     (
-      -- Trusted/anonymous fleet worker. Execution-pinned connections stay on
-      -- their exact device; browser-affinity parent runs stay on fleet.
-      (
+      ${selectedBackendReady}
+      AND (
+        -- Trusted/anonymous fleet worker. Execution-pinned connections stay on
+        -- their exact device; browser-affinity parent runs stay on fleet.
+        (
         ${!context.isUserScopedWorker}
         AND (
           COALESCE(${refs.runRequiredCapability}, '') = ANY(
@@ -147,10 +212,10 @@ export function connectorClaimLaneSql(
             ${delegatedBrowserAffinity}
           )
         )
-      )
-      -- User-scoped worker claiming an unpinned capability connector in its
-      -- base org scope. Page-activated work is handled by the fleet parent.
-      OR (
+        )
+        -- User-scoped worker claiming an unpinned capability connector in its
+        -- base org scope. Page-activated work is handled by the fleet parent.
+        OR (
         ${context.isUserScopedWorker}
         AND ${refs.connectionDeviceWorkerId} IS NULL
         AND (
@@ -169,11 +234,11 @@ export function connectorClaimLaneSql(
         )
         AND NOT COALESCE(${pageActivated}, false)
         AND ${refs.organizationId} = ANY(${pgTextArray(context.baseOrgScopeIds)}::text[])
-      )
-      -- Exact execution pin. A chrome-extension pin on a connector that does
-      -- not execute natively in the extension is delegated browser affinity,
-      -- so its parent connector work stays on fleet instead.
-      OR (
+        )
+        -- Exact execution pin. A chrome-extension pin on a connector that does
+        -- not execute natively in the extension is delegated browser affinity,
+        -- so its parent connector work stays on fleet instead.
+        OR (
         ${context.isUserScopedWorker}
         AND ${context.deviceWorkerId}::uuid IS NOT NULL
         AND ${refs.connectionDeviceWorkerId} = ${context.deviceWorkerId}::uuid
@@ -190,6 +255,7 @@ export function connectorClaimLaneSql(
         )
         AND ${refs.organizationId} = ANY(${pgTextArray(context.orgScopeIds)}::text[])
         AND NOT (${delegatedBrowserAffinity})
+        )
       )
     )
   `;

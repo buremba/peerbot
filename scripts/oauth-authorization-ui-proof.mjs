@@ -181,6 +181,7 @@ try {
     redirect_uri: redirectUri,
     client_id: consentClient.client_id,
     code_verifier: verifier,
+    resource: resourceUrl.toString(),
   });
   const consentScope = String(consentTokens.scope || "")
     .split(/\s+/)

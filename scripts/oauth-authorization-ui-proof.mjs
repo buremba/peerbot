@@ -157,15 +157,14 @@ try {
 
   await page.goto(authorizeUrl.toString(), { waitUntil: "domcontentloaded" });
   await page.getByRole("heading", { name: "Authorize application" }).waitFor();
-  await page.getByText("1 of 3 workspaces selected.").waitFor();
+  await page.getByText("0 of 3 workspaces selected.").waitFor();
+  await page.getByRole("button", { name: "Select all 3" }).click();
+  await page.getByText("3 of 3 workspaces selected.").waitFor();
+  await page.getByLabel("Read only").check();
   await page.screenshot({
     path: join(outputDir, "oauth-consent-review.png"),
     fullPage: true,
   });
-
-  await page.getByRole("button", { name: "Select all 3" }).click();
-  await page.getByText("3 of 3 workspaces selected.").waitFor();
-  await page.getByLabel("Read only").check();
   await page.getByRole("button", { name: "Approve" }).click();
   await page.waitForURL((url) => url.pathname === "/oauth-proof/callback");
 
@@ -233,18 +232,18 @@ try {
   });
   await page.getByRole("heading", { name: "Authorize application" }).waitFor();
   await page.getByText("Device capabilities").waitFor();
-  await page.getByText("1 of 3 workspaces selected.").waitFor();
-  await page.screenshot({
-    path: join(outputDir, "oauth-device-review.png"),
-    fullPage: true,
-  });
-
+  await page.getByText("0 of 3 workspaces selected.").waitFor();
   await page.getByRole("button", { name: "Select all 3" }).click();
+  await page.getByText("3 of 3 workspaces selected.").waitFor();
   await page
     .getByLabel(
       "I initiated this request and confirmed that the device code matches."
     )
     .click();
+  await page.screenshot({
+    path: join(outputDir, "oauth-device-review.png"),
+    fullPage: true,
+  });
   await page.getByRole("button", { name: "Approve" }).click();
   await page.getByRole("heading", { name: "Access Authorized" }).waitFor();
 

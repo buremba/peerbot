@@ -188,6 +188,59 @@ describe("MessageBatcher — stop()", () => {
     // The timer was cleared; the queued message is still in the queue
     expect(batcher.getPendingCount()).toBe(1);
   });
+
+  test("stop during a failed batch leaves the queued suffix pending", async () => {
+    const processed: string[] = [];
+    let releaseFirst: (() => void) | null = null;
+    let firstStarted: (() => void) | null = null;
+    const started = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+
+    const batcher = new MessageBatcher({
+      batchWindowMs: 10,
+      onBatchReady: async (messages) => {
+        if (messages[0]?.payload.messageId === "fails") {
+          firstStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+          throw new Error("turn failed");
+        }
+        processed.push(...messages.map((message) => message.payload.messageId));
+      },
+    });
+
+    const failed = batcher.addMessage(makeMsg("fails", "first", 1));
+    await started;
+    await batcher.addMessage(makeMsg("suffix", "second", 2));
+    batcher.stop();
+    releaseFirst?.();
+    await failed.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(processed).toEqual([]);
+    expect(batcher.getPendingCount()).toBe(1);
+  });
+
+  test("idle direct requeue and priority delivery cannot drain after stop", async () => {
+    const processed: string[] = [];
+    const batcher = new MessageBatcher({
+      batchWindowMs: 10,
+      onBatchReady: async (messages) => {
+        processed.push(...messages.map((message) => message.payload.messageId));
+      },
+    });
+
+    await batcher.addMessage(makeMsg("warm", "warmup", 1));
+    batcher.stop();
+    batcher.requeueClaimedMessages([makeMsg("suffix", "suffix", 2)]);
+    await batcher.addPriorityMessage(makeMsg("priority", "priority", 3));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(processed).toEqual(["warm"]);
+    expect(batcher.getPendingCount()).toBe(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -243,6 +296,44 @@ describe("MessageBatcher — error resilience", () => {
 
     // After any error path, isProcessing must be false
     expect(batcher.isCurrentlyProcessing()).toBe(false);
+  });
+
+  test("messages queued during a failed batch are still processed", async () => {
+    const processed: string[] = [];
+    let releaseFirst: (() => void) | null = null;
+    let signalFirstStarted: (() => void) | null = null;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirstStarted = resolve;
+    });
+
+    const batcher = new MessageBatcher({
+      batchWindowMs: 10,
+      onBatchReady: async (messages) => {
+        const id = messages[0]?.payload.messageId;
+        if (id === "fails") {
+          signalFirstStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+          throw new Error("turn failed");
+        }
+        if (id) processed.push(id);
+      },
+    });
+
+    const failedBatch = batcher.addMessage(makeMsg("fails", "first", 1));
+    await firstStarted;
+    await batcher.addMessage(makeMsg("must-survive", "second", 2));
+    releaseFirst?.();
+    await failedBatch.catch(() => undefined);
+
+    const deadline = Date.now() + 500;
+    while (processed.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(processed).toEqual(["must-survive"]);
+    batcher.stop();
   });
 });
 

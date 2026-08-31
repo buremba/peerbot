@@ -233,7 +233,7 @@ try {
   });
   await page.getByRole("heading", { name: "Authorize application" }).waitFor();
   await page.getByText("Device capabilities").waitFor();
-  await page.getByText("0 of 3 workspaces selected.").waitFor();
+  await page.getByText("1 of 3 workspaces selected.").waitFor();
   await page.getByRole("button", { name: "Select all 3" }).click();
   await page.getByText("3 of 3 workspaces selected.").waitFor();
   await page

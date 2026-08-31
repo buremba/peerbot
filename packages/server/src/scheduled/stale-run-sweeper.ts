@@ -58,6 +58,8 @@ interface StaleRunSweepSpec {
 	 * after which the normal in-progress heartbeat/coarse predicate governs it.
 	 */
 	includePending?: boolean;
+	/** Bound one owner/run transaction so a large sweep cannot monopolize locks. */
+	maxRows?: number;
 }
 
 const RUN_TYPE_PATTERN = /^[a-z_]+$/;
@@ -189,6 +191,10 @@ export async function markStaleRunsAsTimeout(
 	},
 ): Promise<TimedOutStaleRun[]> {
 	const stalePredicate = buildStaleRunWhereSql(spec);
+	const maxRows = spec.maxRows ?? 100;
+	if (!Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 100) {
+		throw new Error("StaleRunSweepSpec.maxRows must be an integer from 1 to 100");
+	}
 	const result = await sql.unsafe(
 		`WITH automation_locks AS MATERIALIZED (
 		 SELECT a.id
@@ -198,6 +204,8 @@ export async function markStaleRunsAsTimeout(
 		   FROM runs
 		   WHERE ${stalePredicate}
 		     AND automation_id IS NOT NULL
+		   ORDER BY id ASC
+		   LIMIT ${maxRows}
 		 )
 		 ORDER BY a.id
 		 FOR UPDATE
@@ -212,7 +220,7 @@ export async function markStaleRunsAsTimeout(
                 WHEN ${hasHeartbeatSql(spec.heartbeatSemantics)} THEN $1
                 ELSE $2
               END AS timeout_error
-       FROM runs
+	   FROM runs
 	   WHERE ${stalePredicate}
 	     AND (
 	       runs.automation_id IS NULL
@@ -222,6 +230,8 @@ export async function markStaleRunsAsTimeout(
 	       )
 	       OR runs.automation_id IN (SELECT id FROM automation_locks)
 	     )
+	   ORDER BY id ASC
+	   LIMIT ${maxRows}
        FOR UPDATE SKIP LOCKED
      )
      UPDATE runs AS r

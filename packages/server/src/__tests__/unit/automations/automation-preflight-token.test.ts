@@ -44,9 +44,12 @@ describe("Automation memory preflight token", () => {
 				organizationId: "org-team",
 				agentId: "developer",
 				runId: 456,
+				executionMode: "capture",
 			}),
 		).resolves.toEqual({ ok: true });
 
 		expect(claims?.source).toBe(AUTOMATION_RUN_SOURCE);
+		expect(claims?.automationRunId).toBe(456);
+		expect(claims?.executionMode).toBe("capture");
 	});
 });

@@ -177,7 +177,7 @@ describe('os.shell connector', () => {
       escapedPid = Number(String(output.stdout).trim());
 
       expect(output.timed_out).toBe(true);
-      expect(Date.now() - started).toBeLessThan(4000);
+      expect(Date.now() - started).toBeLessThan(5500);
       expect(escapedPid).toBeGreaterThan(1);
       // setsid is explicitly outside process-group cleanup. The connector must
       // return on time even though the escaped session is still alive.
@@ -203,7 +203,7 @@ describe('os.shell connector', () => {
       escapedPid = Number(String(output.stdout).trim());
 
       expect(output.timed_out).toBe(true);
-      expect(Date.now() - started).toBeLessThan(4000);
+      expect(Date.now() - started).toBeLessThan(5500);
       expect(escapedPid).toBeGreaterThan(1);
       expect(processGroupExists(escapedPid)).toBe(true);
     } finally {

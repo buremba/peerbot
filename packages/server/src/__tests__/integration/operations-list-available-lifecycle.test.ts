@@ -70,6 +70,7 @@ const KEY_INACTIVE = "demo.ops.inactive";
 const KEY_DEVICE = "demo.ops.device";
 const KEY_DEVICE_SETUP = "chrome.test_readiness";
 const KEY_COMPILED_LEGACY = "whatsapp.local";
+const KEY_HEADLESS_LEGACY = "headless.test_shell";
 
 const ACTIONS_SCHEMA = {
 	create_issue: {
@@ -115,6 +116,7 @@ async function purge(organizationId: string): Promise<void> {
 		KEY_DEVICE,
 		KEY_DEVICE_SETUP,
 		KEY_COMPILED_LEGACY,
+		KEY_HEADLESS_LEGACY,
 	];
 	await sql`DELETE FROM feeds WHERE connection_id IN (SELECT id FROM connections WHERE connector_key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId})`;
 	await sql`DELETE FROM connections WHERE connector_key = ANY(${pgTextArray(keys)}::text[]) AND organization_id = ${organizationId}`;
@@ -512,6 +514,72 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 			"https://gateway.test",
 		);
 		expect(JSON.stringify(create)).not.toContain(workerId);
+	});
+
+	it("reports an online legacy headless backend as unavailable until the daemon is updated", async () => {
+		const { org, user } = await setupOwner("Ops Legacy Headless Org");
+		await seedConnector(org.id, KEY_HEADLESS_LEGACY, "Legacy Headless Shell");
+		const sql = getTestDb();
+		await sql`
+			UPDATE connector_definitions
+			SET runtime = ${sql.json({ platforms: ["headless"] })},
+			    required_capability = 'os.shell'
+			WHERE organization_id = ${org.id} AND key = ${KEY_HEADLESS_LEGACY}
+		`;
+		const manifest = {
+			key: KEY_HEADLESS_LEGACY,
+			version: "1.0.0",
+			name: "Legacy Headless Shell",
+			required_capability: "os.shell",
+			runtime: { platforms: ["headless"] },
+			auth_schema: { methods: [{ type: "none" }] },
+			feeds_schema: {},
+			actions_schema: ACTIONS_SCHEMA,
+		};
+		const [device] = (await sql`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, capabilities, connector_manifests,
+				label, organization_id, last_seen_at
+			) VALUES (
+				${user.id}, ${`headless-${Math.random().toString(36).slice(2, 10)}`},
+				'headless', ${sql.json(["os.shell"])},
+				${sql.json({
+					[KEY_HEADLESS_LEGACY]: {
+						manifest,
+						manifest_hash: deviceManifestHash(
+							manifest as DeviceConnectorManifest,
+						),
+						received_at: new Date().toISOString(),
+					},
+				})},
+				'Legacy Headless', ${org.id}, NOW()
+			)
+			RETURNING id
+		`) as unknown as Array<{ id: string }>;
+		const conn = await createTestConnection({
+			organization_id: org.id,
+			connector_key: KEY_HEADLESS_LEGACY,
+			status: "active",
+			createDefaultFeed: false,
+		});
+		await sql`UPDATE connections SET device_worker_id = ${device.id}::uuid WHERE id = ${conn.id}`;
+
+		const { operations } = await listAll(org.id, user.id, {
+			connector_key: KEY_HEADLESS_LEGACY,
+		});
+		const create = getOperation(operations, "create_issue");
+		expect(create).toMatchObject({
+			executable: false,
+			readiness: "backend_unavailable",
+			execution_targets: [
+				{
+					connection_id: conn.id,
+					status: "backend_unavailable",
+					executable: false,
+				},
+			],
+			next_action: { action: "update_device_daemon", manual: true },
+		});
 	});
 
 	it("uses the manifest snapshot to report setup_required for an online device", async () => {

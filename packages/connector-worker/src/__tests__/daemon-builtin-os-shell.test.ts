@@ -1,6 +1,50 @@
 import { describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { executeRun } from '../daemon/executor.js';
 import { runShellBuiltin } from '../daemon/builtins/os-shell.js';
+
+function processIsLive(pid: number): boolean {
+  try {
+    if (process.platform === 'linux') {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const state = stat.slice(stat.lastIndexOf(') ') + 2, stat.lastIndexOf(') ') + 3);
+      return state !== 'Z';
+    }
+    process.kill(pid, 0);
+    if (process.platform === 'darwin') {
+      const state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+        encoding: 'utf8',
+      }).trim();
+      return !state.startsWith('Z');
+    }
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+function forceKill(pid: number, group = false): void {
+  try {
+    process.kill(group ? -pid : pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+}
+
+function processGroupExists(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
 
 function stubClient() {
   const completions: Array<Record<string, unknown>> = [];
@@ -53,6 +97,60 @@ describe('daemon-builtin os.shell', () => {
         else process.env[name] = value;
       }
     }
+  });
+
+  test('force-kills SIGTERM-ignoring descendants in its process group', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'lobu-shell-test-'));
+    const readyPath = join(testDir, 'ready');
+    let descendantPid = 0;
+    try {
+      const output = await runShellBuiltin({
+        command: `node -e 'const fs = require("node:fs"); process.on("SIGTERM", () => {}); process.on("SIGHUP", () => {}); fs.writeFileSync("${readyPath}", String(process.pid)); setTimeout(() => {}, 10000)' >/dev/null 2>&1 & while [ ! -s ${JSON.stringify(readyPath)} ]; do sleep 0.01; done; cat ${JSON.stringify(readyPath)}; wait`,
+        cwd: process.cwd(),
+        timeout_ms: 300,
+      });
+      descendantPid = Number(output.stdout.trim());
+
+      expect(output.timed_out).toBe(true);
+      expect(Number.isInteger(descendantPid)).toBe(true);
+      expect(processIsLive(descendantPid)).toBe(false);
+    } finally {
+      if (descendantPid > 0 && processIsLive(descendantPid)) forceKill(descendantPid);
+      rmSync(testDir, { recursive: true, force: true });
+    }
+  });
+
+  test('settles after its grace period when a session-detached child keeps stdio open', async () => {
+    if (process.platform !== 'linux') return;
+
+    let escapedPid = 0;
+    try {
+      const started = Date.now();
+      const output = await runShellBuiltin({
+        command: `setsid bash -c 'trap "" TERM; sleep 10' & echo $!; wait`,
+        cwd: process.cwd(),
+        timeout_ms: 300,
+      });
+      escapedPid = Number(output.stdout.trim());
+
+      expect(output.timed_out).toBe(true);
+      expect(Date.now() - started).toBeLessThan(5_500);
+      expect(Number.isInteger(escapedPid)).toBe(true);
+      expect(processGroupExists(escapedPid)).toBe(true);
+    } finally {
+      if (escapedPid > 0) forceKill(escapedPid, true);
+    }
+  });
+
+  test('does not reject when the command exits before consuming stdin', async () => {
+    const output = await runShellBuiltin({
+      command: 'exit 0',
+      cwd: process.cwd(),
+      stdin: 'x'.repeat(1_000_000),
+    });
+
+    expect(output.success).toBe(true);
+    expect(output.exit_code).toBe(0);
   });
 
   test('executes without compiled connector code or connector SDK resolution', async () => {
@@ -145,7 +243,7 @@ describe('daemon-builtin os.shell', () => {
         execution_backend: 'daemon_builtin',
         action_key: 'run',
         action_input: {
-          command: 'sleep 5 & wait',
+          command: 'sleep 10 & wait',
           cwd: process.cwd(),
           timeout_ms: 300,
         },
@@ -156,7 +254,7 @@ describe('daemon-builtin os.shell', () => {
 
     expect(result.itemsCollected).toBe(0);
     expect(result.error).toStartWith('operation_execution_failed:');
-    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(Date.now() - started).toBeLessThan(5_500);
     expect(completions[0]?.status).toBe('failed');
     expect(completions[0]?.error_message).toStartWith('operation_execution_failed: Shell command timed out after ');
   });

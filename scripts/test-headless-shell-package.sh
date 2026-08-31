@@ -16,7 +16,8 @@ test -f "$package_root/dist/daemon/builtins/index.js" || {
 }
 
 smoke_dir="$(mktemp -d)"
-trap 'rm -rf "$smoke_dir"' EXIT
+daemon_cwd="$(mktemp -d)"
+trap 'rm -rf "$smoke_dir" "$daemon_cwd"' EXIT
 
 npm pack "$package_root" --pack-destination "$smoke_dir" --silent >/dev/null
 archives=("$smoke_dir"/*.tgz)
@@ -57,12 +58,13 @@ NODE
 # has already proven the built-in itself is dependency-isolated.
 ln -s "$repo_root/node_modules" "$smoke_dir/node_modules"
 
-PACKAGE_ROOT="$smoke_dir/package" node --input-type=module <<'NODE'
+PACKAGE_ROOT="$smoke_dir/package" DAEMON_CWD="$daemon_cwd" node --input-type=module <<'NODE'
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 
 const packageRoot = process.env.PACKAGE_ROOT;
+const daemonCwd = process.env.DAEMON_CWD;
 const entry = resolve(packageRoot, 'dist/bin.js');
 const token = 'owl_pat_packaged_shell_smoke';
 let activeAttempt = null;
@@ -189,7 +191,7 @@ async function runAttempt(attempt) {
       '--version', 'package-smoke',
     ],
     {
-      cwd: packageRoot,
+      cwd: daemonCwd,
       env: {
         ...process.env,
         WORKER_API_TOKEN: token,

@@ -1,13 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
-
-const PaginationFields = {
-  limit: Type.Optional(
-    Type.Number({ description: "Page size (default: 100)", default: 100 })
-  ),
-  offset: Type.Optional(
-    Type.Number({ description: "Pagination offset (default: 0)", default: 0 })
-  ),
-};
+import { paginationFields } from "./pagination";
 
 // ============================================
 // Schema
@@ -40,7 +32,7 @@ export const ListFeedsAction = Type.Object({
         "Filter by runtime health for active feeds on non-paused connections; paused feeds and feeds on paused connections are excluded. 'failing' = last sync failed or the feed has one or more consecutive failures; 'healthy' = otherwise. Surfaces active-but-failing feeds the `status` filter cannot.",
     })
   ),
-  ...PaginationFields,
+  ...paginationFields(50),
 });
 
 // Metadata inspection is deliberately separate from source access. Reading one

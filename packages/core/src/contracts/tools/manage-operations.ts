@@ -1,11 +1,23 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { MAX_TOOL_PAGE_OFFSET, MAX_TOOL_PAGE_SIZE } from "./pagination";
 
-const PaginationFields = {
+// manage_operations is flattened to one MCP object, so duplicate properties
+// must tell the truth for both actions instead of publishing one false default.
+const OperationsPaginationFields = {
   limit: Type.Optional(
-    Type.Number({ description: "Page size (default: 100)", default: 100 })
+    Type.Integer({
+      minimum: 1,
+      maximum: MAX_TOOL_PAGE_SIZE,
+      description:
+        "Page size (default: 100 for list_available; 20 for list_runs; max: 500)",
+    })
   ),
   offset: Type.Optional(
-    Type.Number({ description: "Pagination offset (default: 0)", default: 0 })
+    Type.Integer({
+      minimum: 0,
+      maximum: MAX_TOOL_PAGE_OFFSET,
+      description: "Pagination offset (default: 0, max: 1000000)",
+    })
   ),
 };
 
@@ -62,10 +74,7 @@ export const ListAvailableAction = Type.Object({
       description: "Include output schema in response",
     })
   ),
-  // Shared with list_runs — same limit/offset defaults + descriptions, and a
-  // future PaginationFields edit reaches both actions instead of silently
-  // skipping this hand-inlined copy.
-  ...PaginationFields,
+  ...OperationsPaginationFields,
 });
 
 export const ExecuteAction = Type.Object({
@@ -172,16 +181,19 @@ export const ListRunsAction = Type.Object({
       Type.Number({ description: "Filter by persisted Automation IDs" })
     )
   ),
-  /** Keyset cursor: return runs ordered before (before_created_at, before_id). */
+  /** Keyset cursor: both fields are required together (validated by the handler). */
   before_id: Type.Optional(
-    Type.Number({ description: "Keyset cursor: return runs before this ID" })
+    Type.Integer({
+      minimum: 1,
+      description: "Keyset cursor: return runs before this ID",
+    })
   ),
   before_created_at: Type.Optional(
     Type.String({
       description: "Keyset cursor: return runs before this timestamp",
     })
   ),
-  ...PaginationFields,
+  ...OperationsPaginationFields,
 });
 
 export const GetRunAction = Type.Object({

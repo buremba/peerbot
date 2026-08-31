@@ -1,5 +1,6 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { ApprovalAttributionSchema } from "../interaction-envelope";
+import { paginationFields } from "./pagination";
 
 function SortOrderField(description: string) {
   return Type.Optional(
@@ -205,16 +206,7 @@ export const ManageEntitySchema = Type.Object({
 
   // List/pagination
   search: Type.Optional(Type.String({ description: "[list] Search by name" })),
-  limit: Type.Optional(
-    Type.Number({
-      description: "[list/list_links] Page size (default: 100, max: 500)",
-    })
-  ),
-  offset: Type.Optional(
-    Type.Number({
-      description: "[list/list_links] Pagination offset (default: 0)",
-    })
-  ),
+  ...paginationFields(100),
   sort_by: Type.Optional(
     Type.String({
       description:

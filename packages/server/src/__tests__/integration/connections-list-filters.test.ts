@@ -19,6 +19,7 @@ type ConnectionListResult = {
 		facets?: Facets;
 		effective_credential_mode?: string | null;
 	}>;
+	total?: number;
 };
 
 type ConnectorGroupsResult = {
@@ -185,6 +186,37 @@ describe("manage_connections and manage_feeds list filters", () => {
 		);
 	});
 
+	it("reports the full filtered total on every page and after overshoot", async () => {
+		const connectionIds = [
+			orgConnectionId,
+			memberPrivateConnectionId,
+			adminPrivateConnectionId,
+		];
+		const first = (await workspace.owner.connections.list({
+			connection_ids: connectionIds,
+			limit: 1,
+			offset: 0,
+		})) as ConnectionListResult;
+		const second = (await workspace.owner.connections.list({
+			connection_ids: connectionIds,
+			limit: 1,
+			offset: 1,
+		})) as ConnectionListResult;
+		const overshoot = (await workspace.owner.connections.list({
+			connection_ids: connectionIds,
+			limit: 1,
+			offset: 3,
+		})) as ConnectionListResult;
+
+		expect(first.connections).toHaveLength(1);
+		expect(second.connections).toHaveLength(1);
+		expect(overshoot.connections).toHaveLength(0);
+		expect(first.connections[0]).not.toHaveProperty("filtered_total");
+		expect(first.total).toBe(3);
+		expect(second.total).toBe(3);
+		expect(overshoot.total).toBe(3);
+	});
+
 	it("filters feeds by explicit feed_ids", async () => {
 		const result = (await workspace.owner.feeds.list({
 			feed_ids: [memberPrivateFeedId],
@@ -271,10 +303,24 @@ describe("manage_connections and manage_feeds list filters", () => {
 	});
 
 	it("applies connection visibility to list and get", async () => {
+		const connectionIds = [
+			orgConnectionId,
+			memberPrivateConnectionId,
+			adminPrivateConnectionId,
+		];
 		const memberList = (await workspace.member.connections.list({
-			connection_ids: [adminPrivateConnectionId],
+			connection_ids: connectionIds,
 		})) as ConnectionListResult;
-		expect(memberList.connections ?? []).toHaveLength(0);
+		expect(ids(memberList.connections)).toEqual(
+			[orgConnectionId, memberPrivateConnectionId].sort((a, b) => a - b),
+		);
+		expect(memberList.total).toBe(2);
+
+		const anonymousList = (await workspace
+			.asAnonymous()
+			.connections.list({ connection_ids: connectionIds })) as ConnectionListResult;
+		expect(ids(anonymousList.connections)).toEqual([orgConnectionId]);
+		expect(anonymousList.total).toBe(1);
 
 		await expect(
 			workspace.member.connections.get(adminPrivateConnectionId),

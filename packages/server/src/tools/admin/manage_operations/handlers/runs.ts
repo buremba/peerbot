@@ -90,15 +90,24 @@ export async function handleListRuns(
 	args: Static<typeof ListRunsAction>,
 	ctx: ToolContext,
 ): Promise<ManageOperationsResult> {
-  const sql = getDb();
   const limit = args.limit ?? 20;
+  if ((args.before_id == null) !== (args.before_created_at == null)) {
+    throw new ToolUserError(
+      "before_id and before_created_at must be provided together",
+      400,
+    );
+  }
   // Keyset pagination short-circuits offset whenever a cursor is supplied.
   const hasCursor = args.before_id != null && args.before_created_at != null;
   const offset = hasCursor ? 0 : (args.offset ?? 0);
 
   // Date-range bounds are validated up front so a bad value is a clean caller
   // error instead of a mid-query Postgres cast failure.
-  for (const field of ["created_after", "created_before"] as const) {
+  for (const field of [
+    "created_after",
+    "created_before",
+    "before_created_at",
+  ] as const) {
     const value = args[field];
     if (value != null && Number.isNaN(Date.parse(value))) {
       throw new ToolUserError(
@@ -107,6 +116,8 @@ export async function handleListRuns(
       );
     }
   }
+
+  const sql = getDb();
 
   // Shared WHERE fragment so the count and page queries can't drift apart.
   let where = sql`r.organization_id = ${ctx.organizationId}`;
@@ -180,18 +191,20 @@ export async function handleListRuns(
     LEFT JOIN connections c ON c.id = r.connection_id
     WHERE ${pageWhere}
     ORDER BY r.created_at DESC, r.id DESC
-    LIMIT ${limit} OFFSET ${offset}
+    LIMIT ${limit + 1} OFFSET ${offset}
   `;
 
   const [countResult, rows] = await Promise.all([countQuery, query]);
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
 
   return {
 		action: "list_runs",
-    runs: rows.map((row) => publicRunRecord(row)),
+    runs: pageRows.map((row) => publicRunRecord(row)),
     total: Number(countResult[0]?.total ?? 0),
     limit,
     offset,
-    has_more: rows.length === limit,
+    has_more: hasMore,
   };
 }
 

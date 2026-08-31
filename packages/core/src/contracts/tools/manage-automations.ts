@@ -882,9 +882,11 @@ export const ManageAutomationsSchema = Type.Object(
       )
     ),
     limit: Type.Optional(
-      Type.Number({
+      Type.Integer({
+        minimum: 1,
+        maximum: 500,
         description:
-          "[list/get_feedback] Maximum records to return. get_feedback defaults to 50; list defaults to all matching Automations.",
+          "[list/get_feedback] Maximum records to return (max: 500). get_feedback defaults to 50; list defaults to all matching Automations.",
       })
     ),
   },

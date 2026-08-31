@@ -251,18 +251,16 @@ describe("worker auth token", () => {
     ).toBe(null);
   });
 
-  test("automationRunId without capture is rejected", () => {
-    // The other direction matters too: a live run addressing an eval row would
-    // let real work stamp a capture record onto a run it never replayed.
-    expect(
-      verifyWorkerToken(
-        generateWorkerToken("user-1", "conv-1", "deploy-A", {
-          channelId: "C1",
-          executionMode: "live",
-          automationRunId: 874626,
-        })
-      )
-    ).toBe(null);
+  test("live Automation provenance round-trips without capture", () => {
+    const verified = verifyWorkerToken(
+      generateWorkerToken("user-1", "conv-1", "deploy-A", {
+        channelId: "C1",
+        executionMode: "live",
+        automationRunId: 874626,
+      })
+    );
+    expect(verified?.executionMode).toBe("live");
+    expect(verified?.automationRunId).toBe(874626);
   });
 
   test("round-trips an admin-tools allowlist with its distinct auth actor", () => {

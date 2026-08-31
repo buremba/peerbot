@@ -36,6 +36,7 @@ import {
 } from "../../auth/api-auth-middleware.js";
 import type { ExternalAuthClient } from "../../auth/external/client.js";
 import type { AgentSettingsStore } from "../../auth/settings/agent-settings-store.js";
+import type { ProviderCatalogService } from "../../auth/provider-catalog.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import {
@@ -45,6 +46,8 @@ import {
 import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
 import type { PlatformRegistry } from "../../platform.js";
+import type { GrantStore } from "../../permissions/grant-store.js";
+import { preflightAutomationRun } from "../../automation-run-preflight.js";
 import {
   parseAutomationRunConversationId,
   verifyAutomationRunIntent,
@@ -438,6 +441,8 @@ interface AgentApiConfig {
   userAgentsStore?: UserAgentsStore;
   agentMetadataStore?: Pick<AgentMetadataStore, "getMetadata">;
   platformRegistry?: PlatformRegistry;
+  providerCatalogService?: ProviderCatalogService;
+  grantStore?: GrantStore;
   approveToolCall?: (
     requestId: string,
     decision: string
@@ -453,6 +458,8 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     userAgentsStore,
     agentMetadataStore,
     platformRegistry,
+    providerCatalogService,
+    grantStore,
   } = config;
   const sessMgr = config.sessionManager;
   const sseManager = config.sseManager;
@@ -885,14 +892,14 @@ export function createAgentApi(config: AgentApiConfig): Hono {
     // an eval replay: it is derived from the run row here, travels as a signed
     // worker-token claim, and is what stops the agent touching the outside
     // world. See packages/server/src/runs/run-types.ts.
-    const automationExecutionMode = automationIntent
+    const automationVerification = automationIntent
       ? await verifyAutomationRunIntent({
           intent: automationIntent,
           organizationId: tokenOrganizationId,
           accessToken: tokenFromHeader(c),
         })
       : null;
-    if (automationIntent && !automationExecutionMode) {
+    if (automationIntent && !automationVerification) {
       logger.warn(
         {
           runId: automationIntent.runId,
@@ -1203,8 +1210,12 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         : {}),
       dryRun: effectiveDryRun,
       intent: automationIntent ?? undefined,
-      ...(automationExecutionMode
-        ? { executionMode: automationExecutionMode }
+	  ...(automationVerification
+		? {
+			executionMode: automationVerification.executionMode,
+			automationCompletionRequired:
+			  automationVerification.completionRequired,
+		  }
         : {}),
     };
     await sessMgr.setSession(session);
@@ -1723,10 +1734,43 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         messageOrganizationId
       );
 
+      if (session.intent?.kind === "automation_run") {
+        const preflight = await preflightAutomationRun({
+          agentId: realAgentId,
+          organizationId: messageOrganizationId,
+          userId: session.userId,
+          requestedModel:
+            typeof agentOptions.model === "string"
+              ? agentOptions.model
+              : undefined,
+          preApprovedTools: Array.isArray(agentOptions.preApprovedTools)
+            ? agentOptions.preApprovedTools
+            : undefined,
+          proxyBaseUrl: `${pubUrl.replace(/\/$/, "").replace(/\/lobu$/, "")}/api/proxy`,
+          providerCatalog: providerCatalogService,
+          grantStore,
+		  completionRequired: session.automationCompletionRequired !== false,
+        });
+        if (!preflight.ok) {
+          rootSpan?.end();
+          return c.json(
+            {
+              success: false,
+              error: preflight.error,
+              retryable: preflight.retryable,
+              errorCode: preflight.errorCode,
+            },
+            preflight.retryable ? 503 : 422
+          );
+        }
+        agentOptions.model = preflight.model;
+      }
+
       const {
         networkConfig: settingsNetwork,
         guardrailsInline: settingsGuardrailsInline,
         nixConfig: resolvedNixConfig,
+        preApprovedTools,
         ...remainingOptions
       } = agentOptions;
 
@@ -1736,7 +1780,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       if (
         (session.turnCount ?? 0) === 0 &&
         !ephemeralForTurn &&
-        session.intent?.kind !== "automation_run" &&
+		session.intent?.kind !== "automation_run" &&
         messageOrganizationId
       ) {
         try {
@@ -1818,6 +1862,9 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         teamId: "api",
         agentId: realAgentId,
         organizationId: messageOrganizationId,
+        ...(session.intent?.kind === "automation_run"
+          ? { parentRunId: session.intent.runId }
+          : {}),
         botId: "lobu-api",
         platform: "api",
         messageText: messageTextForTranscript,
@@ -1849,6 +1896,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         networkConfig: session.networkConfig || settingsNetwork,
         guardrailsInline: settingsGuardrailsInline,
         nixConfig: resolvedNixConfig,
+        preApprovedTools,
       });
 
       rootSpan?.end();

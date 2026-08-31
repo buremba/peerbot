@@ -695,20 +695,37 @@ async function queueWriteForApproval(
   // divergence, same as the connector queue path).
   const { runId, eventId } = await sql.begin(async (tx) => {
     const inserted = await tx`
+      WITH parent_gate AS MATERIALIZED (
+        SELECT id FROM runs
+        WHERE id = ${ctx.actingRunId ?? null}
+          AND organization_id = ${ctx.organizationId}
+          AND run_type = ANY('{automation,automation_eval}'::text[])
+          AND status = ANY('{pending,claimed,running}'::text[])
+        FOR SHARE
+      ), authorized_parent AS (
+        SELECT 1 WHERE ${ctx.actingRunId ?? null}::bigint IS NULL
+        UNION ALL SELECT 1 FROM parent_gate
+      )
       INSERT INTO runs (
         organization_id, run_type, action_key, action_input,
+        automation_id, parent_run_id,
         created_by_user_id, initiator_kind, initiator_ref,
         approval_status, status, created_at
-      ) VALUES (
+      ) SELECT
         ${ctx.organizationId}, 'internal', ${MANAGE_AGENTS_ACTION_KEY},
         ${tx.json(proposal as unknown as Record<string, unknown>)},
+        ${ctx.actingAutomationId ?? null}, ${ctx.actingRunId ?? null},
         ${initiatorColumns.createdByUserId},
         ${initiatorColumns.initiatorKind},
         ${tx.json(initiatorColumns.initiatorRef)},
         'pending', 'pending', current_timestamp
-      )
+      FROM authorized_parent
+      LIMIT 1
       RETURNING id
     `;
+    if (inserted.length === 0) {
+      throw new Error(`Automation parent run ${ctx.actingRunId} is no longer active.`);
+    }
     const runId = Number((inserted[0] as { id: unknown }).id);
 
     const event = await insertEvent(

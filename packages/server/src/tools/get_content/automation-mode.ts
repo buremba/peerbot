@@ -432,13 +432,16 @@ async function queryContentData(
 export async function fingerprintAutomationSources(args: {
   sql: DbClient;
   automationId: number;
+	versionId?: number | null;
   windowStart: string;
   windowEnd: string;
 }): Promise<{ fingerprint: string; empty: boolean }> {
   const rows = await args.sql`
     SELECT w.organization_id, w.entity_ids, w.sources, w.created_by, v.version_sources
     FROM automations w
-    LEFT JOIN automation_versions v ON v.id = w.current_version_id
+	LEFT JOIN automation_versions v
+	  ON v.id = COALESCE(${args.versionId ?? null}::bigint, w.current_version_id)
+	 AND v.automation_id = w.automation_group_id
     WHERE w.id = ${args.automationId}
     LIMIT 1
   `;

@@ -77,17 +77,16 @@ describe("buildWorkerTokenClaims — automationRunId", () => {
 		expect(claims.automationRunId).toBe(874626);
 	});
 
-	// Live tokens stay byte-identical to what they were before this claim
-	// existed — nothing reads it on a live run, and an unchanged live token
-	// keeps this off the rollout risk surface.
-	test("a live run carries no run id, even with the same intent", () => {
+	// Live runs need the same trusted parent identity so action/internal
+	// approval descendants cannot escape parent lifecycle cleanup.
+	test("a live run carries the run id off its verified intent", () => {
 		const claims = buildWorkerTokenClaims({
 			...base,
 			platformMetadata: {
 				intent: { kind: "automation_run", runId: 874626, automationId: 5 },
 			},
 		});
-		expect(claims.automationRunId).toBeUndefined();
+		expect(claims.automationRunId).toBe(874626);
 	});
 
 	test.each([

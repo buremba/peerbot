@@ -368,6 +368,12 @@ export class ProviderCatalogService {
 
     const allModules = getModelProviderModules();
     const moduleMap = new Map(allModules.map((m) => [m.providerId, m]));
+	for (const module of allModules) {
+		const upstreamSlug = module.getUpstreamConfig?.()?.slug;
+		if (upstreamSlug && !moduleMap.has(upstreamSlug)) {
+			moduleMap.set(upstreamSlug, module);
+		}
+	}
 
     // Slugs not backed by a providers.json module may be org-defined inference
     // providers. Load the org's rows once and index by slug so each unmatched
@@ -577,8 +583,8 @@ export class ProviderCatalogService {
         return provider;
       }
     }
-    // Fallback: a "<providerId>/<model>" ref names its provider directly, so
-    // match by the leading segment even when the provider's option list didn't
+    // Fallback: a "<provider-or-upstream-slug>/<model>" ref names its provider
+    // directly, so match by the leading segment even when the option list didn't
     // contain an exact value. This is essential for providers whose models are
     // fetched live and may be empty in this resolution context (e.g. Claude,
     // whose `getModelOptions` lists BARE ids like "claude-opus-4-8" while the
@@ -588,9 +594,13 @@ export class ProviderCatalogService {
     const slashIndex = model.indexOf("/");
     if (slashIndex > 0) {
       const prefix = model.slice(0, slashIndex);
-      const byProviderId = candidates.find((p) => p.providerId === prefix);
-      if (byProviderId) {
-        return byProviderId;
+      const byProvider = candidates.find(
+        (provider) =>
+          provider.providerId === prefix ||
+          provider.getUpstreamConfig?.()?.slug === prefix
+      );
+      if (byProvider) {
+        return byProvider;
       }
     }
     return undefined;

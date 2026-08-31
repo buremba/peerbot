@@ -67,6 +67,21 @@ describe("ProviderCatalogService.findProviderForModel — prefix routing", () =>
     expect(picked?.providerId).toBe("gemini");
   });
 
+  test("routes an upstream-slug model ref to its provider module", async () => {
+    const providers = [
+      {
+        providerId: "chatgpt",
+        getModelOptions: async () => [],
+        getUpstreamConfig: () => ({ slug: "openai-codex" }),
+      },
+    ] as never;
+    const picked = await catalog.findProviderForModel(
+      "openai-codex/gpt-5.6-terra",
+      providers
+    );
+    expect(picked?.providerId).toBe("chatgpt");
+  });
+
   test("exact match is preferred over the prefix fallback", async () => {
     // A provider literally lists "claude/legacy" as a value; the bare-loop must
     // match it before the prefix fallback ever runs.

@@ -11,6 +11,7 @@ import { isAllowedCorsOrigin } from "../../utils/cors-origin.js";
 import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
 import {
   pairAdminGrant,
+	peekPendingTool,
   takePendingTool,
 } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
@@ -310,6 +311,8 @@ export function createGatewayApp(
         userAgentsStore: coreServices.getUserAgentsStore(),
         agentMetadataStore: coreServices.getAgentMetadataStore(),
         platformRegistry,
+        providerCatalogService: coreServices.getProviderCatalogService(),
+        grantStore: coreServices.getGrantStore(),
         approveToolCall: async (requestId: string, decision: string) => {
           const expiresMap = {
             "1h": Date.now() + 3_600_000,
@@ -328,6 +331,14 @@ export function createGatewayApp(
           // double-clicks, Slack webhook retries) cannot double-execute the
           // tool. The Slack/Telegram interaction-bridge path uses the same
           // helper.
+		  const preview = await peekPendingTool(requestId);
+		  if (/_automation_\d+_run_\d+$/.test(preview?.conversationId ?? "")) {
+			return {
+			  success: false,
+			  error:
+				"Headless Automation approvals cannot be resumed interactively; configure standing tool access and retry the Automation",
+			};
+		  }
           const pending = await takePendingTool(requestId);
           if (!pending)
             return { success: false, error: "Request not found or expired" };

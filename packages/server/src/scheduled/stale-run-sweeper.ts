@@ -173,6 +173,7 @@ export function buildStaleRunWhereSql(spec: StaleRunSweepSpec): string {
 export interface TimedOutStaleRun {
 	id: number;
 	automation_id: number | null;
+	organization_id: string | null;
 	run_type: string;
 	previous_status: string;
 	dispatch_source: string | null;
@@ -187,11 +188,24 @@ export async function markStaleRunsAsTimeout(
 		coarseErrorMessage: string;
 	},
 ): Promise<TimedOutStaleRun[]> {
+	const stalePredicate = buildStaleRunWhereSql(spec);
 	const result = await sql.unsafe(
-		`WITH stale AS MATERIALIZED (
+		`WITH automation_locks AS MATERIALIZED (
+		 SELECT a.id
+		 FROM automations a
+		 WHERE a.id IN (
+		   SELECT automation_id
+		   FROM runs
+		   WHERE ${stalePredicate}
+		     AND automation_id IS NOT NULL
+		 )
+		 ORDER BY a.id
+		 FOR UPDATE
+	 ), stale AS MATERIALIZED (
        SELECT id,
               status AS previous_status,
               automation_id,
+			  organization_id,
               run_type,
               approved_input->>'dispatch_source' AS dispatch_source,
               CASE
@@ -199,7 +213,15 @@ export async function markStaleRunsAsTimeout(
                 ELSE $2
               END AS timeout_error
        FROM runs
-       WHERE ${buildStaleRunWhereSql(spec)}
+	   WHERE ${stalePredicate}
+	     AND (
+	       runs.automation_id IS NULL
+	       OR NOT EXISTS (
+	         SELECT 1 FROM automations owner
+	         WHERE owner.id = runs.automation_id
+	       )
+	       OR runs.automation_id IN (SELECT id FROM automation_locks)
+	     )
        FOR UPDATE SKIP LOCKED
      )
      UPDATE runs AS r
@@ -210,7 +232,7 @@ export async function markStaleRunsAsTimeout(
      FROM stale
      WHERE r.id = stale.id
        AND r.status = stale.previous_status
-     RETURNING r.id, r.automation_id, r.run_type,
+	 RETURNING r.id, r.automation_id, r.organization_id, r.run_type,
                stale.previous_status, stale.dispatch_source`,
 		[
 			spec.heartbeatErrorMessage,

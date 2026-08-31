@@ -7,6 +7,14 @@ import {
   boundedJsonSql,
   boundedPayloadTextSql,
 } from '../utils/content-read-bounds';
+import {
+  type FeedDefinition,
+  validateFeedConfig,
+} from '../tools/admin/helpers/feed-helpers';
+
+export class AutomationSourceConfigurationError extends Error {
+  override readonly name = 'AutomationSourceConfigurationError';
+}
 
 /**
  * Validate a custom-SQL Automation source at save time. Runs the SAME scoped
@@ -81,9 +89,9 @@ const SAFE_CONNECTOR_RE = /^[a-zA-Z0-9._-]+$/;
 
 function assertSafeRefValue(label: string, value: string): string {
   const trimmed = value.trim();
-  if (!trimmed) throw new Error(`${label} reference is empty`);
+  if (!trimmed) throw new AutomationSourceConfigurationError(`${label} reference is empty`);
   if (!SAFE_REF_VALUE_RE.test(trimmed)) {
-    throw new Error(`${label} reference contains unsupported characters`);
+    throw new AutomationSourceConfigurationError(`${label} reference contains unsupported characters`);
   }
   return trimmed;
 }
@@ -91,7 +99,7 @@ function assertSafeRefValue(label: string, value: string): string {
 function assertSafeSlug(label: string, value: string): string {
   const trimmed = assertSafeRefValue(label, value);
   if (!SAFE_SLUG_RE.test(trimmed)) {
-    throw new Error(`${label} reference must be a plain slug`);
+    throw new AutomationSourceConfigurationError(`${label} reference must be a plain slug`);
   }
   return trimmed;
 }
@@ -145,7 +153,7 @@ export function parseAutomationSourceRef(query: string): AutomationSourceRef | n
 
   const match = REF_RE.exec(trimmed);
   if (!match) {
-    throw new Error(
+    throw new AutomationSourceConfigurationError(
       'source refs must use @feed:, @connection:, @connector:, @channel:, @entity:, or @metric:'
     );
   }
@@ -167,17 +175,17 @@ export function parseAutomationSourceRef(query: string): AutomationSourceRef | n
       const value = assertSafeRefValue('@metric', rawValue);
       const dot = value.indexOf('.');
       if (dot <= 0 || dot === value.length - 1) {
-        throw new Error('@metric refs must be shaped like @metric:<entity_type>.<measure>');
+        throw new AutomationSourceConfigurationError('@metric refs must be shaped like @metric:<entity_type>.<measure>');
       }
       const entityType = value.slice(0, dot);
       const measure = value.slice(dot + 1);
       if (!SAFE_SLUG_RE.test(entityType) || !SAFE_SLUG_RE.test(measure)) {
-        throw new Error('@metric entity type and measure must be plain identifiers');
+        throw new AutomationSourceConfigurationError('@metric entity type and measure must be plain identifiers');
       }
       return { type: 'metric', entityType, measure };
     }
     default:
-      throw new Error(`unsupported source ref @${type}:`);
+      throw new AutomationSourceConfigurationError(`unsupported source ref @${type}:`);
   }
 }
 
@@ -228,6 +236,8 @@ interface ResolvedFeed {
   feedKey: string;
   /** Declared feed capabilities; empty when no definition resolved. */
   operations: string[];
+  config: Record<string, unknown>;
+  feedsSchema: Record<string, FeedDefinition> | null;
 }
 
 async function resolveFeeds(
@@ -242,14 +252,18 @@ async function resolveFeeds(
     feed_key: string;
     connection_slug: string;
     operations: unknown;
+    config: unknown;
+    feeds_schema: unknown;
   }>`
     SELECT f.id, f.config ->> 'store' AS store, f.feed_key, c.slug AS connection_slug,
-           COALESCE(cd.feed_operations, '[]'::jsonb) AS operations
+           f.config, COALESCE(cd.feed_operations, '[]'::jsonb) AS operations,
+           cd.feeds_schema
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     LEFT JOIN LATERAL (
-      SELECT connector_definitions.feeds_schema -> f.feed_key -> 'operations'
-        AS feed_operations
+      SELECT connector_definitions.feeds_schema,
+             connector_definitions.feeds_schema -> f.feed_key -> 'operations'
+               AS feed_operations
       FROM connector_definitions
       WHERE connector_definitions.key = c.connector_key
         AND connector_definitions.organization_id = f.organization_id
@@ -280,15 +294,37 @@ async function resolveFeeds(
     ORDER BY f.id
     LIMIT 100
   `;
-  return rows
+  const resolved = rows
     .map((r) => ({
       id: Number(r.id),
       store: (r.store === 'channel_messages' ? 'channel_messages' : 'events') as ResolvedFeed['store'],
       connectionSlug: String(r.connection_slug),
       feedKey: String(r.feed_key),
       operations: Array.isArray(r.operations) ? r.operations.map(String) : [],
+      config:
+        r.config && typeof r.config === 'object' && !Array.isArray(r.config)
+          ? (r.config as Record<string, unknown>)
+          : {},
+      feedsSchema:
+        r.feeds_schema && typeof r.feeds_schema === 'object' && !Array.isArray(r.feeds_schema)
+          ? (r.feeds_schema as Record<string, FeedDefinition>)
+          : null,
     }))
     .filter((r) => Number.isSafeInteger(r.id) && r.id > 0);
+
+  for (const feed of resolved) {
+    const configError = validateFeedConfig(
+      feed.feedsSchema,
+      feed.feedKey,
+      feed.config,
+    );
+    if (configError) {
+      throw new AutomationSourceConfigurationError(
+        `@feed:${value} is not runnable: ${configError}`,
+      );
+    }
+  }
+  return resolved;
 }
 
 /** Strip a `platform:` prefix off a channel feed_key to the bare channel id
@@ -338,8 +374,8 @@ async function resolveConnectionId(
     ORDER BY id
     LIMIT 2
   `;
-  if (rows.length === 0) throw new Error(`@connection:${value} did not match any connection`);
-  if (rows.length > 1) throw new Error(`@connection:${value} matched more than one connection`);
+  if (rows.length === 0) throw new AutomationSourceConfigurationError(`@connection:${value} did not match any connection`);
+  if (rows.length > 1) throw new AutomationSourceConfigurationError(`@connection:${value} matched more than one connection`);
   return Number(rows[0].id);
 }
 
@@ -355,7 +391,11 @@ async function compileRefToQuery(
   switch (ref.type) {
     case 'feed': {
       const feeds = await resolveFeeds(sql, organizationId, ref.value);
-      if (feeds.length === 0) throw new Error(`@feed:${ref.value} did not match any feed`);
+      if (feeds.length === 0) {
+        throw new AutomationSourceConfigurationError(
+          `@feed:${ref.value} did not match any feed`,
+        );
+      }
       const eventFeeds = feeds.filter((f) => f.store === 'events');
       const channelFeeds = feeds.filter((f) => f.store === 'channel_messages');
       // A source-only feed never persists events, so compiling it to an
@@ -366,7 +406,7 @@ async function compileRefToQuery(
         (f) => f.operations.length > 0 && !f.operations.includes('sync')
       );
       if (sourceOnly) {
-        throw new Error(
+        throw new AutomationSourceConfigurationError(
           `@feed:${ref.value} is a source-read-only feed and stores no events; ` +
             'read it with feeds.readMany instead of an @feed source'
         );
@@ -374,7 +414,7 @@ async function compileRefToQuery(
       // Don't mix storage planes in one source: a single SELECT cannot span
       // both `events` and `channel_messages`.
       if (eventFeeds.length > 0 && channelFeeds.length > 0) {
-        throw new Error(
+        throw new AutomationSourceConfigurationError(
           `@feed:${ref.value} matched both event and channel-message stores; reference one feed`
         );
       }
@@ -400,7 +440,7 @@ async function compileRefToQuery(
     }
     case 'connector': {
       if (!SAFE_CONNECTOR_RE.test(ref.value)) {
-        throw new Error('@connector refs must be plain connector keys');
+        throw new AutomationSourceConfigurationError('@connector refs must be plain connector keys');
       }
       return {
         query: buildAutomationEventSelect(`connector_key = ${sqlString(ref.value)}`),

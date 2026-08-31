@@ -76,6 +76,13 @@ import { resolveRunInitiator, runPermalinkResource } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 
+interface EntityApprovalQueueOptions {
+	automationReviewArtifact?: boolean;
+	db?: DbClient;
+	notifyExisting?: { runId: number; eventId: number };
+	suppressNotification?: boolean;
+}
+
 /** Synthetic runs.action_key tagging an automation field-change held for approval. */
 export const ENTITY_FIELD_CHANGE_ACTION_KEY = "entity_field_change";
 export const ENTITY_CHANGE_ACTION_KEY = "entity_change";
@@ -512,6 +519,7 @@ export async function proposeEntityFieldChange(
 	ctx: ToolContext,
 	proposal: EntityFieldChangeProposal,
 	parentRunId: number | null = null,
+	options?: EntityApprovalQueueOptions,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
 	const ownerUserId = await resolveProposalFieldOwner(
 		ctx.organizationId,
@@ -522,7 +530,7 @@ export async function proposeEntityFieldChange(
 		...proposal,
 		...(ownerUserId ? { owner_user_id: ownerUserId } : {}),
 		operation: "update",
-	}, parentRunId);
+	}, parentRunId, options);
 }
 
 export async function proposeEntityDelete(
@@ -537,8 +545,14 @@ export async function proposeEntityCreate(
 	ctx: ToolContext,
 	proposal: Omit<EntityCreateProposal, "operation">,
 	parentRunId: number | null = null,
+	options?: EntityApprovalQueueOptions,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	return proposeEntityChange(ctx, { ...proposal, operation: "create" }, parentRunId);
+	return proposeEntityChange(
+		ctx,
+		{ ...proposal, operation: "create" },
+		parentRunId,
+		options,
+	);
 }
 
 /**
@@ -663,8 +677,9 @@ export async function proposeEntityChange(
 	ctx: ToolContext,
 	proposal: EntityChangeProposal,
 	parentRunId: number | null = null,
+	options?: EntityApprovalQueueOptions,
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
-	const sql = getDb();
+	const sql = options?.db ?? getDb();
 	const operation = operationOf(proposal);
 	const updateProposal =
 		operation === "update" ? asUpdateProposal(proposal) : null;
@@ -947,7 +962,32 @@ export async function proposeEntityChange(
 		};
 	};
 
-	const persisted = await sql.begin(async (tx) => {
+	const persist = async (tx: DbClient) => {
+		// All parent-linked proposal writers take the parent before the advisory
+		// idempotency lock. complete_window already owns this row FOR UPDATE; using
+		// the same order here prevents parent<->advisory lock cycles with ordinary
+		// proposal creation.
+		if (parentRunId != null) {
+			const parent = await tx`
+				SELECT id
+				FROM runs
+				WHERE id = ${parentRunId}
+				  AND organization_id = ${ctx.organizationId}
+				  AND run_type = ANY('{automation,automation_eval}'::text[])
+				  AND (
+				    status = ANY('{pending,claimed,running}'::text[])
+				    OR (
+				      ${options?.automationReviewArtifact === true}
+				      AND status = 'completed'
+				      AND automation_id = ${proposal.automation_id ?? null}
+				    )
+				  )
+				FOR SHARE
+			`;
+			if (parent.length === 0) {
+				throw new Error(`Automation parent run ${parentRunId} is no longer active.`);
+			}
+		}
 		await tx`SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyKey}, 0))`;
 		const existing = await findExisting(tx);
 		if (existing.length > 0) {
@@ -955,25 +995,55 @@ export async function proposeEntityChange(
 		}
 
 		const inserted = await tx<{ id: number }>`
+			WITH parent_gate AS MATERIALIZED (
+				SELECT id
+				FROM runs
+				WHERE id = ${parentRunId}
+				  AND organization_id = ${ctx.organizationId}
+				  AND run_type = ANY('{automation,automation_eval}'::text[])
+				  AND (
+				    status = ANY('{pending,claimed,running}'::text[])
+				    OR (
+				      ${options?.automationReviewArtifact === true}
+				      AND status = 'completed'
+				      AND automation_id = ${proposal.automation_id ?? null}
+				    )
+				  )
+				FOR SHARE
+			), authorized_parent AS (
+				SELECT 1 WHERE ${parentRunId}::bigint IS NULL
+				UNION ALL
+				SELECT 1 FROM parent_gate
+			)
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input, parent_run_id,
 				automation_id, created_by_user_id, initiator_kind, initiator_ref,
-				approval_status, status, idempotency_key, created_at
-			) VALUES (
+				approval_status, status, idempotency_key, run_metadata, created_at
+			) SELECT
 				${ctx.organizationId}, 'internal', ${actionKey},
 				${tx.json(proposal as unknown as Record<string, unknown>)},
 				${parentRunId}, ${proposal.automation_id ?? null},
 				${initiatorColumns.createdByUserId},
 				${initiatorColumns.initiatorKind},
 				${tx.json(initiatorColumns.initiatorRef)},
-				'pending', 'pending', ${idempotencyKey}, current_timestamp
-			)
+				'pending', 'pending', ${idempotencyKey},
+				${options?.automationReviewArtifact === true
+					? tx.json({ automation_review_artifact: true })
+					: null},
+				current_timestamp
+			FROM authorized_parent
+			LIMIT 1
 			ON CONFLICT DO NOTHING
 			RETURNING id
 		`;
 		if (inserted.length === 0) {
 			const winner = await findExisting(tx);
 			if (winner.length === 0) {
+				if (parentRunId != null) {
+					throw new Error(
+						`Automation parent run ${parentRunId} is no longer active.`,
+					);
+				}
 				throw new Error("Entity change idempotency conflict has no active run");
 			}
 			return reuseExisting(winner[0], tx);
@@ -982,7 +1052,39 @@ export async function proposeEntityChange(
 		const runId = Number(inserted[0].id);
 		const event = await insertApprovalEvent(runId, tx);
 		return { runId, eventId: Number(event.id), reused: false };
-	});
+	};
+	const exactNotification = options?.notifyExisting;
+	let skipNotification = false;
+	const persisted = exactNotification
+		? await (async () => {
+				const [existing] = await sql<{
+					approval_status: string | null;
+					status: string;
+				}>`
+					SELECT approval_status, status
+					FROM runs
+					WHERE id = ${exactNotification.runId}
+					  AND organization_id = ${ctx.organizationId}
+					  AND idempotency_key = ${idempotencyKey}
+					  AND parent_run_id IS NOT DISTINCT FROM ${parentRunId}
+					LIMIT 1
+				`;
+				if (!existing) {
+					throw new Error(
+						`Persisted entity approval ${exactNotification.runId} is unavailable for notification.`,
+					);
+				}
+				skipNotification =
+					existing.approval_status !== "pending" || existing.status !== "pending";
+				return {
+					runId: exactNotification.runId,
+					eventId: exactNotification.eventId,
+					reused: true,
+				};
+			})()
+		: options?.db
+			? await persist(options.db)
+			: await sql.begin(persist);
 	const { runId, eventId } = persisted;
 
 	const [permalinkRun] = await sql<{
@@ -1014,7 +1116,13 @@ export async function proposeEntityChange(
 		),
 		baseUrl,
 	);
-	if (persisted.reused) return { runId, eventId, approvalUrl };
+	if (
+		skipNotification ||
+		options?.suppressNotification ||
+		(persisted.reused && !exactNotification)
+	) {
+		return { runId, eventId, approvalUrl };
+	}
 	const entityUrl =
 		ownerSlug && entity?.entity_type && entity.slug
 			? buildEntityUrl(

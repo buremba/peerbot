@@ -149,6 +149,20 @@ describe("MCP entitySchema.createType approval", () => {
 		return rows.length > 0;
 	}
 
+	async function createActiveAutomationRun(): Promise<number> {
+		const [run] = await getDb()`
+			INSERT INTO runs (
+				organization_id, run_type, automation_id,
+				approval_status, status, created_at
+			) VALUES (
+				${org.id}, 'automation', ${automationId},
+				'auto', 'running', NOW()
+			)
+			RETURNING id
+		`;
+		return Number(run.id);
+	}
+
 	async function propose(
 		slug: string,
 		token = ownerAdminToken,
@@ -243,6 +257,7 @@ describe("MCP entitySchema.createType approval", () => {
 	});
 
 	it("governs trusted in-process Automation schema mutations without a human role", async () => {
+		const parentRunId = await createActiveAutomationRun();
 		const reactionCtx: ToolContext = {
 			organizationId: org.id,
 			userId: null,
@@ -254,7 +269,7 @@ describe("MCP entitySchema.createType approval", () => {
 			allowCrossOrg: false,
 			clientId: null,
 			actingAutomationId: automationId,
-			actingRunId: 1,
+			actingRunId: parentRunId,
 			sourceContext: { source: "automation-run" },
 		};
 		const env = {} as Env;
@@ -383,7 +398,7 @@ describe("MCP entitySchema.createType approval", () => {
 		expect(await entityTypeExists("deleted-agent-held-type")).toBe(false);
 	});
 
-	it("uses the current Automation owner policy when a pending schema mutation is approved", async () => {
+	it("does not resume a headless Automation schema approval after it is queued", async () => {
 		const originalOwner = await createTestAgent({
 			organizationId: org.id,
 			ownerUserId: owner.id,
@@ -405,6 +420,7 @@ describe("MCP entitySchema.createType approval", () => {
 			principalId: currentOwner.agentId,
 			effects: { create_type: "deny" },
 		});
+		const parentRunId = await createActiveAutomationRun();
 		const pending = await manageEntitySchema(
 			{
 				schema_type: "entity_type",
@@ -417,7 +433,7 @@ describe("MCP entitySchema.createType approval", () => {
 				...inProcessAgentCtx(originalOwner.agentId),
 				agentId: null,
 				actingAutomationId: automationId,
-				actingRunId: 1,
+				actingRunId: parentRunId,
 			},
 		);
 		expect(pending).toMatchObject({ status: "pending_approval" });
@@ -425,7 +441,7 @@ describe("MCP entitySchema.createType approval", () => {
 
 		const { response } = await resolveInApp(Number(pending.run_id), "approve");
 		expect(response.result?.isError).toBe(true);
-		expect(response.result?.content?.[0]?.text).toMatch(/denies|policy/i);
+		expect(response.result?.content?.[0]?.text).toMatch(/Headless Automation/i);
 		expect(await entityTypeExists("reassigned-automation-held-type")).toBe(false);
 	});
 

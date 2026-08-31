@@ -250,6 +250,11 @@ export interface AuthInfo {
    * mutating work must be recorded rather than performed.
    */
   executionMode?: 'live' | 'capture' | null;
+  /**
+   * Parent Automation run from a verified worker token. The tool executor
+   * resolves its Automation id from persistence before stamping provenance.
+   */
+  automationRunId?: number | null;
 }
 
 // ============================================

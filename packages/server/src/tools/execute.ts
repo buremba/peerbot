@@ -18,6 +18,8 @@ import {
 } from '../auth/tool-access';
 import type { Env } from '../index';
 import { recordMcpConversationActivity } from '../lobu/stores/mcp-client-conversations';
+import { getDb } from '../db/client';
+import { AUTOMATION_RUN_TYPES_PG } from '../runs/run-types';
 import { trackMCPToolCall } from '../sentry';
 import { parseApplyId } from '../utils/apply-context';
 import { assertDeploymentsNotPaused } from '../utils/deployment-pause';
@@ -102,6 +104,8 @@ export interface AuthContext {
    * by sdk_run to force the SDK's per-method capture path.
    */
   executionMode?: 'live' | 'capture' | null;
+  /** Signed parent Automation run id from verified worker direct-auth. */
+  automationRunId?: number | null;
 }
 
 /**
@@ -182,7 +186,42 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     // and role × scope decide, so the old two-tool external allowlist is gone.
     adminTools: mcpAuthInfo?.adminTools ?? null,
     executionMode: mcpAuthInfo?.executionMode ?? null,
+    automationRunId: mcpAuthInfo?.automationRunId ?? null,
   };
+}
+
+/**
+ * Turn a signed parent-run claim into the exact trusted Automation identity
+ * used by tool handlers. The database join is deliberate: a run id alone is
+ * not enough to authorize attribution, so the row must still belong to this
+ * organization and to the worker token's agent.
+ */
+async function stampTrustedAutomationIdentity(authCtx: AuthContext): Promise<void> {
+  if (authCtx.automationRunId == null) return;
+  if (!authCtx.organizationId || !authCtx.agentId) {
+    throw new Error('Automation worker token is missing organization or agent scope.');
+  }
+  const rows = await getDb()<{
+    automation_id: number;
+  }>`
+    SELECT r.automation_id
+    FROM runs r
+    JOIN automations a
+      ON a.id = r.automation_id
+     AND a.organization_id = r.organization_id
+    WHERE r.id = ${authCtx.automationRunId}
+      AND r.organization_id = ${authCtx.organizationId}
+      AND r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+      AND r.status = ANY('{pending,claimed,running}'::text[])
+      AND a.agent_id = ${authCtx.agentId}
+    LIMIT 1
+  `;
+  const automationId = Number(rows[0]?.automation_id);
+  if (!Number.isInteger(automationId) || automationId <= 0) {
+    throw new Error('Automation worker token no longer matches an authorized run.');
+  }
+  authCtx.actingAutomationId = automationId;
+  authCtx.actingRunId = authCtx.automationRunId;
 }
 
 /**
@@ -307,6 +346,12 @@ export async function executeTool(
   authCtx: AuthContext
 ): Promise<unknown> {
   const requiredAccess = checkToolAccess(toolName, args, authCtx);
+
+  // Normal scheduled runs call the embedded MCP server with the same verified
+  // worker identity as eval replays. Resolve it before ToolContext is built so
+  // operations.execute and every other descendant writer receive durable
+  // automation_id + parent_run_id without trusting optional caller arguments.
+  await stampTrustedAutomationIdentity(authCtx);
 
   // Promotions pause, enforced where config is actually mutated. `lobu apply`
   // writes through these tools, so this is the chokepoint that binds every

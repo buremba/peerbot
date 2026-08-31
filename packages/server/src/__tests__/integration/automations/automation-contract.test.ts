@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { ErrorCode, OrchestratorError } from "@lobu/core";
 import { inferAutomationGranularityFromSchedule } from "@lobu/connector-sdk";
 import { beforeEach, describe, expect, it } from "vitest";
 import { generateSecureToken, hashToken } from "../../../auth/oauth/utils";
@@ -15,6 +16,7 @@ import type { DbClient } from "../../../db/client";
 import { getDb } from "../../../db/client";
 import { ApiResponseRenderer } from "../../../gateway/api/response-renderer";
 import { UnifiedThreadResponseConsumer } from "../../../gateway/platform/unified-thread-consumer";
+import { RunsQueue } from "../../../gateway/infrastructure/queue/runs-queue";
 import type { Env } from "../../../index";
 import { createEvalRun } from "../../../runs/eval-runs";
 import { createAutomationRun } from "../../../runs/queue-service";
@@ -162,6 +164,128 @@ describe("automation contract", () => {
 		expect(Number(payload.automation_id)).toBe(automationId);
 		expect(payload.agent_id).toBe(agent.agentId);
 		expect(payload.dispatch_source).toBe("scheduled");
+	});
+
+	it("requeues every transient dispatch failure without starving later runs", async () => {
+		const first = await createAutomatedAutomation();
+		const second = await createAutomatedAutomation();
+		await materializeDueAutomationRuns({} as Env);
+
+		const result = await dispatchPendingAutomationRuns({
+			db: first.dbClient,
+		});
+		expect(result.claimed).toBe(2);
+		expect(result.failed).toBe(0);
+
+		const rows = await first.sql<{
+			status: string;
+			retry_count: string | null;
+			retry_not_before: string | null;
+			source_preflight_pending: string | null;
+		}>`
+			SELECT status,
+			       approved_input->>'dispatch_retry_count' AS retry_count,
+			       approved_input->>'dispatch_retry_not_before' AS retry_not_before,
+			       approved_input->>'source_preflight_pending' AS source_preflight_pending
+			FROM runs
+			WHERE automation_id IN (${first.automationId}, ${second.automationId})
+			  AND run_type = ${AUTOMATION_RUN_TYPE}
+			ORDER BY automation_id
+		`;
+		expect(rows).toHaveLength(2);
+		for (const row of rows) {
+			expect(row.status).toBe("pending");
+			expect(Number(row.retry_count)).toBe(1);
+			expect(row.source_preflight_pending).toBeNull();
+			expect(new Date(row.retry_not_before ?? 0).getTime()).toBeGreaterThan(
+				Date.now(),
+			);
+		}
+	});
+
+	it("terminalizes an Automation parent when its queue child cannot retry", async () => {
+		const { sql, automationId, workspace } = await createAutomatedAutomation();
+		await materializeDueAutomationRuns({} as Env);
+		const [parent] = await sql<{ id: number }>`
+			SELECT id FROM runs
+			WHERE automation_id = ${automationId}
+			  AND run_type = ${AUTOMATION_RUN_TYPE}
+		`;
+		const messageId = randomUUID();
+		await sql`
+			UPDATE runs
+			SET status = 'running',
+			    claimed_by = 'lobu:contract-agent',
+			    claimed_at = now(),
+			    dispatched_message_id = ${messageId}
+			WHERE id = ${Number(parent.id)}
+		`;
+		const queue = new RunsQueue();
+		await queue.start();
+		try {
+			let handlerCalls = 0;
+			const childId = Number(
+				await queue.send(
+					"messages",
+					{
+						organizationId: workspace.org.id,
+						parentRunId: Number(parent.id),
+						messageId,
+						agentId: "contract-agent",
+						userId: workspace.users.owner.id,
+						conversationId: `automation-${automationId}`,
+						platform: "automation",
+					},
+					{ retryLimit: 5, retryDelay: 0 },
+				),
+			);
+			await queue.work("messages", async () => {
+				handlerCalls++;
+				throw new OrchestratorError(
+					ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+					"deterministic child failure",
+					undefined,
+					false,
+				);
+			});
+
+			let statuses: Array<{ id: number; status: string }> = [];
+			const deadline = Date.now() + 5_000;
+			while (Date.now() < deadline) {
+				statuses = await sql<{ id: number; status: string }>`
+					SELECT id, status FROM runs
+					WHERE id IN (${Number(parent.id)}, ${childId})
+					ORDER BY id
+				`;
+				if (statuses.length === 2 && statuses.every((row) => row.status === "failed")) {
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			expect(statuses).toHaveLength(2);
+			expect(statuses.every((row) => row.status === "failed")).toBe(true);
+			expect(handlerCalls).toBe(1);
+			const [failedChild] = await sql<{ attempts: number }>`
+				SELECT attempts FROM runs WHERE id = ${childId}
+			`;
+			expect(Number(failedChild.attempts)).toBe(1);
+
+			const [failedParent] = await sql<{
+				error_message: string;
+				consecutive_scheduled_failures: number;
+			}>`
+				SELECT r.error_message, a.consecutive_scheduled_failures
+				FROM runs r
+				JOIN automations a ON a.id = r.automation_id
+				WHERE r.id = ${Number(parent.id)}
+			`;
+			expect(failedParent.error_message).toContain(
+				`Automation worker queue run ${childId} failed`,
+			);
+			expect(Number(failedParent.consecutive_scheduled_failures)).toBe(1);
+		} finally {
+			await queue.stop();
+		}
 	});
 
 	it("completes a queued automation run from complete_window provenance", async () => {
@@ -1861,14 +1985,14 @@ describe("automation contract", () => {
 			`;
 
 			// Drive the eval through the dispatch lane. Under vitest the embedded
-			// gateway is down, so it takes a `failAutomationRun` path — the same one
-			// a session-create or message-POST failure takes in prod.
+			// gateway is down, which is transient: the claim must be released for a
+			// later tick rather than terminalizing the replay.
 			await dispatchPendingAutomationRuns({} as Env);
 
 			const [evalRow] = await sql<{ status: string }>`
 				SELECT status FROM runs WHERE id = ${evalRun?.runId ?? 0}
 			`;
-			expect(evalRow.status).toBe("failed");
+			expect(evalRow.status).toBe("pending");
 
 			// The cron cursor of the Automation it was only replaying is untouched,
 			// and specifically not parked at NULL.

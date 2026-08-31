@@ -162,7 +162,10 @@ async function loadTriggerExecution(
 
   const nativeManagedClaim =
     executor?.kind === "agent" &&
-    (claimedBy === "lobu-dispatcher" || claimedBy === `lobu:${executor.agentId}`);
+	(claimedBy === "lobu-dispatcher" ||
+	  claimedBy.startsWith("lobu-dispatcher:") ||
+	  claimedBy === `lobu:${executor.agentId}` ||
+	  claimedBy.startsWith(`lobu:${executor.agentId}:lobu-dispatcher:`));
   const nativeDeviceClaim =
     executor?.kind === "device" && claimedBy === run.device_claimed_by;
   if (!nativeManagedClaim && !nativeDeviceClaim) {

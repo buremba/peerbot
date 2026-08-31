@@ -19,7 +19,7 @@ import { ProviderCatalogService } from "../provider-catalog.js";
 function registerFakeModule(
   providerId: string,
   sdkCompat: string,
-  opts: { hasSystemKey?: boolean } = {}
+  opts: { hasSystemKey?: boolean; upstreamSlug?: string } = {}
 ): void {
   moduleRegistry.register({
     name: `${providerId}-provider`,
@@ -30,6 +30,9 @@ function registerFakeModule(
     authType: "oauth",
     sdkCompat,
     hasSystemKey: () => opts.hasSystemKey ?? false,
+	getUpstreamConfig: opts.upstreamSlug
+	  ? () => ({ slug: opts.upstreamSlug })
+	  : undefined,
     getSecretEnvVarNames: () => [],
   } as unknown as ModuleInterface);
 }
@@ -495,6 +498,23 @@ describe("ProviderCatalogService.getModelPolicy — exact allow-list", () => {
     // Modules cover ONLY the listed provider — the org default is not added.
     expect(modules.map((m) => m.providerId)).toEqual(["myzai"]);
   });
+
+	test("an upstream-slug ref installs the owning provider module", async () => {
+		registerFakeModule("chatgpt", "openai-responses", {
+			hasSystemKey: true,
+			upstreamSlug: "openai-codex",
+		});
+		const catalog = makeCatalog({
+			models: ["openai-codex/gpt-5.6-terra"],
+			orgRows: [],
+		});
+		const { allowedRefs, modules } = await catalog.getModelPolicy(
+			"agent-1",
+			"org-1",
+		);
+		expect(allowedRefs).toEqual(["openai-codex/gpt-5.6-terra"]);
+		expect(modules.map((module) => module.providerId)).toEqual(["chatgpt"]);
+	});
 
   test("decision B: a sentinel-only list resolves to zero routable modules (hard fail closed)", async () => {
     // models = ["chatgpt/__unresolved__"] is the "restricted but nothing

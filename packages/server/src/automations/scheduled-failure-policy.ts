@@ -60,6 +60,36 @@ export async function recordScheduledExecutionFailure(
   `;
 }
 
+/**
+ * Pause a scheduled Automation immediately after a deterministic configuration
+ * failure. Replaying the same unattended run cannot repair a missing model,
+ * invalid provider credential, or mandatory approval, so consuming the normal
+ * five-run circuit-breaker budget only creates duplicate terminal runs.
+ */
+export async function recordScheduledConfigurationFailure(
+	sql: DbClient,
+	automationId: number | null | undefined,
+	dispatchSource: string | null | undefined,
+): Promise<void> {
+	if (automationId == null || !isScheduledDispatch(dispatchSource)) {
+		return;
+	}
+
+	await sql`
+    UPDATE automations
+    SET consecutive_scheduled_failures = consecutive_scheduled_failures + 1,
+        schedule_auto_paused_at = COALESCE(
+          schedule_auto_paused_at,
+          date_trunc('milliseconds', current_timestamp)
+        ),
+        next_run_at = NULL,
+        updated_at = current_timestamp
+    WHERE id = ${automationId}
+      AND status = 'active'
+      AND schedule IS NOT NULL
+  `;
+}
+
 /** Clear the circuit breaker after a successful non-event window. */
 export async function resetScheduledFailureState(
 	sql: DbClient,

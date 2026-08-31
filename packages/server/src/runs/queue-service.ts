@@ -99,6 +99,10 @@ export interface AutomationRunPayload {
   trigger_output?: 'silent' | 'reply_to_source';
   trigger_key?: string;
   source_fingerprint?: string;
+  /** Scheduled skip-if-unchanged source validation must finish before dispatch. */
+  source_preflight_pending?: boolean;
+	/** Also compare source content and skip an unchanged window when true. */
+	source_fingerprint_required?: boolean;
 }
 
 function automationEventTriggerKey(trigger: AutomationActivationTrigger): string {
@@ -590,6 +594,8 @@ async function createAutomationRunWithClient(
     deviceWorkerId?: string | null;
     agentKind?: string | null;
     sourceFingerprint?: string;
+    sourcePreflightPending?: boolean;
+	sourceFingerprintRequired?: boolean;
   }
 ): Promise<{ runId: number; status: string; created: boolean }> {
   const existing = await findActiveAutomationRun(sql, params.automationId);
@@ -641,6 +647,8 @@ async function createAutomationRunWithClient(
     device_worker_id: normalizedDeviceWorkerId,
     agent_kind: normalizedAgentKind,
     source_fingerprint: params.sourceFingerprint,
+    source_preflight_pending: params.sourcePreflightPending,
+	source_fingerprint_required: params.sourceFingerprintRequired,
   };
   const idempotencyKey = [
     'automation',
@@ -693,6 +701,8 @@ interface CreateAutomationRunParams {
   deviceWorkerId?: string | null;
   agentKind?: string | null;
   sourceFingerprint?: string;
+  sourcePreflightPending?: boolean;
+	sourceFingerprintRequired?: boolean;
 }
 
 async function createAutomationRunInternal(
@@ -1232,6 +1242,19 @@ export async function createConnectorOperationRun(params: {
     action_output: unknown;
     error_message: string | null;
   }>`
+    WITH parent_gate AS MATERIALIZED (
+      SELECT id
+      FROM runs
+      WHERE id = ${params.parentRunId ?? null}
+        AND organization_id = ${params.organizationId}
+        AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+        AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+      FOR SHARE
+    ), authorized_parent AS (
+      SELECT 1 WHERE ${params.parentRunId ?? null}::bigint IS NULL
+      UNION ALL
+      SELECT 1 FROM parent_gate
+    )
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approval_status, status,
@@ -1241,7 +1264,7 @@ export async function createConnectorOperationRun(params: {
       activation_kind, activation_target_urls,
       run_metadata,
       created_at
-    ) VALUES (
+    ) SELECT
       ${params.organizationId}, 'action', ${params.connectionId},
       ${params.connectorKey}, ${connectorVersion},
       ${params.operationKey}, ${sql.json(params.operationInput)},
@@ -1257,7 +1280,8 @@ export async function createConnectorOperationRun(params: {
       ${params.activation ? pgTextArray(params.activation.urls) : null}::text[],
       ${params.runMetadata == null ? null : sql.json(params.runMetadata)},
       current_timestamp
-    )
+    FROM authorized_parent
+    LIMIT 1
     ON CONFLICT (organization_id, action_idempotency_key)
       WHERE run_type = 'action' AND action_idempotency_key IS NOT NULL
     DO NOTHING
@@ -1300,6 +1324,11 @@ export async function createConnectorOperationRun(params: {
     `;
     const prior = existing[0];
     if (!prior) {
+      if (params.parentRunId != null) {
+        throw new Error(
+          `Automation parent run ${params.parentRunId} is no longer active.`,
+        );
+      }
       throw new Error('Concurrent action idempotency winner was not readable.');
     }
     const sameRequest =

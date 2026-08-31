@@ -141,6 +141,15 @@ export async function createEvalRun(
 	const loaded = await loadReplayableSource(params.sourceRunId, sql);
 	if (!loaded.ok) return null;
 	const row = loaded.source;
+	const replayInput =
+		row.approvedInput && typeof row.approvedInput === "object"
+			? { ...(row.approvedInput as Record<string, unknown>) }
+			: {};
+	// Source readiness and skip-if-unchanged are live schedule mechanics, not
+	// replay inputs. A terminal source may retain these flags after failing
+	// before preflight; cloning them would let an eval advance the real cursor.
+	delete replayInput.source_preflight_pending;
+	delete replayInput.source_fingerprint_required;
 
 	const inserted = (await sql`
     INSERT INTO runs (
@@ -158,7 +167,7 @@ export async function createEvalRun(
       ${row.automationId},
       'auto',
       'pending',
-      ${sql.json(row.approvedInput as never)},
+	  ${sql.json(replayInput as never)},
       ${idempotencyKey},
       current_timestamp
     )

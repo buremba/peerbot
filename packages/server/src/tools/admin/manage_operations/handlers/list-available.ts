@@ -23,7 +23,7 @@ import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-r
 import type { AvailableOperation, OperationDescriptor } from "../../../../operations/types";
 import {
 	isChromeNamespaceConnectorKey,
-	isHeadlessConnectorRuntime,
+	hasHeadlessConnectorPlatform,
 } from "../../../../utils/connector-execution-placement";
 import {
 	DEVICE_ONLINE_WINDOW_SECONDS,
@@ -707,7 +707,7 @@ export async function handleListAvailable(
 		targets: targetRows.flatMap((row) =>
 			(row.connector_manifest_backed ||
 				isChromeNamespaceConnectorKey(row.connector_key) ||
-				isHeadlessConnectorRuntime(row.connector_runtime))
+				hasHeadlessConnectorPlatform(row.connector_runtime))
 				? [{
 						ownerUserId: row.device_owner_user_id,
 						connectorKey: row.connector_key,

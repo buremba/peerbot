@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isDelegatedBrowserAffinityConnector,
+  hasHeadlessConnectorPlatform,
   isChromeNamespaceConnectorKey,
   isLegacyNonManifestConnector,
   isLegacyNativeChromeExtensionConnectorKey,
@@ -9,6 +10,13 @@ import {
   LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS,
   LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS,
 } from '../../utils/connector-execution-placement';
+
+describe('headless connector runtime predicates', () => {
+  it('recognizes a headless platform without requiring an execution mode', () => {
+    expect(hasHeadlessConnectorPlatform({ platforms: ['headless'] })).toBe(true);
+    expect(hasHeadlessConnectorPlatform({ platforms: ['macos'] })).toBe(false);
+  });
+});
 
 describe('Chrome-extension connector execution placement', () => {
   it('keeps the legacy native allowlist exact', () => {

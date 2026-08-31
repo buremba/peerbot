@@ -50,6 +50,17 @@ export function isHeadlessConnectorRuntime(
   );
 }
 
+export function hasHeadlessConnectorPlatform(
+  runtime: unknown,
+): runtime is { platforms: string[] } {
+  return (
+    typeof runtime === 'object' &&
+    runtime !== null &&
+    Array.isArray((runtime as { platforms?: unknown }).platforms) &&
+    (runtime as { platforms: unknown[] }).platforms.includes('headless')
+  );
+}
+
 export function isLegacyNonManifestConnector(facts: {
   connectorKey: string;
   manifestBacked: boolean;

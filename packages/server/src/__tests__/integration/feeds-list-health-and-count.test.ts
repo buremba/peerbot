@@ -253,6 +253,72 @@ describe("list_feeds health filter and true total", () => {
 		const byKey = new Map(res.feeds.map((feed) => [feed.feed_key, feed]));
 		expect(byKey.get("historical")?.attention).toBe("never_run");
 		expect(byKey.get("active")?.attention).toBe("setup_required");
+		await sql`DELETE FROM feeds WHERE connection_id = ${conn.id}`;
+		await sql`DELETE FROM connections WHERE id = ${conn.id}`;
+		await sql`DELETE FROM device_workers WHERE id = ${device.id}`;
+		await sql`DELETE FROM connector_definitions WHERE organization_id = ${orgId} AND key = ${connectorKey}`;
+	});
+
+	it("reports an online legacy headless backend as unavailable", async () => {
+		const connectorKey = "test.legacy-headless-feed";
+		const version = "1.0.0";
+		const sql = getTestDb();
+		await createTestConnectorDefinition({
+			key: connectorKey,
+			name: "Legacy Headless Feed",
+			version,
+			organization_id: orgId,
+			feeds_schema: { items: {} },
+		});
+		await sql`
+			UPDATE connector_definitions
+			SET runtime = ${sql.json({ platforms: ["headless"] })}, required_capability = 'os.shell'
+			WHERE organization_id = ${orgId} AND key = ${connectorKey}
+		`;
+		const manifest = {
+			key: connectorKey,
+			version,
+			name: "Legacy Headless Feed",
+			required_capability: "os.shell",
+			runtime: { platforms: ["headless"] },
+			feeds_schema: { items: { operations: ["sync"] } },
+		};
+		const [device] = (await sql`
+			INSERT INTO device_workers (
+				user_id, worker_id, platform, capabilities, label, organization_id,
+				connector_manifests, last_seen_at
+			) VALUES (
+				${ctx.userId}, ${`legacy-feed-${Date.now()}`}, 'headless',
+				${sql.json(['os.shell'])}, 'Legacy Headless Feed', ${orgId},
+				${sql.json({
+					[connectorKey]: {
+						manifest,
+						manifest_hash: deviceManifestHash(manifest),
+						received_at: new Date().toISOString(),
+					},
+				})}, NOW()
+			)
+			RETURNING id
+		`) as unknown as Array<{ id: string }>;
+		const conn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: connectorKey,
+			createDefaultFeed: false,
+		});
+		await sql`UPDATE connections SET device_worker_id = ${device.id}::uuid WHERE id = ${conn.id}`;
+		await sql`
+			INSERT INTO feeds (organization_id, connection_id, feed_key, status, entity_ids, created_at, updated_at)
+			VALUES (${orgId}, ${conn.id}, 'items', 'active', ARRAY[]::bigint[], NOW(), NOW())
+		`;
+
+		const result = await list({ connection_id: conn.id, limit: 10 });
+		expect(result.feeds[0]).toMatchObject({
+			attention: "setup_required",
+		});
+		await sql`DELETE FROM feeds WHERE connection_id = ${conn.id}`;
+		await sql`DELETE FROM connections WHERE id = ${conn.id}`;
+		await sql`DELETE FROM device_workers WHERE id = ${device.id}::uuid`;
+		await sql`DELETE FROM connector_definitions WHERE organization_id = ${orgId} AND key = ${connectorKey}`;
 	});
 
 	it("does not leak the internal count column onto feed rows", async () => {

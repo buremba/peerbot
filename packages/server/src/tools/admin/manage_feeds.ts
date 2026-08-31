@@ -64,7 +64,7 @@ import {
 } from '../../utils/connection-config-redaction';
 import {
   isChromeNamespaceConnectorKey,
-  isHeadlessConnectorRuntime,
+  hasHeadlessConnectorPlatform,
   selectedConnectorVersionArtifactSql,
 } from '../../utils/connector-execution-placement';
 import {
@@ -469,7 +469,7 @@ async function handleListFeeds(
       feed.connector_version.length > 0 &&
       (feed.connector_manifest_backed === true ||
         isChromeNamespaceConnectorKey(feed.connector_key as string) ||
-        isHeadlessConnectorRuntime(feed.connector_runtime))
+        hasHeadlessConnectorPlatform(feed.connector_runtime))
         ? [{
             ownerUserId: feed.device_owner_user_id as string | null,
             connectorKey: feed.connector_key as string,

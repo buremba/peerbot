@@ -100,9 +100,6 @@ export const OAuthCredentialsSchema = Type.Object({
 
 // ── poll ────────────────────────────────────────────────────────────────────
 
-/** Server-selected execution path for an exact pinned connector artifact. */
-export const ExecutionBackendSchema = Type.Literal("native_bridge");
-
 /**
  * Execution backends a worker can advertise capacity for. Declared here, and
  * imported by both the daemon that advertises and the gateway that gates on
@@ -136,6 +133,13 @@ export function defaultBackendCapacity(
       }
     : { [EXECUTION_BACKENDS.compiledConnector]: 1 };
 }
+
+/** Server-selected execution path for an exact pinned connector artifact. */
+export const ExecutionBackendSchema = Type.Union([
+  Type.Literal(EXECUTION_BACKENDS.compiledConnector),
+  Type.Literal(EXECUTION_BACKENDS.daemonBuiltin),
+  Type.Literal("native_bridge"),
+]);
 
 /** `POST /api/workers/poll` request body. */
 export const PollRequestSchema = Type.Object({

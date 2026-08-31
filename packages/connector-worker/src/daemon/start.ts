@@ -8,7 +8,10 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { hostname } from 'node:os';
 import { isKnownPlatform } from '@lobu/core';
-import { defaultBackendCapacity } from '@lobu/core/contracts/worker/protocol';
+import {
+  EXECUTION_BACKENDS,
+  defaultBackendCapacity,
+} from '@lobu/core/contracts/worker/protocol';
 import { assertExternalDepsResolvable } from '../compile/index.js';
 import { buildConnectorWorkerEnv } from '../env.js';
 import { assertConnectorRuntimeLoadable } from '../self-check/index.js';
@@ -155,14 +158,33 @@ export async function startDaemonCommand(
   const workerId = resolveDaemonWorkerId(opts, platform, shortHostname, detected);
   const label = opts.label ?? (platform ? shortHostname : undefined);
 
-  // Crash loud before the first poll if the installed runtime cannot resolve
-  // or execute the same connector graph this worker is about to advertise.
-  assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
-  await assertConnectorRuntimeLoadable();
-  // Resolved only after the assertions above, because they are what makes the
-  // advertisement true: a daemon that reached this line has proven it can
-  // resolve and load the compiled-connector runtime.
-  const backendCapacity = defaultBackendCapacity(platform);
+  // Crash loud before the first poll if the installed runtime cannot resolve or
+  // execute the same connector graph this worker is about to advertise -- with
+  // one exception: on `headless` the shell builtin is the recovery primitive
+  // used to REPAIR exactly this breakage, so a daemon whose compiler graph is
+  // broken must still boot and advertise it.
+  //
+  // The compiled backend is then reported from what the probe actually found,
+  // never from the platform label. `headless` is also the default platform of
+  // every ordinary self-hosted `lobu daemon`, so treating the label as proof of
+  // a broken compiler would close the compiled lane on healthy device workers
+  // and leave their execution-pinned connections queued forever with no error.
+  let compiledRuntimeReady = true;
+  try {
+    assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
+    await assertConnectorRuntimeLoadable();
+  } catch (error) {
+    if (platform !== 'headless') throw error;
+    compiledRuntimeReady = false;
+    log.info(
+      '[cli] compiled-connector runtime unavailable; this daemon will advertise built-in operations only:',
+      error
+    );
+  }
+  const backendCapacity = {
+    ...defaultBackendCapacity(platform),
+    [EXECUTION_BACKENDS.compiledConnector]: compiledRuntimeReady ? 1 : 0,
+  };
   log.info(`[cli] Starting worker daemon (ID: ${workerId}, API: ${opts.apiUrl})`);
   const env = buildConnectorWorkerEnv();
   const maxConcurrentJobs = process.env.WORKER_MAX_CONCURRENT_JOBS

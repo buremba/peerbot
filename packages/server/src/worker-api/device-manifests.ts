@@ -153,6 +153,16 @@ function validateDeviceConnectorManifestsInternal(
       if (!manifest.runtime.platforms.includes(platform)) {
         throw new Error(`runtime.platforms must include '${platform}'`);
       }
+      if (
+        manifest.runtime.execution !== undefined &&
+        manifest.runtime.execution !== 'bridge' &&
+        manifest.runtime.execution !== 'daemon_builtin'
+      ) {
+        throw new Error(`unsupported runtime.execution '${String(manifest.runtime.execution)}'`);
+      }
+      if (platform === 'headless' && manifest.runtime.execution !== 'daemon_builtin') {
+        throw new Error("headless device manifests must declare runtime.execution='daemon_builtin'");
+      }
       const capAuth = authorizeCapabilities(platform, [manifest.required_capability]);
       if (!capAuth.authorized.includes(manifest.required_capability)) {
         throw new Error(`required_capability '${manifest.required_capability}' is not allowed for '${platform}'`);
@@ -366,7 +376,7 @@ export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
         capabilities,
         manifests: [stored.manifest],
       },
-      true
+      false
     );
     const validated = validation.manifests[0];
     if (!validation.accepted || !validated || validated.manifest_hash !== stored.manifest_hash) {

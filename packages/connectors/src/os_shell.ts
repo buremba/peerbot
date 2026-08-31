@@ -37,14 +37,21 @@ interface RunOutput {
   duration_ms: number;
 }
 
-const MAX_TIMEOUT_MS = 300000;
+// Keep the requested command budget truthful: run_sdk's 180s outer ceiling
+// must also cover 3s TERM grace, up to 5s reaping, up to 15s terminal
+// delivery, and bounded network/server grace.
+const MAX_TIMEOUT_MS = 150000;
 const DEFAULT_TIMEOUT_MS = 60000;
 const SIGTERM_GRACE_MS = 3000;
 // The outer shell remains the live process-group owner until Node's grace
 // timer fires, so its numeric pgid cannot be recycled before SIGKILL. The
 // inner login shell and command still receive SIGTERM normally.
-const SHELL_GROUP_ANCHOR = `trap 'sleep 4' TERM
-bash -lc "$1"
+//
+// The trap must outlive the grace timer, so derive it rather than restating
+// it: a hardcoded sleep silently reopens the recycle window the moment
+// SIGTERM_GRACE_MS is raised past it, and nothing would fail to say so.
+const SHELL_GROUP_ANCHOR = `trap 'sleep ${(SIGTERM_GRACE_MS + 1000) / 1000}' TERM
+bash --noprofile --norc -lc "$1"
 status=$?
 exit "$status"`;
 // Cap captured output so a chatty command cannot balloon daemon memory.
@@ -227,7 +234,7 @@ export default class OsShellConnector extends ConnectorRuntime {
             timeout_ms: {
               type: 'integer',
               minimum: 100,
-              maximum: 300000,
+              maximum: 150000,
               default: 60000,
               description:
                 'Wall-clock budget in milliseconds. On timeout the owned process group gets SIGTERM (3s grace) then SIGKILL. Session-detached or daemonized commands may outlive the call; this is not sandbox containment.',
@@ -265,10 +272,17 @@ export default class OsShellConnector extends ConnectorRuntime {
     if (!command) {
       return { success: false, error: 'command is required' };
     }
-    const timeoutMs = Math.min(
-      typeof input.timeout_ms === 'number' ? input.timeout_ms : DEFAULT_TIMEOUT_MS,
-      MAX_TIMEOUT_MS
-    );
+    const timeoutMs = input.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+    if (
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs < 100 ||
+      timeoutMs > MAX_TIMEOUT_MS
+    ) {
+      return {
+        success: false,
+        error: `timeout_ms must be an integer between 100 and ${MAX_TIMEOUT_MS}`,
+      };
+    }
     // cwd must be an existing absolute path (the declared contract); default
     // to the device home. Reject rather than let bash guess at a relative cwd.
     let cwd: string | undefined;

@@ -13,6 +13,7 @@ import {
 } from '@lobu/core';
 import { Value } from '@sinclair/typebox/value';
 import {
+  EXECUTION_BACKENDS,
   PollRequestSchema,
   defaultBackendCapacity,
   type PollRequest,
@@ -1227,6 +1228,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     });
   }
   const isNativeBridgeRun = selectedExecution.backend === 'native_bridge';
+  // Both device-owned backends: the device implements the work itself, so the
+  // gateway ships no compiled code and does not hold the connection lease.
+  const isDeviceOwnedRun =
+    isNativeBridgeRun ||
+    selectedExecution.backend === EXECUTION_BACKENDS.daemonBuiltin;
 
   // Device chat reuses the ordinary messages/chat_message row. The poll
   // response is only an execution envelope: ownership/routing remain on the
@@ -1690,7 +1696,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     isUserScopedWorker,
     hasStoredCompiledCode,
     gatewayHasLocalSource,
-    isNativeBridgeRun,
+    isDeviceOwnedRun,
     manifestBacked: row.connector_manifest_backed,
     deviceAdvertisesRequiredCapability:
       row.connector_required_capability != null &&
@@ -1734,7 +1740,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //    profile still can't leak secrets to an arbitrary capability-matched device.
   const connectionIsDevicePinned = row.connection_device_worker_id != null;
   const deliverConnectionAuth =
-    !isNativeBridgeRun && !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
+    !isDeviceOwnedRun && !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
   // `user_data_dir` and `cdp_url` for device-bound browser profiles flow to
   // the worker via `sessionState.user_data_dir` / `sessionState.cdp_url`
   // (set inside resolveExecutionAuth). No need to thread them as separate

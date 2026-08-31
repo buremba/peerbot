@@ -7,12 +7,10 @@
 
 import type { Env, EventEnvelope } from '@lobu/connector-sdk';
 import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
-import { compileConnectorFromFile, findBundledConnectorFile } from '../compile-connector.js';
-import { batchGenerateEmbeddings } from '../embeddings.js';
-import { executeCompiledConnector } from '../executor/runtime.js';
-import { SubprocessExecutor } from '../executor/subprocess.js';
 import { executeAutomationRun } from './automation.js';
+import { executeDaemonBuiltin } from './builtins/index.js';
 import { executeDeviceChatRun } from './device-chat.js';
+import { WorkerDecodeError } from './client.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
 import { log } from './log.js';
@@ -41,6 +39,8 @@ type JobCodeResult = { ok: true; code: string } | { ok: false; error: string };
 
 async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
   if (job.compiled_code) return { ok: true, code: job.compiled_code };
+  // Inline compiled jobs must not load the optional compiler/SDK graph.
+  const { compileConnectorFromFile, findBundledConnectorFile } = await import('../compile-connector.js');
   if (!job.connector_key) {
     return { ok: false, error: 'No compiled_code and no connector_key — gateway sent neither.' };
   }
@@ -60,6 +60,17 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `esbuild failed for '${job.connector_key}' (${localPath}): ${msg}` };
   }
+}
+
+async function loadCompiledRuntime() {
+  // These are the only production imports retained for source-backed jobs:
+  // the published-package isolation smoke runs inline and daemon_builtin jobs
+  // with compiler/SDK source artifacts absent, while source-backed jobs still
+  // need the compiler and subprocess runtime together.
+  return Promise.all([
+    import('../executor/subprocess.js'),
+    import('../executor/runtime.js'),
+  ]);
 }
 
 export interface ExecutorConfig {
@@ -89,6 +100,49 @@ const DEFAULT_CONFIG: ExecutorConfig = {
   timeoutMs: 600000,
   maxOldSpaceSize: 1024,
 };
+
+const TERMINAL_DELIVERY_DEADLINE_MS = 15_000;
+
+async function withTerminalDeliveryTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('terminal completion deadline exceeded')), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Retry one immutable terminal payload without changing its outcome. */
+async function completeActionOnce(
+  client: ExecutorClient,
+  payload: Parameters<ExecutorClient['completeAction']>[0],
+): Promise<void> {
+  const deadline = Date.now() + TERMINAL_DELIVERY_DEADLINE_MS;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    try {
+      const attemptsLeft = 2 - attempt;
+      await withTerminalDeliveryTimeout(
+        client.completeAction(payload),
+        Math.max(1, Math.floor(remaining / attemptsLeft)),
+      );
+      return;
+    } catch (error) {
+      if (error instanceof WorkerDecodeError) throw error;
+      lastError = error;
+      if (error instanceof Error && error.message === 'terminal completion deadline exceeded') break;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
 
 /**
  * Fold the gateway's authoritative DB egress config into the worker's env.
@@ -148,6 +202,16 @@ export async function executeRun(
     }
     return { itemsCollected: 0, error: message };
   }
+  if (job.execution_backend === 'daemon_builtin' && job.run_type !== 'action') {
+    const message =
+      'operation_backend_unavailable: daemon_builtin currently supports action runs only';
+    try {
+      await reportTerminalFailure(client, job, message, 'error_message');
+    } catch (error) {
+      log.info('[executor] Failed to reject invalid daemon built-in run:', error);
+    }
+    return { itemsCollected: 0, error: message };
+  }
   // The inherited session rides on a non-enumerable symbol, which a spread
   // drops; re-attach it or every interactive run silently falls back to a
   // subprocess.
@@ -201,6 +265,7 @@ async function executeSyncRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
   const subprocessExecutor = new SubprocessExecutor({
     timeoutMs: cfg.timeoutMs,
     maxOldSpaceSize: cfg.maxOldSpaceSize,
@@ -449,21 +514,27 @@ async function executeActionRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
-  const subprocessExecutor = new SubprocessExecutor({
-    timeoutMs: cfg.timeoutMs,
-    maxOldSpaceSize: cfg.maxOldSpaceSize,
-  });
   const { run_id, connector_key, action_key, action_input, credentials } = job;
 
   if (!run_id || !connector_key || !action_key) {
     throw new Error('Invalid action run: missing run_id, connector_key, or action_key');
   }
 
+  if (job.execution_backend === 'daemon_builtin') {
+    return await executeDaemonBuiltinActionRun(client, job, cfg);
+  }
+
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
+  const subprocessExecutor = new SubprocessExecutor({
+    timeoutMs: cfg.timeoutMs,
+    maxOldSpaceSize: cfg.maxOldSpaceSize,
+  });
+
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) {
     const errorMessage = `Action run ${run_id} (${connector_key}): ${codeResult.error}`;
     log.info('[executor]', errorMessage);
-    await client.completeAction({
+    await completeActionOnce(client, {
       run_id,
       worker_id: client.id,
       status: 'failed',
@@ -489,6 +560,7 @@ async function executeActionRun(
       log.debug('[executor] Action heartbeat failed:', err);
     }
   }, cfg.heartbeatIntervalMs);
+  let terminalPayloadStarted = false;
 
   try {
     const result = await executeCompiledConnector({
@@ -532,7 +604,8 @@ async function executeActionRun(
     }
     const actionOutput = result.output;
 
-    await client.completeAction({
+    terminalPayloadStarted = true;
+    await completeActionOnce(client, {
       run_id,
       worker_id: client.id,
       status: 'success',
@@ -545,7 +618,10 @@ async function executeActionRun(
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.info(`[executor] Action run ${run_id} failed:`, errorMessage);
 
-    await client.completeAction({
+    if (terminalPayloadStarted) {
+      return { itemsCollected: 0, error: errorMessage };
+    }
+    await completeActionOnce(client, {
       run_id,
       worker_id: client.id,
       status: 'failed',
@@ -553,6 +629,72 @@ async function executeActionRun(
     });
 
     return { itemsCollected: 0, error: errorMessage };
+  } finally {
+    clearInterval(heartbeatInterval);
+  }
+}
+
+async function executeDaemonBuiltinActionRun(
+  client: ExecutorClient,
+  job: PollResponse,
+  cfg: ExecutorConfig
+): Promise<{ itemsCollected: number; error?: string }> {
+  const { run_id, connector_key, action_key, action_input } = job;
+  if (!run_id || !connector_key || !action_key) {
+    throw new Error('Invalid daemon built-in action: missing run_id, connector_key, or action_key');
+  }
+  if (job.compiled_code) {
+    const message =
+      'operation_backend_unavailable: daemon_builtin payload must not contain compiled_code';
+    await completeActionOnce(client, {
+      run_id,
+      worker_id: client.id,
+      status: 'failed',
+      error_message: message,
+    });
+    return { itemsCollected: 0, error: message };
+  }
+
+  const heartbeatInterval = setInterval(async () => {
+    try {
+      await client.heartbeat(run_id);
+    } catch (error) {
+      log.debug('[executor] Daemon built-in heartbeat failed:', error);
+    }
+  }, cfg.heartbeatIntervalMs);
+
+  try {
+    const result = await executeDaemonBuiltin({
+      connectorKey: connector_key,
+      actionKey: action_key,
+      input: (action_input ?? {}) as Record<string, unknown>,
+      shutdownSignal: cfg.shutdownSignal,
+    });
+    if (!result.ok) {
+      const message = `${result.code}: ${result.error}`;
+      await completeActionOnce(client, {
+        run_id,
+        worker_id: client.id,
+        status: 'failed',
+        error_message: message,
+        ...(result.output ? { action_output: result.output } : {}),
+      });
+      return { itemsCollected: 0, error: message };
+    }
+
+    await completeActionOnce(client, {
+      run_id,
+      worker_id: client.id,
+      status: 'success',
+      action_output: result.output,
+    });
+    return { itemsCollected: 0 };
+  } catch (error) {
+    // Delivery uncertainty is not an execution failure. The immutable payload
+    // was retried above; never send a contradictory terminal result here.
+    const message = error instanceof Error ? error.message : String(error);
+    log.info(`[executor] Daemon built-in terminal delivery uncertain for ${run_id}:`, message);
+    return { itemsCollected: 0, error: message };
   } finally {
     clearInterval(heartbeatInterval);
   }
@@ -568,6 +710,7 @@ async function executeAuthRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
+  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
   // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
   // redirects) — a fixed subprocess timeout would kill the pairing mid-flow.
   // Terminate via the UI cancel signal instead.
@@ -795,6 +938,10 @@ async function executeEmbedBackfillRun(
     }> = [];
     let batchError: string | undefined;
     try {
+      // Dynamic: the headless shell package ships without the embeddings
+      // provider stack, so a static import would pull it into every daemon
+      // bundle. Loaded only when a feed actually has text to embed.
+      const { batchGenerateEmbeddings } = await import('../embeddings.js');
       const { embeddings, model } = await batchGenerateEmbeddings(pending.map((p) => p.text));
       for (let i = 0; i < pending.length; i++) {
         const embedding = embeddings[i];
@@ -936,6 +1083,9 @@ async function processEventChunk(
   }
 
   try {
+    // Dynamic for the same reason as above: keeps the embeddings provider
+    // stack out of the headless shell bundle.
+    const { batchGenerateEmbeddings } = await import('../embeddings.js');
     const { embeddings, model } = await batchGenerateEmbeddings(texts);
     for (let j = 0; j < targets.length; j++) {
       const embedding = embeddings[j];

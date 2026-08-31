@@ -71,15 +71,13 @@ export class WorkerDaemon {
     });
 
     this.env = env;
-    this.shutdownController = interactiveSession
-      ? new AbortController()
-      : undefined;
+    // Always present: the daemon builtin cancels an in-flight shell command on
+    // shutdown, so the signal can no longer be scoped to interactive sessions.
+    this.shutdownController = new AbortController();
     const executor = {
       timeoutMs: DEFAULT_EXECUTOR_TIMEOUT_MS,
       ...(daemonConfig.executor ?? {}),
-      ...(this.shutdownController
-        ? { shutdownSignal: this.shutdownController.signal }
-        : {}),
+      shutdownSignal: this.shutdownController.signal,
     };
     if (interactiveSession) attachInteractiveSession(executor, interactiveSession);
     this.config = {

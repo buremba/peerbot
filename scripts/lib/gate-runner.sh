@@ -103,7 +103,7 @@ gate_unit() {
   bun test packages/server/src/__tests__/unit --timeout 30000 || return 1
   bun test packages/server/src/auth/__tests__/system-provider-resolution.test.ts --timeout 30000 || return 1
   bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --timeout 30000 || return 1
-  bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts --timeout 30000 || return 1
+  bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts packages/server/src/utils/__tests__/build-catalog-manifests-exit.test.ts --timeout 30000 || return 1
   bun test packages/connector-worker --timeout 30000 || return 1
   bun test packages/client packages/promptfoo-provider --timeout 30000 || return 1
   bun test packages/connector-sdk --timeout 30000 || return 1

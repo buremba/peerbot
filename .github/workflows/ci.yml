@@ -285,10 +285,10 @@ jobs:
           # run here rather than in the integration job.
           bun test packages/server/src/utils/__tests__/device-pin-tombstones.test.ts packages/server/src/tools/admin/manage_operations/__tests__/activity-feed-collapse.test.ts --coverage --timeout 30000
           mv coverage/lcov.info coverage/server-units-activity.lcov.info
-          # Connector-compiler bun:test suites (#2042/#2043): pure source-text
-          # and AST-level compilation checks (esbuild only, no Postgres in the
-          # module graph), so they run in the pure-unit job rather than integration.
-          bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts --coverage --timeout 30000
+          # Connector-compiler and catalog-build bun:test suites: pure source-text,
+          # AST-level compilation, and bounded manifest generation checks (no
+          # Postgres), so they run in the pure-unit job rather than integration.
+          bun test packages/server/src/utils/__tests__/catalog-connectors-compile.test.ts packages/server/src/utils/__tests__/compiler-core.test.ts packages/server/src/utils/__tests__/build-catalog-manifests-exit.test.ts --coverage --timeout 30000
           mv coverage/lcov.info coverage/server-units-compiler.lcov.info
 
       - name: connector-worker (bun:test)

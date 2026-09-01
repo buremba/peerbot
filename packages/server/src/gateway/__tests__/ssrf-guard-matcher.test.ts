@@ -11,12 +11,52 @@ describe("isReservedIp — hardened matcher", () => {
     expect(isReservedIp("100.64.0.1")).toBe(true); // CGNAT 100.64/10
     expect(isReservedIp("198.18.0.1")).toBe(true); // benchmark 198.18/15
     expect(isReservedIp("169.254.169.254")).toBe(true); // cloud metadata
+    expect(isReservedIp("192.0.0.1")).toBe(true); // IETF protocol assignments
+    expect(isReservedIp("192.0.2.1")).toBe(true); // TEST-NET-1
+    expect(isReservedIp("192.88.99.2")).toBe(true); // 6a44 relay anycast
+    expect(isReservedIp("198.51.100.1")).toBe(true); // TEST-NET-2
+    expect(isReservedIp("203.0.113.1")).toBe(true); // TEST-NET-3
   });
 
   test("newly-covered IPv6 spellings", () => {
     expect(isReservedIp("::")).toBe(true); // unspecified
     expect(isReservedIp("fe80::1")).toBe(true); // link-local
     expect(isReservedIp("ff02::1")).toBe(true); // multicast
+  });
+
+  test("IANA non-global IPv6 ranges are blocked", () => {
+    expect(isReservedIp("64:ff9b:1::808:808")).toBe(true); // local-use NAT64
+    expect(isReservedIp("100::1")).toBe(true); // discard-only
+    expect(isReservedIp("100:0:0:1::1")).toBe(true); // dummy IPv6 prefix
+    expect(isReservedIp("2001:2::1")).toBe(true); // benchmarking
+    expect(isReservedIp("2001:5::1")).toBe(true); // unassigned IETF protocol space
+    expect(isReservedIp("2001:10::1")).toBe(true); // deprecated ORCHID
+    expect(isReservedIp("2001:db8::1")).toBe(true); // documentation
+    expect(isReservedIp("2002::1")).toBe(true); // deprecated 6to4
+    expect(isReservedIp("3fff::1")).toBe(true); // documentation
+    expect(isReservedIp("5f00::1")).toBe(true); // segment-routing SIDs
+    expect(isReservedIp("fec0::1")).toBe(true); // deprecated site-local
+    expect(isReservedIp("::127.0.0.1")).toBe(true); // deprecated IPv4-compatible
+    expect(isReservedIp("4000::1")).toBe(true); // outside allocated 2000::/3
+    expect(isReservedIp("64:ff9b:0:ffff::1")).toBe(true); // unallocated 0000::/8
+    expect(isReservedIp("64:ff9b:2::1")).toBe(true); // outside both NAT64 prefixes
+  });
+
+  test("real IANA global exceptions are preserved", () => {
+    expect(isReservedIp("192.0.0.9")).toBe(false); // PCP anycast
+    expect(isReservedIp("192.0.0.10")).toBe(false); // TURN anycast
+    expect(isReservedIp("192.31.196.1")).toBe(false); // AS112-v4
+    expect(isReservedIp("192.52.193.1")).toBe(false); // AMT-v4
+    expect(isReservedIp("192.175.48.1")).toBe(false); // direct AS112-v4
+    expect(isReservedIp("2001:1::1")).toBe(false); // PCP anycast
+    expect(isReservedIp("2001:1::2")).toBe(false); // TURN anycast
+    expect(isReservedIp("2001:1::3")).toBe(false); // DNS-SD anycast
+    expect(isReservedIp("2001:3::1")).toBe(false); // AMT is globally reachable
+    expect(isReservedIp("2001:4:112::1")).toBe(false); // AS112-v6
+    expect(isReservedIp("2001:20::1")).toBe(false); // ORCHIDv2
+    expect(isReservedIp("2001:30::1")).toBe(false); // Drone Remote ID
+    expect(isReservedIp("2620:4f:8000::1")).toBe(false); // direct AS112-v6
+    expect(isReservedIp("2001:4860:4860::8888")).toBe(false);
   });
 
   test("IPv4-mapped IPv6 (dotted + hex) — the classic bypass", () => {

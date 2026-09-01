@@ -2,20 +2,22 @@ import { createHash } from 'node:crypto';
 
 /**
  * Single source of truth for npm packages that connector code may import but
- * which we deliberately do NOT bundle into the compiled connector artifact.
+ * which the connector runtime provides instead of bundling into each compiled
+ * connector artifact.
  *
  * These deps must be installed in every runtime that executes compiled
  * connectors — the server container that hosts in-process feed sync,
  * and the connector-worker daemon that runs out-of-process. They appear in:
  *
- *   - `packages/connector-worker/src/compile/index.ts` `external` list
- *     (esbuild leaves the imports as bare specifiers in the bundle)
+ *   - `packages/connector-worker/src/compile/index.ts` (`@lobu/connector-sdk`
+ *     is externalized by the SDK plugin; the rest use esbuild's `external` list)
  *   - `packages/connector-worker/package.json` dependencies (so the runtime can
  *     resolve them)
  *   - `assertExternalDepsResolvable()` (boot-time check that crashes loud
  *     instead of failing silently per-feed)
  *
- * Rule of thumb: only externalize deps that genuinely can't be bundled —
+ * Rule of thumb: besides the shared connector SDK, only externalize deps that
+ * genuinely can't be bundled —
  * native binaries (`sharp`, `jimp`) or runtime install steps
  * (`playwright` ships browsers via `npx playwright install`). Pure JS deps
  * like `pino` or `link-preview-js` should be bundled instead, even if it
@@ -23,7 +25,17 @@ import { createHash } from 'node:crypto';
  * class of "compiled connector references X but X isn't installed in the
  * worker image" outages.
  */
+/** Native/browser dependencies externalized through esbuild's `external` option. */
 export const EXTERNAL_RUNTIME_DEPS = ['playwright', 'sharp', 'jimp'] as const;
+
+/** Shared framework externalized by the connector SDK esbuild plugin. */
+const CONNECTOR_SDK_RUNTIME_DEP = '@lobu/connector-sdk' as const;
+
+/** Every bare package specifier a compiled connector expects the runtime to supply. */
+export const RUNTIME_PROVIDED_PACKAGES = [
+  CONNECTOR_SDK_RUNTIME_DEP,
+  ...EXTERNAL_RUNTIME_DEPS,
+] as const;
 
 /**
  * Bump when the compile pipeline changes in a way that makes previously
@@ -59,7 +71,7 @@ export function assertExternalDepsResolvable(
   resolve: (specifier: string) => void
 ): void {
   const missing: string[] = [];
-  for (const dep of EXTERNAL_RUNTIME_DEPS) {
+  for (const dep of RUNTIME_PROVIDED_PACKAGES) {
     try {
       resolve(dep);
     } catch {
@@ -69,7 +81,7 @@ export function assertExternalDepsResolvable(
   if (missing.length > 0) {
     throw new Error(
       `Connector runtime is missing required npm packages: ${missing.join(', ')}. ` +
-        `These are declared in EXTERNAL_RUNTIME_DEPS (packages/connector-worker/src/runtime-deps.ts) ` +
+        `These are declared in RUNTIME_PROVIDED_PACKAGES (packages/connector-worker/src/runtime-deps.ts) ` +
         `and must be installed in every runtime that executes compiled connectors. ` +
         `Add them to packages/connector-worker/package.json and rebuild the runtime image.`
     );

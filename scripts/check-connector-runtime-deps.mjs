@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Tripwire: assert that every dep declared in EXTERNAL_RUNTIME_DEPS is
+ * Tripwire: assert that every dep declared in RUNTIME_PROVIDED_PACKAGES is
  * present in the worker package.json. Catches "added a dep to the
  * compiler's external list but forgot to install it in the runtime
  * image" — the failure mode that silently broke the Reddit automation
@@ -21,19 +21,23 @@ const runtimeDepsSource = readFileSync(
   "utf-8"
 );
 
-const match = runtimeDepsSource.match(
+const sdkMatch = runtimeDepsSource.match(
+  /CONNECTOR_SDK_RUNTIME_DEP\s*=\s*['"]([^'"]+)['"]\s*as\s+const/
+);
+const externalMatch = runtimeDepsSource.match(
   /EXTERNAL_RUNTIME_DEPS\s*=\s*\[([^\]]+)\]\s*as\s+const/
 );
-if (!match) {
+if (!sdkMatch || !externalMatch) {
   console.error(
-    "Could not parse EXTERNAL_RUNTIME_DEPS from packages/connector-worker/src/runtime-deps.ts"
+    "Could not parse connector runtime dependencies from packages/connector-worker/src/runtime-deps.ts"
   );
   process.exit(2);
 }
-const declared = match[1]
+const external = externalMatch[1]
   .split(",")
   .map((s) => s.trim().replace(/^['"]|['"]$/g, ""))
   .filter(Boolean);
+const declared = [sdkMatch[1], ...external];
 
 const workerPkg = JSON.parse(
   readFileSync(
@@ -47,14 +51,14 @@ const missing = declared.filter((dep) => !installedDeps.has(dep));
 
 if (missing.length > 0) {
   console.error(
-    `❌ EXTERNAL_RUNTIME_DEPS includes deps that are NOT in packages/connector-worker/package.json:\n` +
+    `❌ RUNTIME_PROVIDED_PACKAGES includes deps that are NOT in packages/connector-worker/package.json:\n` +
       missing.map((d) => `  - ${d}`).join("\n") +
-      `\n\nEither add them as worker dependencies, or remove them from EXTERNAL_RUNTIME_DEPS\n` +
-      `(packages/connector-worker/src/runtime-deps.ts) so they get bundled into the connector artifact.`
+      `\n\nEither add them as worker dependencies, or stop providing/externalizing them at runtime\n` +
+      `(packages/connector-worker/src/runtime-deps.ts).`
   );
   process.exit(1);
 }
 
 console.log(
-  `✅ EXTERNAL_RUNTIME_DEPS (${declared.join(", ")}) all installed in worker package.json`
+  `✅ RUNTIME_PROVIDED_PACKAGES (${declared.join(", ")}) all installed in worker package.json`
 );

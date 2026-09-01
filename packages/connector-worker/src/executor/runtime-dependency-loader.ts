@@ -12,12 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, symlink } from 'node:fs/promises';
 import { createRequire, register } from 'node:module';
 import { basename, dirname, join } from 'node:path';
-import { EXTERNAL_RUNTIME_DEPS } from '../runtime-deps.js';
-
-const RUNTIME_DEPENDENCY_ROOTS = [
-  '@lobu/connector-sdk',
-  ...EXTERNAL_RUNTIME_DEPS,
-] as const;
+import { RUNTIME_PROVIDED_PACKAGES } from '../runtime-deps.js';
 
 type ResolveContext = {
   parentURL?: string;
@@ -42,7 +37,7 @@ const runtimeRequire = createRequire(import.meta.url);
 const packageRootCache = new Map<string, string | null>();
 
 export function isConnectorRuntimeDependency(specifier: string): boolean {
-  return RUNTIME_DEPENDENCY_ROOTS.some(
+  return RUNTIME_PROVIDED_PACKAGES.some(
     (root) => specifier === root || specifier.startsWith(`${root}/`)
   );
 }
@@ -97,7 +92,7 @@ function resolveRuntimePackageRoot(pkgName: string): string | null {
 export async function stageConnectorRuntimeDependencies(
   tempDir: string
 ): Promise<void> {
-  for (const pkgName of RUNTIME_DEPENDENCY_ROOTS) {
+  for (const pkgName of RUNTIME_PROVIDED_PACKAGES) {
     if (!packageRootCache.has(pkgName)) {
       packageRootCache.set(pkgName, resolveRuntimePackageRoot(pkgName));
     }

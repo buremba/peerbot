@@ -4,7 +4,7 @@
  * at runtime via `LOBU_CATALOG_URIS` (and vendored into the CLI tarball).
  */
 import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   generateConnectorsManifest,
@@ -13,7 +13,10 @@ import {
 } from '../src/catalog/generate-defaults';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const outDir = join(here, '..', 'dist', 'catalogs');
+const configuredOutDir = process.env.LOBU_CATALOG_BUILD_OUT_DIR?.trim();
+const outDir = configuredOutDir
+  ? resolve(configuredOutDir)
+  : join(here, '..', 'dist', 'catalogs');
 
 await mkdir(outDir, { recursive: true });
 await rm(join(outDir, 'automations.json'), { force: true });

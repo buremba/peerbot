@@ -21,7 +21,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
-  EXTERNAL_RUNTIME_DEPS,
+  RUNTIME_PROVIDED_PACKAGES,
   SDK_SPECIFIER_RE,
   createNpmSpecifierPlugin,
   normalizeSdkSpecifier,
@@ -289,16 +289,6 @@ export async function compileSource(
 }
 
 /**
- * Bare specifiers the compiled bundle may import at load time: the connector
- * SDK (always externalized by `createConnectorCompiler`) plus the
- * EXTERNAL_RUNTIME_DEPS (native/binary deps esbuild leaves external).
- */
-const RUNTIME_PROVIDED_PACKAGES: readonly string[] = [
-  '@lobu/connector-sdk',
-  ...EXTERNAL_RUNTIME_DEPS,
-];
-
-/**
  * Resolve the on-disk package root for a bare specifier, as THIS process (the
  * server, which always has the SDK installed) resolves it. Walks up from the
  * resolved entry file and accepts a directory when its package.json declares
@@ -419,30 +409,40 @@ export async function extractMetadata<TMetadata>(
 
       let resolved = false;
       let stderrOutput = '';
+      let deadline: ReturnType<typeof setTimeout> | null = null;
+
+      const settle = (fn: () => void): void => {
+        if (resolved) return;
+        resolved = true;
+        if (deadline) {
+          clearTimeout(deadline);
+          deadline = null;
+        }
+        fn();
+      };
 
       child.stderr?.on('data', (chunk: Buffer) => {
         stderrOutput += chunk.toString();
       });
 
       child.on('message', (msg: any) => {
-        resolved = true;
-        if (msg.success) {
-          resolve(msg.metadata);
-        } else {
-          reject(new Error(formatMetadataExtractionError(String(msg.error))));
-        }
+        settle(() => {
+          if (msg.success) {
+            resolve(msg.metadata);
+          } else {
+            reject(new Error(formatMetadataExtractionError(String(msg.error))));
+          }
+        });
       });
 
       child.on('error', (err) => {
-        if (!resolved) {
-          resolved = true;
+        settle(() => {
           reject(new Error(`Metadata extraction subprocess error: ${err.message}`));
-        }
+        });
       });
 
       child.on('exit', (code) => {
-        if (!resolved) {
-          resolved = true;
+        settle(() => {
           const stderr = stderrOutput.trim();
           reject(
             new Error(
@@ -451,15 +451,14 @@ export async function extractMetadata<TMetadata>(
                 : `Metadata extraction subprocess exited with code ${code}`
             )
           );
-        }
+        });
       });
 
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
+      deadline = setTimeout(() => {
+        settle(() => {
           child.kill('SIGKILL');
           reject(new Error('Metadata extraction timed out after 30s'));
-        }
+        });
       }, 30000);
     });
 

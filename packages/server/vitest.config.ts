@@ -55,7 +55,8 @@ export default defineConfig({
       "src/utils/__tests__/device-pin-tombstones.test.ts",
       "src/utils/__tests__/catalog-connectors-compile.test.ts",
       "src/utils/__tests__/compiler-core.test.ts",
-      // Unlike the three above, this one needs Postgres (it executes the pause
+      "src/utils/__tests__/build-catalog-manifests-exit.test.ts",
+      // Unlike the files above, this one needs Postgres (it executes the pause
       // decision against real rows), so it runs in the bun:test/Postgres job
       // alongside src/lobu/__tests__ rather than in the pure-unit job.
       "src/utils/__tests__/deployment-pause.test.ts",

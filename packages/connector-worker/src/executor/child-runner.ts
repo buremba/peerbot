@@ -477,6 +477,19 @@ function installParentDeathHandlers(): void {
     cleanupActiveRuntimeTempDir();
     process.exit(143);
   });
+  // A supervisor signalling the whole process group reaches parent and child
+  // before IPC disconnect is delivered, and the default signal action
+  // terminates without running 'exit' handlers — so neither handler above
+  // fires and the staged directory leaks. Handle the signals explicitly.
+  process.once('SIGTERM', () => {
+    cleanupActiveRuntimeTempDir();
+    process.exit(143);
+  });
+  process.once('SIGINT', () => {
+    cleanupActiveRuntimeTempDir();
+    // 130 = 128 + SIGINT.
+    process.exit(130);
+  });
 }
 
 async function main() {

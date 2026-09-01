@@ -32,6 +32,7 @@ export {
   COMPILE_CONFIG_HASH,
   computeCompileConfigHash,
   EXTERNAL_RUNTIME_DEPS,
+  RUNTIME_PROVIDED_PACKAGES,
 } from '../runtime-deps.js';
 
 // Strict regex for connector_key: lowercase letters/digits, optional dots
@@ -79,19 +80,6 @@ export function findBundledConnectorFile(
 }
 
 /**
- * esbuild plugin that marks the connector SDK as **external** (runtime-provided)
- * rather than bundling it in. The SDK pulls a large infra graph transitively
- * (Sentry, OpenTelemetry, grpc, isomorphic-git, …); bundling it inflated every
- * connector to multiple MB. The runtime that executes the connector already has
- * `@lobu/connector-sdk` installed (it's a dependency of `@lobu/connector-worker`),
- * so the bundle leaves it as a bare import and Node resolves it from the runtime's
- * node_modules at load time — the standard "externalize the framework, bundle the
- * user code" pattern (cf. AWS Lambda not bundling `@aws-sdk`).
- *
- * The `lobu` alias specifier is normalized to `@lobu/connector-sdk` so the emitted
- * import resolves to a real package the runtime provides.
- */
-/**
  * Matches the connector SDK as a root or subpath import, under either the
  * `lobu` alias or its real package name. Shared with the server's source-text
  * compiler (`packages/server/src/utils/compiler-core.ts`) so the two compilers
@@ -106,6 +94,19 @@ export function normalizeSdkSpecifier(specifier: string): string {
   return specifier.replace(/^lobu(?=$|\/)/, '@lobu/connector-sdk');
 }
 
+/**
+ * esbuild plugin that marks the connector SDK as **external** (runtime-provided)
+ * rather than bundling it in. The SDK pulls a large infra graph transitively
+ * (Sentry, OpenTelemetry, grpc, isomorphic-git, …); bundling it inflated every
+ * connector to multiple MB. The runtime that executes the connector already has
+ * `@lobu/connector-sdk` installed (it's a dependency of `@lobu/connector-worker`),
+ * so the bundle leaves it as a bare import and Node resolves it from the runtime's
+ * node_modules at load time — the standard "externalize the framework, bundle the
+ * user code" pattern (cf. AWS Lambda not bundling `@aws-sdk`).
+ *
+ * The `lobu` alias specifier is normalized to `@lobu/connector-sdk` so the emitted
+ * import resolves to a real package the runtime provides.
+ */
 function createSdkExternalPlugin(): Plugin {
   return {
     name: 'sdk-external',

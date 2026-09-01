@@ -25,16 +25,20 @@ export interface ConnectorClaimContext {
   orgScopeIds: string[];
   baseOrgScopeIds: string[];
   workerHardensDbEgress: boolean;
-  /** Capacity advertised for each execution backend by this worker. */
-  backendCapacity?: Record<string, number>;
+  /**
+   * Capacity advertised for each execution backend by this worker. Required:
+   * an omitted map reads as zero capacity for every backend, so the worker
+   * claims nothing at all and nothing anywhere reports why.
+   */
+  backendCapacity: Record<string, number>;
 }
 
 /** A backend is claimable only when this poll explicitly advertises capacity. */
 function hasPositiveBackendCapacity(
-  capacity: Record<string, number> | undefined,
+  capacity: Record<string, number>,
   backend: string
 ): boolean {
-  const value = capacity?.[backend];
+  const value = capacity[backend];
   return typeof value === 'number' && value > 0;
 }
 

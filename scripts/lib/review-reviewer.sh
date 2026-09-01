@@ -15,11 +15,11 @@ review_select_reviewer() {
         printf 'codex\n'
       fi
       ;;
-    codex|claude|pi)
+    codex|claude)
       printf '%s\n' "$1"
       ;;
     *)
-      echo "invalid REVIEWER_CLI=$1 (expected auto, codex, claude, or pi)" >&2
+      echo "invalid REVIEWER_CLI=$1 (expected auto, codex, or claude)" >&2
       return 2
       ;;
   esac
@@ -43,6 +43,6 @@ review_should_retry_inline() {
 review_fail_closed_message() {
   local reviewer="$1"
   local detail="$2"
-  printf "Independent review could not be completed by '%s': %s. The review gate fails closed and will not fall back to another reviewer. Fix the selected reviewer's installation, authentication, quota, or configuration, then rerun; use REVIEWER_CLI=claude|codex|pi only to explicitly select the intended independent reviewer.\n" \
+  printf "Independent review could not be completed by '%s': %s. The review gate fails closed and will not fall back to another reviewer. Fix the selected reviewer's installation, authentication, quota, or configuration, then rerun; use REVIEWER_CLI=claude|codex only to explicitly select the intended independent reviewer.\n" \
     "$reviewer" "$detail"
 }

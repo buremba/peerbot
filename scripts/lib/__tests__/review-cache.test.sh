@@ -17,8 +17,7 @@ trap 'rm -rf "$cache_root"' EXIT
 export REVIEW_CACHE_ROOT_FOR_TESTS="$cache_root"
 export REVIEWER_CLI_SELECTED=codex
 export CLAUDE_REVIEW_MODEL=fable CLAUDE_REVIEW_EFFORT=high
-export CODEX_REVIEW_MODEL=""
-export PI_REVIEW_MODEL=gpt-5.6-terra PI_REVIEW_PROVIDER=openai-codex
+export CODEX_REVIEW_MODEL=gpt-5.6-sol CODEX_REVIEW_EFFORT=xhigh
 
 sig="$(review_reviewer_signature)"
 [ -n "$sig" ] || fail "empty reviewer signature"
@@ -33,7 +32,7 @@ hit="$(review_cache_lookup "hash-a" "$sig")"
 [ "$(jq -r .diff_hash "$hit")" = "hash-a" ] || fail "cached diff_hash not stored"
 
 # different reviewer signature → miss (stale verdict under a new reviewer)
-if review_cache_lookup "hash-a" "claude|fable|low||gpt-5.6-terra|openai-codex" >/dev/null 2>&1; then
+if review_cache_lookup "hash-a" "claude|fable|low|gpt-5.6-sol|xhigh" >/dev/null 2>&1; then
   fail "different reviewer signature unexpectedly hit"
 fi
 
@@ -42,10 +41,20 @@ if review_cache_lookup "hash-b" "$sig" >/dev/null 2>&1; then
   fail "different diff hash unexpectedly hit"
 fi
 
-# a changed signature must invalidate: same verdict under pi vs codex
+# a changed signature must invalidate: same verdict under claude vs codex
 review_cache_store "hash-c" "$sig" "origin/main" "cafe" "$verdict"
-if review_cache_lookup "hash-c" "pi|fable|high||gpt-5.6-terra|openai-codex" >/dev/null 2>&1; then
+if review_cache_lookup "hash-c" "claude|fable|high|gpt-5.6-sol|xhigh" >/dev/null 2>&1; then
   fail "cross-reviewer verdict reused"
+fi
+
+# a changed codex effort must invalidate: effort is part of the signature
+sig_low_effort="$(CODEX_REVIEW_EFFORT=high review_reviewer_signature)"
+if [ "$sig_low_effort" = "$sig" ]; then
+  fail "codex effort not included in the reviewer signature"
+fi
+review_cache_store "hash-d" "$sig_low_effort" "origin/main" "cafe" "$verdict"
+if review_cache_lookup "hash-d" "$sig" >/dev/null 2>&1; then
+  fail "verdict cached under a different codex effort was reused"
 fi
 
 # review_diff_hash is stable for identical content and differs on change

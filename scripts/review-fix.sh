@@ -5,7 +5,7 @@
 # nothing. The driving agent inspects the edits (shown at the end), commits,
 # then runs `make review` once on the settled HEAD.
 #
-# Reviewer selection matches review.sh — REVIEWER_CLI=auto|codex|claude|pi. This
+# Reviewer selection matches review.sh — REVIEWER_CLI=auto|codex|claude. This
 # step is mandated by AGENTS.md but is not a gate: unlike review.sh it posts no
 # status, so a reviewer outage here silently skips the fixer instead of failing
 # a check. Being hard-wired to one CLI therefore costs a whole quality pass
@@ -69,10 +69,10 @@ if [ "$REVIEWER_MODE" != "full" ] \
 fi
 
 FIXER_CLI="$(review_select_reviewer "${REVIEWER_CLI:-auto}")"
-CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"
+CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"
 CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
-PI_REVIEW_MODEL="${PI_REVIEW_MODEL:-gpt-5.6-terra}"
-PI_REVIEW_PROVIDER="${PI_REVIEW_PROVIDER:-openai-codex}"
+CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
+CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
 if [ "$FIXER_CLI" = "claude" ]; then
   review_validate_claude_model "$CLAUDE_REVIEW_MODEL" || exit $?
 fi
@@ -92,6 +92,10 @@ case "$FIXER_CLI" in
     if [ -n "${CODEX_REVIEW_MODEL:-}" ]; then
       CODEX_ARGS+=(--model "$CODEX_REVIEW_MODEL")
     fi
+    if [ -n "${CODEX_REVIEW_EFFORT:-}" ]; then
+      # codex -c values are TOML, so the string needs embedded quotes.
+      CODEX_ARGS+=(-c "model_reasoning_effort=\"$CODEX_REVIEW_EFFORT\"")
+    fi
     env BASE_BRANCH="$BASE_BRANCH" "${CODEX_ARGS[@]}" "$(cat "$PROMPT_FILE")" < /dev/null > /dev/null 2> "$LAST_MSG_FILE.stderr"
     FIXER_EXIT=$?
     ;;
@@ -108,20 +112,6 @@ case "$FIXER_CLI" in
         --no-session-persistence \
         --tools Bash,Read,Grep,LS,Edit,Write \
         --permission-mode bypassPermissions < /dev/null > "$LAST_MSG_FILE"
-    FIXER_EXIT=$?
-    ;;
-  pi)
-    # Same shape as the claude arm: stdout is the summary, and edit/write are
-    # the point of the fixer pass.
-    PI_ARGS=(pi -p --no-session --tools "read,bash,edit,write")
-    if [ -n "${PI_REVIEW_PROVIDER:-}" ]; then
-      PI_ARGS+=(--provider "$PI_REVIEW_PROVIDER")
-    fi
-    if [ -n "${PI_REVIEW_MODEL:-}" ]; then
-      PI_ARGS+=(--model "$PI_REVIEW_MODEL")
-    fi
-    env BASE_BRANCH="$BASE_BRANCH" \
-      "${PI_ARGS[@]}" "$(cat "$PROMPT_FILE")" < /dev/null > "$LAST_MSG_FILE"
     FIXER_EXIT=$?
     ;;
 esac

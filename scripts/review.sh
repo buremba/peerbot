@@ -79,19 +79,13 @@ elif git show-ref --verify --quiet refs/remotes/origin/main; then
 else
   BASE_BRANCH="main"
 fi
-CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"
+CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"
 CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
-CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
-# `pi` is the explicit third reviewer (never chosen by `auto`): useful when the
-# codex/claude CLIs are out of quota or unauthenticated. Auth comes from the
-# operator's pi provider accounts; PI_REVIEW_PROVIDER defaults to the
-# operator's ChatGPT-backed openai-codex accounts. Without an explicit
-# provider, pi's own model-pattern resolution can land on a provider that has
-# no credentials. Model note: the ChatGPT account backend rejects gpt-5.6-sol
-# ("not supported when using Codex with a ChatGPT account") while it accepts
-# gpt-5.6-terra, so terra is the default; override with PI_REVIEW_MODEL.
-PI_REVIEW_MODEL="${PI_REVIEW_MODEL:-gpt-5.6-terra}"
-PI_REVIEW_PROVIDER="${PI_REVIEW_PROVIDER:-openai-codex}"
+# Codex defaults assume API-key auth: the ChatGPT account backend rejects
+# gpt-5.6-sol ("not supported when using Codex with a ChatGPT account"), so
+# ChatGPT-backed operators must override CODEX_REVIEW_MODEL.
+CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
+CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
 REVIEWER_CLI="${REVIEWER_CLI:-auto}"
 # light (default): skip the cross-harness reviewer for small safe-class diffs
 # (docs/renames/generated/root bun.lock/snapshots/additive-tests, exact model
@@ -267,38 +261,15 @@ run_reviewer_inline() {
       if [ -n "$CODEX_REVIEW_MODEL" ]; then
         codex_args+=(--model "$CODEX_REVIEW_MODEL")
       fi
+      if [ -n "$CODEX_REVIEW_EFFORT" ]; then
+        # codex -c values are TOML, so the string needs embedded quotes.
+        codex_args+=(-c "model_reasoning_effort=\"$CODEX_REVIEW_EFFORT\"")
+      fi
       run_review_child env \
         BASE_BRANCH="$BASE_BRANCH" \
         HEAD_SHA="$HEAD_SHA" \
         CI_CHECKS_FILE="$CI_CHECKS_FILE" \
         "${codex_args[@]}" "$(cat "$prompt_file")" < /dev/null > /dev/null 2> "$diagnostic_file"
-      ;;
-    pi)
-      # Read-only exploratory parity with the codex arm: read+bash let the
-      # reviewer inspect the tree and run targeted suites, with no edit tools.
-      # NOTE: pi's tool allowlist is not an OS-enforced sandbox — bash can
-      # still mutate the worktree. That is the same trust model as the claude
-      # arm above (Bash without Edit/Write); the verdict's value (running the
-      # changed-path suites) requires shell access, and the commit lock plus
-      # HEAD-is-current re-assertions contain a bad actor's blast radius to
-      # this worktree's status posts.
-      # --no-session keeps an ephemeral verdict run out of session history.
-      local pi_args=(
-        pi -p
-        --no-session
-        --tools "read,bash"
-      )
-      if [ -n "$PI_REVIEW_PROVIDER" ]; then
-        pi_args+=(--provider "$PI_REVIEW_PROVIDER")
-      fi
-      if [ -n "$PI_REVIEW_MODEL" ]; then
-        pi_args+=(--model "$PI_REVIEW_MODEL")
-      fi
-      run_review_child env \
-        BASE_BRANCH="$BASE_BRANCH" \
-        HEAD_SHA="$HEAD_SHA" \
-        CI_CHECKS_FILE="$CI_CHECKS_FILE" \
-        "${pi_args[@]}" "$(cat "$prompt_file")" < /dev/null > "$raw_file" 2> "$diagnostic_file"
       ;;
   esac
   REVIEWER_EXIT=$?

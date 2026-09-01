@@ -8,7 +8,7 @@
  * hook is run over a real credential-bearing payload. Comparing function
  * references would still pass if the three were wired to the wrong keys.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 const initCalls: Array<Record<string, unknown>> = [];
 
@@ -22,6 +22,14 @@ mock.module("@sentry/node", () => ({
 const { initSentry } = await import("../sentry");
 
 const SECRET = "SENTRY_INIT_SENTINEL";
+
+// bun runs every test file in ONE process, so a DSN left set here would follow
+// the suite into whatever file runs next and quietly arm Sentry there.
+const ORIGINAL_DSN = process.env.SENTRY_DSN;
+afterAll(() => {
+  if (ORIGINAL_DSN === undefined) delete process.env.SENTRY_DSN;
+  else process.env.SENTRY_DSN = ORIGINAL_DSN;
+});
 
 function capturedOptions(): Record<string, unknown> {
   expect(initCalls).toHaveLength(1);

@@ -8,8 +8,7 @@
 import type { Context } from 'hono';
 import * as Sentry from '@sentry/node';
 import { ToolUserError } from './utils/errors';
-import { getErrorMessage } from "@lobu/core";
-import { scrubSentryValue } from '@lobu/core';
+import { getErrorMessage, scrubSentryValue } from '@lobu/core';
 
 const SENTRY_CAPTURED_FLAG = 'sentryErrorCaptured';
 

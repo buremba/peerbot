@@ -227,9 +227,11 @@ export function scrubSentryErrorEvent<T extends SentryEventLike>(event: T): T {
 }
 
 /**
- * Transactions are sampled (0.02 prod, 1.0 dev) but not exempt: a span's
+ * Sampled wherever tracing is on -- but sampled is not exempt: a span's
  * attributes carry the request URL, which is the very `?token=` vector the
- * error path scrubs. Without this they reach Sentry unscrubbed.
+ * error path scrubs. Without this they reach Sentry unscrubbed. Rates are the
+ * consumer's business, not this module's (the gateway traces, the worker sets
+ * tracesSampleRate 0, so there it is installed and inert).
  */
 // Generic rather than naming TransactionEvent: @sentry/node does not
 // re-export that type. Inference recovers it exactly at the

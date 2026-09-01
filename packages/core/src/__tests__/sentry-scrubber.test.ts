@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   scrubSentryErrorEvent,
   scrubSentryValue,
-} from "../utils/sentry-scrubber.js";
+} from "../utils/sentry-scrubber";
 
 const SECRET = "SENTRY_SECRET_SENTINEL";
 

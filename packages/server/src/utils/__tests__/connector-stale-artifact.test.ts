@@ -65,7 +65,13 @@ beforeEach(() => {
   queries.length = 0;
   storedSourceCode = STORED_SOURCE;
   vi.resetModules();
-  vi.doMock('../../db/client', () => ({ getDb: () => fakeSql }));
+  // Spread the real module: vi.doMock is not hoisted or file-scoped, so a
+  // hand-listed shape leaks into later files in the same vitest worker and
+  // surfaces there as `No "<export>" export is defined on the mock`.
+  vi.doMock('../../db/client', async (importOriginal) => ({
+    ...((await importOriginal()) as Record<string, unknown>),
+    getDb: () => fakeSql,
+  }));
 });
 
 // vitest.config.ts runs this package with `isolate: false` and a single fork,

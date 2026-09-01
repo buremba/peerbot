@@ -64,9 +64,16 @@ function mockDeps(opts: MockOpts = {}) {
 	enqueued.length = 0;
 	// The agent-exists probe runs getDb()/createDbClientFromEnv `...` — return a
 	// truthy agent row so assertAgentInOrg passes.
-	vi.doMock("../../db/client.js", () => {
+	// Spread the real module: vi.doMock is not hoisted or file-scoped, so a
+	// hand-listed shape leaks into later files in the same vitest worker and
+	// surfaces there as `No "<export>" export is defined on the mock`.
+	vi.doMock("../../db/client.js", async (importOriginal) => {
 		const tag = () => Promise.resolve([{ ok: 1 }]);
-		return { getDb: () => tag, createDbClientFromEnv: () => tag };
+		return {
+			...((await importOriginal()) as Record<string, unknown>),
+			getDb: () => tag,
+			createDbClientFromEnv: () => tag,
+		};
 	});
 	vi.doMock("../../gateway/services/platform-helpers.js", async () => {
 		const actual = await vi.importActual<

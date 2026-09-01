@@ -203,7 +203,12 @@ export class SubprocessExecutor implements SyncExecutor {
     // The parent owns this directory so a timeout/crash SIGKILL cannot bypass
     // cleanup in the child. The child also removes it on graceful completion;
     // both paths use forceful recursive cleanup so the race is harmless.
-    const runtimeTempDir = await mkdtemp(join(tmpdir(), 'lobu-connector-child-'));
+    // Tagged with the owning pid so an orphaned directory is attributable to
+    // the process that leaked it, and so tests can assert cleanup for a
+    // specific child rather than racing every connector on the machine.
+    const runtimeTempDir = await mkdtemp(
+      join(tmpdir(), `lobu-connector-child-${process.pid}-`)
+    );
     return new Promise<ExecutorResult>((resolve, reject) => {
       let childRunnerPath = join(__dirname, 'child-runner.js');
       const childRunnerTsPath = join(__dirname, 'child-runner.ts');
@@ -247,12 +252,26 @@ export class SubprocessExecutor implements SyncExecutor {
       let child: ChildProcess;
       if (nixPackages.length > 0) {
         // Wrap in nix-shell so the connector's declared native tools are on
-        // PATH. `exec node` replaces the shell with node so the IPC channel
+        // PATH. `exec` replaces the shell with the runtime so the IPC channel
         // (fd 3 / NODE_CHANNEL_FD created by the 'ipc' stdio slot) and kill()
         // reach the real process — without `exec`, kill() would hit the shell
-        // and orphan node. execArgv is rebuilt as inline flags. nix-shell's
-        // impure shell keeps the ambient PATH, so `node` still resolves.
-        const nodeCmd = ['exec', 'node', ...execArgv, shellQuote(childRunnerPath)].join(' ');
+        // and orphan the runtime. execArgv is rebuilt as inline flags.
+        //
+        // nix-shell's impure shell keeps the ambient PATH, so a bare `node`
+        // resolves for built workers. A source-mode Bun worker must keep using
+        // Bun's own absolute path: `node` cannot execute child-runner.ts
+        // without the tsx loader, and that loader is itself incompatible with
+        // Bun — the combination this file's regression test pins.
+        const runnerExecutable =
+          isBun && childRunnerPath === childRunnerTsPath
+            ? process.execPath
+            : 'node';
+        const nodeCmd = [
+          'exec',
+          shellQuote(runnerExecutable),
+          ...execArgv,
+          shellQuote(childRunnerPath),
+        ].join(' ');
         const nixArgs: string[] = [];
         // SECURITY: validate + normalize every package name. `nix-shell -p`
         // evaluates each argument as a Nix expression, so a raw value could run
@@ -285,20 +304,9 @@ export class SubprocessExecutor implements SyncExecutor {
       const stdoutTail = new RingBuffer(STREAM_TAIL_CAP_BYTES);
       const stderrTail = new RingBuffer(STREAM_TAIL_CAP_BYTES);
 
-      // Set timeout - kill child if it takes too long. timeoutMs <= 0 disables
-      // the timer (used for interactive auth runs that wait on human input).
-      const timeout =
-        this.options.timeoutMs > 0
-          ? setTimeout(() => {
-              if (!resolved) {
-                console.error(
-                  `[SubprocessExecutor] Killing child process after ${this.options.timeoutMs}ms timeout`
-                );
-                timedOut = true;
-                child.kill('SIGKILL');
-              }
-            }, this.options.timeoutMs)
-          : null;
+      // Armed below, once `settle` and `combinedTail` exist. timeoutMs <= 0
+      // disables the timer (used for interactive auth runs awaiting a human).
+      let timeout: ReturnType<typeof setTimeout> | null = null;
 
       const cleanup = () => {
         if (timeout) clearTimeout(timeout);
@@ -341,6 +349,40 @@ export class SubprocessExecutor implements SyncExecutor {
         if (err) parts.push(`[stderr]\n${err}`);
         return parts.join('\n');
       };
+
+      // The deadline covers the whole executor contract, not just the child.
+      // Killing the child is not sufficient on its own: it may already have
+      // exited, and the exit path deliberately waits for queued parent hooks
+      // before settling. A hook that never resolves would therefore leave this
+      // promise pending forever and leak the staged runtime directory with it.
+      // Reject at the deadline instead; a late hook is harmless because
+      // `settle` is idempotent.
+      if (this.options.timeoutMs > 0) {
+        timeout = setTimeout(() => {
+          if (resolved) return;
+          console.error(
+            `[SubprocessExecutor] Killing child process after ${this.options.timeoutMs}ms timeout`
+          );
+          timedOut = true;
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // Already exited after flushing its terminal IPC message.
+          }
+          settle(() => {
+            const tail = redactOutput(combinedTail());
+            const prefix = `Feed execution timed out after ${this.options.timeoutMs}ms`;
+            reject(
+              new SubprocessError(tail ? `${prefix}\n${tail}` : prefix, {
+                exitCode: null,
+                exitSignal: null,
+                outputTail: tail,
+                exitReason: 'timeout',
+              })
+            );
+          });
+        }, this.options.timeoutMs);
+      }
 
       const computeExitReason = (tail: string): SubprocessExitReason => {
         if (timedOut) return 'timeout';

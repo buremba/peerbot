@@ -49,12 +49,18 @@ function compiled(body: string): string {
 }
 
 async function runtimeDirsForThisProcess(): Promise<string[]> {
-  return runtimeDirsFor(process.pid, process.cwd());
+  return runtimeDirsFor(process.pid);
 }
 
-async function runtimeDirsFor(pid: number, cwd: string): Promise<string[]> {
-  const prefix = `.connector-child-${pid}-`;
-  return (await readdir(cwd)).filter((name) => name.startsWith(prefix));
+/**
+ * Staged runtime directories belonging to `pid`. The executor stages under the
+ * OS temp dir (not cwd) so it never needs a writable launch directory, and tags
+ * the name with the owning pid so this can assert on one child's cleanup
+ * without seeing every other connector running on the machine.
+ */
+async function runtimeDirsFor(pid: number): Promise<string[]> {
+  const prefix = `lobu-connector-child-${pid}-`;
+  return (await readdir(tmpdir())).filter((name) => name.startsWith(prefix));
 }
 
 async function waitFor(
@@ -208,7 +214,9 @@ exit 2
     expect((error as SubprocessError).message).toContain('timed out after 3000ms');
     expect(Date.now() - startedAt).toBeLessThan(10_000);
     expect(await runtimeDirsForThisProcess()).toEqual([]);
-  });
+    // Deadline is 3s and cleanup is observed after it; the default 5s
+    // per-test budget cannot contain that.
+  }, 20_000);
 
   test('child removes its runtime directory when a detached process group receives SIGTERM', async () => {
     if (process.platform === 'win32') return;
@@ -264,7 +272,7 @@ exit 2
         const entries = await readdir(isolatedCwd);
         return (
           entries.includes('connector-ready') &&
-          (await runtimeDirsFor(probePid, isolatedCwd)).length === 1
+          (await runtimeDirsFor(probePid)).length === 1
         );
       });
 
@@ -279,7 +287,7 @@ exit 2
         }),
       ]);
       expect(exit.signal === 'SIGTERM' || exit.code === 143, stderr).toBe(true);
-      await waitFor(async () => (await runtimeDirsFor(probePid, isolatedCwd)).length === 0);
+      await waitFor(async () => (await runtimeDirsFor(probePid)).length === 0);
     } finally {
       try {
         process.kill(-probePid, 'SIGKILL');
@@ -288,7 +296,9 @@ exit 2
       }
       await rm(isolatedCwd, { recursive: true, force: true });
     }
-  });
+    // Deadline is 3s and cleanup is observed after it; the default 5s
+    // per-test budget cannot contain that.
+  }, 20_000);
 
   test('resolves runtime-provided packages when the daemon cwd has no node_modules', async () => {
     const isolatedCwd = await mkdtemp(join(tmpdir(), 'lobu-connector-runtime-cwd-'));

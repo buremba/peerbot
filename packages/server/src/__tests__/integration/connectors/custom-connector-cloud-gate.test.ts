@@ -138,6 +138,52 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
   });
 
   /**
+   * The wire: what bytes actually leave the gateway, as opposed to whether the
+   * run was admitted. A shared row can hold code the image did not produce,
+   * and in Cloud the worker must never receive it.
+   *
+   * Scope note, so this is not read as more than it is. Two redundant
+   * mechanisms keep the payload out — poll suppresses shipping stored bytes
+   * when the image has the source, and resolveConnectorCode compiles the image
+   * file regardless — and disabling either one alone still leaves this green.
+   * There is no configuration that isolates one of them, because admission
+   * denies first whenever the image lacks the key. So this guards the
+   * observable outcome of the composed path, not either mechanism; the
+   * discriminating test for the resolver is in connector-stale-artifact.
+   * The self-host control below is what makes even that meaningful: it proves
+   * the row's bytes really do ship when nothing suppresses them.
+   */
+  it('withholds non-image bytes from the worker in Cloud, ships them self-hosted', async () => {
+    const sql = getTestDb();
+    const planted = 'PLANTED_DB_BYTES_MUST_NEVER_REACH_A_WORKER';
+
+    async function pollBodyFor(cloud: boolean, worker: string): Promise<string> {
+      const { feedId, connId, orgId } = await setupFeed();
+      await sql`
+        UPDATE connector_versions
+        SET compiled_code = ${`export default class P { m(){ return '${planted}'; } }`}
+        WHERE connector_key = ${CONNECTOR_KEY} AND version = ${CONNECTOR_VERSION}
+      `;
+      await insertPendingRun(orgId, feedId, connId);
+      if (cloud) process.env.LOBU_CLOUD_MODE = '1';
+      else delete process.env.LOBU_CLOUD_MODE;
+      const res = await post('/api/workers/poll', {
+        body: { worker_id: worker, capabilities: { db_egress_hardening: true } },
+        token: 'test-fleet-token',
+        env: { WORKER_API_TOKEN: 'test-fleet-token' },
+      });
+      expect(res.status).toBe(200);
+      return await res.text();
+    }
+
+    // CONTROL: self-host ships the stored bytes to the worker.
+    expect(await pollBodyFor(false, 'selfhost-wire-worker')).toContain(planted);
+
+    // Cloud withholds them; the worker resolves from its own image copy.
+    expect(await pollBodyFor(true, 'cloud-wire-worker')).not.toContain(planted);
+  });
+
+  /**
    * The availability half. Both layers must still admit the row every Cloud
    * connector actually has — shared scope, pointing at the image source.
    */

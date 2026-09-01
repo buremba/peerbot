@@ -87,13 +87,16 @@ flowchart LR
 
 A connection with connector `webhook` turns any external system that POSTs JSON
 (Sentry, GitHub, Stripe, CI) into a push source: the delivery lands as an
-`events` row. Generic webhook rows are data rather than direct Event-trigger
-activations; process them with a scheduled or manual Automation and a bounded SQL
-source.
+`events` row. Subscribe an Automation to the connector event
+`delivery.received` for immediate processing, optionally filtering on the
+configured `semantic_type`; scheduled and manual Automations can still process
+the same durable rows through bounded SQL sources.
 
 - **Deliver:** `POST <gateway>/lobu/api/v1/webhooks/<connectionId>` with
   `Authorization: Bearer <token>` (or `?token=` when `allowQueryAuth` is on).
-- **Config:** `token` (auto-generated, returned once), `allowQueryAuth`,
+  Public create/apply requires a non-numeric connection slug and a bearer token
+  of at least 32 characters; the slug is the `<connectionId>` in this route.
+- **Config:** caller-supplied `token`, `allowQueryAuth`,
   `dedupeHeader` (the provider's delivery-id header; the default idempotency key
   is `sha256(raw body)`), `semanticType`, `titlePath` (JSON pointer → `title`),
   `searchable` (render `payload_text` for semantic recall).
@@ -102,9 +105,11 @@ source.
   `429` over 120 authenticated deliveries/min per connection. Dedupe is a
   partial unique index on `(organization_id, connector_key, origin_id)`.
 - **Read back:** scheduled or manual Automation SQL sources select
-  `WHERE connector_key = 'webhook:<connectionId>'` and read the verbatim
-  payload from `payload_data`. Object-root JSON is stored directly; array or
-  primitive roots are wrapped as `{"payload": ...}`.
+  the connection by `connection_id` and read the verbatim payload from
+  `payload_data`. The legacy `connector_key = 'webhook:<runtimeConnectionId>'`
+  remains available for compatibility and is required for deliveries ingested
+  before connection-scoped webhook projection shipped. Object-root JSON is
+  stored directly; array or primitive roots are wrapped as `{"payload": ...}`.
 
 ## Reading and writing data (agent-facing)
 

@@ -31,8 +31,10 @@ export interface ConnectorMetadata {
   openapiConfig?: Record<string, unknown> | null;
   requiredCapability?: string | null;
   runtime?: {
-    platforms: Array<'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'chrome-extension'>;
-    execution?: 'bridge';
+    platforms: Array<
+      'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'headless' | 'chrome-extension'
+    >;
+    execution?: 'bridge' | 'daemon_builtin';
     scopes?: string[];
   } | null;
   /**

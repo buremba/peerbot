@@ -226,6 +226,8 @@ Docs: [Agent workspace](https://lobu.ai/guides/agent-prompts/) · [Guardrails](h
 
 Automations are versioned background responsibilities activated manually, on a schedule, by a connector event, or by another Automation's durable output. They read governed sources, persist structured results, and can notify Slack, open a ticket, or start agent work while nobody is in chat.
 
+Collection and activation stay independent: connect a source once, keep its durable history useful to every authorized agent, then choose whether a responsibility should run on a schedule or immediately when a matching event arrives. Polling connectors, authenticated webhooks, and Automation outputs use their appropriate ingestion paths but converge on the same durable Automation run lifecycle. Initial syncs establish a baseline without flooding subscribers; repeated deliveries are deduplicated.
+
 See the [activation and chaining model](docs/AUTOMATIONS.md).
 
 ### Optional execution

@@ -26,6 +26,7 @@ import {
 	authorizePinnedDeviceForWorker,
 	authorizeRunForWorker,
 } from "./shared";
+import { runLeaseFence } from "../runs/run-lease";
 
 const MAX_REPLY_BYTES = 512 * 1024;
 
@@ -213,8 +214,7 @@ export async function completeDeviceChatRun(c: Context<{ Bindings: Env }>) {
           exit_signal = ${body.exit_signal ?? null},
           exit_reason = ${body.exit_reason ?? (error ? "error_message" : "ok")}
       WHERE id = ${runId}
-        AND status = 'running'
-        AND claimed_by = ${body.worker_id}
+        ${runLeaseFence(tx, body.worker_id)}
       RETURNING id
     `;
 		if (terminal.length === 0) return false;

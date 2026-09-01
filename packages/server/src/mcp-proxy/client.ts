@@ -8,10 +8,12 @@
 
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import {
-  fetchCredentialedPublicUrl,
-  fetchPublicUrl,
   isReservedIp,
   stripIpv6Brackets,
+} from '@lobu/connector-sdk/ip-reachability';
+import {
+  fetchCredentialedPublicUrl,
+  fetchPublicUrl,
 } from '../gateway/proxy/ssrf-guard';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';

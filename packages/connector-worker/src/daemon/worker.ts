@@ -32,6 +32,8 @@ export interface DaemonConfig {
   /** Fixed advertisement for an exact interactive session. */
   agentKinds?: AgentKind[];
   workerCredentialMaintenance?: (activate: (workerApiToken: string) => void) => Promise<void>;
+  /** Backend capacities advertised to the gateway. */
+  backendCapacity?: Record<string, number>;
 }
 
 const DEFAULT_CAPABILITIES: WorkerCapabilities = {};
@@ -47,7 +49,7 @@ export class WorkerDaemon {
   private env: Env;
   private config: { executor: Partial<ExecutorConfig> };
   private pollLoop: WorkerPollLoop;
-  private shutdownController?: AbortController;
+  private shutdownController: AbortController;
 
   constructor(daemonConfig: DaemonConfig, env: Env) {
     const interactiveSession = attachedInteractiveSession(daemonConfig);
@@ -65,18 +67,17 @@ export class WorkerDaemon {
       // binaries, or the device advertises a kind it then fails to launch.
       binaryOverrides: daemonConfig.executor?.binaryOverrides,
       agentKinds: daemonConfig.agentKinds,
+      backendCapacity: daemonConfig.backendCapacity,
     });
 
     this.env = env;
-    this.shutdownController = interactiveSession
-      ? new AbortController()
-      : undefined;
+    // Always present: the daemon builtin cancels an in-flight shell command on
+    // shutdown, so the signal can no longer be scoped to interactive sessions.
+    this.shutdownController = new AbortController();
     const executor = {
       timeoutMs: DEFAULT_EXECUTOR_TIMEOUT_MS,
       ...(daemonConfig.executor ?? {}),
-      ...(this.shutdownController
-        ? { shutdownSignal: this.shutdownController.signal }
-        : {}),
+      shutdownSignal: this.shutdownController.signal,
     };
     if (interactiveSession) attachInteractiveSession(executor, interactiveSession);
     this.config = {
@@ -113,7 +114,7 @@ export class WorkerDaemon {
    */
   stop(): void {
     this.pollLoop.stop();
-    this.shutdownController?.abort();
+    this.shutdownController.abort();
   }
 
   /**

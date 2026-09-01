@@ -25,7 +25,9 @@ import {
   githubReposToResources,
 } from '@lobu/connectors/github-identity';
 import {
+  ACL_ERROR_MESSAGE_PREFIX,
   clearConnectionAclError,
+  clearRetainedAclErrorMessage,
   markConnectionAclFailed,
 } from './acl-observability.js';
 import { buildAccessGraph } from './access-graph.js';
@@ -202,10 +204,42 @@ async function fetchRepoCollaborators(
  */
 export async function runGithubAclSyncTick(coreServices: CoreServices): Promise<void> {
   const sql = getDb();
+  // Residue release, BEFORE the sweep below. The exclusion stops NEW failures but
+  // cannot undo old ones: `clearConnectionAclError` only clears behind a
+  // `fresh` state, which an excluded row can never reach, so a failure written
+  // by an earlier tick (or by any tick before this exclusion existed) would sit
+  // on a healthy connection forever. Keyed on the residue itself, not on "an
+  // ACL state row exists": a consent-only connection can legitimately hold a
+  // `fresh` or `stale` enforcement row, and that row is what keeps its
+  // already-synced events fenced. Matches only rows that actually carry
+  // residue, so the steady state does no work.
+  const stale = await sql<{ id: string; organization_id: string }>`
+		SELECT c.id::text AS id, c.organization_id
+		FROM connections c
+		WHERE c.connector_key = 'github'
+		  AND c.deleted_at IS NULL
+		  AND c.config->>'consent_only' = 'true'
+		  AND left(c.error_message, ${ACL_ERROR_MESSAGE_PREFIX.length}) = ${ACL_ERROR_MESSAGE_PREFIX}
+	`;
+  for (const row of stale) {
+    await clearRetainedAclErrorMessage(sql, {
+      organizationId: row.organization_id,
+      connectionId: row.id,
+    });
+  }
+
+  // Consent-only grant-holders are EXCLUDED, not swept and failed: they exist
+  // solely to hold an OAuth grant for delegation, and `manage_feeds` refuses
+  // feeds on them by construction, so `listRepos` is empty for them on every
+  // tick. Sweeping them would mark a healthy row `failed` forever (the reason
+  // only clears on a successful sync, which can never happen), turning the
+  // ACL-failure signal into permanent noise. A NORMAL connection that has no
+  // feeds still fails closed below — the skip is scoped to consent-only.
   const connections = await sql<{ id: string; organization_id: string }>`
 		SELECT id::text AS id, organization_id
 		FROM connections
 		WHERE connector_key = 'github' AND status = 'active' AND deleted_at IS NULL
+		  AND config->>'consent_only' IS DISTINCT FROM 'true'
 	`;
   if (connections.length === 0) return;
 

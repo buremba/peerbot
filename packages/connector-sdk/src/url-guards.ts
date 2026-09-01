@@ -1,6 +1,12 @@
 /**
  * URL validation for connector egress (SSRF guards + domain allowlists).
+ *
+ * The IP classification comes from `./ip-reachability.ts`, the same module the
+ * gateway proxy and the database egress guard use, so a connector's URL check
+ * cannot be weaker than the guards behind it.
  */
+
+import { isReservedIp, stripIpv6Brackets } from './ip-reachability.js';
 
 export function validatePublicUrl(url: string): void {
   let parsed: URL;
@@ -16,41 +22,16 @@ export function validatePublicUrl(url: string): void {
 
   const hostname = parsed.hostname.toLowerCase();
 
-  if (hostname === 'localhost' || hostname === '[::1]' || hostname.endsWith('.localhost')) {
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
     throw new Error(`URL must not point to localhost: ${hostname}`);
   }
 
-  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const [, a, b] = ipv4Match.map(Number);
-    if (
-      a === 127 ||
-      a === 10 ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 169 && b === 254) ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      a === 0
-    ) {
-      throw new Error(`URL must not point to a private/internal IP address: ${hostname}`);
-    }
-  }
-
-  if (hostname.startsWith('[')) {
-    const ipv6 = hostname.slice(1, -1).toLowerCase();
-    const linkLocalPrefix = /^fe[89ab][0-9a-f]?:/;
-    const multicastPrefix = /^ff[0-9a-f]{2}:/;
-    if (
-      ipv6 === '::1' ||
-      linkLocalPrefix.test(ipv6) ||
-      multicastPrefix.test(ipv6) ||
-      ipv6.startsWith('fc') ||
-      ipv6.startsWith('fd') ||
-      ipv6 === '::' ||
-      ipv6.startsWith('::ffff:')
-    ) {
-      throw new Error(`URL must not point to a private/internal IPv6 address: ${hostname}`);
-    }
+  // WHATWG URL keeps IPv6 literals bracketed and already folds the decimal,
+  // octal, and hex spellings of an IPv4 into dotted-quad, so the shared
+  // classifier sees a canonical literal. A non-IP hostname returns false here
+  // and is only checked by name — see the DNS caveat on this function.
+  if (isReservedIp(stripIpv6Brackets(hostname))) {
+    throw new Error(`URL must not point to a private/internal IP address: ${hostname}`);
   }
 
   if (

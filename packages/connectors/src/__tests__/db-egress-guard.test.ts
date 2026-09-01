@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { normalizeIpLiteral } from '@lobu/connector-sdk/ip-reachability';
 import {
   assertConnectionStringAllowed,
   assertHostAllowed,
@@ -6,7 +7,6 @@ import {
   extractDbHosts,
   type HostLookup,
   isBlockedIp,
-  normalizeIpLiteral,
   readEgressPolicy,
 } from '../db-egress-guard.ts';
 

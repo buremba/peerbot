@@ -16,8 +16,7 @@ import { mcpAuth } from "../../auth/middleware";
 import { REST_TOOL_GET_ROUTES } from "../../http/rest-tool-routes";
 import type { Env } from "../../index";
 import { initWorkspaceProvider } from "../../workspace";
-import { clearMultiTenantCachesForTests } from "../../workspace/multi-tenant-caches";
-import { cleanupTestDatabase } from "../setup/test-db";
+import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestOrganization } from "../setup/test-fixtures";
 
 const testEnv: Env = {
@@ -56,7 +55,6 @@ describe("public-org REST transport parity", () => {
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
-		clearMultiTenantCachesForTests();
 		await initWorkspaceProvider();
 		app = buildApp();
 		publicSlug = (
@@ -138,6 +136,21 @@ describe("public-org REST transport parity", () => {
 				path,
 				status: 401,
 			});
+		}
+	});
+
+	it("applies a public-to-private visibility change on the next request", async () => {
+		const path = REST_TOOL_GET_ROUTES[0].routePath
+			.replace(":orgSlug", publicSlug)
+			.replace(":id", "1");
+		expect(await anonymousGet(path)).toBe(200);
+
+		const sql = getTestDb();
+		await sql`UPDATE organization SET visibility = 'private' WHERE slug = ${publicSlug}`;
+		try {
+			expect(await anonymousGet(path)).toBe(401);
+		} finally {
+			await sql`UPDATE organization SET visibility = 'public' WHERE slug = ${publicSlug}`;
 		}
 	});
 

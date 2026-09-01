@@ -162,7 +162,7 @@ export async function listDeviceWorkers(c: Context<{ Bindings: Env }>) {
     return c.json({ devices: await queryDeviceWorkers(userId) });
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[listDeviceWorkers] Error');
-    captureServerError(c, err, 'listDeviceWorkers');
+    captureServerError(c, err, 'listDeviceWorkers', 500);
     return c.json({ error: errorMessage(err) }, 500);
   }
 }
@@ -502,7 +502,7 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     });
   } catch (err) {
     logger.error({ err: errorMessage(err) }, '[mintDeviceChildToken] failed');
-    captureServerError(c, err, 'mintDeviceChildToken');
+    captureServerError(c, err, 'mintDeviceChildToken', 500);
     return c.json({ error: errorMessage(err) }, 500);
   }
 }

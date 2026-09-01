@@ -97,6 +97,31 @@ setInterval(() => {}, 1000);
     expect(signalOwnedPosixProcessGroup(liveOwner, 'SIGTERM', sendSignal)).toBe(true);
     expect(signals).toEqual([{ pid: -4242, signal: 'SIGTERM' }]);
   });
+
+  test('separates a vanished process group from one it may not signal', () => {
+    const owner = { pid: 4243, exitCode: null, signalCode: null };
+    const failWith = (code: string) =>
+      (() => {
+        const err = new Error(code) as NodeJS.ErrnoException;
+        err.code = code;
+        throw err;
+      }) as unknown as typeof process.kill;
+
+    // ESRCH: the group is gone. False retires it, and the caller then skips
+    // straight past the grace window — correct, there is nothing to escalate.
+    expect(signalOwnedPosixProcessGroup(owner, 'SIGTERM', failWith('ESRCH'))).toBe(false);
+
+    // EPERM: the group is THERE, we just could not signal a member of it.
+    // Reporting false here is what leaves a TERM-ignoring tree alive, because
+    // `terminateChild` reads false as "no owned group", sends one SIGTERM to
+    // the supervisor and returns without ever escalating to SIGKILL.
+    expect(signalOwnedPosixProcessGroup(owner, 'SIGTERM', failWith('EPERM'))).toBe(true);
+
+    // Anything else is a real fault and must not be swallowed as either.
+    expect(() =>
+      signalOwnedPosixProcessGroup(owner, 'SIGTERM', failWith('EINVAL')),
+    ).toThrow();
+  });
 });
 
 describe('terminated target metadata', () => {

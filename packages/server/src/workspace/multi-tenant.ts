@@ -32,13 +32,6 @@ import type {
   WorkspaceProvider,
 } from './types';
 import { listManagedAuthConnectorOffers } from './managed-auth-discovery';
-import {
-  memberRoleCache,
-  orgIdSlugCache,
-  orgSlugCache,
-  ownerCache,
-  sessionCache,
-} from './multi-tenant-caches';
 import { resolveSession, sessionCookieCandidates } from '../auth/resolve-session';
 
 /**
@@ -54,70 +47,39 @@ import { resolveSession, sessionCookieCandidates } from '../auth/resolve-session
  */
 const UNSCOPED_PATH_PREFIXES = ['/mcp/', '/api/me/', '/api/workers/'];
 
-export function invalidateMembershipRoleCache(
-  organizationId: string,
-  userId: string | null | undefined
-): void {
-  if (!userId) return;
-  memberRoleCache.delete(`${organizationId}:${userId}`);
-}
-
-export function invalidateOrgSlugCache(slug: string | null | undefined): void {
-  if (!slug) return;
-  const cached = orgSlugCache.get(slug);
-  if (cached) orgIdSlugCache.delete(cached.id);
-  orgSlugCache.delete(slug);
-}
-
-function cacheOrganizationSlug(
-  slug: string,
-  record: { id: string; visibility: string }
-): void {
-  orgSlugCache.set(slug, record);
-  orgIdSlugCache.set(record.id, slug);
-}
-
 /**
- * Cache-backed membership-role lookup. Reuses the same 60s cache the auth
- * middleware populates so writes on the `member` table that call
- * `invalidateMembershipRoleCache` take effect for sandbox callers too.
+ * Authorization decisions must be fresh across replicas. A process-local role
+ * cache lets a member removed on pod A keep their prior authority on pod B
+ * until the TTL expires, so every authorization boundary reads Postgres.
  */
-export async function getCachedMembershipRole(
+export async function getMembershipRole(
   organizationId: string,
   userId: string | null
 ): Promise<string | null> {
   if (!userId) return null;
-  const key = `${organizationId}:${userId}`;
-  const cached = memberRoleCache.get(key);
-  if (cached !== undefined) return cached;
   const rows = await getDb()`
       SELECT role FROM "member"
       WHERE "organizationId" = ${organizationId} AND "userId" = ${userId}
       LIMIT 1
     `;
-  const role = rows.length > 0 ? (rows[0].role as string) : null;
-  memberRoleCache.set(key, role);
-  return role;
+  return rows.length > 0 ? (rows[0].role as string) : null;
 }
 
 /**
- * Cache-backed org lookup by slug. Returns `null` for unknown slugs.
+ * Fresh org lookup by slug. Visibility is authorization state: caching it in a
+ * replica could keep a newly-private workspace publicly readable.
  */
-export async function getCachedOrgBySlug(
+export async function getOrgBySlug(
   slug: string
 ): Promise<{ id: string; visibility: string } | null> {
-  const cached = orgSlugCache.get(slug);
-  if (cached) return cached;
   const rows = await getDb()`
       SELECT id, visibility FROM "organization" WHERE slug = ${slug} LIMIT 1
     `;
   if (rows.length === 0) return null;
-  const record = {
+  return {
     id: rows[0].id as string,
     visibility: (rows[0].visibility as string) ?? "private",
   };
-  cacheOrganizationSlug(slug, record);
-  return record;
 }
 
 /// Bootstrap identity constants — must match the constants in
@@ -184,26 +146,16 @@ export class MultiTenantProvider implements WorkspaceProvider {
     let requestedOrgVisibility: string | null = null;
     let requestedOrgMissing = false;
     if (requestedOrgSlug) {
-      const cached = orgSlugCache.get(requestedOrgSlug);
-      if (cached) {
-        requestedOrgId = cached.id;
-        requestedOrgVisibility = cached.visibility;
+      const orgResult = await sql`
+        SELECT id, visibility FROM "organization"
+        WHERE slug = ${requestedOrgSlug}
+        LIMIT 1
+      `;
+      if (orgResult.length === 0) {
+        requestedOrgMissing = true;
       } else {
-        const orgResult = await sql`
-          SELECT id, visibility FROM "organization"
-          WHERE slug = ${requestedOrgSlug}
-          LIMIT 1
-        `;
-        if (orgResult.length === 0) {
-          requestedOrgMissing = true;
-        } else {
-          requestedOrgId = orgResult[0].id as string;
-          requestedOrgVisibility = (orgResult[0].visibility as string) ?? 'private';
-          cacheOrganizationSlug(requestedOrgSlug, {
-            id: requestedOrgId,
-            visibility: requestedOrgVisibility,
-          });
-        }
+        requestedOrgId = orgResult[0].id as string;
+        requestedOrgVisibility = (orgResult[0].visibility as string) ?? 'private';
       }
     }
 
@@ -253,25 +205,13 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
     const allowAnonymousPublicOrgMcp = isMcpRoute && requestedOrgVisibility === 'public';
 
-    async function getMembershipRole(
-      orgId: string,
-      userId: string,
-      options?: { bypassCache?: boolean }
-    ): Promise<string | null> {
-      const cacheKey = `${orgId}:${userId}`;
-      if (!options?.bypassCache) {
-        const cached = memberRoleCache.get(cacheKey);
-        if (cached !== undefined) return cached;
-      }
-
+    async function loadMembershipRole(orgId: string, userId: string): Promise<string | null> {
       const result = await sql`
         SELECT role FROM "member"
         WHERE "organizationId" = ${orgId} AND "userId" = ${userId}
         LIMIT 1
       `;
-      const role = result.length > 0 ? (result[0].role as string) : null;
-      memberRoleCache.set(cacheKey, role);
-      return role;
+      return result.length > 0 ? (result[0].role as string) : null;
     }
 
     async function setContextAndContinue(
@@ -617,7 +557,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
       const oauthTargetGranted =
         isPat || (authInfo.grantedOrganizationIds ?? []).includes(effectiveOrgId);
-      const role = await getMembershipRole(effectiveOrgId, authInfo.userId, { bypassCache: true });
+      const role = await loadMembershipRole(effectiveOrgId, authInfo.userId);
       const allowPublicOrgWithoutMembership =
         !role &&
         requestedOrgId === effectiveOrgId &&
@@ -691,11 +631,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
     //    `auth.api.getSession` runs below.
     try {
       const candidates = sessionCookieCandidates(c.req.header('Cookie'));
-      // The ordinary jar holds one session cookie and its value is the cache key.
-      // With a duplicate the key is ambiguous, so there is nothing safe to look
-      // up — resolveSession decides which one is live.
-      const sessionCacheKey =
-        candidates.length === 1 ? candidates[0].value : null;
 
       // A duplicated session cookie no longer decides anything — resolveSession
       // picks the live one regardless of order — but it still means the browser
@@ -714,28 +649,11 @@ export class MultiTenantProvider implements WorkspaceProvider {
         );
       }
 
-      let session: { user: any; session: any } | null = null;
-      let cacheHit = false;
-      if (sessionCacheKey) {
-        const cached = sessionCache.get(sessionCacheKey);
-        if (cached !== undefined) {
-          session = cached;
-          cacheHit = true;
-        }
-      }
-      if (!cacheHit) {
-        const auth = await createAuth(c.env);
-        session = await resolveSession(auth, c.req.raw.headers);
-        // Only cache valid sessions. Caching `null` would let an explicitly
-        // revoked or expired session continue to resolve to "no auth" for
-        // the cache TTL (30s) instead of returning the upstream's fresh
-        // verdict — fine on its own, but it also masks the inverse case
-        // where the user just logged in: the prior `null` answer keeps
-        // them logged out until the entry expires.
-        if (sessionCacheKey && session?.user && session.session) {
-          sessionCache.set(sessionCacheKey, session);
-        }
-      }
+      // Session revocation is authorization state. Always ask Better Auth's
+      // Postgres-backed store so a logout/revocation on another replica takes
+      // effect on the next request here too.
+      const auth = await createAuth(c.env);
+      const session = await resolveSession(auth, c.req.raw.headers);
 
       if (session?.user && session.session) {
         if (!requestedOrgId) {
@@ -755,7 +673,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
           );
         }
 
-        const role = await getMembershipRole(requestedOrgId, session.session.userId);
+        const role = await loadMembershipRole(requestedOrgId, session.session.userId);
         if (role) {
           return setContextAndContinue({
             mcpIsAuthenticated: true,
@@ -891,59 +809,30 @@ export class MultiTenantProvider implements WorkspaceProvider {
   }
 
   async getOrgSlug(orgId: string): Promise<string | null> {
-    const cached = orgIdSlugCache.get(orgId);
-    if (cached !== undefined) return cached;
     const sql = getDb();
     const rows = await sql`
-      SELECT slug, visibility FROM "organization" WHERE id = ${orgId} LIMIT 1
+      SELECT slug FROM "organization" WHERE id = ${orgId} LIMIT 1
     `;
-    if (!rows[0]) {
-      orgIdSlugCache.set(orgId, null);
-      return null;
-    }
-    const slug = rows[0].slug as string;
-    cacheOrganizationSlug(slug, {
-      id: orgId,
-      visibility: (rows[0].visibility as string) ?? 'private',
-    });
-    return slug;
+    return rows[0] ? (rows[0].slug as string) : null;
   }
 
   async getOrgSlugs(orgIds: string[]): Promise<Map<string, string>> {
     if (orgIds.length === 0) return new Map();
     const result = new Map<string, string>();
-    const missing: string[] = [];
-    for (const orgId of new Set(orgIds)) {
-      const cached = orgIdSlugCache.get(orgId);
-      if (cached === undefined) missing.push(orgId);
-      else if (cached !== null) result.set(orgId, cached);
-    }
-    if (missing.length === 0) return result;
-
+    const uniqueOrgIds = [...new Set(orgIds)];
     const sql = getDb();
-    const placeholders = missing.map((_, i) => `$${i + 1}`).join(', ');
-    const rows = await sql.unsafe<{ id: string; slug: string; visibility: string }>(
-      `SELECT id, slug, visibility FROM "organization" WHERE id IN (${placeholders})`,
-      missing
+    const placeholders = uniqueOrgIds.map((_, i) => `$${i + 1}`).join(', ');
+    const rows = await sql.unsafe<{ id: string; slug: string }>(
+      `SELECT id, slug FROM "organization" WHERE id IN (${placeholders})`,
+      uniqueOrgIds
     );
     for (const row of rows) {
       result.set(row.id, row.slug);
-      cacheOrganizationSlug(row.slug, {
-        id: row.id,
-        visibility: row.visibility ?? 'private',
-      });
-    }
-    for (const orgId of missing) {
-      if (!result.has(orgId)) orgIdSlugCache.set(orgId, null);
     }
     return result;
   }
 
   async resolveOwner(slug: string, type: 'organization'): Promise<ResolvedOwner | null> {
-    const cacheKey = `${type}:${slug}`;
-    const cached = ownerCache.get(cacheKey);
-    if (cached !== undefined) return cached;
-
     const sql = getDb();
     const rows = await sql`
       SELECT
@@ -975,10 +864,8 @@ export class MultiTenantProvider implements WorkspaceProvider {
           id: org.id,
           name: org.name,
         };
-        ownerCache.set(cacheKey, result);
         return result;
       }
-      ownerCache.set(cacheKey, null);
       return null;
     }
     const row = rows[0] as {
@@ -993,7 +880,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
       id: row.ref_id,
       name: row.org_name,
     };
-    ownerCache.set(cacheKey, result);
     return result;
   }
 }

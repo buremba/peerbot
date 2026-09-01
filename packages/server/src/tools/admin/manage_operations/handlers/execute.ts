@@ -25,6 +25,7 @@ import { notifyActionApprovalNeeded } from "../../../../notifications/triggers";
 import { resolveApprovalChatOrigin } from "../../approval-delivery";
 import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
+import { LOST_LEASE_MESSAGE, runLeaseFence } from "../../../../runs/run-lease";
 import { executeHttpOperation } from "../../../../operations/execute-http-operation";
 import { validateOperationInput } from "../../../../operations/input-validation";
 import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
@@ -68,7 +69,8 @@ async function failRunInline(
 	runId: number,
 	organizationId: string,
 	errorMsg: string,
-	deferTerminalWrite = false,
+	deferTerminalWrite: boolean,
+	claimedBy: string,
 ): Promise<InlineExecutionResult> {
 	// Connector code, scraped pages and upstream MCP servers all reach here as
 	// raw text, so the message can carry NUL (0x00) that Postgres rejects (see
@@ -77,7 +79,9 @@ async function failRunInline(
 	const message = stripNul(errorMsg);
 	if (!deferTerminalWrite) {
 		const sql = getDb();
-		await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
+		if (rows.length === 0)
+			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}
 	return { status: "failed", error_message: message };
 }
@@ -87,7 +91,8 @@ async function completeRunInline(
 	runId: number,
 	organizationId: string,
 	output: Record<string, unknown>,
-	deferTerminalWrite = false,
+	deferTerminalWrite: boolean,
+	claimedBy: string,
 ): Promise<InlineExecutionResult> {
 	// Same NUL strip as failRunInline — `output` is connector- or upstream-MCP-
 	// produced and lands in the jsonb `action_output` column. Sanitize before
@@ -95,7 +100,9 @@ async function completeRunInline(
 	const sanitized = stripNulDeep(output) as Record<string, unknown>;
 	if (!deferTerminalWrite) {
 		const sql = getDb();
-		await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(sanitized)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		const rows = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(sanitized)} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
+		if (rows.length === 0)
+			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}
 	return { status: "completed", output: sanitized };
 }
@@ -153,8 +160,9 @@ async function executeLocalActionInline(
 	actionInput: Record<string, unknown>,
 	requesterUserId: string | null,
 	env: Env,
-	abortSignal?: AbortSignal,
-	deferTerminalWrite = false,
+	abortSignal: AbortSignal | undefined,
+	deferTerminalWrite: boolean,
+	claimedBy: string,
 ): Promise<InlineExecutionResult> {
 	const sql = getDb();
 
@@ -177,6 +185,7 @@ async function executeLocalActionInline(
 			organizationId,
 			getErrorMessage(err),
 			deferTerminalWrite,
+			claimedBy,
 		);
 	}
 
@@ -255,6 +264,7 @@ async function executeLocalActionInline(
 			organizationId,
 			result.output,
 			deferTerminalWrite,
+			claimedBy,
 		);
 	} catch (error) {
 		return failRunInline(
@@ -262,6 +272,7 @@ async function executeLocalActionInline(
 			organizationId,
 			getErrorMessage(error),
 			deferTerminalWrite,
+			claimedBy,
 		);
 	}
 }
@@ -272,7 +283,8 @@ async function executeMcpToolInline(
 	connection: ConnectionRow,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
-	deferTerminalWrite = false,
+	deferTerminalWrite: boolean,
+	claimedBy: string,
 ): Promise<InlineExecutionResult> {
 	if (operation.backend_config.backend !== "mcp_tool") {
 		return {
@@ -300,6 +312,7 @@ async function executeMcpToolInline(
 			organizationId,
 			getErrorMessage(error),
 			deferTerminalWrite,
+			claimedBy,
 		);
 	}
 
@@ -313,6 +326,7 @@ async function executeMcpToolInline(
       organizationId,
       errorText,
       deferTerminalWrite,
+      claimedBy,
     );
   }
 
@@ -323,6 +337,7 @@ async function executeMcpToolInline(
 			content: result.content,
 		} as Record<string, unknown>,
 		deferTerminalWrite,
+		claimedBy,
 	);
 }
 
@@ -337,6 +352,12 @@ interface InlineExecutionOptions {
 	 * would leave a terminal run with no card when the card INSERT fails).
 	 */
 	deferTerminalWrite?: boolean;
+	/**
+	 * The owner this request claimed the run under. Required: every inline
+	 * terminal write fences on it, and an optional fence value is a fence the
+	 * next caller can forget.
+	 */
+	claimedBy: string;
 }
 
 export async function executeOperationInline(
@@ -347,10 +368,10 @@ export async function executeOperationInline(
 	actionInput: Record<string, unknown>,
 	requesterUserId: string | null,
 	env: Env,
-	abortSignal?: AbortSignal,
-	options?: InlineExecutionOptions,
+	abortSignal: AbortSignal | undefined,
+	options: InlineExecutionOptions,
 ): Promise<InlineExecutionResult> {
-	const deferTerminalWrite = options?.deferTerminalWrite ?? false;
+	const deferTerminalWrite = options.deferTerminalWrite ?? false;
 	if (operation.backend === "local_action") {
 		return executeLocalActionInline(
 			runId,
@@ -362,6 +383,7 @@ export async function executeOperationInline(
 			env,
 			abortSignal,
 			deferTerminalWrite,
+			options.claimedBy,
 		);
 	}
 	if (operation.backend === "mcp_tool") {
@@ -372,6 +394,7 @@ export async function executeOperationInline(
 			operation,
 			actionInput,
 			deferTerminalWrite,
+			options.claimedBy,
 		);
 	}
 	return executeHttpOperation(
@@ -382,6 +405,7 @@ export async function executeOperationInline(
 		actionInput,
 		abortSignal,
 		deferTerminalWrite,
+		options.claimedBy,
 	);
 }
 /** Return the durable outcome of a run claimed by an earlier request. */
@@ -940,6 +964,17 @@ export async function handleExecute(
 		};
 	}
 
+	if (claim.claimedBy === null) {
+		// Every inline run is claimed in the INSERT that creates it. A null owner
+		// means this row was not created for inline execution, and running it
+		// would write the outcome back with no lease to fence against.
+		return {
+			action: "execute",
+			run_id: runId,
+			status: "failed",
+			error_message: "Inline execution requires a claimed run.",
+		};
+	}
 	const result = await executeOperationInline(
 		runId,
 		ctx.organizationId,
@@ -949,6 +984,7 @@ export async function handleExecute(
 		visibilityUserId,
 		env,
 		ctx.abortSignal,
+		{ claimedBy: claim.claimedBy },
 	);
 	await trackOperationReaction(runId);
 	if (result.status === "completed") {

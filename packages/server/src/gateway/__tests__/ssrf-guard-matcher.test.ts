@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isReservedIp } from "../proxy/ssrf-guard.js";
+import { isReservedIp } from "@lobu/connector-sdk/ip-reachability";
 
 // The previous hand-rolled isReservedIp checked only ::1, fc/fd, 127/8, 10/8,
 // 172.16/12, 192.168/16, 169.254/16. These pin the ranges/spellings it MISSED
@@ -64,6 +64,17 @@ describe("isReservedIp — hardened matcher", () => {
     expect(isReservedIp("::ffff:7f00:1")).toBe(true);
     expect(isReservedIp("::ffff:169.254.169.254")).toBe(true);
     expect(isReservedIp("::ffff:10.0.0.1")).toBe(true);
+  });
+
+  // Until the three IP classifiers were consolidated, THIS gateway copy lacked
+  // the IPv4-compatible unwrap that the database egress guard already had, so
+  // dropping `ffff` from a mapped address walked straight past the guard.
+  test("IPv4-compatible IPv6 (::a.b.c.d) — the gap the shared matcher closed", () => {
+    expect(isReservedIp("::7f00:1")).toBe(true); // → 127.0.0.1
+    expect(isReservedIp("::127.0.0.1")).toBe(true);
+    expect(isReservedIp("::a9fe:a9fe")).toBe(true); // → 169.254.169.254
+    expect(isReservedIp("::c0a8:101")).toBe(true); // → 192.168.1.1
+    expect(isReservedIp("::808:808")).toBe(false); // → 8.8.8.8 (public)
   });
 
   test("zone IDs are stripped before the decision", () => {

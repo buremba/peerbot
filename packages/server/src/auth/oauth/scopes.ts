@@ -176,6 +176,30 @@ export function stripNonPublicOAuthScopes(scope: string | undefined | null): str
 }
 
 /**
+ * Narrow a THIRD-PARTY client's requested scope to what auth-code clients may
+ * receive, dropping anything else.
+ *
+ * Unknown scopes are IGNORED, not rejected. RFC 6749 §3.3 permits either, but
+ * the clients on the other end of this endpoint — Slack, Claude Desktop,
+ * Cursor — routinely append `openid`, `email`, `profile` or `offline_access`
+ * to whatever discovery advertises. Failing the whole authorization over one
+ * unrecognized value breaks the integration outright, where narrowing it just
+ * grants less. Rejecting is right for scope strings WE produce (the consent
+ * form, the device flow); it is wrong for a stranger's request.
+ *
+ * Returns null only when nothing requested is grantable at all, which is a
+ * genuine `invalid_scope`. Supersedes stripNonPublicOAuthScopes here:
+ * DISCOVERY_SCOPES already excludes the non-public ones.
+ */
+export function filterToDiscoveryScopes(scope: string | undefined | null): string | null {
+  const requested = normalizeScopeList(scope);
+  if (requested.length === 0) return null;
+  const allowed = new Set<string>(DISCOVERY_SCOPES);
+  const kept = requested.filter((value) => allowed.has(value));
+  return kept.length > 0 ? kept.join(' ') : null;
+}
+
+/**
  * Strip `mcp:admin` from a requested scope string when the user is not an
  * owner/admin of the target org. The runtime tool-access checks reject
  * admin-tier actions for non-admins anyway, so filtering at consent makes

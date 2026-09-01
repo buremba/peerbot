@@ -5,6 +5,7 @@ import {
   filterScopeByRole,
   isOAuthScopeGrantWithinRequest,
   NON_PUBLIC_OAUTH_SCOPES,
+  filterToDiscoveryScopes,
   normalizeOAuthScopeRequest,
   stripNonPublicOAuthScopes,
 } from '../../auth/oauth/scopes';
@@ -148,5 +149,35 @@ describe('filterScopeByRole', () => {
     );
     expect((owner as string).split(' ')).toContain('connections:token');
     expect((owner as string).split(' ')).toContain('mcp:admin');
+  });
+});
+
+describe('filterToDiscoveryScopes', () => {
+  // The /oauth/authorize endpoint takes a STRANGER's scope string. Slack,
+  // Claude Desktop and Cursor all append standard OIDC scopes that Lobu has
+  // never issued. Rejecting the whole request over one of them breaks the
+  // integration; narrowing it just grants less.
+  it('keeps grantable scopes and ignores OIDC scopes Lobu does not issue', () => {
+    expect(filterToDiscoveryScopes('openid email profile offline_access mcp:read')).toBe(
+      'mcp:read'
+    );
+  });
+
+  it('drops non-public scopes without needing stripNonPublicOAuthScopes first', () => {
+    expect(filterToDiscoveryScopes('mcp:read device_worker:run connections:token')).toBe(
+      'mcp:read'
+    );
+  });
+
+  it('returns null only when nothing requested is grantable', () => {
+    expect(filterToDiscoveryScopes('openid offline_access')).toBeNull();
+    expect(filterToDiscoveryScopes('')).toBeNull();
+  });
+
+  // The contrast that motivates the split: the strict form is still correct
+  // for scope strings we generate ourselves (consent form, device flow).
+  it('is deliberately more permissive than the strict normalizer', () => {
+    expect(normalizeOAuthScopeRequest('openid mcp:read', DISCOVERY_SCOPES)).toBeNull();
+    expect(filterToDiscoveryScopes('openid mcp:read')).toBe('mcp:read');
   });
 });

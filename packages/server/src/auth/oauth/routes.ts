@@ -26,6 +26,7 @@ import {
   canonicalizeOAuthScopeGrant,
   DEFAULT_SCOPES_STRING,
   DISCOVERY_SCOPES,
+  filterToDiscoveryScopes,
   filterScopeByRole,
   isOAuthScopeGrantWithinRequest,
   NON_PUBLIC_OAUTH_SCOPES,
@@ -718,10 +719,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
     );
   }
 
-  params.scope = normalizeOAuthScopeRequest(
-    stripNonPublicOAuthScopes(params.scope || DEFAULT_SCOPES_STRING),
-    DISCOVERY_SCOPES
-  ) ?? undefined;
+  params.scope = filterToDiscoveryScopes(params.scope || DEFAULT_SCOPES_STRING) ?? undefined;
   if (!params.scope) {
     return c.json(
       createOAuthError('invalid_scope', 'No requested scopes are available to OAuth clients'),

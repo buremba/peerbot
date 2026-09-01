@@ -342,6 +342,7 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [''],
       baseOrgScopeIds: [''],
       workerHardensDbEgress: true,
+      backendCapacity: { compiled_connector: 1 },
     };
     const macContext: DueFeedClaimContext = {
       isUserScopedWorker: true,
@@ -354,6 +355,14 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [org.id],
       baseOrgScopeIds: [org.id],
       workerHardensDbEgress: false,
+      // Deliberately the map a headless daemon advertises, both backends open,
+      // so the claim assertions below double as the regression test: `headless`
+      // is the default platform of `lobu daemon` and that daemon asserts its
+      // compiled runtime loads before it polls, so owning the daemon builtin
+      // must never cost a worker its compiled lane. If it did, every
+      // execution-pinned compiled connection on a self-hosted device would stop
+      // being claimed with no error anywhere.
+      backendCapacity: { daemon_builtin: 1, compiled_connector: 1 },
     };
     const chromeContext: DueFeedClaimContext = {
       isUserScopedWorker: true,
@@ -366,6 +375,11 @@ describe('scheduled feed device liveness', () => {
       orgScopeIds: [org.id],
       baseOrgScopeIds: [org.id],
       workerHardensDbEgress: false,
+      // Matches what poll.ts advertises for a non-headless platform. This
+      // feed claims through the manifest/bridge lane, which does not consult
+      // compiled capacity at all -- so the value here must mirror production
+      // rather than imply a restriction the lane never applies.
+      backendCapacity: { compiled_connector: 1 },
     };
 
     // Production incident shape: the Mac is recently seen but busy, so it is not
@@ -396,6 +410,22 @@ describe('scheduled feed device liveness', () => {
       SET last_seen_at = current_timestamp - INTERVAL '10 minutes'
       WHERE id = ${macDeviceId}::uuid
     `;
+
+    // Same Mac, same pins, same authorized capability -- but with its compiled
+    // backend closed it must claim nothing. That is the gate's whole point: a
+    // worker can be online and fully authorized and still be unable to RUN a
+    // compiled artifact because its connector compiler/SDK runtime is
+    // unavailable, and claiming it would surface the failure only after the run
+    // is already running. An advertisement that omits the backend is not a
+    // grant either.
+    for (const backendCapacity of [{ compiled_connector: 0 }, {}]) {
+      expect(
+        await materializeDueFeeds({} as Env, sql, {
+          claimContext: { ...macContext, backendCapacity },
+          maxRunsCreated: 1,
+        })
+      ).toMatchObject({ runsCreated: 0 });
+    }
 
     // The Mac poll owns both its explicit pin and the unpinned capability lane,
     // but each idle poll materializes only one claim slot.

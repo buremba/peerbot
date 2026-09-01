@@ -14,6 +14,7 @@ import {
 import { Value } from '@sinclair/typebox/value';
 import {
   PollRequestSchema,
+  defaultBackendCapacity,
   type PollRequest,
 } from '@lobu/core/contracts/worker/protocol';
 import type { Context } from 'hono';
@@ -285,6 +286,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   let app_version: string | null = null;
   let label: string | null = null;
   let capacityAvailable: number | null = null;
+  let backendCapacity: Record<string, number> = {};
+  let backendCapacityProvided = false;
   let connectorManifestsProvided = false;
   let connectorManifestsRaw: unknown;
   // Agent CLIs this device can spawn. `null` is NOT the same as `[]`: null means
@@ -313,6 +316,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     app_version = body.app_version ?? null;
     label = body.label ?? null;
     capacityAvailable = body.capacity_available ?? null;
+    backendCapacity = body.backend_capacity ?? {};
+    backendCapacityProvided = Object.hasOwn(body, 'backend_capacity');
     connectorManifestsProvided = Object.hasOwn(body, 'connector_manifests');
     connectorManifestsRaw = body.connector_manifests;
     agentKinds = normalizeAgentKinds(body.agent_kinds);
@@ -420,6 +425,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       }
       effectivePlatform = existing[0].platform;
     }
+  }
+  // An omitted map means a client that predates the field; mirror what that
+  // platform's daemon would have advertised — see `defaultBackendCapacity` in
+  // core/contracts/worker/protocol.ts for why each platform gets what it gets.
+  //
+  // Keyed on effectivePlatform and placed AFTER the binding resolution above:
+  // a headless-bound device that omits `platform` from its body would
+  // otherwise default to compiled-only and silently lose the one backend it
+  // is the only worker able to run.
+  if (!backendCapacityProvided) {
+    backendCapacity = defaultBackendCapacity(effectivePlatform);
   }
   // For user-scoped (device) workers, authorize the advertised capability set
   // against the platform-specific allowlist in @lobu/core. Anything outside
@@ -643,10 +659,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     capabilityMatchSet,
     manifestClaimAuthorizations,
     allowLegacyManifestCapabilityClaims:
-      isUserScopedWorker && !connectorManifestsProvided && effectivePlatform !== 'chrome-extension',
+      isUserScopedWorker &&
+      !connectorManifestsProvided &&
+      effectivePlatform !== 'chrome-extension' &&
+      effectivePlatform !== 'headless',
     orgScopeIds,
     baseOrgScopeIds,
     workerHardensDbEgress,
+    backendCapacity,
   };
   const workerKind = isUserScopedWorker ? 'device' : 'fleet';
   // `platform` is self-reported in the poll body and is only pinned to the
@@ -1200,7 +1220,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       ...pollMetadata,
     });
   }
-  const isNativeBridgeRun = selectedExecution.backend === 'native_bridge';
+  // Both device-owned backends: the device implements the work itself, so the
+  // gateway ships no compiled code and does not hold the connection lease. The
+  // classifier returns a backend only for a hash-attested manifest artifact
+  // that carries no compiled or source code, so "a backend was classified" is
+  // exactly "this run is device-owned".
+  const isDeviceOwnedRun = selectedExecution.backend !== undefined;
 
   // Device chat reuses the ordinary messages/chat_message row. The poll
   // response is only an execution envelope: ownership/routing remain on the
@@ -1658,13 +1683,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const hasStoredCompiledCode = Boolean(row.compiled_code);
   const workerWillResolveLocally =
     !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
-  // Only a native-bridge run is implemented by the device itself. Manifest
-  // backing and the capability gate do not establish who executes the code.
+  // Only a device-owned run (native bridge or daemon builtin) is implemented by
+  // the device itself. Manifest backing and the capability gate do not
+  // establish who executes the code.
   const deviceWillExecuteNativeConnector = deviceExecutesConnectorNatively({
     isUserScopedWorker,
     hasStoredCompiledCode,
     gatewayHasLocalSource,
-    isNativeBridgeRun,
+    isDeviceOwnedRun,
     manifestBacked: row.connector_manifest_backed,
     deviceAdvertisesRequiredCapability:
       row.connector_required_capability != null &&
@@ -1708,7 +1734,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //    profile still can't leak secrets to an arbitrary capability-matched device.
   const connectionIsDevicePinned = row.connection_device_worker_id != null;
   const deliverConnectionAuth =
-    !isNativeBridgeRun && !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
+    !isDeviceOwnedRun && !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);
   // `user_data_dir` and `cdp_url` for device-bound browser profiles flow to
   // the worker via `sessionState.user_data_dir` / `sessionState.cdp_url`
   // (set inside resolveExecutionAuth). No need to thread them as separate
@@ -1780,9 +1806,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_type: row.run_type,
     connector_key: row.connector_key ?? undefined,
     connector_version: row.connector_version ?? undefined,
-    ...(isNativeBridgeRun
+    // The routing marker the worker switches on: `daemon_builtin` selects the
+    // daemon's supervised built-in, `native_bridge` the native bridge daemon.
+    // Every classified backend has to reach the worker -- emitting only one of
+    // them leaves the other lane dead, and the worker then falls through to the
+    // compiled path for a run the gateway deliberately shipped no code for.
+    ...(selectedExecution.backend
       ? {
-          execution_backend: 'native_bridge' as const,
+          execution_backend: selectedExecution.backend,
           connector_manifest_hash: selectedExecution.manifestHash,
         }
       : {}),

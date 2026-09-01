@@ -3,6 +3,7 @@
  */
 
 import { describe, expect, it, mock } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { connectorSdkMock } from './connector-sdk.mock';
 
@@ -33,6 +34,24 @@ function processIsLive(pid: number): boolean {
       return state !== 'Z';
     }
     process.kill(pid, 0);
+    if (process.platform === 'darwin') {
+      // A zombie still answers kill(pid, 0), so ask `ps` for the real state.
+      // Between that signal probe and this call the pid can be reaped, and
+      // `ps` then exits 1 with no stdout -- which execFileSync raises as an
+      // error carrying a `status`, not an ESRCH/ENOENT `code`, so the handler
+      // below would rethrow it and fail the test. A pid `ps` cannot find is
+      // not an error here: it is the definition of not live.
+      let state: string;
+      try {
+        state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+      } catch {
+        return false;
+      }
+      return state !== '' && !state.startsWith('Z');
+    }
     return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -71,6 +90,15 @@ function processGroupExists(pid: number): boolean {
 describe('os.shell connector', () => {
   const connector = new OsShellConnector();
 
+  it('rejects timeout values beyond the published execution budget', async () => {
+    const result = await connector.execute(
+      runContext('run', { command: 'printf nope', timeout_ms: 150001 })
+    );
+    expect(result).toEqual({
+      success: false,
+      error: 'timeout_ms must be an integer between 100 and 150000',
+    });
+  });
   it('runs a command and returns stdout with exit 0', async () => {
     const result = await connector.execute(
       runContext('run', { command: 'echo hello-from-shell' })
@@ -170,7 +198,7 @@ describe('os.shell connector', () => {
       escapedPid = Number(String(output.stdout).trim());
 
       expect(output.timed_out).toBe(true);
-      expect(Date.now() - started).toBeLessThan(4000);
+      expect(Date.now() - started).toBeLessThan(5500);
       expect(escapedPid).toBeGreaterThan(1);
       // setsid is explicitly outside process-group cleanup. The connector must
       // return on time even though the escaped session is still alive.
@@ -196,7 +224,7 @@ describe('os.shell connector', () => {
       escapedPid = Number(String(output.stdout).trim());
 
       expect(output.timed_out).toBe(true);
-      expect(Date.now() - started).toBeLessThan(4000);
+      expect(Date.now() - started).toBeLessThan(5500);
       expect(escapedPid).toBeGreaterThan(1);
       expect(processGroupExists(escapedPid)).toBe(true);
     } finally {

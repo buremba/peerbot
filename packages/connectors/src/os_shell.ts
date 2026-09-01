@@ -2,12 +2,23 @@
  * os.shell - run shell commands on the host device.
  *
  * Device-bound connector served by the connector-worker daemon on headless
- * devices (servers, VMs, k8s pods). Executes through `bash -lc` and returns
+ * devices (servers, VMs, k8s pods). Executes through `bash --noprofile --norc -c` and returns
  * structured stdout/stderr/exit_code - the same contract as the macOS
  * os.shell manifest, but for boxes without a UI. Commands run in the device's
  * real environment (host PATH, files), so the action is approval-gated. The
  * timeout bounds this call and cleans up its process group; it is not sandbox
  * containment, and deliberately daemonized/session-detached work may outlive it.
+ *
+ * PAIRED IMPLEMENTATION — keep the CONTRACT in step with
+ * `packages/connector-worker/src/daemon/builtins/os-shell.ts`: the argv
+ * (`bash --noprofile --norc -c`), the timeout bounds, the 1MB output cap, and
+ * the returned shape are one action contract with two executors. They are not
+ * merged because they run on different substrates and for opposite reasons:
+ * this one executes inside the compiled-connector subprocess runtime, while
+ * the daemon builtin runs on the daemon's own supervisor precisely so a device
+ * whose compiler is broken can still be recovered. Sharing a module would put
+ * the compiler graph back on the recovery path. A device serves whichever its
+ * manifest declares (`runtime.execution`); it never runs both.
  */
 
 import { spawn } from 'node:child_process';
@@ -37,14 +48,21 @@ interface RunOutput {
   duration_ms: number;
 }
 
-const MAX_TIMEOUT_MS = 300000;
+// Keep the requested command budget truthful: run_sdk's 180s outer ceiling
+// must also cover 3s TERM grace, up to 5s reaping, up to 15s terminal
+// delivery, and bounded network/server grace.
+const MAX_TIMEOUT_MS = 150000;
 const DEFAULT_TIMEOUT_MS = 60000;
 const SIGTERM_GRACE_MS = 3000;
 // The outer shell remains the live process-group owner until Node's grace
 // timer fires, so its numeric pgid cannot be recycled before SIGKILL. The
 // inner login shell and command still receive SIGTERM normally.
-const SHELL_GROUP_ANCHOR = `trap 'sleep 4' TERM
-bash -lc "$1"
+//
+// The trap must outlive the grace timer, so derive it rather than restating
+// it: a hardcoded sleep silently reopens the recycle window the moment
+// SIGTERM_GRACE_MS is raised past it, and nothing would fail to say so.
+const SHELL_GROUP_ANCHOR = `trap 'sleep ${(SIGTERM_GRACE_MS + 1000) / 1000}' TERM
+bash --noprofile --norc -c "$1"
 status=$?
 exit "$status"`;
 // Cap captured output so a chatty command cannot balloon daemon memory.
@@ -192,8 +210,8 @@ export default class OsShellConnector extends ConnectorRuntime {
     key: 'os.shell',
     name: 'Shell',
     description:
-      'Run shell commands on the host device. Executes via `bash -lc` and returns structured stdout/stderr/exit_code. Same trust tier as the macOS shell connector - commands run in the device\'s real environment (host PATH, files), so gate with approval.',
-    version: '0.1.0',
+      'Run shell commands on the host device. Executes via `bash --noprofile --norc -c` and returns structured stdout/stderr/exit_code. Same trust tier as the macOS shell connector - commands run in the device\'s real environment (host PATH, files), so gate with approval.',
+    version: '0.2.0',
     requiredCapability: 'os.shell',
     authSchema: { methods: [{ type: 'none' }] },
     feeds: {},
@@ -203,7 +221,7 @@ export default class OsShellConnector extends ConnectorRuntime {
         kind: 'write',
         name: 'Run command',
         description:
-          'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash -lc`, so pipes, redirects, and && chains work. Prefer one focused command per call.',
+          'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash --noprofile --norc -c`, so pipes, redirects, and && chains work, but shell profile/rc files are NOT loaded - use absolute paths rather than relying on aliases. Prefer one focused command per call.',
         requiresApproval: true,
         annotations: {
           destructiveHint: true,
@@ -218,7 +236,7 @@ export default class OsShellConnector extends ConnectorRuntime {
               type: 'string',
               minLength: 1,
               maxLength: 20000,
-              description: 'Shell command to execute. Runs via `bash -lc`, so pipes, redirects, and && chains work. Keep commands short and targeted.',
+              description: 'Shell command to execute. Runs via `bash --noprofile --norc -c`, so pipes, redirects, and && chains work, but no profile or rc file is loaded. Keep commands short and targeted.',
             },
             cwd: {
               type: 'string',
@@ -227,7 +245,7 @@ export default class OsShellConnector extends ConnectorRuntime {
             timeout_ms: {
               type: 'integer',
               minimum: 100,
-              maximum: 300000,
+              maximum: 150000,
               default: 60000,
               description:
                 'Wall-clock budget in milliseconds. On timeout the owned process group gets SIGTERM (3s grace) then SIGKILL. Session-detached or daemonized commands may outlive the call; this is not sandbox containment.',
@@ -265,10 +283,17 @@ export default class OsShellConnector extends ConnectorRuntime {
     if (!command) {
       return { success: false, error: 'command is required' };
     }
-    const timeoutMs = Math.min(
-      typeof input.timeout_ms === 'number' ? input.timeout_ms : DEFAULT_TIMEOUT_MS,
-      MAX_TIMEOUT_MS
-    );
+    const timeoutMs = input.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+    if (
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs < 100 ||
+      timeoutMs > MAX_TIMEOUT_MS
+    ) {
+      return {
+        success: false,
+        error: `timeout_ms must be an integer between 100 and ${MAX_TIMEOUT_MS}`,
+      };
+    }
     // cwd must be an existing absolute path (the declared contract); default
     // to the device home. Reject rather than let bash guess at a relative cwd.
     let cwd: string | undefined;

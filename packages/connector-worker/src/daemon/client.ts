@@ -228,6 +228,7 @@ export class WorkerClient implements ExecutorClient {
   private fixedAgentKinds?: AgentKind[];
   private advertisementProvider?: WorkerAdvertisementProvider;
   private agentKindsCache: { kinds: AgentKind[]; at: number } | null = null;
+  private backendCapacity: Record<string, number>;
 
   constructor(config: {
     apiUrl: string;
@@ -247,6 +248,8 @@ export class WorkerClient implements ExecutorClient {
     agentKinds?: AgentKind[];
     /** Mutable device capability/manifest snapshot, updated by the native bridge. */
     advertisementProvider?: WorkerAdvertisementProvider;
+    /** Static readiness/capacity per execution backend. */
+    backendCapacity?: Record<string, number>;
   }) {
     this.apiUrl = trimTrailingSlashes(config.apiUrl);
     this.workerId = config.workerId;
@@ -259,6 +262,7 @@ export class WorkerClient implements ExecutorClient {
     this.binaryOverrides = config.binaryOverrides;
     this.fixedAgentKinds = config.agentKinds;
     this.advertisementProvider = config.advertisementProvider;
+    this.backendCapacity = { ...(config.backendCapacity ?? {}) };
   }
 
   /**
@@ -341,6 +345,9 @@ export class WorkerClient implements ExecutorClient {
       ...(capacityAvailable === undefined
         ? {}
         : { capacity_available: capacityAvailable }),
+      ...(Object.keys(this.backendCapacity).length > 0
+        ? { backend_capacity: this.backendCapacity }
+        : {}),
       // app_version belongs to the device registration fields, so omit both for
       // fleet workers rather than sending empty values. A device worker also
       // advertises the agent kinds its automation arm can run.

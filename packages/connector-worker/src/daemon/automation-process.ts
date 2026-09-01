@@ -85,6 +85,11 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
   };
   process.on('SIGTERM', () => {});
   process.once('disconnect', stopAfterParentLoss);
+  // A broken parent pipe is parent loss for ownership purposes. Do not report
+  // the target's normal exit first: the gateway may release the run while the
+  // delayed whole-tree SIGKILL is still pending, orphaning TERM-ignoring
+  // descendants.
+  process.stdin.once('error', stopAfterParentLoss);
   process.on('message', (message: unknown) => {
     if (
       typeof message !== 'object' ||
@@ -104,7 +109,10 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
         stdio: ['pipe', 'inherit', 'inherit'],
         windowsHide: true,
       });
-      if (target.stdin) process.stdin.pipe(target.stdin);
+      if (target.stdin) {
+        target.stdin.on('error', () => {});
+        process.stdin.pipe(target.stdin);
+      }
     } catch (error) {
       finish(127, null, error instanceof Error ? error.message : String(error));
     }
@@ -218,7 +226,17 @@ export function signalOwnedPosixProcessGroup(
     sendSignal(-owner.pid, signal);
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    const code = (err as NodeJS.ErrnoException).code;
+    // ESRCH is the only "there is no group here" answer, and it is the only one
+    // that may return false: the caller reads false as "no owned group", skips
+    // the grace window and never escalates to SIGKILL.
+    if (code === 'ESRCH') return false;
+    // EPERM means the opposite — the group EXISTS, we just could not signal any
+    // member of it (a setuid'd descendant, say). Reporting that as "gone" would
+    // retire the tree from escalation while it is still running, so keep the
+    // caller on the owned-group path: the SIGKILL escalation may still land,
+    // and the supervisor itself is ours to kill directly if it does not.
+    if (code === 'EPERM') return true;
     throw err;
   }
 }
@@ -319,7 +337,7 @@ export function spawnSupervisedCli(
   binary: string,
   args: string[],
   env: NodeJS.ProcessEnv,
-  options: { stdin?: 'ignore' | 'pipe' } = {}
+  options: { stdin?: 'ignore' | 'pipe'; cwd?: string } = {}
 ): SupervisedCli {
   const supervisor = spawn(
     process.execPath,
@@ -327,6 +345,7 @@ export function spawnSupervisedCli(
     {
       detached: SUPPORTS_PROCESS_GROUPS,
       env,
+      cwd: options.cwd,
       stdio: [options.stdin ?? 'ignore', 'pipe', 'pipe', 'ipc'],
       windowsHide: true,
     }

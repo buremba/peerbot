@@ -183,13 +183,22 @@ export function buildTarball(root: string): string {
  * is not set, reuse whatever the `daytona` CLI already stored. The CLI writes
  * TWO shapes depending on how the developer authenticated, and both are valid:
  * `daytona login` stores a browser JWT under `api.token.accessToken`, while
- * `daytona login --api-key` stores a long-lived key under `api.key`. Reading
- * only the JWT shape reports "No Daytona credentials" at an authenticated
- * machine, which reads as a login failure rather than an unread field.
+ * `daytona login --api-key` stores a long-lived key under `api.key` (leaving
+ * an empty `api.token` object beside it). Reading only the JWT shape reports
+ * "No Daytona credentials" on an authenticated machine, which reads as a
+ * login failure rather than an unread field.
  */
-export type DaytonaCredentials =
+type DaytonaCredentials =
   | { apiKey: string; apiUrl?: string }
   | { jwtToken: string; organizationId: string; apiUrl?: string };
+
+/**
+ * The stored JWT is stale and no API key stands behind it. Thrown rather than
+ * exited so the branch stays reachable from a test: `process.exit` inside the
+ * pure reader kills the test runner mid-suite instead of failing an assertion,
+ * which makes the regression look like a crash rather than a caught bug.
+ */
+export class ExpiredCliTokenError extends Error {}
 
 /** Split from disk access so both credential shapes are testable. */
 export function credentialsFromConfig(cfg: unknown): DaytonaCredentials | null {
@@ -211,21 +220,24 @@ export function credentialsFromConfig(cfg: unknown): DaytonaCredentials | null {
   if (!profile) return null;
   const apiUrl = profile.api?.url;
 
+  // An API key carries its own org scope, so no activeOrganizationId is needed.
+  const apiKey = profile.api?.key;
   const token = profile.api?.token;
   if (token?.accessToken && profile.activeOrganizationId) {
-    if (token.expiresAt && new Date(token.expiresAt).getTime() < Date.now()) {
-      console.error("daytona CLI token has expired — run: daytona login");
-      process.exit(1);
+    const expired =
+      !!token.expiresAt && new Date(token.expiresAt).getTime() < Date.now();
+    if (!expired) {
+      return {
+        jwtToken: token.accessToken,
+        organizationId: profile.activeOrganizationId,
+        apiUrl,
+      };
     }
-    return {
-      jwtToken: token.accessToken,
-      organizationId: profile.activeOrganizationId,
-      apiUrl,
-    };
+    // A stale JWT must not mask a key that still works.
+    if (!apiKey) throw new ExpiredCliTokenError();
   }
 
-  // An API key carries its own org scope, so no activeOrganizationId is needed.
-  if (profile.api?.key) return { apiKey: profile.api.key, apiUrl };
+  if (apiKey) return { apiKey, apiUrl };
 
   return null;
 }
@@ -238,10 +250,23 @@ function cliCredentials(): DaytonaCredentials | null {
   const xdg = join(homedir(), ".config/daytona/config.json");
   const path = existsSync(cfgPath) ? cfgPath : existsSync(xdg) ? xdg : null;
   if (!path) return null;
+  let cfg: unknown;
   try {
-    return credentialsFromConfig(JSON.parse(readFileSync(path, "utf8")));
+    cfg = JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return null;
+  }
+  // Only the parse is best-effort. An expired token is a real, actionable
+  // state, so it must not be swallowed by the same catch that tolerates an
+  // unreadable config file.
+  try {
+    return credentialsFromConfig(cfg);
+  } catch (err) {
+    if (err instanceof ExpiredCliTokenError) {
+      console.error("daytona CLI token has expired — run: daytona login");
+      process.exit(1);
+    }
+    throw err;
   }
 }
 

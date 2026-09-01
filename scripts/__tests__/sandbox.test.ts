@@ -16,6 +16,7 @@ import {
   authenticatedUrl,
   buildTarball,
   credentialsFromConfig,
+  ExpiredCliTokenError,
   isAppleDouble,
   sandboxName,
   sanitizedEnv,
@@ -342,7 +343,7 @@ describe("credentialsFromConfig", () => {
   });
 
   test("accepts an API key with no activeOrganizationId", () => {
-    // A key carries its own org scope, and the CLI omits the field for one.
+    // A key carries its own org scope; the CLI may omit the field for one.
     const cfg = {
       activeProfile: "initial",
       profiles: [{ id: "initial", api: { key: "dtn-key-only" } }],
@@ -353,7 +354,50 @@ describe("credentialsFromConfig", () => {
     });
   });
 
-  test("prefers the JWT when a profile carries both", () => {
+  test("falls back to the API key when the JWT has expired", () => {
+    const cfg = {
+      activeProfile: "initial",
+      profiles: [
+        {
+          id: "initial",
+          activeOrganizationId: "org-1",
+          api: {
+            url: "https://api.example",
+            key: "dtn-key-abc",
+            token: {
+              accessToken: "jwt-old",
+              expiresAt: "2000-01-01T00:00:00Z",
+            },
+          },
+        },
+      ],
+    };
+    expect(credentialsFromConfig(cfg)).toEqual({
+      apiKey: "dtn-key-abc",
+      apiUrl: "https://api.example",
+    });
+  });
+
+  test("reports an expired JWT when no API key stands behind it", () => {
+    const cfg = {
+      activeProfile: "initial",
+      profiles: [
+        {
+          id: "initial",
+          activeOrganizationId: "org-1",
+          api: {
+            token: {
+              accessToken: "jwt-old",
+              expiresAt: "2000-01-01T00:00:00Z",
+            },
+          },
+        },
+      ],
+    };
+    expect(() => credentialsFromConfig(cfg)).toThrow(ExpiredCliTokenError);
+  });
+
+  test("prefers a live JWT when a profile carries both", () => {
     const cfg = {
       activeProfile: "initial",
       profiles: [

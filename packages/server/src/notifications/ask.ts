@@ -15,6 +15,7 @@ import {
 	approvalContext,
 } from "../utils/approval-context";
 import { insertEvent } from "../utils/insert-event";
+import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import {
 	CURRENT_ASK_SCHEMA_VERSION,
 	validateAskInputSchema,
@@ -80,7 +81,7 @@ export async function queueAgentAsk(params: {
 				WHERE id = ${params.ctx.actingRunId ?? null}
 				  AND organization_id = ${params.ctx.organizationId}
 				  AND run_type = ANY('{automation,automation_eval}'::text[])
-				  AND status = ANY('{pending,claimed,running}'::text[])
+				  AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
 				FOR SHARE
 			), authorized_parent AS (
 				SELECT 1 WHERE ${params.ctx.actingRunId ?? null}::bigint IS NULL

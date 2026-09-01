@@ -86,6 +86,7 @@ import {
 } from './manage_automations/feedback';
 import { handleGetComponentReference } from './manage_automations/reference';
 import { handleList } from './manage_automations/list';
+import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses';
 
 export {
   ListAutomationsResultSchema,
@@ -729,7 +730,7 @@ async function queueAutomationWriteForApproval(
         WHERE id = ${ctx.actingRunId ?? null}
           AND organization_id = ${ctx.organizationId}
           AND run_type = ANY('{automation,automation_eval}'::text[])
-          AND status = ANY('{pending,claimed,running}'::text[])
+          AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
         FOR SHARE
       ), authorized_parent AS (
         SELECT 1 WHERE ${ctx.actingRunId ?? null}::bigint IS NULL

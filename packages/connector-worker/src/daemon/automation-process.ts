@@ -25,8 +25,7 @@ const PROCESS_REAP_GRACE_MS = 5000;
  * negative-pid group signals.
  */
 function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): void {
-  const supervisorArgs = process.argv.slice(1);
-  const [binary, ...args] = supervisorArgs;
+  const [binary, ...args] = process.argv.slice(1);
   let targetFinished = false;
   let parentLost = false;
   let target: ChildProcess | undefined;
@@ -363,7 +362,17 @@ export function spawnSupervisedCli(
       });
     });
     supervisor.once('error', (error) => {
-      settle({ exitCode: null, signalCode: null, error: error.message });
+      // Deliberately NOT falling back to process.execPath under Bun. The
+      // supervisor runs on Node there precisely because Bun's
+      // node:child_process merges `env` with the parent environment, which
+      // would hand every supervised command the daemon's own environment --
+      // the leak the built-in shell exists to avoid. A missing Node is a
+      // packaging fault to fix, not a property to trade away silently.
+      const detail =
+        (error as NodeJS.ErrnoException).code === 'ENOENT' && process.versions.bun
+          ? `${error.message} (the supervised-CLI runner requires an installed \`node\` when the daemon itself runs on Bun; install Node in the runtime image)`
+          : error.message;
+      settle({ exitCode: null, signalCode: null, error: detail });
     });
     supervisor.once('exit', (code, signal) => {
       settle({

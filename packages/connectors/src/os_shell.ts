@@ -2,7 +2,7 @@
  * os.shell - run shell commands on the host device.
  *
  * Device-bound connector served by the connector-worker daemon on headless
- * devices (servers, VMs, k8s pods). Executes through `bash -lc` and returns
+ * devices (servers, VMs, k8s pods). Executes through `bash --noprofile --norc -c` and returns
  * structured stdout/stderr/exit_code - the same contract as the macOS
  * os.shell manifest, but for boxes without a UI. Commands run in the device's
  * real environment (host PATH, files), so the action is approval-gated. The
@@ -51,7 +51,7 @@ const SIGTERM_GRACE_MS = 3000;
 // it: a hardcoded sleep silently reopens the recycle window the moment
 // SIGTERM_GRACE_MS is raised past it, and nothing would fail to say so.
 const SHELL_GROUP_ANCHOR = `trap 'sleep ${(SIGTERM_GRACE_MS + 1000) / 1000}' TERM
-bash --noprofile --norc -lc "$1"
+bash --noprofile --norc -c "$1"
 status=$?
 exit "$status"`;
 // Cap captured output so a chatty command cannot balloon daemon memory.
@@ -199,7 +199,7 @@ export default class OsShellConnector extends ConnectorRuntime {
     key: 'os.shell',
     name: 'Shell',
     description:
-      'Run shell commands on the host device. Executes via `bash -lc` and returns structured stdout/stderr/exit_code. Same trust tier as the macOS shell connector - commands run in the device\'s real environment (host PATH, files), so gate with approval.',
+      'Run shell commands on the host device. Executes via `bash --noprofile --norc -c` and returns structured stdout/stderr/exit_code. Same trust tier as the macOS shell connector - commands run in the device\'s real environment (host PATH, files), so gate with approval.',
     version: '0.1.0',
     requiredCapability: 'os.shell',
     authSchema: { methods: [{ type: 'none' }] },
@@ -210,7 +210,7 @@ export default class OsShellConnector extends ConnectorRuntime {
         kind: 'write',
         name: 'Run command',
         description:
-          'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash -lc`, so pipes, redirects, and && chains work. Prefer one focused command per call.',
+          'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash --noprofile --norc -c`, so pipes, redirects, and && chains work, but shell profile/rc files are NOT loaded - use absolute paths rather than relying on aliases. Prefer one focused command per call.',
         requiresApproval: true,
         annotations: {
           destructiveHint: true,
@@ -225,7 +225,7 @@ export default class OsShellConnector extends ConnectorRuntime {
               type: 'string',
               minLength: 1,
               maxLength: 20000,
-              description: 'Shell command to execute. Runs via `bash -lc`, so pipes, redirects, and && chains work. Keep commands short and targeted.',
+              description: 'Shell command to execute. Runs via `bash --noprofile --norc -c`, so pipes, redirects, and && chains work, but no profile or rc file is loaded. Keep commands short and targeted.',
             },
             cwd: {
               type: 'string',

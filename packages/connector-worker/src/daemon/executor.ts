@@ -15,6 +15,7 @@ import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
 import { log } from './log.js';
 import { reportTerminalFailure } from './terminal-failure.js';
+import { completeActionOnce } from './terminal-delivery.js';
 
 /**
  * Resolve the executable compiled code for a job.
@@ -100,49 +101,6 @@ const DEFAULT_CONFIG: ExecutorConfig = {
   timeoutMs: 600000,
   maxOldSpaceSize: 1024,
 };
-
-const TERMINAL_DELIVERY_DEADLINE_MS = 15_000;
-
-async function withTerminalDeliveryTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('terminal completion deadline exceeded')), timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-/** Retry one immutable terminal payload without changing its outcome. */
-async function completeActionOnce(
-  client: ExecutorClient,
-  payload: Parameters<ExecutorClient['completeAction']>[0],
-): Promise<void> {
-  const deadline = Date.now() + TERMINAL_DELIVERY_DEADLINE_MS;
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    try {
-      const attemptsLeft = 2 - attempt;
-      await withTerminalDeliveryTimeout(
-        client.completeAction(payload),
-        Math.max(1, Math.floor(remaining / attemptsLeft)),
-      );
-      return;
-    } catch (error) {
-      if (error instanceof WorkerDecodeError) throw error;
-      lastError = error;
-      if (error instanceof Error && error.message === 'terminal completion deadline exceeded') break;
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
-}
 
 /**
  * Fold the gateway's authoritative DB egress config into the worker's env.

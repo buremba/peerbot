@@ -376,7 +376,12 @@ export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
         capabilities,
         manifests: [stored.manifest],
       },
-      false
+      // Legacy feed schemas without `operations` stay acceptable here (#3132):
+      // this path revalidates an ALREADY-STORED manifest, and a device that
+      // registered before operations existed must keep its claim authorization.
+      // The headless `runtime.execution` requirement above is independent of
+      // this flag, so fail-closed routing is unaffected either way.
+      true
     );
     const validated = validation.manifests[0];
     if (!validation.accepted || !validated || validated.manifest_hash !== stored.manifest_hash) {

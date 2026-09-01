@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,8 +15,23 @@ function processIsLive(pid: number): boolean {
     }
     process.kill(pid, 0);
     if (process.platform === 'darwin') {
-      process.kill(pid, 0);
-      return true;
+      // A zombie still answers kill(pid, 0), so ask `ps` for the real state --
+      // the same check the sibling suite uses. Between the signal probe and
+      // this call the pid can be reaped, and `ps` then exits 1 with no stdout,
+      // which execFileSync raises as an error carrying a `status` rather than
+      // an ESRCH/ENOENT `code`; the handler below would rethrow it and fail
+      // the test. A pid `ps` cannot find is not an error here: it is the
+      // definition of not live.
+      let state: string;
+      try {
+        state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+      } catch {
+        return false;
+      }
+      return state !== '' && !state.startsWith('Z');
     }
     return true;
   } catch (error) {

@@ -50,7 +50,7 @@ import {
   materializeDueFeeds,
 } from '../scheduled/check-due-feeds';
 import { reconcileDeviceCapabilities } from './device-reconcile';
-import { findBundledConnectorFile, resolveBundledConnectorFile } from '../utils/connector-catalog';
+import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
@@ -61,7 +61,7 @@ import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execut
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { selectedConnectorVersionArtifactSql } from '../utils/connector-execution-placement';
-import { assertCustomConnectorCloudAllowed } from '../utils/custom-connector-cloud-gate';
+import { assertCloudConnectorArtifactTrusted } from '../utils/custom-connector-cloud-gate';
 import {
   classifySelectedConnectorExecution,
   deviceExecutesConnectorNatively,
@@ -972,7 +972,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         cv.artifact_hash AS connector_manifest_hash,
         cv.artifact_source_path AS artifact_source_path,
         cv.artifact_has_source_code AS artifact_has_source_code,
-        cv.artifact_source_code AS source_code,
         COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
         CASE WHEN cd.version = r.connector_version THEN cd.runtime ELSE NULL END
           AS connector_runtime,
@@ -1141,7 +1140,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connector_manifest_hash: string | null;
     artifact_source_path: string | null;
     artifact_has_source_code: boolean;
-    source_code: string | null;
     connector_manifest_backed: boolean;
     connector_runtime: { nix?: { packages?: string[] } | null } | null;
     connector_required_capability: string | null;
@@ -1650,42 +1648,32 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //     worker image — see worker-side resolver in
   //     connector-worker/src/compile-connector.ts) to decide whether the
   //     fleet path applies.
-  try {
-    assertCustomConnectorCloudAllowed({
-      provenance: row.connector_manifest_backed
-        ? 'device-manifest'
-        : row.artifact_organization_id
-          ? 'organization'
-          : row.compiled_code
-            ? 'shared'
-            : 'bundled',
-      hasExecutableBytes: Boolean(row.compiled_code),
-      hasSourceCode: Boolean(row.source_code),
-      sourcePath: row.artifact_source_path,
-      hasMatchingBundledSource: false,
-    });
-    if (isCloudMode() && row.connector_key && row.connector_version) {
-      const exactBundled = await resolveBundledConnectorFile(row.connector_key, row.connector_version);
-      if (
-        row.artifact_organization_id !== null ||
-        row.artifact_row_count !== 1 ||
-        row.compiled_code ||
-        row.source_code ||
-        row.compile_config_hash ||
-        !row.artifact_source_path ||
-        row.artifact_source_path.startsWith('device-manifest://') ||
-        !exactBundled
-      ) throw new Error('Cloud connector artifact is not an exact shared bundled source.');
+  // Cloud admission for the artifact this run selected. Same classification
+  // the queue-time gate and the agent-tooling resolver use, so a run can never
+  // be admitted by one reader and rejected by another.
+  if (row.connector_key) {
+    try {
+      assertCloudConnectorArtifactTrusted({
+        connectorKey: row.connector_key,
+        facts: {
+          organizationId: row.artifact_organization_id,
+          rowCount:
+            row.connector_version_row_id == null ? 0 : Number(row.artifact_row_count),
+          hasCompiledCode: row.compiled_code != null,
+          hasSourceCode: row.artifact_has_source_code,
+          sourcePath: row.artifact_source_path,
+        },
+      });
+    } catch (err) {
+      const message = errorMessage(err);
+      await failClaimedWorkerRun({ runId: row.run_id, workerId: worker_id, errorMessage: message });
+      return c.json({
+        next_poll_seconds: 1,
+        skipped_run_id: row.run_id,
+        error: message,
+        ...pollMetadata,
+      });
     }
-  } catch (err) {
-    const message = errorMessage(err);
-    await failClaimedWorkerRun({ runId: row.run_id, workerId: worker_id, errorMessage: message });
-    return c.json({
-      next_poll_seconds: 1,
-      skipped_run_id: row.run_id,
-      error: message,
-      ...pollMetadata,
-    });
   }
 
   // Execution-time cloud gate: a raw-DB connector (postgres) opens outbound TCP
@@ -1717,10 +1705,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   }
 
   let compiledCode: string | undefined;
-  const gatewayHasLocalSource = row.connector_key && row.connector_version
-    ? (isCloudMode()
-      ? (await resolveBundledConnectorFile(row.connector_key, row.connector_version)) !== null
-      : findBundledConnectorFile(row.connector_key) !== null)
+  const gatewayHasLocalSource = row.connector_key
+    ? findBundledConnectorFile(row.connector_key) !== null
     : false;
   // Org-installed overrides (install_connector / source_url) persist
   // compiled_code on the version row. Fleet workers normally compile bundled
@@ -1751,8 +1737,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         version: row.connector_version,
         compiled_code: row.compiled_code,
         compile_config_hash: row.compile_config_hash,
-        source_code: row.source_code,
-        source_path: row.artifact_source_path,
       });
     } catch (err) {
       const message = errorMessage(err);

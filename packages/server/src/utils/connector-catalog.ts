@@ -90,54 +90,66 @@ interface CatalogConnectorDefinition {
 
 const metadataCache = new Map<string, CachedMetadata>();
 
-const bundledMetadataCache = new Map<
+/**
+ * One cache entry per (image file, selected version): compiling and
+ * extracting is the expensive half, so both the "does the image attest this
+ * key@version" question and the agent-tooling question are answered from a
+ * single compile.
+ */
+const bundledAttestationCache = new Map<
 	string,
-	{ mtimeMs: number; value: BundledAgentToolingMetadata | null }
+	{ mtimeMs: number; value: BundledConnectorAttestation | null }
 >();
-const MAX_BUNDLED_METADATA_CACHE = 32;
-
-const bundledResolutionCache = new Map<
-	string,
-	{ mtimeMs: number; filePath: string | null }
->();
-const MAX_BUNDLED_RESOLUTION_CACHE = 64;
+const MAX_BUNDLED_ATTESTATION_CACHE = 64;
 
 export interface BundledAgentToolingMetadata {
 	authSchema: Record<string, unknown> | null;
 	agentTooling: ConnectorAgentTooling | null;
 }
 
-/** Resolve a connector only when the on-image file attests the exact key/version. */
-export async function resolveBundledConnectorFile(
+interface BundledConnectorAttestation extends BundledAgentToolingMetadata {
+	filePath: string;
+}
+
+/**
+ * Compile the on-image connector file once and keep it only when it attests
+ * the exact selected key@version. Returns null when the image carries no
+ * file for the key, or carries a different key/version than the one selected.
+ */
+async function attestBundledConnector(
 	connectorKey: string,
 	selectedVersion: string,
-): Promise<string | null> {
+): Promise<BundledConnectorAttestation | null> {
 	const filePath = findBundledConnectorFile(connectorKey);
 	if (!filePath) return null;
 	const fileStat = await stat(filePath);
 	const cacheKey = `${filePath}\0${selectedVersion}`;
-	const cached = bundledResolutionCache.get(cacheKey);
-	if (cached?.mtimeMs === fileStat.mtimeMs) return cached.filePath;
+	const cached = bundledAttestationCache.get(cacheKey);
+	if (cached?.mtimeMs === fileStat.mtimeMs) return cached.value;
 
-	let resolved: string | null = null;
+	let value: BundledConnectorAttestation | null = null;
 	try {
 		const compiledCode = await compileConnectorFromFile(filePath);
 		const metadata = await extractConnectorMetadata(compiledCode);
 		if (metadata.key === connectorKey && metadata.version === selectedVersion) {
-			resolved = filePath;
+			value = {
+				filePath,
+				authSchema: metadata.authSchema ?? null,
+				agentTooling: metadata.agentTooling ?? null,
+			};
 		}
 	} catch (error) {
 		logger.warn(
 			{ connector_key: connectorKey, version: selectedVersion, error: getErrorMessage(error) },
-			"Bundled connector resolution failed",
+			"Bundled connector attestation failed",
 		);
 	}
-	if (bundledResolutionCache.size >= MAX_BUNDLED_RESOLUTION_CACHE) {
-		const oldest = bundledResolutionCache.keys().next().value;
-		if (oldest) bundledResolutionCache.delete(oldest);
+	if (bundledAttestationCache.size >= MAX_BUNDLED_ATTESTATION_CACHE) {
+		const oldest = bundledAttestationCache.keys().next().value;
+		if (oldest) bundledAttestationCache.delete(oldest);
 	}
-	bundledResolutionCache.set(cacheKey, { mtimeMs: fileStat.mtimeMs, filePath: resolved });
-	return resolved;
+	bundledAttestationCache.set(cacheKey, { mtimeMs: fileStat.mtimeMs, value });
+	return value;
 }
 
 function normalizeLocalPath(pathValue: string): string {
@@ -259,35 +271,9 @@ export async function resolveBundledAgentToolingMetadata(
 	connectorKey: string,
 	selectedVersion: string,
 ): Promise<BundledAgentToolingMetadata | null> {
-	const filePath = await resolveBundledConnectorFile(connectorKey, selectedVersion);
-	if (!filePath) return null;
-	const fileStat = await stat(filePath);
-	const cacheKey = `${filePath}\0${selectedVersion}`;
-	const cached = bundledMetadataCache.get(cacheKey);
-	if (cached?.mtimeMs === fileStat.mtimeMs) return cached.value;
-
-	let value: BundledAgentToolingMetadata | null = null;
-	try {
-		const compiledCode = await compileConnectorFromFile(filePath);
-		const metadata = await extractConnectorMetadata(compiledCode);
-		if (metadata.key === connectorKey && metadata.version === selectedVersion) {
-			value = {
-				authSchema: metadata.authSchema ?? null,
-				agentTooling: metadata.agentTooling ?? null,
-			};
-		}
-	} catch (error) {
-		logger.warn(
-			{ connector_key: connectorKey, version: selectedVersion, error: getErrorMessage(error) },
-			"Bundled connector metadata resolution failed",
-		);
-	}
-	if (bundledMetadataCache.size >= MAX_BUNDLED_METADATA_CACHE) {
-		const oldest = bundledMetadataCache.keys().next().value;
-		if (oldest) bundledMetadataCache.delete(oldest);
-	}
-	bundledMetadataCache.set(cacheKey, { mtimeMs: fileStat.mtimeMs, value });
-	return value;
+	const attested = await attestBundledConnector(connectorKey, selectedVersion);
+	if (!attested) return null;
+	return { authSchema: attested.authSchema, agentTooling: attested.agentTooling };
 }
 
 async function extractConnectorCatalogMetadata(

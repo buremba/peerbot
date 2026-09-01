@@ -23,11 +23,9 @@ import type {
   ConnectorAgentToolingEnv,
 } from "@lobu/connector-sdk";
 import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
-import {
-	resolveBundledConnectorFile,
-  resolveBundledAgentToolingMetadata,
-} from "../../utils/connector-catalog";
+import { resolveBundledAgentToolingMetadata } from "../../utils/connector-catalog";
 import { isCloudMode } from "../../utils/cloud-mode";
+import { isCloudConnectorArtifactTrusted } from "../../utils/custom-connector-cloud-gate";
 import { getDb } from "../../db/client.js";
 import {
   getAppInstallationAuthMethods,
@@ -149,8 +147,6 @@ interface ToolingConnectionRow {
   artifact_row_count: number;
   artifact_has_compiled_code: boolean;
   artifact_has_source_code: boolean;
-  artifact_has_source_path: boolean;
-  artifact_has_compile_config_hash: boolean;
   artifact_source_path: string | null;
   definition_version: string;
 }
@@ -243,10 +239,8 @@ async function loadToolingConnections(
            cv.id AS artifact_id,
            COALESCE(cv.artifact_row_count, 0) AS artifact_row_count,
            cv.organization_id AS artifact_organization_id,
-           (cv.compiled_code IS NOT NULL) AS artifact_has_compiled_code,
-           (cv.source_code IS NOT NULL) AS artifact_has_source_code,
-           (cv.source_path IS NOT NULL) AS artifact_has_source_path,
-           (cv.compile_config_hash IS NOT NULL) AS artifact_has_compile_config_hash,
+           cv.has_compiled_code AS artifact_has_compiled_code,
+           cv.has_source_code AS artifact_has_source_code,
            cv.source_path AS artifact_source_path,
            -- Lease AUTHORITY, joined only for the fingerprint: revoking or
            -- transferring an installation must invalidate a warm worker that
@@ -262,11 +256,14 @@ async function loadToolingConnections(
       ON cd.key = c.connector_key
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
+    -- Only the PRESENCE of bytes is needed, never the bytes: a connector
+    -- bundle is megabytes, and this join runs once per connection row.
     LEFT JOIN LATERAL (
       SELECT *
       FROM (
-        SELECT id, organization_id, compiled_code, source_code, source_path,
-               compile_config_hash,
+        SELECT id, organization_id, source_path,
+               (compiled_code IS NOT NULL) AS has_compiled_code,
+               (source_code IS NOT NULL) AS has_source_code,
                COUNT(*) OVER ()::int AS artifact_row_count,
                ROW_NUMBER() OVER (ORDER BY organization_id NULLS LAST) AS artifact_rank
         FROM connector_versions
@@ -274,8 +271,7 @@ async function loadToolingConnections(
           AND version = cd.version
           AND (organization_id = cd.organization_id OR organization_id IS NULL)
       ) candidates
-      WHERE artifact_row_count = 1 OR artifact_rank = 1
-      LIMIT 1
+      WHERE artifact_rank = 1
     ) cv ON TRUE
     LEFT JOIN app_installations ai
       -- connections.config is a jsonb blob written by the install path, not a
@@ -354,29 +350,23 @@ async function resolveToolingMetadata(
     return { tooling: parseAgentTooling(row.agent_tooling), authSchema: row.auth_schema };
   }
 
-  // A selected org row, absent/ambiguous row, device manifest, or source-only
-  // row is never an authority for Cloud agent tooling. These facts are selected
-  // independently so contradictory legacy rows fail closed instead of being
-  // collapsed into a metadata-only provenance label.
-  if (
-    row.artifact_id == null ||
-    row.artifact_row_count !== 1 ||
-    row.artifact_organization_id !== null ||
-    row.artifact_has_compiled_code ||
-    row.artifact_has_source_code ||
-    row.artifact_has_compile_config_hash ||
-    !row.artifact_has_source_path ||
-    row.artifact_source_path?.startsWith("device-manifest://")
-  ) {
-    return null;
-  }
+  // Cloud never trusts connector_definitions JSON for a shared artifact: the
+  // packages, domains and auth method an agent runs under come from the image
+  // file itself. An org-supplied, ambiguous or unattested artifact contributes
+  // no tooling at all rather than falling back to the stored declaration.
+  const trusted = isCloudConnectorArtifactTrusted({
+    connectorKey: row.connector_key,
+    facts: {
+      organizationId: row.artifact_organization_id,
+      rowCount: row.artifact_id == null ? 0 : row.artifact_row_count,
+      hasCompiledCode: row.artifact_has_compiled_code,
+      hasSourceCode: row.artifact_has_source_code,
+      sourcePath: row.artifact_source_path,
+    },
+  });
+  if (!trusted) return null;
 
   try {
-    const bundledFile = await resolveBundledConnectorFile(
-      row.connector_key,
-      row.definition_version,
-    );
-    if (!bundledFile) return null;
     const metadata = await resolveBundledAgentToolingMetadata(
       row.connector_key,
       row.definition_version,

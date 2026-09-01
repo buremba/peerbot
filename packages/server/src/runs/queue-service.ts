@@ -35,8 +35,11 @@ import { getDb } from '../db/client';
 import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../config/intervals';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
-import { assertCustomConnectorCloudAllowed } from '../utils/custom-connector-cloud-gate';
-import { resolveBundledConnectorFile } from '../utils/connector-catalog';
+import {
+  assertCloudConnectorArtifactTrusted,
+  type ConnectorArtifactFacts,
+} from '../utils/custom-connector-cloud-gate';
+import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
 import { ToolUserError, errorMessage } from '../utils/errors';
@@ -233,37 +236,10 @@ async function softDeleteOrphanFeed(
  * own automation (sync soft-deletes the orphan feed; auth/action throw).
  */
 type ConnectorVersionResolution =
-  | { ok: true; version: string; compiledCode: string | null; sourceCode: string | null; sourcePath: string | null; compileConfigHash: string | null; artifactRowCount: number; artifactScope: 'organization' | 'shared' | 'bundled' }
+  | { ok: true; version: string; facts: ConnectorArtifactFacts }
   | { ok: false; reason: 'no-definition' }
   | { ok: false; reason: 'no-version'; version: string }
   | { ok: false; reason: 'not-runnable'; version: string };
-
-async function assertQueuedConnectorArtifactAllowed(
-  connectorKey: string,
-  resolved: Extract<ConnectorVersionResolution, { ok: true }>,
-): Promise<void> {
-	if (!isCloudMode()) return;
-	const exactBundled = await resolveBundledConnectorFile(connectorKey, resolved.version);
-	assertCustomConnectorCloudAllowed({
-		provenance: resolved.artifactScope,
-		hasExecutableBytes: Boolean(resolved.compiledCode),
-		hasSourceCode: Boolean(resolved.sourceCode),
-		sourcePath: resolved.sourcePath,
-		hasMatchingBundledSource: exactBundled !== null,
-	});
-	if (
-		resolved.artifactScope !== 'shared' ||
-		resolved.artifactRowCount !== 1 ||
-		resolved.compiledCode ||
-		resolved.sourceCode ||
-		resolved.compileConfigHash ||
-		!resolved.sourcePath ||
-		resolved.sourcePath.startsWith('device-manifest://') ||
-		!exactBundled
-	) {
-		throw new Error('Cloud connector artifact is not an exact shared bundled source.');
-	}
-}
 
 async function resolveActiveConnectorVersion(
   sql: DbClient,
@@ -292,8 +268,13 @@ async function resolveActiveConnectorVersion(
     version = (defRows[0] as { version: string }).version;
   }
 
+  // The artifact row is read even when runnability is not required: Cloud
+  // admission classifies the selected artifact, and a run enqueued here is
+  // executed later whether or not the caller pre-checked for code.
   const versionRows = await sql`
-    SELECT compiled_code, source_code, source_path, compile_config_hash, organization_id,
+    SELECT (compiled_code IS NOT NULL) AS has_compiled_code,
+           (source_code IS NOT NULL) AS has_source_code,
+           source_path, organization_id,
            COUNT(*) OVER ()::int AS artifact_row_count
     FROM connector_versions
     WHERE connector_key = ${params.connectorKey} AND version = ${version}
@@ -302,49 +283,52 @@ async function resolveActiveConnectorVersion(
     LIMIT 1
   `;
   if (versionRows.length === 0) {
-    // A missing stored row is only a bundled artifact when the image itself
-    // attests the exact selected key@version. Never manufacture a row-shaped
-    // bundled fact for metadata-only or non-runnable work.
-    const bundled = await resolveBundledConnectorFile(params.connectorKey, version);
-    if (bundled) {
-      return {
-        ok: true,
-        version,
-        compiledCode: null,
-        sourceCode: null,
+    // No stored artifact row at all. A runnable caller still needs one; a
+    // caller that only needs the selected version (metadata-only operations,
+    // device-executed connectors that ship no gateway-side artifact) keeps
+    // working, and there are no organization-supplied bytes to admit.
+    if (params.requireRunnable) return { ok: false, reason: 'no-version', version };
+    return {
+      ok: true,
+      version,
+      facts: {
+        organizationId: null,
+        rowCount: 0,
+        hasCompiledCode: false,
+        hasSourceCode: false,
         sourcePath: null,
-        compileConfigHash: null,
-        artifactRowCount: 0,
-        artifactScope: 'bundled',
-      };
-    }
-    return { ok: false, reason: 'no-version', version };
+      },
+    };
   }
-  const { compiled_code, source_code, source_path, compile_config_hash } = versionRows[0] as {
-    compiled_code: string | null;
-    source_code: string | null;
+  // Presence, never the bytes: an artifact bundle is megabytes and nothing
+  // on this path needs its contents.
+  const artifact = versionRows[0] as {
+    has_compiled_code: boolean;
+    has_source_code: boolean;
     source_path: string | null;
-    compile_config_hash: string | null;
     organization_id: string | null;
     artifact_row_count: number;
+  };
+  const facts: ConnectorArtifactFacts = {
+    organizationId: artifact.organization_id,
+    rowCount: Number(artifact.artifact_row_count),
+    hasCompiledCode: artifact.has_compiled_code,
+    hasSourceCode: artifact.has_source_code,
+    sourcePath: artifact.source_path,
   };
   // Runnable if ANY runtime code source exists: stored compiled code, a
   // source_path the runtime can compile on demand, or a bundled connector
   // file. Union of all three so no run type (sync/auth/operation) regresses —
   // resolveConnectorCode() resolves from whichever is present at execution.
   if (
-    !compiled_code &&
-    !source_path &&
-    !(await resolveBundledConnectorFile(params.connectorKey, version))
+    params.requireRunnable &&
+    !facts.hasCompiledCode &&
+    !facts.sourcePath &&
+    !findBundledConnectorFile(params.connectorKey)
   ) {
     return { ok: false, reason: 'not-runnable', version };
   }
-  const artifactScope = (versionRows[0] as { organization_id: string | null }).organization_id
-    ? 'organization'
-    : compiled_code
-      ? 'shared'
-      : 'bundled';
-  return { ok: true, version, compiledCode: compiled_code, sourceCode: source_code, sourcePath: source_path, compileConfigHash: compile_config_hash, artifactRowCount: Number((versionRows[0] as { artifact_row_count: number }).artifact_row_count), artifactScope };
+  return { ok: true, version, facts };
 }
 
 /**
@@ -526,7 +510,10 @@ async function createSyncRunWithClient(
   }
   const connectorVersion = resolved.version;
   try {
-    await assertQueuedConnectorArtifactAllowed(feed.connector_key, resolved);
+    assertCloudConnectorArtifactTrusted({
+      connectorKey: feed.connector_key,
+      facts: resolved.facts,
+    });
   } catch (error) {
     logger.warn(
       { feedId, connector_key: feed.connector_key, error: errorMessage(error) },
@@ -1137,7 +1124,10 @@ export async function createAuthRun(params: {
     );
   }
   const connectorVersion = resolved.version;
-  await assertQueuedConnectorArtifactAllowed(params.connectorKey, resolved);
+  assertCloudConnectorArtifactTrusted({
+    connectorKey: params.connectorKey,
+    facts: resolved.facts,
+  });
 
   try {
     const inserted = await sql`
@@ -1292,7 +1282,10 @@ export async function createConnectorOperationRun(params: {
     );
   }
   const connectorVersion = resolved.version;
-  await assertQueuedConnectorArtifactAllowed(params.connectorKey, resolved);
+  assertCloudConnectorArtifactTrusted({
+    connectorKey: params.connectorKey,
+    facts: resolved.facts,
+  });
 
   const inserted = await sql<{
     id: number;

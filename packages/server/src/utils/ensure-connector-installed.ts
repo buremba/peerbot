@@ -12,10 +12,9 @@
 import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import { getDb } from '../db/client';
 import {
-	bundledConnectorSourcePath,
-	compileConnectorFromFile,
-	findBundledConnectorFile,
-	resolveBundledConnectorFile,
+  bundledConnectorSourcePath,
+  compileConnectorFromFile,
+  findBundledConnectorFile,
 } from './connector-catalog';
 import {
   compileConnectorSource,
@@ -28,7 +27,6 @@ import {
 } from './connector-definition-install';
 import { computeCodeHash } from './compiler-core';
 import logger from './logger';
-import { assertCustomConnectorCloudAllowed } from './custom-connector-cloud-gate';
 import { isCloudMode } from './cloud-mode';
 
 /**
@@ -45,12 +43,10 @@ export type StoredConnectorVersion = {
    * exact row it resolved. NULL when the reader's LEFT JOIN found no row.
    */
   id: number | null;
-	organization_id: string | null;
-	version: string | null;
-	compiled_code: string | null;
-	compile_config_hash: string | null;
-	source_code?: string | null;
-	source_path?: string | null;
+  organization_id: string | null;
+  version: string | null;
+  compiled_code: string | null;
+  compile_config_hash: string | null;
 };
 
 /**
@@ -78,23 +74,24 @@ export async function resolveConnectorCode(
   connectorKey: string,
   stored: StoredConnectorVersion | null
 ): Promise<string> {
-	const bundledPath = findBundledConnectorFile(connectorKey);
-	assertCustomConnectorCloudAllowed({
-		provenance: stored?.organization_id === null ? 'shared' : stored?.organization_id ? 'organization' : 'bundled',
-		hasExecutableBytes: stored?.compiled_code != null,
-		hasSourceCode: stored?.source_code != null,
-		sourcePath: stored?.source_path,
-		hasMatchingBundledSource: bundledPath !== null,
-	});
-	if (stored?.compiled_code) {
-		// A matching image bundle is authoritative in Cloud. Do not inspect or
-		// recompile the stored bytes, even when their compile fingerprint is stale.
-		if (isCloudMode() && stored.organization_id === null) {
-			const exactPath = await resolveBundledConnectorFile(connectorKey, stored.version ?? '');
-			if (!exactPath) throw new Error(`No exact bundled connector for '${connectorKey}' version '${stored.version}'.`);
-			return compileConnectorFromFile(exactPath);
-		}
-		if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;
+  // Cloud executes only bytes the running image attests. Admission of the
+  // artifact happens in the caller (custom-connector-cloud-gate); resolution
+  // refuses every stored-byte fallback below, so an admission gap can still
+  // never put organization-supplied code on a runtime.
+  if (isCloudMode()) {
+    if (stored?.organization_id != null) {
+      throw new Error(
+        `Refusing organization-supplied code for '${connectorKey}' in Lobu Cloud.`
+      );
+    }
+    const imagePath = findBundledConnectorFile(connectorKey);
+    if (!imagePath) {
+      throw new Error(`No bundled source for '${connectorKey}' in Lobu Cloud.`);
+    }
+    return compileConnectorFromFile(imagePath);
+  }
+  if (stored?.compiled_code) {
+    if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;
     if (stored.id != null) {
       try {
         const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.id);
@@ -120,9 +117,7 @@ export async function resolveConnectorCode(
     // No stored source to recompile from (legacy row) — fall through to the
     // bundled on-disk source; the stale artifact itself must never execute.
   }
-	const filePath = isCloudMode()
-		? await resolveBundledConnectorFile(connectorKey, stored?.version ?? '')
-		: bundledPath;
+  const filePath = findBundledConnectorFile(connectorKey);
   if (filePath) return compileConnectorFromFile(filePath);
   throw new Error(
     stored?.compiled_code

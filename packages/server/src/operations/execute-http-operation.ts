@@ -1,35 +1,11 @@
 import { getErrorMessage } from "@lobu/core";
-import { type DbClient, getDb } from "../db/client";
+import { getDb } from "../db/client";
+import { LOST_LEASE_MESSAGE, inlineLeaseFence } from "../runs/inline-lease";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
 import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import type { OperationDescriptor } from "./types";
 
 const DEFAULT_HTTP_OPERATION_FETCH_TIMEOUT_MS = 120_000;
-
-/**
- * Reported when a fenced terminal write matches no row: the run was cancelled,
- * reaped, or re-claimed while this request was still executing. The external
- * call may well have succeeded, but this request no longer owns the run, so it
- * must not overwrite whoever does — the durable row is the answer.
- */
-export const LOST_LEASE_MESSAGE =
-	"Inline execution lost its run lease; the durable run state is authoritative.";
-
-/**
- * The guard every inline terminal write shares: land the outcome only while
- * this request still owns the run it claimed and nothing has terminalized it
- * (a cancel, the stale-run reaper, a second approve). One definition, because
- * four hand-written copies drift and a fence that silently matches no row is
- * indistinguishable from one that worked.
- *
- * A caller that took no lease passes `null` and keeps the unfenced semantics:
- * it has no owner to lose, and `claimed_by = NULL` is never true, so spelling
- * the fence unconditionally would strand the run.
- */
-export function inlineLeaseFence(sql: DbClient, claimedBy: string | null) {
-	return sql`AND status = 'running'
-		AND (${claimedBy}::text IS NULL OR claimed_by = ${claimedBy})`;
-}
 
 export type HttpOperationExecutionResult =
 	| {
@@ -151,9 +127,9 @@ export async function executeHttpOperation(
 	connection: HttpOperationConnection,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
-	abortSignal?: AbortSignal,
-	deferTerminalWrite = false,
-	claimedBy?: string | null,
+	abortSignal: AbortSignal | undefined,
+	deferTerminalWrite: boolean,
+	claimedBy: string,
 ): Promise<HttpOperationExecutionResult> {
 	const sql = getDb();
 	if (operation.backend_config.backend !== "http_operation") {
@@ -265,7 +241,7 @@ export async function executeHttpOperation(
 			const errorText =
 				typeof parsedBody === "string" ? parsedBody : `HTTP ${response.status}`;
 			if (!deferTerminalWrite) {
-				const updated = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy ?? null)} RETURNING id`;
+				const updated = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy)} RETURNING id`;
 				if (updated.length === 0)
 					return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 			}
@@ -273,7 +249,7 @@ export async function executeHttpOperation(
 		}
 
 		if (!deferTerminalWrite) {
-			const updated = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy ?? null)} RETURNING id`;
+			const updated = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy)} RETURNING id`;
 			if (updated.length === 0)
 				return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 		}

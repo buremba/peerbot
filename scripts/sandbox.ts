@@ -180,15 +180,69 @@ export function buildTarball(root: string): string {
 
 /**
  * Auth without asking anyone to set up a second credential: if DAYTONA_API_KEY
- * is not set, reuse the JWT the `daytona` CLI already stores after `daytona
- * login`. The SDK accepts jwtToken + organizationId directly, so a developer
- * who can run `daytona list` can run this with no extra configuration.
+ * is not set, reuse whatever the `daytona` CLI already stored. The CLI writes
+ * TWO shapes depending on how the developer authenticated, and both are valid:
+ * `daytona login` stores a browser JWT under `api.token.accessToken`, while
+ * `daytona login --api-key` stores a long-lived key under `api.key` (leaving
+ * an empty `api.token` object beside it). Reading only the JWT shape reports
+ * "No Daytona credentials" on an authenticated machine, which reads as a
+ * login failure rather than an unread field.
  */
-function cliCredentials(): {
-  jwtToken: string;
-  organizationId: string;
-  apiUrl?: string;
-} | null {
+type DaytonaCredentials =
+  | { apiKey: string; apiUrl?: string }
+  | { jwtToken: string; organizationId: string; apiUrl?: string };
+
+/**
+ * The stored JWT is stale and no API key stands behind it. Thrown rather than
+ * exited so the branch stays reachable from a test: `process.exit` inside the
+ * pure reader kills the test runner mid-suite instead of failing an assertion,
+ * which makes the regression look like a crash rather than a caught bug.
+ */
+export class ExpiredCliTokenError extends Error {}
+
+/** Split from disk access so both credential shapes are testable. */
+export function credentialsFromConfig(cfg: unknown): DaytonaCredentials | null {
+  const root = cfg as {
+    activeProfile?: string;
+    profiles?: {
+      id?: string;
+      activeOrganizationId?: string;
+      api?: {
+        url?: string;
+        key?: string;
+        token?: { accessToken?: string; expiresAt?: string };
+      };
+    }[];
+  };
+  const profiles = root?.profiles ?? [];
+  const profile =
+    profiles.find((p) => p.id === root?.activeProfile) ?? profiles[0];
+  if (!profile) return null;
+  const apiUrl = profile.api?.url;
+
+  // An API key carries its own org scope, so no activeOrganizationId is needed.
+  const apiKey = profile.api?.key;
+  const token = profile.api?.token;
+  if (token?.accessToken && profile.activeOrganizationId) {
+    const expired =
+      !!token.expiresAt && new Date(token.expiresAt).getTime() < Date.now();
+    if (!expired) {
+      return {
+        jwtToken: token.accessToken,
+        organizationId: profile.activeOrganizationId,
+        apiUrl,
+      };
+    }
+    // A stale JWT must not mask a key that still works.
+    if (!apiKey) throw new ExpiredCliTokenError();
+  }
+
+  if (apiKey) return { apiKey, apiUrl };
+
+  return null;
+}
+
+function cliCredentials(): DaytonaCredentials | null {
   const cfgPath = join(
     homedir(),
     "Library/Application Support/daytona/config.json"
@@ -196,25 +250,23 @@ function cliCredentials(): {
   const xdg = join(homedir(), ".config/daytona/config.json");
   const path = existsSync(cfgPath) ? cfgPath : existsSync(xdg) ? xdg : null;
   if (!path) return null;
+  let cfg: unknown;
   try {
-    const cfg = JSON.parse(readFileSync(path, "utf8"));
-    const profile =
-      (cfg.profiles ?? []).find(
-        (p: { id?: string }) => p.id === cfg.activeProfile
-      ) ?? (cfg.profiles ?? [])[0];
-    const token = profile?.api?.token;
-    if (!token?.accessToken || !profile?.activeOrganizationId) return null;
-    if (token.expiresAt && new Date(token.expiresAt).getTime() < Date.now()) {
+    cfg = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+  // Only the parse is best-effort. An expired token is a real, actionable
+  // state, so it must not be swallowed by the same catch that tolerates an
+  // unreadable config file.
+  try {
+    return credentialsFromConfig(cfg);
+  } catch (err) {
+    if (err instanceof ExpiredCliTokenError) {
       console.error("daytona CLI token has expired — run: daytona login");
       process.exit(1);
     }
-    return {
-      jwtToken: token.accessToken,
-      organizationId: profile.activeOrganizationId,
-      apiUrl: profile?.api?.url,
-    };
-  } catch {
-    return null;
+    throw err;
   }
 }
 

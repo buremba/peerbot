@@ -15,6 +15,8 @@ import {
   HOST_ONLY_ENV_KEYS,
   authenticatedUrl,
   buildTarball,
+  credentialsFromConfig,
+  ExpiredCliTokenError,
   isAppleDouble,
   sandboxName,
   sanitizedEnv,
@@ -293,5 +295,151 @@ describe("CLI validation", () => {
     expect(new TextDecoder().decode(result.stderr)).toContain(
       "usage: sandbox.ts run <command>"
     );
+  });
+});
+
+describe("credentialsFromConfig", () => {
+  // `daytona login` writes a browser JWT; `daytona login --api-key` writes a
+  // long-lived key. Reading only the first reports "No Daytona credentials" on
+  // an authenticated machine, which reads as a login failure.
+  const jwtProfile = {
+    activeProfile: "initial",
+    profiles: [
+      {
+        id: "initial",
+        activeOrganizationId: "org-1",
+        api: {
+          url: "https://api.example",
+          token: { accessToken: "jwt-abc", expiresAt: "2999-01-01T00:00:00Z" },
+        },
+      },
+    ],
+  };
+
+  const apiKeyProfile = {
+    activeProfile: "initial",
+    profiles: [
+      {
+        id: "initial",
+        activeOrganizationId: "org-1",
+        api: { url: "https://api.example", key: "dtn-key-abc" },
+      },
+    ],
+  };
+
+  test("reads the browser JWT shape", () => {
+    expect(credentialsFromConfig(jwtProfile)).toEqual({
+      jwtToken: "jwt-abc",
+      organizationId: "org-1",
+      apiUrl: "https://api.example",
+    });
+  });
+
+  test("reads the API key shape", () => {
+    expect(credentialsFromConfig(apiKeyProfile)).toEqual({
+      apiKey: "dtn-key-abc",
+      apiUrl: "https://api.example",
+    });
+  });
+
+  test("accepts an API key with no activeOrganizationId", () => {
+    // A key carries its own org scope; the CLI may omit the field for one.
+    const cfg = {
+      activeProfile: "initial",
+      profiles: [{ id: "initial", api: { key: "dtn-key-only" } }],
+    };
+    expect(credentialsFromConfig(cfg)).toEqual({
+      apiKey: "dtn-key-only",
+      apiUrl: undefined,
+    });
+  });
+
+  test("falls back to the API key when the JWT has expired", () => {
+    const cfg = {
+      activeProfile: "initial",
+      profiles: [
+        {
+          id: "initial",
+          activeOrganizationId: "org-1",
+          api: {
+            url: "https://api.example",
+            key: "dtn-key-abc",
+            token: {
+              accessToken: "jwt-old",
+              expiresAt: "2000-01-01T00:00:00Z",
+            },
+          },
+        },
+      ],
+    };
+    expect(credentialsFromConfig(cfg)).toEqual({
+      apiKey: "dtn-key-abc",
+      apiUrl: "https://api.example",
+    });
+  });
+
+  test("reports an expired JWT when no API key stands behind it", () => {
+    const cfg = {
+      activeProfile: "initial",
+      profiles: [
+        {
+          id: "initial",
+          activeOrganizationId: "org-1",
+          api: {
+            token: {
+              accessToken: "jwt-old",
+              expiresAt: "2000-01-01T00:00:00Z",
+            },
+          },
+        },
+      ],
+    };
+    expect(() => credentialsFromConfig(cfg)).toThrow(ExpiredCliTokenError);
+  });
+
+  test("prefers a live JWT when a profile carries both", () => {
+    const cfg = {
+      activeProfile: "initial",
+      profiles: [
+        {
+          id: "initial",
+          activeOrganizationId: "org-1",
+          api: {
+            key: "dtn-key-abc",
+            token: {
+              accessToken: "jwt-abc",
+              expiresAt: "2999-01-01T00:00:00Z",
+            },
+          },
+        },
+      ],
+    };
+    expect(credentialsFromConfig(cfg)).toMatchObject({ jwtToken: "jwt-abc" });
+  });
+
+  test("selects the active profile, not merely the first", () => {
+    const cfg = {
+      activeProfile: "second",
+      profiles: [
+        { id: "first", api: { key: "wrong" } },
+        { id: "second", api: { key: "right" } },
+      ],
+    };
+    expect(credentialsFromConfig(cfg)).toMatchObject({ apiKey: "right" });
+  });
+
+  test("returns null when a profile carries no usable credential", () => {
+    expect(
+      credentialsFromConfig({
+        activeProfile: "initial",
+        profiles: [{ id: "initial", api: { url: "https://api.example" } }],
+      })
+    ).toBeNull();
+  });
+
+  test("returns null for an empty or malformed config", () => {
+    expect(credentialsFromConfig({})).toBeNull();
+    expect(credentialsFromConfig({ profiles: [] })).toBeNull();
+    expect(credentialsFromConfig(null)).toBeNull();
   });
 });

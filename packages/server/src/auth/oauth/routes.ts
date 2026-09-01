@@ -1096,10 +1096,8 @@ oauthRoutes.post('/oauth/device/email', async (c) => {
   const consentPath = `/oauth/device?user_code=${encodeURIComponent(userCode)}`;
   try {
     const auth = await createAuth(c.env, c.req.raw);
-    // createAuth() returns a cache-widened betterAuth type (see authCache:
-    // TtlCache<ReturnType<typeof betterAuth>>) that erases plugin endpoint
-    // signatures, so the magic-link endpoint is present at runtime but not in
-    // the static type. Narrowly type just the call we make.
+    // The Better Auth instance type does not expose this plugin endpoint in
+    // the static type, so narrowly type just the call we make.
     const magicLinkApi = auth.api as unknown as {
       signInMagicLink: (args: {
         body: { email: string; callbackURL?: string; newUserCallbackURL?: string };

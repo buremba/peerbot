@@ -3,7 +3,6 @@ import { getDb } from '../db/client';
 import { ensureMemberEntity } from '../utils/member-entity';
 import { recordWorkspaceChangeEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
-import { invalidateMembershipRoleCache } from './multi-tenant';
 
 type JoinPublicResult =
   | { status: 'joined' | 'already_member'; organizationId: string; role: string }
@@ -19,9 +18,9 @@ interface JoinPublicParams {
  * Self-serve join for a public organization. Used by the REST /join endpoint.
  * Idempotent.
  *
- * Replicates the side effects of Better Auth's afterAddMember hook
- * (ensureMemberEntity + invalidateMembershipRoleCache) since Better Auth's
- * addMember API is admin-gated and can't be used for self-service.
+ * Replicates the durable member-entity side effect of Better Auth's
+ * afterAddMember hook since Better Auth's addMember API is admin-gated and
+ * can't be used for self-service.
  */
 export async function joinPublicOrganization({
   userId,
@@ -54,7 +53,7 @@ export async function joinPublicOrganization({
   if (userRows.length === 0) return { status: 'not_found' };
   const user = userRows[0];
 
-  // $member projection + role cache must run whenever membership is known to
+  // $member projection must run whenever membership is known to
   // exist — including already_member and concurrent ON CONFLICT paths. Across
   // replicas the winner may have crashed after committing the member row; the
   // loser (or a later retry) is the repair path. Only audit emission is gated
@@ -80,7 +79,6 @@ export async function joinPublicOrganization({
         '[joinPublicOrganization] Failed to create $member entity',
       );
     }
-    invalidateMembershipRoleCache(organizationId, userId);
   }
 
   const existing = await sql<{ id: string; role: string }>`
@@ -101,7 +99,7 @@ export async function joinPublicOrganization({
   // ON CONFLICT DO NOTHING + RETURNING: when a concurrent request wins the
   // race and already inserted this member, no row is returned and we must NOT
   // emit an audit event for a phantom (never-inserted) member id. Projection
-  // repair + cache invalidation still run below for the losing replica.
+  // repair still runs below for the losing replica.
   const inserted = (await sql`
     INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt")
     VALUES (${memberId}, ${organizationId}, ${userId}, 'member', NOW())

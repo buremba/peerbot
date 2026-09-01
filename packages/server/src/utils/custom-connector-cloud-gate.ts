@@ -37,7 +37,7 @@ type CloudDenialReason =
 function denied(reason: CloudDenialReason): never {
 	throw new ToolError(
 		'PERMISSION',
-		`${CUSTOM_CONNECTOR_CLOUD_DISABLED} executable connector artifacts supplied by an organization are disabled in Lobu Cloud (${reason})`,
+		`${CUSTOM_CONNECTOR_CLOUD_DISABLED} Lobu Cloud only runs connector code shipped in its own image; this artifact is not eligible (${reason})`,
 	);
 }
 

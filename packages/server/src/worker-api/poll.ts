@@ -1711,7 +1711,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // Org-installed overrides (install_connector / source_url) persist
   // compiled_code on the version row. Fleet workers normally compile bundled
   // sources locally, but an explicit override must still ship inline so prod
-  // picks up connector code before the next image deploy.
+  // picks up connector code before the next image deploy. In Cloud the image
+  // is the trust root, so stored bytes on a shared row are ignored whenever
+  // the image carries the source — the worker compiles from its own image.
   const hasStoredCompiledCode = Boolean(row.compiled_code) &&
     !(isCloudMode() && row.artifact_organization_id === null && gatewayHasLocalSource);
   const workerWillResolveLocally =

@@ -215,12 +215,12 @@ export async function resolveConnectorInstallSource(params: {
   sourceCode?: string;
   compiled?: boolean;
 }): Promise<ResolvedConnectorInstallSource> {
-	// This must remain the first operation: Cloud must not read, fetch, flatten,
-	// compile, or import organization-supplied executable bytes.
-	if (params.sourceUri || params.sourceUrl || params.sourceCode || params.compiled) {
-		assertCustomConnectorInstallAllowed();
-	}
-	let sourceCode: string;
+  // This must remain the first operation: Cloud must not read, fetch, flatten,
+  // compile, or import organization-supplied executable bytes.
+  if (params.sourceUri || params.sourceUrl || params.sourceCode || params.compiled) {
+    assertCustomConnectorInstallAllowed();
+  }
+  let sourceCode: string;
   let sourcePath: string | null = null;
 
   if (params.sourceUri) {

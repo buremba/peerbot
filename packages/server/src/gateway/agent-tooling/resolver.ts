@@ -311,7 +311,7 @@ async function loadToolingConnections(
 function toolingIdentityEntry(
   row: ToolingConnectionRow,
   tooling: ConnectorAgentTooling | null,
-  authSchema: unknown = row.auth_schema,
+  authSchema: unknown,
 ): string {
   const installationRef = parseJsonObject(row.config).installation_ref;
   const method = getAppInstallationAuthMethods(
@@ -482,8 +482,10 @@ export async function resolveAgentTooling(params: {
     const trusted = await resolveToolingMetadata(row);
     if (!trusted) continue;
     const { tooling, authSchema } = trusted;
-    // Recorded for EVERY row, including ones that contribute nothing: removing
-    // a malformed connection still changes the org's tooling identity.
+    // Recorded for every trusted row, including ones that contribute nothing:
+    // removing a malformed connection still changes the org's tooling identity.
+    // Cloud-untrusted rows are skipped on the declaration side too, so the two
+    // fingerprints stay in agreement.
     identity.push(toolingIdentityEntry(row, tooling, authSchema));
     if (!tooling) {
       // Covers both a structurally malformed value and one whose every entry
@@ -605,7 +607,7 @@ function buildLeaseSubject(
   row: ToolingConnectionRow,
   connectionId: number,
   organizationId: string,
-  trustedAuthSchema: unknown = row.auth_schema,
+  trustedAuthSchema: unknown,
 ): LeaseSubject {
   const config = parseJsonObject(row.config);
   const rawRef = config.installation_ref;

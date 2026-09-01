@@ -692,7 +692,7 @@ export async function rollbackConnectorVersion(params: {
 	// Org fence (#2045): a rollback target must be this org's own retained row
 	// or a shared row — another org's private artifact is never activatable.
 	const rows = (await sql`
-		SELECT id, organization_id, version, compiled_code, compile_config_hash
+    SELECT id, organization_id, version, compiled_code, compile_config_hash
     FROM connector_versions
     WHERE connector_key = ${params.connectorKey} AND version = ${params.version}
       AND (organization_id = ${params.organizationId} OR organization_id IS NULL)

@@ -32,10 +32,13 @@ const facts = (over: Partial<ConnectorArtifactFacts>): ConnectorArtifactFacts =>
 function denial(act: () => void): Error {
 	try {
 		act();
-		expect.unreachable('expected Cloud denial');
 	} catch (error) {
+		// Callers may ignore the return, so the helper itself pins that the
+		// throw was the Cloud denial and not some incidental error.
+		expect((error as Error).message).toStartWith(CUSTOM_CONNECTOR_CLOUD_DISABLED);
 		return error as Error;
 	}
+	expect.unreachable('expected Cloud denial');
 }
 
 /**

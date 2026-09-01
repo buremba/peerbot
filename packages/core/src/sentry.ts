@@ -81,11 +81,15 @@ export async function initSentry() {
         Sentry.consoleLoggingIntegration({ levels: ["log", "warn", "error"] }),
       ],
       // Same scrubbing the gateway installs (packages/server/src/instrument.ts).
-      // The worker needs it at least as badly: consoleLoggingIntegration ships
-      // every console.log/warn/error, and provider URLs, callback URLs and
-      // connector arguments routinely carry `?token=`/`?code=` in exactly those
-      // lines. Without these hooks the credentials the server stopped leaking
-      // still left the fleet through here.
+      // These three cover error events, transactions, and the breadcrumbs Node's
+      // default consoleIntegration derives from console output -- the paths that
+      // carry provider URLs, OAuth callback URLs and connector arguments, and so
+      // the `?token=`/`?code=` values in them. Without these the credentials the
+      // gateway stopped leaking still left the fleet through the worker.
+      //
+      // Note this does NOT cover consoleLoggingIntegration above: that routes
+      // through _INTERNAL_captureLog, which is filtered by beforeSendLog and is
+      // inert entirely unless `enableLogs` is set, which it is not here.
       beforeSend: scrubSentryErrorEvent,
       beforeSendTransaction: scrubSentryTransactionEvent,
       beforeBreadcrumb: scrubSentryBreadcrumb,

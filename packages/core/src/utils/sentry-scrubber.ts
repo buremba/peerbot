@@ -1,4 +1,4 @@
-import { isSecretKey, redactUriCredentials } from "./secret-redaction.js";
+import { isSecretKey, redactUriCredentials } from "./secret-redaction";
 
 /**
  * Structural stand-in for the SDK's event shape. Declared here rather than

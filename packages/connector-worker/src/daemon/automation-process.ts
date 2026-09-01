@@ -226,7 +226,17 @@ export function signalOwnedPosixProcessGroup(
     sendSignal(-owner.pid, signal);
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH' || (err as NodeJS.ErrnoException).code === 'EPERM') return false;
+    const code = (err as NodeJS.ErrnoException).code;
+    // ESRCH is the only "there is no group here" answer, and it is the only one
+    // that may return false: the caller reads false as "no owned group", skips
+    // the grace window and never escalates to SIGKILL.
+    if (code === 'ESRCH') return false;
+    // EPERM means the opposite — the group EXISTS, we just could not signal any
+    // member of it (a setuid'd descendant, say). Reporting that as "gone" would
+    // retire the tree from escalation while it is still running, so keep the
+    // caller on the owned-group path: the SIGKILL escalation may still land,
+    // and the supervisor itself is ours to kill directly if it does not.
+    if (code === 'EPERM') return true;
     throw err;
   }
 }

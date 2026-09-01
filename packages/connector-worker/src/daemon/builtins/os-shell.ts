@@ -38,10 +38,6 @@ export interface ShellRunOutput {
   duration_ms: number;
 }
 
-// The owned process group is cleaned up automatically. Deliberately detached
-// new sessions are outside that ownership contract and must be cleaned up by
-// their creator; never signal a detached numeric PGID after ownership ends.
-
 const DEFAULT_TIMEOUT_MS = 60_000;
 // The requested command budget must leave room inside run_sdk's 180s ceiling
 // for 3s TERM grace, up to 5s reaping, up to 15s terminal delivery, and
@@ -120,6 +116,10 @@ export async function runShellBuiltin(
     const stdoutClosed = waitForClose(child.stdout);
     const stderrClosed = waitForClose(child.stderr);
 
+    // Only the group this daemon owns. A command that deliberately detaches a
+    // new session is outside that ownership contract and belongs to whoever
+    // created it: signalling a numeric PGID we no longer own risks hitting a
+    // reused one, so ownership ending is the end of our reach.
     const killOwnedProcessGroup = (signal: NodeJS.Signals): void => {
       try {
         if (child.pid != null) {

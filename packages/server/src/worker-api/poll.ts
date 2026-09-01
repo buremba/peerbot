@@ -426,20 +426,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       effectivePlatform = existing[0].platform;
     }
   }
-  // A daemon built after the per-backend signal always advertises its own map
-  // (connector-worker/src/daemon/start.ts). An omitted map therefore means a
-  // client that predates the field, or one that never runs the daemon at all
-  // (the Chrome extension and the macOS app poll directly). Mirror what the
-  // daemon would have advertised for that platform rather than inventing a
-  // wider or narrower grant: a running daemon has asserted its compiled
-  // runtime loads before it polls, so every platform is compiled-capable, and
-  // `headless` additionally owns the in-process daemon builtin. Not keyed on
-  // token scope: user-scoped device workers are compiled-capable too.
+  // An omitted map means a client that predates the field; mirror what that
+  // platform's daemon would have advertised — see `defaultBackendCapacity` in
+  // core/contracts/worker/protocol.ts for why each platform gets what it gets.
   //
-  // Placed AFTER the binding resolution above, and keyed on effectivePlatform,
-  // because the claim lane is: a headless-bound device that omits `platform`
-  // from its body would otherwise default to compiled-only and silently lose
-  // the daemon backend it is the only worker able to run.
+  // Keyed on effectivePlatform and placed AFTER the binding resolution above:
+  // a headless-bound device that omits `platform` from its body would
+  // otherwise default to compiled-only and silently lose the one backend it
+  // is the only worker able to run.
   if (!backendCapacityProvided) {
     backendCapacity = defaultBackendCapacity(effectivePlatform);
   }

@@ -1,6 +1,6 @@
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../db/client";
-import { LOST_LEASE_MESSAGE, inlineLeaseFence } from "../runs/inline-lease";
+import { LOST_LEASE_MESSAGE, runLeaseFence } from "../runs/run-lease";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
 import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import type { OperationDescriptor } from "./types";
@@ -85,7 +85,7 @@ async function failRun(
 		// or a thrown request still terminalizes the run, and must not overwrite
 		// an outcome the reaper or a re-claim already recorded.
 		const sql = getDb();
-		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy)} RETURNING id`;
+		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
 		if (rows.length === 0)
 			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}
@@ -250,7 +250,7 @@ export async function executeHttpOperation(
 			const errorText =
 				typeof parsedBody === "string" ? parsedBody : `HTTP ${response.status}`;
 			if (!deferTerminalWrite) {
-				const updated = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy)} RETURNING id`;
+				const updated = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
 				if (updated.length === 0)
 					return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 			}
@@ -258,7 +258,7 @@ export async function executeHttpOperation(
 		}
 
 		if (!deferTerminalWrite) {
-			const updated = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy)} RETURNING id`;
+			const updated = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
 			if (updated.length === 0)
 				return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 		}

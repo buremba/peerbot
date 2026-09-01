@@ -63,7 +63,7 @@ import {
 	MANAGE_ENTITY_SCHEMA_ACTION_KEY,
 	type StoredManageEntitySchemaProposal,
 } from "../../manage_entity_schema";
-import { inlineLeaseFence } from "../../../../runs/inline-lease";
+import { runLeaseFence } from "../../../../runs/run-lease";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
 /**
@@ -89,7 +89,7 @@ async function persistDurableApplyOutput(
 		WHERE id = ${runId}
 			AND organization_id = ${organizationId}
 			AND approval_status = 'approved'
-			${inlineLeaseFence(sql, claimedBy)}
+			${runLeaseFence(sql, claimedBy)}
 	`;
 }
 
@@ -468,7 +468,7 @@ async function failBuilderRun(
 		const rows = await tx`
 			UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
 			WHERE id = ${runId} AND organization_id = ${organizationId}
-			${inlineLeaseFence(tx, claimedBy)}
+			${runLeaseFence(tx, claimedBy)}
 			RETURNING id
 		`;
 		if (rows.length === 0) return null;
@@ -1772,7 +1772,7 @@ export async function handleApprove(
 				action_output = ${result.output ? tx.json(result.output) : null},
 				error_message = ${result.error_message}
 			WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
-			${inlineLeaseFence(tx, inlineOwner)}
+			${runLeaseFence(tx, inlineOwner)}
 			RETURNING id
 		`;
 		if (rows.length === 0) return false;

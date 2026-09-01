@@ -25,7 +25,7 @@ import { notifyActionApprovalNeeded } from "../../../../notifications/triggers";
 import { resolveApprovalChatOrigin } from "../../approval-delivery";
 import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
-import { LOST_LEASE_MESSAGE, inlineLeaseFence } from "../../../../runs/inline-lease";
+import { LOST_LEASE_MESSAGE, runLeaseFence } from "../../../../runs/run-lease";
 import { executeHttpOperation } from "../../../../operations/execute-http-operation";
 import { validateOperationInput } from "../../../../operations/input-validation";
 import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
@@ -79,7 +79,7 @@ async function failRunInline(
 	const message = stripNul(errorMsg);
 	if (!deferTerminalWrite) {
 		const sql = getDb();
-		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy)} RETURNING id`;
+		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
 		if (rows.length === 0)
 			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}
@@ -100,7 +100,7 @@ async function completeRunInline(
 	const sanitized = stripNulDeep(output) as Record<string, unknown>;
 	if (!deferTerminalWrite) {
 		const sql = getDb();
-		const rows = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(sanitized)} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy)} RETURNING id`;
+		const rows = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(sanitized)} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
 		if (rows.length === 0)
 			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}

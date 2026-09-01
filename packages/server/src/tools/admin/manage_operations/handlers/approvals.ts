@@ -66,6 +66,7 @@ import {
 import { runLeaseFence } from "../../../../runs/run-lease";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
+import { AUTOMATION_RUN_TYPES_PG } from "../../../../runs/run-types";
 /**
  * Durably persist a claimed run's apply/execution output in its OWN
  * transaction, BEFORE the terminalization attempt. If the terminal card write
@@ -209,7 +210,7 @@ async function blockHeadlessAutomationApproval(
 			WHERE child.id = ${runId}
 			  AND child.organization_id = ${organizationId}
 			  AND child.run_type = ANY(${pgTextArray(["action", "internal"])}::text[])
-			  AND parent.run_type = ANY('{automation,automation_eval}'::text[])
+			  AND parent.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
 			FOR UPDATE OF parent
 			LIMIT 1
 		`;

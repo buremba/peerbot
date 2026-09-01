@@ -11,6 +11,7 @@ import {
 	AUTOMATION_RUN_TYPES_PG,
 } from "../runs/run-types.js";
 import { runLeaseFence } from "../runs/run-lease";
+import { getErrorMessage } from "@lobu/core";
 import logger from "../utils/logger";
 import {
 	ACTIVE_RUN_STATUSES,
@@ -638,7 +639,22 @@ async function describeFinalizeMiss(
 	const agentMiss =
 		"Agent reply finished without calling run_sdk (client.automations.completeWindow)" +
 		attempts;
-	const approvalFailure = await describePendingApproval(sql, runId, budget);
+	// This is the diagnostic path: it runs to EXPLAIN a run that already missed
+	// its finalize, and its caller (resolveAutomationRunsByMessageIds) has no
+	// way to surface a read error usefully. A transient oauth_states failure
+	// must degrade to the generic description rather than propagate and take
+	// the sweep down with it. The fail-closed callers -- complete_window and
+	// the lifecycle transitions -- call describePendingApproval directly and
+	// still get the throw.
+	let approvalFailure: string | null = null;
+	try {
+		approvalFailure = await describePendingApproval(sql, runId, budget);
+	} catch (error) {
+		logger.warn(
+			{ run_id: runId, error: getErrorMessage(error) },
+			"Could not read pending approvals while describing a finalize miss",
+		);
+	}
 	if (approvalFailure) return approvalFailure;
 	return (
 		agentMiss +

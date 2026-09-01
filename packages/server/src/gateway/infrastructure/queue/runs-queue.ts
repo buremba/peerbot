@@ -63,6 +63,8 @@ export function notifyChannelFor(queueName: string): string {
 const MAX_BACKOFF_SECONDS = 300;
 /** How often the stale-claim sweeper runs. */
 const STALE_SWEEP_INTERVAL_MS = 30_000;
+/** Upper bound on graceful-shutdown drain before claims are released. */
+const SHUTDOWN_DRAIN_MS = 30_000;
 function queueBreadcrumb(
   category: string,
   message: string,
@@ -354,7 +356,13 @@ export class RunsQueue implements IMessageQueue {
       w.wakeup();
     }
 
-    while (true) {
+    // Counting `claiming` as well as `active` is the fence: a worker that has
+    // taken a row but not yet started its handler still owns it. The deadline
+    // is what keeps that from turning a wedged handler into a shutdown that
+    // never returns — drain is best-effort, and releaseAllClaims below hands
+    // anything still held back to `pending` for the next gateway.
+    const drainStart = Date.now();
+    while (Date.now() - drainStart < SHUTDOWN_DRAIN_MS) {
       const inFlight = Array.from(this.workers.values()).reduce(
         (sum, w) => sum + w.claiming + w.active,
         0,

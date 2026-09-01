@@ -76,6 +76,7 @@ import { resolveRunInitiator, runPermalinkResource } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses';
+import { AUTOMATION_RUN_TYPES_PG } from "../../runs/run-types";
 
 interface EntityApprovalQueueOptions {
 	automationReviewArtifact?: boolean;
@@ -992,7 +993,7 @@ export async function proposeEntityChange(
 				FROM runs
 				WHERE id = ${parentRunId}
 				  AND organization_id = ${ctx.organizationId}
-				  AND run_type = ANY('{automation,automation_eval}'::text[])
+				  AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
 				  AND (
 				    status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
 				    OR (
@@ -1019,7 +1020,7 @@ export async function proposeEntityChange(
 				FROM runs
 				WHERE id = ${parentRunId}
 				  AND organization_id = ${ctx.organizationId}
-				  AND run_type = ANY('{automation,automation_eval}'::text[])
+				  AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
 				  AND (
 				    status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
 				    OR (

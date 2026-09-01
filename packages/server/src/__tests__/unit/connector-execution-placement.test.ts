@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertChromeNamespaceInstallIsDeviceManifest,
   isDelegatedBrowserAffinityConnector,
   isChromeNamespaceConnectorKey,
   isLegacyNonManifestConnector,
@@ -93,5 +94,48 @@ describe('Chrome-extension connector execution placement', () => {
       })
     ).toBe(true);
     expect(isDelegatedBrowserAffinityConnector('macos', facts)).toBe(false);
+  });
+
+  describe('reserved-namespace install guard', () => {
+    it('admits a chrome.* key that arrives as a device manifest', () => {
+      expect(() =>
+        assertChromeNamespaceInstallIsDeviceManifest({
+          connectorKey: 'chrome.history',
+          sourcePath: 'device-manifest://chrome-extension/chrome.history@1.0.0',
+        })
+      ).not.toThrow();
+      expect(() =>
+        assertChromeNamespaceInstallIsDeviceManifest({
+          connectorKey: 'chrome',
+          sourcePath: 'device-manifest://chrome-extension/chrome@1.0.0',
+        })
+      ).not.toThrow();
+    });
+
+    it('rejects a chrome.* key that ships its own code', () => {
+      // The exact shape that killed the chrome.whatsapp migration: the gateway
+      // withholds the bundle from a "native" connector and the extension has no
+      // handler, so the failure only surfaced as `unknown dispatch` at run time.
+      expect(() =>
+        assertChromeNamespaceInstallIsDeviceManifest({
+          connectorKey: 'chrome.whatsapp',
+          sourcePath: null,
+        })
+      ).toThrow(/reserved 'chrome\.\*' namespace/);
+      expect(() =>
+        assertChromeNamespaceInstallIsDeviceManifest({
+          connectorKey: 'chrome.whatsapp',
+          sourcePath: 'connectors/whatsapp-web.ts',
+        })
+      ).toThrow(/cannot live there/);
+    });
+
+    it('leaves keys outside the namespace alone', () => {
+      for (const connectorKey of ['whatsapp.web', 'chromecast.demo', 'x', 'linkedin']) {
+        expect(() =>
+          assertChromeNamespaceInstallIsDeviceManifest({ connectorKey, sourcePath: null })
+        ).not.toThrow();
+      }
+    });
   });
 });

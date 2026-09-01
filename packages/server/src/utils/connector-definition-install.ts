@@ -20,6 +20,7 @@ import {
 } from './connector-compiler';
 import { fetchPublicUrl, isInternalUrl } from '../gateway/proxy/ssrf-guard';
 import type { McpOAuthMetadata } from '../mcp-proxy/types';
+import { assertChromeNamespaceInstallIsDeviceManifest } from './connector-execution-placement';
 import { preflightConnectorRelationshipTypes } from './connector-relationship-declarations';
 import { reconcileConnectorIdentityScopeRegistry } from './connector-identity-scopes';
 import { assertCustomConnectorInstallAllowed } from './custom-connector-cloud-gate';
@@ -341,6 +342,14 @@ async function upsertConnectorDefinitionRecordsInTransaction(
   // on the compile path some of them skip. The preflight validates the local
   // declaration graph and resolves it against the org's own relationship
   // vocabulary before any definition or version row can become active.
+  // The reserved Chrome namespace is an execution declaration, not a name.
+  // Guard it here — the shared writer every install path funnels through —
+  // rather than on the compile path a device manifest skips.
+  assertChromeNamespaceInstallIsDeviceManifest({
+    connectorKey: metadata.key,
+    sourcePath: params.versionRecord.sourcePath,
+  });
+
   await preflightConnectorRelationshipTypes({
     sql,
     organizationId: params.organizationId,

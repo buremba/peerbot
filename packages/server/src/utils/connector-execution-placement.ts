@@ -38,6 +38,38 @@ export function isChromeNamespaceConnectorKey(connectorKey: string): boolean {
   return connectorKey === 'chrome' || connectorKey.startsWith('chrome.');
 }
 
+/** Every `chrome.*` artifact identity the extension serves natively. */
+export const DEVICE_MANIFEST_SOURCE_PREFIX = 'device-manifest://chrome-extension/';
+
+/**
+ * The reserved `chrome.*` namespace declares "the Owletto extension implements
+ * this natively", and {@link isNativeChromeExtensionConnector} short-circuits
+ * on it. A key installed there with supplied code is therefore unreachable in
+ * both directions: the gateway withholds `compiled_code` from a native
+ * connector, and the extension has no handler for a key it does not implement,
+ * so every run dies with
+ *
+ *   Owletto for Chrome: unknown dispatch (connector='chrome.whatsapp', ...)
+ *
+ * Reject it at install instead of at first run. A connector that needs its own
+ * code delivered belongs on an ordinary key with a `chrome-extension` platform
+ * pin, which routes it through {@link isDelegatedBrowserAffinityConnector}.
+ */
+export function assertChromeNamespaceInstallIsDeviceManifest(facts: {
+  connectorKey: string;
+  sourcePath: string | null | undefined;
+}): void {
+  if (!isChromeNamespaceConnectorKey(facts.connectorKey)) return;
+  if (facts.sourcePath?.startsWith(DEVICE_MANIFEST_SOURCE_PREFIX) === true) return;
+  throw new Error(
+    `Connector key '${facts.connectorKey}' is in the reserved 'chrome.*' namespace, which is ` +
+      'only installable from an Owletto device manifest. A connector that ships its own code ' +
+      'cannot live there: the gateway withholds the bundle from a native connector and the ' +
+      'extension cannot dispatch a key it does not implement. Use a key outside the namespace ' +
+      'and pin the connection to a chrome-extension device for browser access.'
+  );
+}
+
 export function isLegacyNonManifestConnector(facts: {
   connectorKey: string;
   manifestBacked: boolean;

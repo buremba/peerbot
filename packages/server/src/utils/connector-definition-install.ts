@@ -347,7 +347,10 @@ async function upsertConnectorDefinitionRecordsInTransaction(
   // rather than on the compile path a device manifest skips.
   assertChromeNamespaceInstallIsDeviceManifest({
     connectorKey: metadata.key,
+    connectorVersion: metadata.version,
     sourcePath: params.versionRecord.sourcePath,
+    compiledCode: params.versionRecord.compiledCode,
+    sourceCode: params.versionRecord.sourceCode,
   });
 
   await preflightConnectorRelationshipTypes({

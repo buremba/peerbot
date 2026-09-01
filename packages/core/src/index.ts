@@ -138,6 +138,7 @@ export * from "./utils/network-domains";
 export * from "./utils/retry";
 export * from "./utils/sanitize";
 export * from "./utils/secret-redaction";
+export * from "./utils/sentry-scrubber";
 // Shared Lobu runtime session.jsonl parser (gateway + worker).
 export {
   type BashExecutionContent,

@@ -17,7 +17,7 @@ import {
   scrubSentryBreadcrumb,
   scrubSentryErrorEvent,
   scrubSentryTransactionEvent,
-} from './utils/sentry-scrubber';
+} from '@lobu/core';
 
 // .env is the single source of truth for secrets. This module reads SENTRY_DSN
 // (and ENVIRONMENT / SENTRY_RELEASE) at load time and is imported before any

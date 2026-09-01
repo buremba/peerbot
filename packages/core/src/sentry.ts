@@ -1,4 +1,9 @@
 import { createLogger, type Logger } from "./logger";
+import {
+  scrubSentryBreadcrumb,
+  scrubSentryErrorEvent,
+  scrubSentryTransactionEvent,
+} from "./utils/sentry-scrubber";
 
 // Lazy logger initialization to avoid circular dependency
 let _logger: Logger | null = null;
@@ -75,6 +80,19 @@ export async function initSentry() {
       integrations: [
         Sentry.consoleLoggingIntegration({ levels: ["log", "warn", "error"] }),
       ],
+      // Same scrubbing the gateway installs (packages/server/src/instrument.ts).
+      // These three cover error events, transactions, and the breadcrumbs Node's
+      // default consoleIntegration derives from console output -- the paths that
+      // carry provider URLs, OAuth callback URLs and connector arguments, and so
+      // the `?token=`/`?code=` values in them. Without these the credentials the
+      // gateway stopped leaking still left the fleet through the worker.
+      //
+      // Note this does NOT cover consoleLoggingIntegration above: that routes
+      // through _INTERNAL_captureLog, which is filtered by beforeSendLog and is
+      // inert entirely unless `enableLogs` is set, which it is not here.
+      beforeSend: scrubSentryErrorEvent,
+      beforeSendTransaction: scrubSentryTransactionEvent,
+      beforeBreadcrumb: scrubSentryBreadcrumb,
     });
 
     getLogger().debug("Sentry monitoring initialized");

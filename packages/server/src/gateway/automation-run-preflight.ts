@@ -2,7 +2,6 @@ import {
 	AgentErrorCode,
 	getErrorMessage,
 } from "@lobu/core";
-export { isPermanentAutomationAgentError } from "../automations/failure-classification.js";
 import type { ProviderCatalogService } from "./auth/provider-catalog.js";
 import type { GrantStore } from "./permissions/grant-store.js";
 

@@ -1,8 +1,8 @@
 import { AgentErrorCode } from "@lobu/core";
 import { describe, expect, test } from "bun:test";
+import { isPermanentAutomationAgentError } from "../../automations/failure-classification.js";
 import {
   automationToolIsPreApproved,
-  isPermanentAutomationAgentError,
   preflightAutomationRun,
 } from "../automation-run-preflight.js";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";

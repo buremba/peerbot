@@ -4,8 +4,9 @@
  * The MCP proxy used to carry a hand-rolled regex variant of the SSRF check
  * that missed NAT64 (`64:ff9b::/96`) and hex-form IPv4-mapped IPv6
  * (`::ffff:7f00:1`) — both decode to internal IPv4 targets but slipped past the
- * regex. It now delegates to the shared `isReservedIp` from `ssrf-guard.ts`, so
- * these spellings are caught identically to the gateway egress proxy.
+ * regex. It now delegates to the shared `isReservedIp` from
+ * `@lobu/connector-sdk/ip-reachability`, so these spellings are caught
+ * identically to the gateway egress proxy.
  */
 
 import { describe, expect, it } from 'vitest';

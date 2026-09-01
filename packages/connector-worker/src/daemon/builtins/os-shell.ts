@@ -1,3 +1,12 @@
+/**
+ * os.shell as a daemon builtin.
+ *
+ * PAIRED IMPLEMENTATION — keep the CONTRACT in step with
+ * `packages/connectors/src/os_shell.ts` (see its header for why the two are
+ * not merged). This side additionally replaces the environment rather than
+ * inheriting it: a builtin runs in the daemon's own process, so an inherited
+ * env would hand the command the daemon's credentials.
+ */
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';

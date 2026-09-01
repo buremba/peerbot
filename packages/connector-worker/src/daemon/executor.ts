@@ -10,7 +10,6 @@ import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
 import { executeAutomationRun } from './automation.js';
 import { executeDaemonBuiltin } from './builtins/index.js';
 import { executeDeviceChatRun } from './device-chat.js';
-import { WorkerDecodeError } from './client.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
 import { log } from './log.js';
@@ -63,11 +62,19 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
   }
 }
 
+/**
+ * Load the compiler and the subprocess runtime, together and on demand.
+ *
+ * Dynamic on purpose. A daemon whose compiler/SDK artifacts are missing or
+ * broken is precisely the case the daemon builtins exist to recover, and a
+ * static import here would fail this whole module at load — taking the
+ * recovery path down with it. So inline-compiled jobs (which already carry
+ * their code) and daemon_builtin jobs never reach this graph at all; only
+ * source-backed jobs do, and those need both halves anyway. The published-
+ * package isolation smoke pins that: it runs both lanes with the source
+ * artifacts absent.
+ */
 async function loadCompiledRuntime() {
-  // These are the only production imports retained for source-backed jobs:
-  // the published-package isolation smoke runs inline and daemon_builtin jobs
-  // with compiler/SDK source artifacts absent, while source-backed jobs still
-  // need the compiler and subprocess runtime together.
   return Promise.all([
     import('../executor/subprocess.js'),
     import('../executor/runtime.js'),

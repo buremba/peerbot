@@ -8,6 +8,17 @@
  * real environment (host PATH, files), so the action is approval-gated. The
  * timeout bounds this call and cleans up its process group; it is not sandbox
  * containment, and deliberately daemonized/session-detached work may outlive it.
+ *
+ * PAIRED IMPLEMENTATION — keep the CONTRACT in step with
+ * `packages/connector-worker/src/daemon/builtins/os-shell.ts`: the argv
+ * (`bash --noprofile --norc -c`), the timeout bounds, the 1MB output cap, and
+ * the returned shape are one action contract with two executors. They are not
+ * merged because they run on different substrates and for opposite reasons:
+ * this one executes inside the compiled-connector subprocess runtime, while
+ * the daemon builtin runs on the daemon's own supervisor precisely so a device
+ * whose compiler is broken can still be recovered. Sharing a module would put
+ * the compiler graph back on the recovery path. A device serves whichever its
+ * manifest declares (`runtime.execution`); it never runs both.
  */
 
 import { spawn } from 'node:child_process';
@@ -200,7 +211,7 @@ export default class OsShellConnector extends ConnectorRuntime {
     name: 'Shell',
     description:
       'Run shell commands on the host device. Executes via `bash --noprofile --norc -c` and returns structured stdout/stderr/exit_code. Same trust tier as the macOS shell connector - commands run in the device\'s real environment (host PATH, files), so gate with approval.',
-    version: '0.1.0',
+    version: '0.2.0',
     requiredCapability: 'os.shell',
     authSchema: { methods: [{ type: 'none' }] },
     feeds: {},

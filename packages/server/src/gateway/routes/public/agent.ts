@@ -1780,7 +1780,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
       if (
         (session.turnCount ?? 0) === 0 &&
         !ephemeralForTurn &&
-		session.intent?.kind !== "automation_run" &&
+        session.intent?.kind !== "automation_run" &&
         messageOrganizationId
       ) {
         try {

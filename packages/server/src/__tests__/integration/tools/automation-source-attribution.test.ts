@@ -19,7 +19,8 @@ import {
   resolveAutomationAttribution,
   verifiedAutomationSource,
 } from '../../../automations/automation-source';
-import { cleanupTestDatabase } from '../../setup/test-db';
+import { type AuthContext, executeTool } from '../../../tools/execute';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createAutomationResultRun, createTestAgent } from '../../setup/test-fixtures';
 import { TestApiClient, TestWorkspace } from '../../setup/test-mcp-client';
 
@@ -235,5 +236,110 @@ describe('resolveAutomationAttribution precedence', () => {
     await expect(
       resolveAutomationAttribution({ organizationId: org.organizationId }, undefined)
     ).resolves.toEqual({ automationId: null, runId: null });
+  });
+});
+
+/**
+ * The signed-token half of the same rule, and the regression it nearly shipped.
+ *
+ * A live Automation worker token now carries `automationRunId`, so every tool
+ * call runs `stampTrustedAutomationIdentity`. Scope and liveness are separate
+ * questions there: a run outside this org/agent is a forged or misaddressed
+ * claim and must be refused, but a run that is merely FINISHED is not an
+ * authorization failure. An agent can still be issuing tool calls after
+ * complete_window commits and terminalizes the parent, and those calls
+ * succeeded before live tokens carried a parent claim at all.
+ *
+ * `executeTool` stamps onto the AuthContext in place, so these assert on the
+ * context itself — independent of whether the tool body then succeeds.
+ */
+describe('trusted attribution from a signed parent-run claim', () => {
+  function workerCtx(params: {
+    organizationId: string;
+    agentId: string;
+    automationRunId: number;
+  }): AuthContext {
+    return {
+      organizationId: params.organizationId,
+      tokenOrganizationId: params.organizationId,
+      userId: null,
+      memberRole: 'owner',
+      agentId: params.agentId,
+      requestedAgentId: params.agentId,
+      isAuthenticated: true,
+      clientId: null,
+      scopes: ['mcp:read', 'mcp:write'],
+      tokenType: 'worker',
+      requestUrl: `http://localhost/api/${params.organizationId}`,
+      baseUrl: '',
+      scopedToOrg: true,
+      allowCrossOrg: false,
+      automationRunId: params.automationRunId,
+    } as unknown as AuthContext;
+  }
+
+  /** Run the stamp the way executeTool does, keeping any tool-body error out. */
+  async function stampVia(ctx: AuthContext): Promise<Error | null> {
+    try {
+      await executeTool('search_sdk', { query: 'noop' }, {} as never, ctx);
+    } catch (error) {
+      return error as Error;
+    }
+    return null;
+  }
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  it('stamps the parent while the run is still active', async () => {
+    const org = await orgWithAutomation('Attribution live', 'attribution-live');
+    const sql = getTestDb();
+    await sql`UPDATE runs SET status = 'running' WHERE id = ${org.runId}`;
+
+    const ctx = workerCtx({
+      organizationId: org.organizationId,
+      agentId: org.agentId,
+      automationRunId: org.runId,
+    });
+    await stampVia(ctx);
+
+    expect(ctx.actingAutomationId).toBe(org.automationId);
+    expect(ctx.actingRunId).toBe(org.runId);
+  });
+
+  it('a finished parent leaves attribution unset instead of failing the call', async () => {
+    const org = await orgWithAutomation('Attribution done', 'attribution-done');
+    const sql = getTestDb();
+    // What complete_window leaves behind.
+    await sql`UPDATE runs SET status = 'completed' WHERE id = ${org.runId}`;
+
+    const ctx = workerCtx({
+      organizationId: org.organizationId,
+      agentId: org.agentId,
+      automationRunId: org.runId,
+    });
+    const error = await stampVia(ctx);
+
+    expect(error?.message ?? '').not.toContain('no longer matches an authorized run');
+    expect(ctx.actingAutomationId).toBeUndefined();
+    expect(ctx.actingRunId).toBeUndefined();
+  });
+
+  it('still refuses a run belonging to another org', async () => {
+    const mine = await orgWithAutomation('Attribution mine', 'attribution-mine');
+    const theirs = await orgWithAutomation('Attribution theirs', 'attribution-theirs');
+    const sql = getTestDb();
+    await sql`UPDATE runs SET status = 'running' WHERE id = ${theirs.runId}`;
+
+    const ctx = workerCtx({
+      organizationId: mine.organizationId,
+      agentId: mine.agentId,
+      automationRunId: theirs.runId,
+    });
+    const error = await stampVia(ctx);
+
+    expect(error?.message ?? '').toContain('no longer matches an authorized run');
+    expect(ctx.actingAutomationId).toBeUndefined();
   });
 });

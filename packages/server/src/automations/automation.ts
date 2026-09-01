@@ -122,6 +122,9 @@ interface DispatchAutomationRunsResult {
 	dispatched: number;
 	reconciled: number;
 	failed: number;
+	/** Transiently put back for a later tick. Counted so a claimed run is never
+	 *  reported with every outcome counter at zero. */
+	requeued: number;
 }
 
 interface ReconcileAutomationRunsResult {
@@ -2065,6 +2068,7 @@ export async function dispatchPendingAutomationRuns(options?: {
 	let dispatched = 0;
 	let reconciled = 0;
 	let failed = 0;
+	let requeued = 0;
 
 	if (requestedRunIds.length > 0) {
 		for (const runId of requestedRunIds) {
@@ -2076,9 +2080,10 @@ export async function dispatchPendingAutomationRuns(options?: {
 			if (outcome === "dispatched") dispatched++;
 			if (outcome === "reconciled") reconciled++;
 			if (outcome === "failed") failed++;
+			if (outcome === "requeued") requeued++;
 		}
 
-		return { claimed, dispatched, reconciled, failed };
+		return { claimed, dispatched, reconciled, failed, requeued };
 	}
 
 	while (claimed < 100) {
@@ -2090,9 +2095,10 @@ export async function dispatchPendingAutomationRuns(options?: {
 		if (outcome === "dispatched") dispatched++;
 		if (outcome === "reconciled") reconciled++;
 		if (outcome === "failed") failed++;
+		if (outcome === "requeued") requeued++;
 	}
 
-	return { claimed, dispatched, reconciled, failed };
+	return { claimed, dispatched, reconciled, failed, requeued };
 }
 
 export async function queueAndDispatchAutomationRun(

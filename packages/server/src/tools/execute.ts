@@ -20,6 +20,7 @@ import type { Env } from '../index';
 import { recordMcpConversationActivity } from '../lobu/stores/mcp-client-conversations';
 import { getDb } from '../db/client';
 import { AUTOMATION_RUN_TYPES_PG } from '../runs/run-types';
+import { ACTIVE_RUN_STATUSES } from '../utils/run-statuses';
 import { trackMCPToolCall } from '../sentry';
 import { parseApplyId } from '../utils/apply-context';
 import { assertDeploymentsNotPaused } from '../utils/deployment-pause';
@@ -203,8 +204,9 @@ async function stampTrustedAutomationIdentity(authCtx: AuthContext): Promise<voi
   }
   const rows = await getDb()<{
     automation_id: number;
+    status: string;
   }>`
-    SELECT r.automation_id
+    SELECT r.automation_id, r.status
     FROM runs r
     JOIN automations a
       ON a.id = r.automation_id
@@ -212,14 +214,22 @@ async function stampTrustedAutomationIdentity(authCtx: AuthContext): Promise<voi
     WHERE r.id = ${authCtx.automationRunId}
       AND r.organization_id = ${authCtx.organizationId}
       AND r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-      AND r.status = ANY('{pending,claimed,running}'::text[])
       AND a.agent_id = ${authCtx.agentId}
     LIMIT 1
   `;
   const automationId = Number(rows[0]?.automation_id);
   if (!Number.isInteger(automationId) || automationId <= 0) {
+    // No such run in this org for this token's agent. The claim is forged or
+    // points outside the token's scope, so it must not be honoured.
     throw new Error('Automation worker token no longer matches an authorized run.');
   }
+  // Liveness is NOT an authorization question, so it is checked separately
+  // from scope. An agent can still be issuing tool calls after complete_window
+  // committed and terminalized the parent; those calls succeeded before live
+  // tokens carried a parent claim, and failing them now would be a regression.
+  // There is simply no live parent to attribute them to, so leave attribution
+  // unset and let the call proceed.
+  if (!ACTIVE_RUN_STATUSES.includes(rows[0].status as never)) return;
   authCtx.actingAutomationId = automationId;
   authCtx.actingRunId = authCtx.automationRunId;
 }

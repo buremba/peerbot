@@ -134,9 +134,15 @@ export function defaultBackendCapacity(
     : { [EXECUTION_BACKENDS.compiledConnector]: 1 };
 }
 
-/** Server-selected execution path for an exact pinned connector artifact. */
+/**
+ * Server-selected execution path for an exact pinned connector artifact.
+ *
+ * Device-owned paths only. A compiled run ships the code itself and carries no
+ * marker, so `compiled_connector` is a `backend_capacity` key and never a poll
+ * response value — listing it here would widen the wire contract with a value
+ * no producer emits and the worker ignores.
+ */
 export const ExecutionBackendSchema = Type.Union([
-  Type.Literal(EXECUTION_BACKENDS.compiledConnector),
   Type.Literal(EXECUTION_BACKENDS.daemonBuiltin),
   Type.Literal("native_bridge"),
 ]);

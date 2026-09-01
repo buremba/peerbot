@@ -35,7 +35,7 @@ function hasPositiveBackendCapacity(
   backend: string
 ): boolean {
   const value = capacity?.[backend];
-  return typeof value === 'number' && Number.isFinite(value) && value > 0;
+  return typeof value === 'number' && value > 0;
 }
 
 interface ConnectorClaimLaneRefs {

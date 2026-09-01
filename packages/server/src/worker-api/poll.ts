@@ -13,7 +13,6 @@ import {
 } from '@lobu/core';
 import { Value } from '@sinclair/typebox/value';
 import {
-  EXECUTION_BACKENDS,
   PollRequestSchema,
   defaultBackendCapacity,
   type PollRequest,
@@ -1227,12 +1226,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       ...pollMetadata,
     });
   }
-  const isNativeBridgeRun = selectedExecution.backend === 'native_bridge';
   // Both device-owned backends: the device implements the work itself, so the
-  // gateway ships no compiled code and does not hold the connection lease.
-  const isDeviceOwnedRun =
-    isNativeBridgeRun ||
-    selectedExecution.backend === EXECUTION_BACKENDS.daemonBuiltin;
+  // gateway ships no compiled code and does not hold the connection lease. The
+  // classifier returns a backend only for a hash-attested manifest artifact
+  // that carries no compiled or source code, so "a backend was classified" is
+  // exactly "this run is device-owned".
+  const isDeviceOwnedRun = selectedExecution.backend !== undefined;
 
   // Device chat reuses the ordinary messages/chat_message row. The poll
   // response is only an execution envelope: ownership/routing remain on the
@@ -1690,8 +1689,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const hasStoredCompiledCode = Boolean(row.compiled_code);
   const workerWillResolveLocally =
     !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
-  // Only a native-bridge run is implemented by the device itself. Manifest
-  // backing and the capability gate do not establish who executes the code.
+  // Only a device-owned run (native bridge or daemon builtin) is implemented by
+  // the device itself. Manifest backing and the capability gate do not
+  // establish who executes the code.
   const deviceWillExecuteNativeConnector = deviceExecutesConnectorNatively({
     isUserScopedWorker,
     hasStoredCompiledCode,
@@ -1812,9 +1812,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_type: row.run_type,
     connector_key: row.connector_key ?? undefined,
     connector_version: row.connector_version ?? undefined,
-    ...(isNativeBridgeRun
+    // The routing marker the worker switches on: `daemon_builtin` selects the
+    // daemon's supervised built-in, `native_bridge` the native bridge daemon.
+    // Every classified backend has to reach the worker -- emitting only one of
+    // them leaves the other lane dead, and the worker then falls through to the
+    // compiled path for a run the gateway deliberately shipped no code for.
+    ...(selectedExecution.backend
       ? {
-          execution_backend: 'native_bridge' as const,
+          execution_backend: selectedExecution.backend,
           connector_manifest_hash: selectedExecution.manifestHash,
         }
       : {}),

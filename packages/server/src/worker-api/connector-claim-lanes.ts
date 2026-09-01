@@ -1,3 +1,4 @@
+import { EXECUTION_BACKENDS } from '@lobu/core/contracts/worker/protocol';
 import type { DbClient } from '../db/client';
 import { pgTextArray } from '../db/client';
 import { isCloudMode } from '../utils/cloud-mode';
@@ -33,7 +34,8 @@ function hasPositiveBackendCapacity(
   capacity: Record<string, number> | undefined,
   backend: string
 ): boolean {
-  return Number.isFinite(capacity?.[backend]) && (capacity?.[backend] ?? 0) > 0;
+  const value = capacity?.[backend];
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
 interface ConnectorClaimLaneRefs {
@@ -115,7 +117,7 @@ export function connectorClaimLaneSql(
         AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
         AND auth_item->>'manifestHash' = ${refs.runManifestHash}
         AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
-        AND auth_item->>'runtimeExecution' = 'daemon_builtin'
+        AND auth_item->>'runtimeExecution' = ${EXECUTION_BACKENDS.daemonBuiltin}
     )
   `;
   const delegatedBrowserAffinity = delegatedBrowserAffinitySql(sql, {
@@ -137,8 +139,14 @@ export function connectorClaimLaneSql(
   // A worker may be able to run the daemon-owned backend while its connector
   // compiler/SDK runtime is unavailable. Never let a compiled artifact enter
   // any claim lane unless that backend was explicitly advertised as ready.
-  const compiledBackendReady = hasPositiveBackendCapacity(context.backendCapacity, 'compiled_connector');
-  const daemonBuiltinReady = hasPositiveBackendCapacity(context.backendCapacity, 'daemon_builtin');
+  const compiledBackendReady = hasPositiveBackendCapacity(
+    context.backendCapacity,
+    EXECUTION_BACKENDS.compiledConnector
+  );
+  const daemonBuiltinReady = hasPositiveBackendCapacity(
+    context.backendCapacity,
+    EXECUTION_BACKENDS.daemonBuiltin
+  );
   // A chrome-namespace execution runs inside the advertising extension, so it
   // needs no server-side backend at all. The helper is narrow by construction:
   // a reserved chrome key, or a legacy key only while the selected artifact is
@@ -166,7 +174,7 @@ export function connectorClaimLaneSql(
       OR (
         COALESCE(${refs.runManifestBacked}, false)
         AND CASE
-          WHEN ${refs.runRuntime}->>'execution' = 'daemon_builtin' THEN ${daemonBuiltinReady}
+          WHEN ${refs.runRuntime}->>'execution' = ${EXECUTION_BACKENDS.daemonBuiltin} THEN ${daemonBuiltinReady}
           WHEN ${refs.runRuntime}->>'execution' = 'bridge' THEN true
           WHEN ${refs.runRuntime}->>'execution' IS NULL
             THEN NOT (${exactDaemonBuiltinAuthorization}) OR ${daemonBuiltinReady}

@@ -1,5 +1,5 @@
 import { deviceManifestHash, type DeviceConnectorManifest } from '@lobu/connector-sdk';
-import type { ExecutionBackend } from '@lobu/core/contracts/worker/protocol';
+import { EXECUTION_BACKENDS, type ExecutionBackend } from '@lobu/core/contracts/worker/protocol';
 
 export type SelectedConnectorExecutionBackend = ExecutionBackend;
 
@@ -45,9 +45,9 @@ export interface SelectedConnectorExecution {
  * Classify the exact artifact selected by the poll query. A device-owned
  * backend marker is emitted only when the selected artifact is hash-attested
  * by this device and its canonical definition declares that backend. The
- * artifact source path is part
- * of the authorization, so an organization override cannot silently replace a
- * shared bridge artifact with compiled code or another device's manifest.
+ * artifact source path is part of the authorization, so an organization
+ * override cannot silently replace a shared bridge artifact with compiled code
+ * or another device's manifest.
  */
 export function classifySelectedConnectorExecution(params: {
   artifact: SelectedConnectorArtifact;
@@ -107,7 +107,7 @@ export function classifySelectedConnectorExecution(params: {
   }
   const parsedSource = parseManifestSourcePath(params.artifact.sourcePath);
   if (!parsedSource) {
-    return { manifestBacked, inconsistency: 'bridge-marked artifact has an invalid manifest source path' };
+    return { manifestBacked, inconsistency: 'device-owned artifact has an invalid manifest source path' };
   }
   if (params.expectedPlatform && parsedSource.platform !== params.expectedPlatform) {
     return {
@@ -145,7 +145,7 @@ export function classifySelectedConnectorExecution(params: {
 
   return {
     manifestBacked,
-    backend: deviceExecution === 'bridge' ? 'native_bridge' : 'daemon_builtin',
+    backend: deviceExecution === 'bridge' ? 'native_bridge' : EXECUTION_BACKENDS.daemonBuiltin,
     manifestHash: params.artifact.manifestHash,
   };
 }
@@ -154,11 +154,12 @@ export function classifySelectedConnectorExecution(params: {
  * Whether the claiming device implements this connector itself, so the gateway
  * may omit `compiled_code` from the poll response.
  *
- * A native-bridge run always qualifies. Legacy device manifests and
- * capability-only clients also remain device-executed when the gateway has no
- * code it could deliver. When bundled or stored code exists, manifest backing
- * and capability advertisement are authorization signals only; they do not
- * establish that the device implements the connector.
+ * A device-owned run (native bridge or daemon builtin) always qualifies.
+ * Legacy device manifests and capability-only clients also remain
+ * device-executed when the gateway has no code it could deliver. When bundled
+ * or stored code exists, manifest backing and capability advertisement are
+ * authorization signals only; they do not establish that the device implements
+ * the connector.
  */
 export function deviceExecutesConnectorNatively(params: {
   isUserScopedWorker: boolean;

@@ -148,6 +148,30 @@ async function readWhatsAppRows(orgId: string) {
   return { connections, feeds };
 }
 
+/** Queue an approved os.shell action run against the device's auto-wired connection. */
+async function seedHeadlessShellRun(orgId: string, version = '0.2.0') {
+  const sql = getTestDb();
+  const [connection] = (await sql`
+    SELECT id FROM connections
+    WHERE organization_id = ${orgId}
+      AND connector_key = 'os.shell'
+      AND deleted_at IS NULL
+    LIMIT 1
+  `) as unknown as Array<{ id: number }>;
+  const [run] = (await sql`
+    INSERT INTO runs (
+      organization_id, run_type, connection_id, connector_key,
+      connector_version, action_key, action_input, approval_status, status,
+      created_at
+    ) VALUES (
+      ${orgId}, 'action', ${connection.id}, 'os.shell', ${version}, 'run',
+      ${sql.json({ command: 'hostname' })}, 'auto', 'pending', NOW()
+    )
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+  return Number(run.id);
+}
+
 async function readFeedStatus(orgId: string, key = CONNECTOR_KEY) {
   const sql = getTestDb();
   const rows = (await sql`
@@ -184,7 +208,11 @@ async function poll(
   connectorManifests: unknown[],
   platform = 'macos',
   capabilities: Record<string, boolean> = { screentime: true },
-  options: { capacityAvailable?: number; agentKinds?: string[] } = {},
+  options: {
+    capacityAvailable?: number;
+    agentKinds?: string[];
+    backendCapacity?: Record<string, number>;
+  } = {},
 ) {
   const body: Record<string, unknown> = {
     worker_id: workerId,
@@ -198,6 +226,7 @@ async function poll(
     body.capacity_available = options.capacityAvailable;
   }
   if (options.agentKinds !== undefined) body.agent_kinds = options.agentKinds;
+  if (options.backendCapacity !== undefined) body.backend_capacity = options.backendCapacity;
   return post('/api/workers/poll', {
     body,
   });
@@ -1213,6 +1242,94 @@ describe('device connector manifests', () => {
     expect(body.execution_backend).toBeUndefined();
     expect(typeof body.compiled_code).toBe('string');
     expect((body.compiled_code as string).length).toBeGreaterThan(0);
+  });
+
+  it('routes an os.shell run to the daemon builtin on builtin capacity alone', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('headless');
+    // The daemon declares os.shell as `runtime.execution: 'daemon_builtin'`, so
+    // the gateway has to classify the run onto that backend AND tell the worker
+    // which backend it picked. Without the marker the worker falls through to
+    // its compiled path and imports the connector compiler for a run the
+    // gateway deliberately shipped no code for.
+    const registered = await poll(
+      workerId,
+      [HEADLESS_OS_SHELL_MANIFEST],
+      'headless',
+      { 'os.shell': true },
+      { capacityAvailable: 0 },
+    );
+    expect(registered.status).toBe(200);
+
+    const sql = getTestDb();
+    const [version] = (await sql`
+      SELECT source_path, compiled_code FROM connector_versions
+      WHERE connector_key = 'os.shell' AND version = '0.2.0'
+      LIMIT 1
+    `) as unknown as Array<{ source_path: string | null; compiled_code: string | null }>;
+    expect(version?.source_path).toBe('device-manifest://headless/os.shell@0.2.0');
+    expect(version?.compiled_code).toBeNull();
+
+    const runId = await seedHeadlessShellRun(orgId);
+
+    // A daemon whose connector compiler failed to load still owns the builtin;
+    // advertising `compiled_connector: 0` is exactly the recovery case this
+    // backend exists for, so builtin capacity alone must admit the run.
+    const claimed = await poll(
+      workerId,
+      [HEADLESS_OS_SHELL_MANIFEST],
+      'headless',
+      { 'os.shell': true },
+      {
+        capacityAvailable: 1,
+        backendCapacity: { daemon_builtin: 1, compiled_connector: 0 },
+      },
+    );
+    expect(claimed.status).toBe(200);
+    const body = (await claimed.json()) as Record<string, unknown>;
+    expect(body.run_id).toBe(runId);
+    expect(body.connector_key).toBe('os.shell');
+    expect(body.execution_backend).toBe('daemon_builtin');
+    expect(body.connector_manifest_hash).toBe(
+      deviceManifestHash(HEADLESS_OS_SHELL_MANIFEST as unknown as DeviceConnectorManifest),
+    );
+    expect(body.compiled_code).toBeUndefined();
+  });
+
+  it('leaves an os.shell run queued for a daemon advertising no builtin capacity', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('headless');
+    const registered = await poll(
+      workerId,
+      [HEADLESS_OS_SHELL_MANIFEST],
+      'headless',
+      { 'os.shell': true },
+      { capacityAvailable: 0 },
+    );
+    expect(registered.status).toBe(200);
+    const runId = await seedHeadlessShellRun(orgId);
+
+    // Compiled capacity cannot stand in for the builtin: the artifact is a
+    // manifest with no code, so a daemon that lost its builtin has nothing to
+    // run it with and must leave the run for a later poll.
+    const claimed = await poll(
+      workerId,
+      [HEADLESS_OS_SHELL_MANIFEST],
+      'headless',
+      { 'os.shell': true },
+      {
+        capacityAvailable: 1,
+        backendCapacity: { daemon_builtin: 0, compiled_connector: 1 },
+      },
+    );
+    expect(claimed.status).toBe(200);
+    const body = (await claimed.json()) as Record<string, unknown>;
+    expect(body.run_id).toBeUndefined();
+
+    const sql = getTestDb();
+    const [run] = (await sql`
+      SELECT status, claimed_by FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
+    expect(run.status).toBe('pending');
+    expect(run.claimed_by).toBeNull();
   });
 
   it('drops a manifest that still declares removed entityLinks rules', async () => {

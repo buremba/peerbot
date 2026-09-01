@@ -4,9 +4,9 @@
  * they were wired, so a dropped line here would silently reopen the leak this
  * module exists to close.
  *
- * Asserts on BEHAVIOUR, not identity: each captured hook is run over a real
- * credential-bearing payload. Comparing function references would still pass
- * if the three were wired to the wrong keys.
+ * Asserts on what each hook DOES, not on function identity: every captured
+ * hook is run over a real credential-bearing payload. Comparing function
+ * references would still pass if the three were wired to the wrong keys.
  */
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 

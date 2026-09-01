@@ -9,6 +9,7 @@
  * layers now classify through `custom-connector-cloud-gate`.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resolveAgentToolingDeclaration } from '../../../gateway/agent-tooling/resolver';
 import type { Env } from '../../../index';
 import { createSyncRun } from '../../../runs/queue-service';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -215,5 +216,103 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
 
     const [row] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
     expect((row as { status: string }).status).toBe('running');
+  });
+});
+
+/**
+ * The third admission surface. Queue and dispatch decide whether a run starts;
+ * this one decides what an agent's worker is BUILT with — the nix packages on
+ * its PATH and the hosts on its deny-by-default egress allowlist.
+ *
+ * `connector_definitions.agent_tooling` is jsonb written by the install path,
+ * so in Cloud it is an org-writable input to a worker's sandbox. The image file
+ * is the only declaration Cloud honours, and an artifact the image cannot
+ * attest contributes nothing at all rather than falling back to the stored row.
+ *
+ * The self-host control is what makes this discriminating: it proves the
+ * planted declaration really does reach the worker when nothing substitutes it.
+ */
+describe('Cloud agent tooling comes from the image, not the stored declaration', () => {
+  // `github` is the bundled connector that declares agentTooling, so the image
+  // has something concrete to substitute in.
+  const TOOLING_KEY = 'github';
+  const TOOLING_VERSION = '1.3.0';
+  const IMAGE_PACKAGE = 'gh';
+  const IMAGE_DOMAIN = 'api.github.com';
+  // A binary and an egress host no bundled connector declares.
+  const PLANTED_PACKAGE = 'curl';
+  const PLANTED_DOMAIN = 'planted.example.com';
+
+  async function setupToolingConnection(): Promise<string> {
+    const sql = getTestDb();
+    const org = await createTestOrganization();
+    await createTestConnectorDefinition({
+      key: TOOLING_KEY,
+      name: 'GitHub',
+      version: TOOLING_VERSION,
+      organization_id: org.id,
+    });
+    await sql`
+      UPDATE connector_definitions
+      SET agent_tooling = ${sql.json({
+        nix: { packages: [PLANTED_PACKAGE] },
+        domains: [PLANTED_DOMAIN],
+      })}
+      WHERE key = ${TOOLING_KEY} AND organization_id = ${org.id}
+    `;
+    await createTestConnection({
+      organization_id: org.id,
+      connector_key: TOOLING_KEY,
+    });
+    return org.id;
+  }
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+  afterEach(() => {
+    delete process.env.LOBU_CLOUD_MODE;
+  });
+
+  it('CONTROL — self-host builds the worker from the stored declaration', async () => {
+    const orgId = await setupToolingConnection();
+
+    delete process.env.LOBU_CLOUD_MODE;
+    const declared = await resolveAgentToolingDeclaration({ organizationId: orgId });
+
+    expect(declared.packages).toContain(PLANTED_PACKAGE);
+    expect(declared.domains).toContain(PLANTED_DOMAIN);
+  });
+
+  it('Cloud substitutes the image declaration and drops the stored one', async () => {
+    const orgId = await setupToolingConnection();
+
+    process.env.LOBU_CLOUD_MODE = '1';
+    const declared = await resolveAgentToolingDeclaration({ organizationId: orgId });
+
+    expect(declared.packages).not.toContain(PLANTED_PACKAGE);
+    expect(declared.domains).not.toContain(PLANTED_DOMAIN);
+    // Positively the image's own declaration, not merely an empty result.
+    expect(declared.packages).toContain(IMAGE_PACKAGE);
+    expect(declared.domains).toContain(IMAGE_DOMAIN);
+  });
+
+  it('Cloud contributes nothing for an org-scoped artifact', async () => {
+    const sql = getTestDb();
+    const orgId = await setupToolingConnection();
+    await sql`
+      UPDATE connector_versions
+      SET organization_id = ${orgId},
+          source_code = ${'export default { sync: async () => ({ items: [] }) }'}
+      WHERE connector_key = ${TOOLING_KEY} AND version = ${TOOLING_VERSION}
+    `;
+
+    process.env.LOBU_CLOUD_MODE = '1';
+    const declared = await resolveAgentToolingDeclaration({ organizationId: orgId });
+
+    // Not the planted declaration, and not the image's either — an artifact
+    // Cloud cannot attest gets no tooling at all.
+    expect(declared.packages).toEqual([]);
+    expect(declared.domains).toEqual([]);
   });
 });

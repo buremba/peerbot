@@ -34,13 +34,12 @@ review_diff_hash() {
 # A verdict is only reusable for the same reviewer identity. Any knob that can
 # change the verdict — CLI, model, effort, provider — must be in the signature.
 review_reviewer_signature() {
-  printf '%s|%s|%s|%s|%s|%s\n' \
+  printf '%s|%s|%s|%s|%s\n' \
     "${REVIEWER_CLI_SELECTED:-}" \
     "${CLAUDE_REVIEW_MODEL:-}" \
     "${CLAUDE_REVIEW_EFFORT:-}" \
     "${CODEX_REVIEW_MODEL:-}" \
-    "${PI_REVIEW_MODEL:-}" \
-    "${PI_REVIEW_PROVIDER:-}"
+    "${CODEX_REVIEW_EFFORT:-}"
 }
 
 # review_cache_lookup <hash> <signature>

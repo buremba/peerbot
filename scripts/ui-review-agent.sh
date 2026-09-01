@@ -25,9 +25,10 @@ CONTEXT_FILE="${1:?usage: ui-review-agent.sh <context-file> <out-file>}"
 OUT_FILE="${2:?usage: ui-review-agent.sh <context-file> <out-file>}"
 
 REVIEWER_CLI="${REVIEWER_CLI:-auto}"
-CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-opus}"
+CLAUDE_REVIEW_MODEL="${CLAUDE_REVIEW_MODEL:-fable}"
 CLAUDE_REVIEW_EFFORT="${CLAUDE_REVIEW_EFFORT:-high}"
-CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-}"
+CODEX_REVIEW_MODEL="${CODEX_REVIEW_MODEL:-gpt-5.6-sol}"
+CODEX_REVIEW_EFFORT="${CODEX_REVIEW_EFFORT:-xhigh}"
 SCHEMA_FILE="$SCRIPT_DIR/../prompts/ui-review-agent-output-schema.json"
 PROMPT_FILE="$SCRIPT_DIR/../prompts/ui-review-agent-prompt.md"
 SCHEMA_JQ='(.has_ui_surface | type == "boolean") and (.reasoning | type == "string" and length > 0) and (.verification_summary | type == "string" and length > 0)'
@@ -68,13 +69,8 @@ case "$REVIEWER_CLI_SELECTED" in
   codex)
     codex_args=(codex exec --sandbox read-only --output-schema "$SCHEMA_FILE" --output-last-message "$RAW_FILE" --ephemeral)
     [ -n "$CODEX_REVIEW_MODEL" ] && codex_args+=(--model "$CODEX_REVIEW_MODEL")
+    [ -n "$CODEX_REVIEW_EFFORT" ] && codex_args+=(-c "model_reasoning_effort=\"$CODEX_REVIEW_EFFORT\"")
     "${codex_args[@]}" "$(cat "$FULL_PROMPT_FILE")" < /dev/null > /dev/null 2> "$DIAGNOSTIC_FILE"
-    ;;
-  pi)
-    pi_args=(pi -p --no-session --tools "read")
-    [ -n "${PI_REVIEW_PROVIDER:-}" ] && pi_args+=(--provider "$PI_REVIEW_PROVIDER")
-    [ -n "${PI_REVIEW_MODEL:-}" ] && pi_args+=(--model "$PI_REVIEW_MODEL")
-    "${pi_args[@]}" "$(cat "$FULL_PROMPT_FILE")" < /dev/null > "$RAW_FILE" 2> "$DIAGNOSTIC_FILE"
     ;;
 esac
 REVIEWER_EXIT=$?

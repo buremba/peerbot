@@ -26,7 +26,7 @@ import {
   canonicalizeOAuthScopeGrant,
   DEFAULT_SCOPES_STRING,
   DISCOVERY_SCOPES,
-  filterToDiscoveryScopes,
+  filterRequestedScopes,
   filterScopeByRole,
   isOAuthScopeGrantWithinRequest,
   NON_PUBLIC_OAUTH_SCOPES,
@@ -719,7 +719,8 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
     );
   }
 
-  params.scope = filterToDiscoveryScopes(params.scope || DEFAULT_SCOPES_STRING) ?? undefined;
+  params.scope =
+    filterRequestedScopes(params.scope || DEFAULT_SCOPES_STRING, DISCOVERY_SCOPES) ?? undefined;
   if (!params.scope) {
     return c.json(
       createOAuthError('invalid_scope', 'No requested scopes are available to OAuth clients'),
@@ -1108,7 +1109,13 @@ oauthRoutes.post('/oauth/device_authorization', async (c) => {
     return c.json(createOAuthError('invalid_scope', 'Requested scope must not be empty'), 400);
   }
 
-  const normalizedDeviceScope = normalizeOAuthScopeRequest(
+  // Same tolerance as /oauth/authorize, and for the same reason: device-code
+  // registration is open (DCR), so this scope string comes from a stranger
+  // too. AVAILABLE_SCOPES rather than DISCOVERY_SCOPES — the device flow may
+  // legitimately grant `device_worker:run`/`connections:token` when a client
+  // asks for them explicitly, and the user's device-code consent is the
+  // boundary that makes that safe.
+  const normalizedDeviceScope = filterRequestedScopes(
     body.scope || DEFAULT_SCOPES_STRING,
     AVAILABLE_SCOPES
   );

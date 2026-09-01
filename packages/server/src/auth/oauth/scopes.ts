@@ -176,25 +176,32 @@ export function stripNonPublicOAuthScopes(scope: string | undefined | null): str
 }
 
 /**
- * Narrow a THIRD-PARTY client's requested scope to what auth-code clients may
- * receive, dropping anything else.
+ * Narrow an UNTRUSTED client's requested scope to what it may receive,
+ * dropping anything else. The tolerant counterpart to
+ * {@link normalizeOAuthScopeRequest}, and deliberately the same shape so the
+ * choice between them is the only difference at a call site.
  *
  * Unknown scopes are IGNORED, not rejected. RFC 6749 §3.3 permits either, but
- * the clients on the other end of this endpoint — Slack, Claude Desktop,
- * Cursor — routinely append `openid`, `email`, `profile` or `offline_access`
- * to whatever discovery advertises. Failing the whole authorization over one
- * unrecognized value breaks the integration outright, where narrowing it just
- * grants less. Rejecting is right for scope strings WE produce (the consent
- * form, the device flow); it is wrong for a stranger's request.
+ * the clients on these endpoints are strangers: registration is open (DCR),
+ * and Slack, Claude Desktop and Cursor all append standard OIDC scopes
+ * (`openid`, `email`, `profile`, `offline_access`) that Lobu has never issued.
+ * Failing a whole authorization over one unrecognized value breaks the
+ * integration outright, where narrowing it just grants less. Dropping a scope
+ * is never a privilege risk — the user still consents to what remains.
  *
- * Returns null only when nothing requested is grantable at all, which is a
- * genuine `invalid_scope`. Supersedes stripNonPublicOAuthScopes here:
- * DISCOVERY_SCOPES already excludes the non-public ones.
+ * Reject instead for scope strings WE generate (the consent form), where an
+ * unknown value is a real error rather than someone else's dialect.
+ *
+ * Returns null only when nothing requested is grantable, a genuine
+ * `invalid_scope`.
  */
-export function filterToDiscoveryScopes(scope: string | undefined | null): string | null {
+export function filterRequestedScopes(
+  scope: string | undefined | null,
+  allowedScopes: readonly string[] = AVAILABLE_SCOPES
+): string | null {
   const requested = normalizeScopeList(scope);
   if (requested.length === 0) return null;
-  const allowed = new Set<string>(DISCOVERY_SCOPES);
+  const allowed = new Set<string>(allowedScopes);
   const kept = requested.filter((value) => allowed.has(value));
   return kept.length > 0 ? kept.join(' ') : null;
 }

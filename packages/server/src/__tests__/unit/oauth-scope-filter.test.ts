@@ -5,7 +5,8 @@ import {
   filterScopeByRole,
   isOAuthScopeGrantWithinRequest,
   NON_PUBLIC_OAUTH_SCOPES,
-  filterToDiscoveryScopes,
+  AVAILABLE_SCOPES,
+  filterRequestedScopes,
   normalizeOAuthScopeRequest,
   stripNonPublicOAuthScopes,
 } from '../../auth/oauth/scopes';
@@ -152,32 +153,52 @@ describe('filterScopeByRole', () => {
   });
 });
 
-describe('filterToDiscoveryScopes', () => {
+describe('filterRequestedScopes', () => {
   // The /oauth/authorize endpoint takes a STRANGER's scope string. Slack,
   // Claude Desktop and Cursor all append standard OIDC scopes that Lobu has
   // never issued. Rejecting the whole request over one of them breaks the
   // integration; narrowing it just grants less.
   it('keeps grantable scopes and ignores OIDC scopes Lobu does not issue', () => {
-    expect(filterToDiscoveryScopes('openid email profile offline_access mcp:read')).toBe(
+    expect(filterRequestedScopes('openid email profile offline_access mcp:read', DISCOVERY_SCOPES)).toBe(
       'mcp:read'
     );
   });
 
   it('drops non-public scopes without needing stripNonPublicOAuthScopes first', () => {
-    expect(filterToDiscoveryScopes('mcp:read device_worker:run connections:token')).toBe(
+    expect(filterRequestedScopes('mcp:read device_worker:run connections:token', DISCOVERY_SCOPES)).toBe(
       'mcp:read'
     );
   });
 
   it('returns null only when nothing requested is grantable', () => {
-    expect(filterToDiscoveryScopes('openid offline_access')).toBeNull();
-    expect(filterToDiscoveryScopes('')).toBeNull();
+    expect(filterRequestedScopes('openid offline_access', DISCOVERY_SCOPES)).toBeNull();
+    expect(filterRequestedScopes('', DISCOVERY_SCOPES)).toBeNull();
   });
 
   // The contrast that motivates the split: the strict form is still correct
   // for scope strings we generate ourselves (consent form, device flow).
   it('is deliberately more permissive than the strict normalizer', () => {
     expect(normalizeOAuthScopeRequest('openid mcp:read', DISCOVERY_SCOPES)).toBeNull();
-    expect(filterToDiscoveryScopes('openid mcp:read')).toBe('mcp:read');
+    expect(filterRequestedScopes('openid mcp:read', DISCOVERY_SCOPES)).toBe('mcp:read');
+  });
+});
+
+describe('filterRequestedScopes on the device flow', () => {
+  // Device-code registration is open (DCR), so this scope string comes from a
+  // stranger too — but the device flow may legitimately grant the non-public
+  // scopes when a client asks for them explicitly, gated by the user's
+  // device-code consent. So it filters against AVAILABLE_SCOPES, not
+  // DISCOVERY_SCOPES.
+  it('keeps explicitly requested non-public scopes that the authorize path drops', () => {
+    expect(filterRequestedScopes('mcp:read connections:token', AVAILABLE_SCOPES)).toBe(
+      'mcp:read connections:token'
+    );
+    expect(filterRequestedScopes('mcp:read connections:token', DISCOVERY_SCOPES)).toBe('mcp:read');
+  });
+
+  it('still ignores OIDC scopes rather than failing the device authorization', () => {
+    expect(filterRequestedScopes('openid offline_access mcp:read', AVAILABLE_SCOPES)).toBe(
+      'mcp:read'
+    );
   });
 });

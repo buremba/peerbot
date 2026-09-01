@@ -18,7 +18,7 @@ import {
   computeCompileConfigHash,
   EXTERNAL_RUNTIME_DEPS,
 } from '@lobu/connector-worker/compile';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 // A bundle from the "pino is external" era: pino left as a bare import that
 // the current runtime image no longer ships.
@@ -68,6 +68,16 @@ beforeEach(() => {
   vi.doMock('../../db/client', () => ({ getDb: () => fakeSql }));
 });
 
+// vitest.config.ts runs this package with `isolate: false` and a single fork,
+// so the module registry is shared by every file in the shard. Without
+// retracting the mock here, whatever this file imported last stays cached with
+// a `getDb()` that returns `fakeSql` — and the next file to import it gets a
+// sql object with no `.begin`, failing far from the cause.
+afterEach(() => {
+  vi.doUnmock('../../db/client');
+  vi.resetModules();
+});
+
 describe('resolveConnectorCode compile-config staleness', () => {
   test('artifact compiled under a different externals config is NOT executed verbatim — recompiled from stored source and persisted', async () => {
     const { resolveConnectorCode } = await import('../ensure-connector-installed');
@@ -78,6 +88,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
     // hatch is recompiling connector_versions.source_code.
     const code = await resolveConnectorCode('zz.staleprobe', {
       id: 1,
+      organization_id: null,
       version: '1.0.0',
       compiled_code: STALE_BUNDLE,
       compile_config_hash: null,
@@ -100,6 +111,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
 
     const code = await resolveConnectorCode('zz.staleprobe', {
       id: 1,
+      organization_id: null,
       version: '1.0.0',
       compiled_code: STALE_BUNDLE,
       compile_config_hash: COMPILE_CONFIG_HASH,
@@ -122,6 +134,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
     const { resolveConnectorCode } = await import('../ensure-connector-installed');
     const code = await resolveConnectorCode('zz.staleprobe', {
       id: 1,
+      organization_id: null,
       version: '1.0.0',
       compiled_code: precompiled.compiledCode,
       compile_config_hash: null,
@@ -139,6 +152,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
     await expect(
       resolveConnectorCode('zz.staleprobe', {
         id: 1,
+        organization_id: null,
         version: '1.0.0',
         compiled_code: STALE_BUNDLE,
         compile_config_hash: 'fingerprint-of-a-previous-pipeline',
@@ -195,5 +209,92 @@ export default class FreshInstallConnector {
     const resolved = await resolveConnectorInstallSource({ sourceCode: TS_SOURCE });
 
     expect(resolved.compileConfigHash).toBe(COMPILE_CONFIG_HASH);
+  });
+});
+
+/**
+ * The Cloud containment property itself, observed rather than inferred.
+ *
+ * Every other test in this branch checks an ADMISSION decision — whether a run
+ * is allowed to start. None of them check the thing the feature actually
+ * promises: that when a run does start under LOBU_CLOUD_MODE, the bytes handed
+ * to the runtime came from the image and not from `connector_versions`.
+ *
+ * These plant a distinguishable payload in the stored row, stamped with the
+ * CURRENT fingerprint so nothing else in resolveConnectorCode would reject it,
+ * and use a key the image really ships. The self-host case is the control: it
+ * proves the planted bytes would otherwise execute verbatim, so the Cloud case
+ * is testing containment and not a tautology.
+ */
+describe('Cloud executes image bytes, never the stored row', () => {
+  // Valid ESM that a compile would accept, carrying a payload no bundled
+  // connector contains.
+  const PLANTED_MARKER = 'PLANTED_DB_BYTES_MUST_NEVER_EXECUTE';
+  const PLANTED_BUNDLE = [
+    'export default class PlantedConnector {',
+    `  marker() { return ${JSON.stringify(PLANTED_MARKER)}; }`,
+    '  async sync() { return {}; }',
+    '  async execute() { return {}; }',
+    '}',
+    '',
+  ].join('\n');
+
+  // `github` is a real bundled connector — findBundledConnectorFile resolves
+  // it and the resolver compiles the on-image file.
+  const sharedRow = {
+    id: 1,
+    organization_id: null,
+    version: '1.3.0',
+    compiled_code: PLANTED_BUNDLE,
+    compile_config_hash: COMPILE_CONFIG_HASH,
+  };
+
+  const originalCloudMode = process.env.LOBU_CLOUD_MODE;
+  afterEach(() => {
+    if (originalCloudMode === undefined) delete process.env.LOBU_CLOUD_MODE;
+    else process.env.LOBU_CLOUD_MODE = originalCloudMode;
+  });
+
+  test('CONTROL — self-host hands the stored bytes straight to the runtime', async () => {
+    delete process.env.LOBU_CLOUD_MODE;
+    const { resolveConnectorCode } = await import('../ensure-connector-installed');
+
+    const code = await resolveConnectorCode('github', sharedRow);
+
+    // A fresh fingerprint means the self-host path returns the row verbatim.
+    // This is what Cloud has to prevent.
+    expect(code).toBe(PLANTED_BUNDLE);
+    expect(code).toContain(PLANTED_MARKER);
+  });
+
+  test('Cloud compiles the image file and the planted bytes never appear', async () => {
+    process.env.LOBU_CLOUD_MODE = 'true';
+    const { resolveConnectorCode } = await import('../ensure-connector-installed');
+
+    const code = await resolveConnectorCode('github', sharedRow);
+
+    expect(code).not.toContain(PLANTED_MARKER);
+    expect(code).not.toBe(PLANTED_BUNDLE);
+    // Positively the real connector, not merely "not the payload".
+    expect(code).toContain('github');
+    expect(code.length).toBeGreaterThan(PLANTED_BUNDLE.length);
+  });
+
+  test('Cloud refuses outright when the row is organization-scoped', async () => {
+    process.env.LOBU_CLOUD_MODE = 'true';
+    const { resolveConnectorCode } = await import('../ensure-connector-installed');
+
+    await expect(
+      resolveConnectorCode('github', { ...sharedRow, organization_id: 'org_planted' })
+    ).rejects.toThrow(/organization-supplied/i);
+  });
+
+  test('Cloud refuses when the image ships no source for the key', async () => {
+    process.env.LOBU_CLOUD_MODE = 'true';
+    const { resolveConnectorCode } = await import('../ensure-connector-installed');
+
+    await expect(
+      resolveConnectorCode('zz.staleprobe', { ...sharedRow, version: '1.0.0' })
+    ).rejects.toThrow(/No bundled source/i);
   });
 });

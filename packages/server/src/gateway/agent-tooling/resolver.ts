@@ -23,6 +23,9 @@ import type {
   ConnectorAgentToolingEnv,
 } from "@lobu/connector-sdk";
 import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
+import { resolveBundledAgentToolingMetadata } from "../../utils/connector-catalog";
+import { isCloudMode } from "../../utils/cloud-mode";
+import { isCloudConnectorArtifactTrusted } from "../../utils/custom-connector-cloud-gate";
 import { getDb } from "../../db/client.js";
 import {
   getAppInstallationAuthMethods,
@@ -139,6 +142,13 @@ interface ToolingConnectionRow {
   installation_provider_instance: string | null;
   installation_app_id: string | null;
   installation_tenant: string | null;
+  artifact_organization_id: string | null;
+  artifact_id: string | number | null;
+  artifact_row_count: number;
+  artifact_has_compiled_code: boolean;
+  artifact_has_source_code: boolean;
+  artifact_source_path: string | null;
+  definition_version: string;
 }
 
 /**
@@ -225,6 +235,13 @@ async function loadToolingConnections(
            c.config,
            cd.agent_tooling,
            cd.auth_schema,
+           cd.version AS definition_version,
+           cv.id AS artifact_id,
+           cv.artifact_row_count,
+           cv.organization_id AS artifact_organization_id,
+           cv.has_compiled_code AS artifact_has_compiled_code,
+           cv.has_source_code AS artifact_has_source_code,
+           cv.source_path AS artifact_source_path,
            -- Lease AUTHORITY, joined only for the fingerprint: revoking or
            -- transferring an installation must invalidate a warm worker that
            -- is still holding a token minted under it. These fields do not
@@ -239,6 +256,23 @@ async function loadToolingConnections(
       ON cd.key = c.connector_key
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
+    -- Only the PRESENCE of bytes is needed, never the bytes: a connector
+    -- bundle is megabytes, and this join runs once per connection row.
+    LEFT JOIN LATERAL (
+      SELECT *
+      FROM (
+        SELECT id, organization_id, source_path,
+               (compiled_code IS NOT NULL) AS has_compiled_code,
+               (source_code IS NOT NULL) AS has_source_code,
+               COUNT(*) OVER ()::int AS artifact_row_count,
+               ROW_NUMBER() OVER (ORDER BY organization_id NULLS LAST) AS artifact_rank
+        FROM connector_versions
+        WHERE connector_key = cd.key
+          AND version = cd.version
+          AND (organization_id = cd.organization_id OR organization_id IS NULL)
+      ) candidates
+      WHERE artifact_rank = 1
+    ) cv ON TRUE
     LEFT JOIN app_installations ai
       -- connections.config is a jsonb blob written by the install path, not a
       -- typed column, so a malformed installation_ref is representable. A bare
@@ -276,11 +310,12 @@ async function loadToolingConnections(
  */
 function toolingIdentityEntry(
   row: ToolingConnectionRow,
-  tooling: ConnectorAgentTooling | null
+  tooling: ConnectorAgentTooling | null,
+  authSchema: unknown,
 ): string {
   const installationRef = parseJsonObject(row.config).installation_ref;
   const method = getAppInstallationAuthMethods(
-    normalizeConnectorAuthSchema(row.auth_schema)
+    normalizeConnectorAuthSchema(authSchema)
   )[0];
   return JSON.stringify([
     String(row.connection_id),
@@ -301,6 +336,56 @@ function toolingIdentityEntry(
     row.installation_tenant,
     tooling,
   ]);
+}
+
+type TrustedToolingMetadata = {
+  tooling: ConnectorAgentTooling | null;
+  authSchema: unknown;
+};
+
+async function resolveToolingMetadata(
+  row: ToolingConnectionRow,
+): Promise<TrustedToolingMetadata | null> {
+  if (!isCloudMode()) {
+    return { tooling: parseAgentTooling(row.agent_tooling), authSchema: row.auth_schema };
+  }
+
+  // Cloud never trusts connector_definitions JSON for a shared artifact: the
+  // packages, domains and auth method an agent runs under come from the image
+  // file itself. An org-supplied, ambiguous or unattested artifact contributes
+  // no tooling at all rather than falling back to the stored declaration.
+  const trusted = isCloudConnectorArtifactTrusted({
+    connectorKey: row.connector_key,
+    facts: {
+      organizationId: row.artifact_organization_id,
+      rowCount: row.artifact_id == null ? 0 : row.artifact_row_count,
+      hasCompiledCode: row.artifact_has_compiled_code,
+      hasSourceCode: row.artifact_has_source_code,
+      sourcePath: row.artifact_source_path,
+    },
+  });
+  if (!trusted) return null;
+
+  // Deliberately stricter than run admission, which is version-agnostic:
+  // pinning admission to an exact key@version broke version-pinned runs and
+  // pre-refresh drift. Tooling can afford the opposite trade-off because a
+  // near-miss here would widen a worker's egress allowlist to another
+  // version's domains. Contributing nothing until the definition re-syncs is
+  // the safe direction; a wrong declaration is not.
+  try {
+    const metadata = await resolveBundledAgentToolingMetadata(
+      row.connector_key,
+      row.definition_version,
+    );
+    if (!metadata) return null;
+    return { tooling: metadata.agentTooling, authSchema: metadata.authSchema };
+  } catch (error) {
+    logger.warn(
+      { connector_key: row.connector_key, version: row.definition_version, error },
+      "Ignoring Cloud agent tooling after bundled metadata resolution failed",
+    );
+    return null;
+  }
 }
 
 /** Digest the per-connection identity entries into a stable fingerprint. */
@@ -347,7 +432,9 @@ export async function resolveAgentToolingDeclaration(params: {
   // `loadToolingConnections` is ORDER BY c.id, so the digest is stable across
   // turns and replicas without sorting here.
   for (const row of await loadToolingConnections(params.organizationId)) {
-    const tooling = parseAgentTooling(row.agent_tooling);
+    const trusted = await resolveToolingMetadata(row);
+    if (!trusted) continue;
+    const { tooling, authSchema } = trusted;
     for (const pkg of tooling?.nix?.packages ?? []) packages.add(pkg);
     for (const domain of tooling?.domains ?? []) domains.add(domain);
 
@@ -355,7 +442,7 @@ export async function resolveAgentToolingDeclaration(params: {
     // tooling while pointing at different installations, and swapping between
     // them changes WHO the agent is. The installation ref therefore has to be
     // in the digest even though it contributes nothing to packages/domains.
-    identity.push(toolingIdentityEntry(row, tooling));
+    identity.push(toolingIdentityEntry(row, tooling, authSchema));
   }
   return {
     packages: [...packages],
@@ -398,10 +485,14 @@ export async function resolveAgentTooling(params: {
   let leaseExpiresAt: Date | null = null;
 
   for (const row of rows) {
-    const tooling = parseAgentTooling(row.agent_tooling);
-    // Recorded for EVERY row, including ones that contribute nothing: removing
-    // a malformed connection still changes the org's tooling identity.
-    identity.push(toolingIdentityEntry(row, tooling));
+    const trusted = await resolveToolingMetadata(row);
+    if (!trusted) continue;
+    const { tooling, authSchema } = trusted;
+    // Recorded for every trusted row, including ones that contribute nothing:
+    // removing a malformed connection still changes the org's tooling identity.
+    // Cloud-untrusted rows are skipped on the declaration side too, so the two
+    // fingerprints stay in agreement.
+    identity.push(toolingIdentityEntry(row, tooling, authSchema));
     if (!tooling) {
       // Covers both a structurally malformed value and one whose every entry
       // was filtered out (an unknown credential tier, an invalid package name,
@@ -464,7 +555,12 @@ export async function resolveAgentTooling(params: {
         continue;
       }
 
-      const subject = buildLeaseSubject(row, connectionId, organizationId);
+      const subject = buildLeaseSubject(
+        row,
+        connectionId,
+        organizationId,
+        authSchema,
+      );
       const lease = await params.leaseRegistry.mintFor(subject, scope);
       if (!lease) continue;
       env[entry.name] = lease.token;
@@ -516,7 +612,8 @@ export async function resolveAgentTooling(params: {
 function buildLeaseSubject(
   row: ToolingConnectionRow,
   connectionId: number,
-  organizationId: string
+  organizationId: string,
+  trustedAuthSchema: unknown,
 ): LeaseSubject {
   const config = parseJsonObject(row.config);
   const rawRef = config.installation_ref;
@@ -532,7 +629,7 @@ function buildLeaseSubject(
       : null;
 
   const method = getAppInstallationAuthMethods(
-    normalizeConnectorAuthSchema(row.auth_schema)
+    normalizeConnectorAuthSchema(trustedAuthSchema)
   )[0];
 
   return {

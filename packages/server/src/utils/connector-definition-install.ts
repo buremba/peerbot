@@ -22,6 +22,7 @@ import { fetchPublicUrl, isInternalUrl } from '../gateway/proxy/ssrf-guard';
 import type { McpOAuthMetadata } from '../mcp-proxy/types';
 import { preflightConnectorRelationshipTypes } from './connector-relationship-declarations';
 import { reconcileConnectorIdentityScopeRegistry } from './connector-identity-scopes';
+import { assertCustomConnectorInstallAllowed } from './custom-connector-cloud-gate';
 
 type SqlClient = ReturnType<typeof getDb>;
 
@@ -214,6 +215,11 @@ export async function resolveConnectorInstallSource(params: {
   sourceCode?: string;
   compiled?: boolean;
 }): Promise<ResolvedConnectorInstallSource> {
+  // This must remain the first operation: Cloud must not read, fetch, flatten,
+  // compile, or import organization-supplied executable bytes.
+  if (params.sourceUri || params.sourceUrl || params.sourceCode || params.compiled) {
+    assertCustomConnectorInstallAllowed();
+  }
   let sourceCode: string;
   let sourcePath: string | null = null;
 

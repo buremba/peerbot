@@ -151,6 +151,8 @@ export function selectedConnectorVersionArtifactSql<TFragment>(
   return sql`
     SELECT
       cv.id AS artifact_row_id,
+      cv.organization_id AS artifact_organization_id,
+      COUNT(*) OVER ()::int AS artifact_row_count,
       (
         cv.source_path LIKE 'device-manifest://%'
         AND cv.compiled_code IS NULL

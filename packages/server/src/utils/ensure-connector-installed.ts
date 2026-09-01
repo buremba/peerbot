@@ -27,6 +27,7 @@ import {
 } from './connector-definition-install';
 import { computeCodeHash } from './compiler-core';
 import logger from './logger';
+import { isCloudMode } from './cloud-mode';
 
 /**
  * The `connector_versions` columns every executing reader must select and
@@ -42,6 +43,7 @@ export type StoredConnectorVersion = {
    * exact row it resolved. NULL when the reader's LEFT JOIN found no row.
    */
   id: number | null;
+  organization_id: string | null;
   version: string | null;
   compiled_code: string | null;
   compile_config_hash: string | null;
@@ -72,6 +74,22 @@ export async function resolveConnectorCode(
   connectorKey: string,
   stored: StoredConnectorVersion | null
 ): Promise<string> {
+  // Cloud executes only bytes the running image attests. Admission of the
+  // artifact happens in the caller (custom-connector-cloud-gate); resolution
+  // refuses every stored-byte fallback below, so an admission gap can still
+  // never put organization-supplied code on a runtime.
+  if (isCloudMode()) {
+    if (stored?.organization_id != null) {
+      throw new Error(
+        `Refusing organization-supplied code for '${connectorKey}' in Lobu Cloud.`
+      );
+    }
+    const imagePath = findBundledConnectorFile(connectorKey);
+    if (!imagePath) {
+      throw new Error(`No bundled source for '${connectorKey}' in Lobu Cloud.`);
+    }
+    return compileConnectorFromFile(imagePath);
+  }
   if (stored?.compiled_code) {
     if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;
     if (stored.id != null) {
@@ -129,14 +147,14 @@ export async function resolveConnectorCodeForKey(
   // active=1.1.0 while an old org-local 1.0.0 row still exists).
   const rows = version
     ? await sql`
-        SELECT id, version, compiled_code, compile_config_hash FROM connector_versions
+        SELECT id, organization_id, version, compiled_code, compile_config_hash FROM connector_versions
         WHERE connector_key = ${connectorKey} AND version = ${version}
           AND (organization_id = ${organizationId} OR organization_id IS NULL)
         ORDER BY organization_id NULLS LAST
         LIMIT 1
       `
     : await sql`
-        SELECT cv.id, cv.version, cv.compiled_code, cv.compile_config_hash
+        SELECT cv.id, cv.organization_id, cv.version, cv.compiled_code, cv.compile_config_hash
         FROM connector_definitions cd
         JOIN connector_versions cv
           ON cv.connector_key = cd.key

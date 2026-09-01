@@ -12,6 +12,7 @@ import {
 	extractConnectorMetadata,
 	NO_CONNECTOR_RUNTIME_ERROR,
 } from "./connector-compiler";
+import type { ConnectorAgentTooling } from "@lobu/connector-sdk";
 import logger from "./logger";
 
 const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
@@ -88,6 +89,66 @@ interface CatalogConnectorDefinition {
 }
 
 const metadataCache = new Map<string, CachedMetadata>();
+
+/**
+ * One cache entry per (image file, selected version): compiling and
+ * extracting is the expensive half, and the resolver asks once per connection
+ * row on every agent turn.
+ */
+const bundledAttestationCache = new Map<
+	string,
+	{ mtimeMs: number; value: BundledAgentToolingMetadata | null }
+>();
+const MAX_BUNDLED_ATTESTATION_CACHE = 64;
+
+export interface BundledAgentToolingMetadata {
+	authSchema: Record<string, unknown> | null;
+	agentTooling: ConnectorAgentTooling | null;
+}
+
+/**
+ * Resolve only agent metadata from the trusted connector file in this image,
+ * compiled once and kept only when it attests the exact selected key@version.
+ * Returns null when the image carries no file for the key, or carries a
+ * different key/version than the one selected.
+ *
+ * This is intentionally not part of the public catalog projection: Cloud
+ * tooling must never trust connector_definitions JSON for a shared artifact.
+ */
+export async function resolveBundledAgentToolingMetadata(
+	connectorKey: string,
+	selectedVersion: string,
+): Promise<BundledAgentToolingMetadata | null> {
+	const filePath = findBundledConnectorFile(connectorKey);
+	if (!filePath) return null;
+	const fileStat = await stat(filePath);
+	const cacheKey = `${filePath}\0${selectedVersion}`;
+	const cached = bundledAttestationCache.get(cacheKey);
+	if (cached?.mtimeMs === fileStat.mtimeMs) return cached.value;
+
+	let value: BundledAgentToolingMetadata | null = null;
+	try {
+		const compiledCode = await compileConnectorFromFile(filePath);
+		const metadata = await extractConnectorMetadata(compiledCode);
+		if (metadata.key === connectorKey && metadata.version === selectedVersion) {
+			value = {
+				authSchema: metadata.authSchema ?? null,
+				agentTooling: metadata.agentTooling ?? null,
+			};
+		}
+	} catch (error) {
+		logger.warn(
+			{ connector_key: connectorKey, version: selectedVersion, error: getErrorMessage(error) },
+			"Bundled connector attestation failed",
+		);
+	}
+	if (bundledAttestationCache.size >= MAX_BUNDLED_ATTESTATION_CACHE) {
+		const oldest = bundledAttestationCache.keys().next().value;
+		if (oldest) bundledAttestationCache.delete(oldest);
+	}
+	bundledAttestationCache.set(cacheKey, { mtimeMs: fileStat.mtimeMs, value });
+	return value;
+}
 
 function normalizeLocalPath(pathValue: string): string {
 	return resolve(pathValue);

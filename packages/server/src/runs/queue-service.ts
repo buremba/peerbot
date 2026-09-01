@@ -35,10 +35,14 @@ import { getDb } from '../db/client';
 import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../config/intervals';
 import type { Env } from '../index';
 import { isCloudMode } from '../utils/cloud-mode';
+import {
+  assertCloudConnectorArtifactTrusted,
+  type ConnectorArtifactFacts,
+} from '../utils/custom-connector-cloud-gate';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
-import { ToolUserError } from '../utils/errors';
+import { ToolUserError, errorMessage } from '../utils/errors';
 import { stableJson } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
@@ -232,7 +236,7 @@ async function softDeleteOrphanFeed(
  * own automation (sync soft-deletes the orphan feed; auth/action throw).
  */
 type ConnectorVersionResolution =
-  | { ok: true; version: string; compiledCode: string | null; sourcePath: string | null }
+  | { ok: true; version: string; facts: ConnectorArtifactFacts }
   | { ok: false; reason: 'no-definition' }
   | { ok: false; reason: 'no-version'; version: string }
   | { ok: false; reason: 'not-runnable'; version: string };
@@ -264,36 +268,67 @@ async function resolveActiveConnectorVersion(
     version = (defRows[0] as { version: string }).version;
   }
 
-  if (!params.requireRunnable) {
-    return { ok: true, version, compiledCode: null, sourcePath: null };
-  }
-
+  // The artifact row is read even when runnability is not required: Cloud
+  // admission classifies the selected artifact, and a run enqueued here is
+  // executed later whether or not the caller pre-checked for code.
   const versionRows = await sql`
-    SELECT compiled_code, source_path FROM connector_versions
+    SELECT (compiled_code IS NOT NULL) AS has_compiled_code,
+           (source_code IS NOT NULL) AS has_source_code,
+           source_path, organization_id,
+           COUNT(*) OVER ()::int AS artifact_row_count
+    FROM connector_versions
     WHERE connector_key = ${params.connectorKey} AND version = ${version}
       AND (organization_id = ${params.orgId} OR organization_id IS NULL)
     ORDER BY organization_id NULLS LAST
     LIMIT 1
   `;
   if (versionRows.length === 0) {
-    return { ok: false, reason: 'no-version', version };
+    // No stored artifact row at all. A runnable caller still needs one; a
+    // caller that only needs the selected version (metadata-only operations,
+    // device-executed connectors that ship no gateway-side artifact) keeps
+    // working, and there are no organization-supplied bytes to admit.
+    if (params.requireRunnable) return { ok: false, reason: 'no-version', version };
+    return {
+      ok: true,
+      version,
+      facts: {
+        organizationId: null,
+        rowCount: 0,
+        hasCompiledCode: false,
+        hasSourceCode: false,
+        sourcePath: null,
+      },
+    };
   }
-  const { compiled_code, source_path } = versionRows[0] as {
-    compiled_code: string | null;
+  // Presence, never the bytes: an artifact bundle is megabytes and nothing
+  // on this path needs its contents.
+  const artifact = versionRows[0] as {
+    has_compiled_code: boolean;
+    has_source_code: boolean;
     source_path: string | null;
+    organization_id: string | null;
+    artifact_row_count: number;
+  };
+  const facts: ConnectorArtifactFacts = {
+    organizationId: artifact.organization_id,
+    rowCount: Number(artifact.artifact_row_count),
+    hasCompiledCode: artifact.has_compiled_code,
+    hasSourceCode: artifact.has_source_code,
+    sourcePath: artifact.source_path,
   };
   // Runnable if ANY runtime code source exists: stored compiled code, a
   // source_path the runtime can compile on demand, or a bundled connector
   // file. Union of all three so no run type (sync/auth/operation) regresses —
   // resolveConnectorCode() resolves from whichever is present at execution.
   if (
-    !compiled_code &&
-    !source_path &&
+    params.requireRunnable &&
+    !facts.hasCompiledCode &&
+    !facts.sourcePath &&
     !findBundledConnectorFile(params.connectorKey)
   ) {
     return { ok: false, reason: 'not-runnable', version };
   }
-  return { ok: true, version, compiledCode: compiled_code, sourcePath: source_path };
+  return { ok: true, version, facts };
 }
 
 /**
@@ -474,6 +509,18 @@ async function createSyncRunWithClient(
     return { ok: false, reason: 'connector_version_unrunnable' };
   }
   const connectorVersion = resolved.version;
+  try {
+    assertCloudConnectorArtifactTrusted({
+      connectorKey: feed.connector_key,
+      facts: resolved.facts,
+    });
+  } catch (error) {
+    logger.warn(
+      { feedId, connector_key: feed.connector_key, error: errorMessage(error) },
+      '[queue] Skipping sync run for custom executable connector under LOBU_CLOUD_MODE'
+    );
+    return { ok: false, reason: 'cloud_restricted' };
+  }
 
   // Manual feeds (schedule null) keep next_run_at null after enqueue so they
   // are not re-picked by the due-feed scheduler.
@@ -1077,6 +1124,10 @@ export async function createAuthRun(params: {
     );
   }
   const connectorVersion = resolved.version;
+  assertCloudConnectorArtifactTrusted({
+    connectorKey: params.connectorKey,
+    facts: resolved.facts,
+  });
 
   try {
     const inserted = await sql`
@@ -1231,6 +1282,10 @@ export async function createConnectorOperationRun(params: {
     );
   }
   const connectorVersion = resolved.version;
+  assertCloudConnectorArtifactTrusted({
+    connectorKey: params.connectorKey,
+    facts: resolved.facts,
+  });
 
   const inserted = await sql<{
     id: number;

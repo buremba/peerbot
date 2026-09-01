@@ -339,7 +339,7 @@ jobs:
 
       - name: example connectors (bun:test)
         # Unbundled connectors live under examples/; mock @lobu/connector-sdk
-        # so Playwright/Baileys never load in CI.
+        # so heavyweight connector dependencies never load in CI.
         run: |
           bun test examples/personal-agent --timeout 30000
           bun test examples/brand-intelligence --timeout 30000

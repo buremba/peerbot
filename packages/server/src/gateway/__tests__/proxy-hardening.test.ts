@@ -16,10 +16,11 @@
  * deadline. Tests for timeout semantics are omitted until the feature is re-added.
  *
  * NOTE: NAT64 address translation (64:ff9b::/96 prefix) IS handled. The IP
- * normalization + reserved-range matcher now live in the shared
- * `gateway/proxy/ssrf-guard.ts` (`isReservedIp`); `isBlockedIpAddress` is the
- * proxy-local alias for it. A 64:ff9b::7f00:1 literal decodes to 127.0.0.1 and
- * is blocked — see http-proxy.test.ts and ssrf-guard-matcher.test.ts.
+ * normalization + reserved-range matcher live in the shared
+ * `@lobu/connector-sdk/ip-reachability` (`isReservedIp`); `isBlockedIpAddress`
+ * is the proxy-local alias for it. A 64:ff9b::7f00:1 literal decodes to
+ * 127.0.0.1 and is blocked — see http-proxy.test.ts and
+ * ssrf-guard-matcher.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";

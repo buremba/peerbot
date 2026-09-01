@@ -82,6 +82,7 @@ import {
 import { recordScheduledExecutionFailure } from "../automations/scheduled-failure-policy";
 import { authorizeRunForWorker } from "./shared";
 import { classifyRunOutcome } from "../runs/run-outcome";
+import { runLeaseFence, runOwnerFence } from "../runs/run-lease";
 
 type DbClient = ReturnType<typeof getDb>;
 type SqlFragment = ReturnType<DbClient>;
@@ -126,8 +127,7 @@ async function finalizeRun(
     SET status = ${status},
         completed_at = current_timestamp${extra}
     WHERE id = ${params.runId}
-      AND status = 'running'
-      AND claimed_by = ${params.workerId}
+      ${runLeaseFence(sql, params.workerId)}
     RETURNING ${returning}
   `) as unknown as Array<Record<string, unknown>>;
 }
@@ -250,8 +250,7 @@ export async function heartbeat(c: Context<{ Bindings: Env }>) {
       SET last_heartbeat_at = current_timestamp,
           items_collected = COALESCE(${progress?.items_collected_so_far ?? null}, items_collected)${agentSessionCheckpoint}
       WHERE id = ${run_id}
-        AND status = 'running'
-        AND claimed_by = ${worker_id}
+        ${runLeaseFence(sql, worker_id)}
       RETURNING id
     `;
 		if (updated.length === 0) {
@@ -1478,8 +1477,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
             exit_signal = ${body.exit_signal ?? null},
             exit_reason = ${body.exit_reason ?? "error_message"}
         WHERE id = ${runId}
-          AND status = 'running'
-          AND claimed_by = ${body.worker_id}
+          ${runLeaseFence(tx, body.worker_id)}
         RETURNING id
       `) as unknown as Array<{ id: number }>;
 			if (failedRows.length === 0) return false;
@@ -1563,8 +1561,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
           exit_signal = ${body.exit_signal ?? null},
           exit_reason = 'cancelled'
       WHERE id = ${runId}
-        AND status = 'running'
-        AND claimed_by = ${body.worker_id}
+        ${runLeaseFence(sql, body.worker_id)}
       RETURNING id
     `) as unknown as Array<{ id: number }>;
 		if (cancelledRows.length === 0) {
@@ -2032,7 +2029,7 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       UPDATE runs
       SET items_collected = ${updated}
       WHERE id = ${req.run_id}
-        AND claimed_by = ${req.worker_id}
+        ${runOwnerFence(sql, req.worker_id)}
     `;
 
 		logger.info(

@@ -83,6 +83,7 @@ import {
   runScopedBrowserActionContext,
   trustedChromeActionInput,
 } from './browser-action-context';
+import { runLeaseFence } from '../runs/run-lease';
 
 // A failure at the DISPATCH stage means the agent never ran: the run is not
 // evidence about the agent regardless of the message, so no message
@@ -134,8 +135,7 @@ export async function failClaimedWorkerRun(params: {
           completed_at = current_timestamp,
           error_message = ${params.errorMessage}
       WHERE id = ${params.runId}
-        AND status = 'running'
-        AND claimed_by = ${params.workerId}
+        ${runLeaseFence(tx, params.workerId)}
       RETURNING organization_id, run_type, approval_status, action_key
     `;
     if (rows.length === 0) return false;
@@ -192,8 +192,7 @@ async function failClaimedDeviceChatRun(params: {
           completed_at = current_timestamp,
           error_message = ${params.errorMessage}
       WHERE id = ${params.runId}
-        AND status = 'running'
-        AND claimed_by = ${params.workerId}
+        ${runLeaseFence(tx, params.workerId)}
         AND run_type = 'chat_message'
         AND queue_name = 'messages'
       RETURNING id

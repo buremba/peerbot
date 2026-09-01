@@ -1,5 +1,5 @@
 import { type DbClient, getDb } from "../../db/client";
-import { runOwnerFence } from "../../runs/inline-lease";
+import { runOwnerFence } from "../../runs/run-lease";
 import { insertEvent } from "../../utils/insert-event";
 
 /**

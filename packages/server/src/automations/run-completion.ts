@@ -14,6 +14,7 @@ import {
 	AUTOMATION_RUN_TYPE,
 	AUTOMATION_RUN_TYPES_PG,
 } from "../runs/run-types.js";
+import { runLeaseFence } from "../runs/run-lease";
 
 type AutomationTerminalResult =
 	| { ok: true }
@@ -99,8 +100,7 @@ export async function bumpDeviceFinalizeNudge(
         output_tail = ${outputTail},
         error_message = ${`Device CLI attempt ${nextNudgeCount}: completeWindow not called — resume allowed`}
     WHERE id = ${runId}
-      AND status = 'running'
-      AND claimed_by = ${workerId}
+      ${runLeaseFence(sql, workerId)}
       AND COALESCE((approved_input->>'finalize_nudge_count')::int, 0)
           = ${nextNudgeCount - 1}
     RETURNING id

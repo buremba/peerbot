@@ -69,11 +69,21 @@ assert_present "$openai_embeddings" 'optional: false'
 disabled_render="$(render --set embeddings.enabled=false --set secretName=lobu-shared)"
 assert_absent "$disabled_render" 'app.kubernetes.io/component: embeddings'
 
-if render --set embeddings.env.PORT=9999 >/tmp/lobu-embeddings-invalid-render.yaml 2>&1; then
+# An operator who clears the block entirely leaves `embeddings.env` null, not
+# an empty map. The template's `default (dict)` guard is what keeps that from
+# erroring on a range over nil, and `--set` cannot produce it.
+null_env_values="$(mktemp)"
+invalid_render="$(mktemp)"
+trap 'rm -f "$null_env_values" "$invalid_render"' EXIT
+printf 'secretName: lobu-shared\nembeddings:\n  env:\n' >"$null_env_values"
+null_env_embeddings="$(deployment <<<"$(render -f "$null_env_values")")"
+assert_present "$null_env_embeddings" 'name: EMBEDDINGS_SERVICE_TOKEN'
+assert_absent "$null_env_embeddings" '^          envFrom:'
+
+if render --set embeddings.env.PORT=9999 >"$invalid_render" 2>&1; then
   echo "expected chart-owned embeddings.env override to fail" >&2
   exit 1
 fi
-grep -q 'embeddings.env cannot override chart-owned PORT' /tmp/lobu-embeddings-invalid-render.yaml
-rm -f /tmp/lobu-embeddings-invalid-render.yaml
+grep -q 'embeddings.env cannot override chart-owned PORT' "$invalid_render"
 
 echo "embeddings secret projection renders default/local/openai/disabled paths without shared-secret leakage"

@@ -295,6 +295,15 @@ embeddings:
       timeoutSeconds: 15
       failureThreshold: 8
 
+  # Every non-credential embeddings setting lives HERE, not in the shared
+  # secret. The deployment projects exactly EMBEDDINGS_SERVICE_TOKEN and
+  # EMBEDDINGS_API_KEY out of `secretName`, so a release that used to supply
+  # EMBEDDINGS_BACKEND / MODEL / API_URL / DIMENSIONS / BATCH_SIZE / NORMALIZE /
+  # TIMEOUT_MS through that secret stops receiving them. That degrades silently:
+  # the service falls back to the `local` backend and writes vectors of the
+  # wrong dimension rather than failing. An existing release carrying any of
+  # those keys in its shared secret has to move them into this map before the
+  # chart upgrade, not after.
   env: {}
 
   service:

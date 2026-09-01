@@ -572,6 +572,16 @@ function scanCanonicalVocabulary(violations: Violation[]): void {
           // spellings. Match member access only, so an owned key or prose using
           // the same words still fails the canonical vocabulary gate.
           .replace(/\.(?:collectionBehavior|animationBehavior)\b/gi, "")
+          // Chrome owns these exact `chrome.sidePanel` identifiers. Unlike the
+          // AppKit names this matches the bare token, not just member access:
+          // the extension stubs the setter as a bare object key in tests, and
+          // no owned surface is spelled exactly this. Banning them is what
+          // made #863 rename `setPanelBehavior` to `setPanelAutomation` — a
+          // name no Chrome build ships — which left the Owletto toolbar icon
+          // silently unable to open the side panel
+          // (packages/owletto/apps/chrome/side-panel-action-click.js).
+          // A retired term is ours to retire; a platform's identifier is not.
+          .replace(/\b(?:setPanelBehavior|getPanelBehavior)\b/g, "")
           .replace(/\bscroll-behavior\b/g, "");
         if (RETIRED_CANONICAL_VOCABULARY.test(canonicalLine)) {
           violations.push({

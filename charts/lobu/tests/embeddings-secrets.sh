@@ -7,10 +7,15 @@ render() {
   helm template lobu "$chart_dir" --namespace lobu "$@"
 }
 
+# The Service and the Deployment both carry `metadata.name: lobu-embeddings`, so
+# matching the name alone concatenates two documents and lets a present-assertion
+# be satisfied by the wrong one. Track `kind` and open the window only under the
+# Deployment.
 deployment() {
   awk '
-    /^---$/ { keep = 0 }
-    /^  name: lobu-embeddings$/ { keep = 1 }
+    /^---$/ { kind = ""; keep = 0 }
+    /^kind: / { kind = $2 }
+    /^  name: lobu-embeddings$/ { if (kind == "Deployment") keep = 1 }
     keep { print }
   '
 }

@@ -180,15 +180,57 @@ export function buildTarball(root: string): string {
 
 /**
  * Auth without asking anyone to set up a second credential: if DAYTONA_API_KEY
- * is not set, reuse the JWT the `daytona` CLI already stores after `daytona
- * login`. The SDK accepts jwtToken + organizationId directly, so a developer
- * who can run `daytona list` can run this with no extra configuration.
+ * is not set, reuse whatever the `daytona` CLI already stored. The CLI writes
+ * TWO shapes depending on how the developer authenticated, and both are valid:
+ * `daytona login` stores a browser JWT under `api.token.accessToken`, while
+ * `daytona login --api-key` stores a long-lived key under `api.key`. Reading
+ * only the JWT shape reports "No Daytona credentials" at an authenticated
+ * machine, which reads as a login failure rather than an unread field.
  */
-function cliCredentials(): {
-  jwtToken: string;
-  organizationId: string;
-  apiUrl?: string;
-} | null {
+export type DaytonaCredentials =
+  | { apiKey: string; apiUrl?: string }
+  | { jwtToken: string; organizationId: string; apiUrl?: string };
+
+/** Split from disk access so both credential shapes are testable. */
+export function credentialsFromConfig(cfg: unknown): DaytonaCredentials | null {
+  const root = cfg as {
+    activeProfile?: string;
+    profiles?: {
+      id?: string;
+      activeOrganizationId?: string;
+      api?: {
+        url?: string;
+        key?: string;
+        token?: { accessToken?: string; expiresAt?: string };
+      };
+    }[];
+  };
+  const profiles = root?.profiles ?? [];
+  const profile =
+    profiles.find((p) => p.id === root?.activeProfile) ?? profiles[0];
+  if (!profile) return null;
+  const apiUrl = profile.api?.url;
+
+  const token = profile.api?.token;
+  if (token?.accessToken && profile.activeOrganizationId) {
+    if (token.expiresAt && new Date(token.expiresAt).getTime() < Date.now()) {
+      console.error("daytona CLI token has expired — run: daytona login");
+      process.exit(1);
+    }
+    return {
+      jwtToken: token.accessToken,
+      organizationId: profile.activeOrganizationId,
+      apiUrl,
+    };
+  }
+
+  // An API key carries its own org scope, so no activeOrganizationId is needed.
+  if (profile.api?.key) return { apiKey: profile.api.key, apiUrl };
+
+  return null;
+}
+
+function cliCredentials(): DaytonaCredentials | null {
   const cfgPath = join(
     homedir(),
     "Library/Application Support/daytona/config.json"
@@ -197,22 +239,7 @@ function cliCredentials(): {
   const path = existsSync(cfgPath) ? cfgPath : existsSync(xdg) ? xdg : null;
   if (!path) return null;
   try {
-    const cfg = JSON.parse(readFileSync(path, "utf8"));
-    const profile =
-      (cfg.profiles ?? []).find(
-        (p: { id?: string }) => p.id === cfg.activeProfile
-      ) ?? (cfg.profiles ?? [])[0];
-    const token = profile?.api?.token;
-    if (!token?.accessToken || !profile?.activeOrganizationId) return null;
-    if (token.expiresAt && new Date(token.expiresAt).getTime() < Date.now()) {
-      console.error("daytona CLI token has expired — run: daytona login");
-      process.exit(1);
-    }
-    return {
-      jwtToken: token.accessToken,
-      organizationId: profile.activeOrganizationId,
-      apiUrl: profile?.api?.url,
-    };
+    return credentialsFromConfig(JSON.parse(readFileSync(path, "utf8")));
   } catch {
     return null;
   }

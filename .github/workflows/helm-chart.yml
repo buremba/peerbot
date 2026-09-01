@@ -131,6 +131,9 @@ jobs:
       - name: Artifact storage topology fails closed
         run: bash charts/lobu/tests/artifacts-topology.sh
 
+      - name: Embeddings secret projection stays minimal
+        run: bash charts/lobu/tests/embeddings-secrets.sh
+
   publish:
     needs: lint
     if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}

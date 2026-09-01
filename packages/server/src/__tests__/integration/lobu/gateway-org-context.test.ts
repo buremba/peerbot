@@ -32,7 +32,6 @@ import {
   createLobuAuthBridge,
   createLobuOrgContextMiddleware,
 } from "../../../lobu/gateway";
-import { clearMultiTenantCachesForTests } from "../../../workspace/multi-tenant-caches";
 import { cleanupTestDatabase } from "../../setup/test-db";
 import {
   addUserToOrganization,
@@ -119,7 +118,6 @@ describe("Lobu embedded Agent API org-context middleware (x-lobu-org)", () => {
   });
 
   beforeEach(() => {
-    clearMultiTenantCachesForTests();
     patApp = buildPatApp();
   });
 

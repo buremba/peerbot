@@ -50,4 +50,17 @@ describe('multi-tenant resolveAuth: authSource per branch', () => {
       "if (overrides.authSource !== undefined) c.set('authSource', overrides.authSource);"
     );
   });
+
+  it('does not authorize from process-local membership, org, owner, or session caches', () => {
+    for (const cacheName of [
+      'memberRoleCache',
+      'orgSlugCache',
+      'orgIdSlugCache',
+      'ownerCache',
+      'sessionCache',
+    ]) {
+      expect(SOURCE).not.toContain(cacheName);
+    }
+    expect(SOURCE).toContain('const session = await resolveSession(auth, c.req.raw.headers);');
+  });
 });

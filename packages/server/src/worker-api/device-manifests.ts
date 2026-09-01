@@ -153,6 +153,31 @@ function validateDeviceConnectorManifestsInternal(
       if (!manifest.runtime.platforms.includes(platform)) {
         throw new Error(`runtime.platforms must include '${platform}'`);
       }
+      if (
+        manifest.runtime.execution !== undefined &&
+        manifest.runtime.execution !== 'bridge' &&
+        manifest.runtime.execution !== 'daemon_builtin'
+      ) {
+        throw new Error(`unsupported runtime.execution '${String(manifest.runtime.execution)}'`);
+      }
+      // Only an EXPLICIT contradiction is rejected. `execution` is absent on
+      // every headless manifest registered before this field existed
+      // (os.shell@0.1.0 declared `runtime: { platforms: ['headless'] }` and
+      // nothing else), and this validator also runs over ALREADY-STORED
+      // manifests to rebuild claim authority — so rejecting an absent value
+      // would strip os.shell from every headless device the moment the gateway
+      // deploys, ahead of any daemon upgrade. An absent value keeps its
+      // pre-existing meaning (ordinary manifest-backed device work over the
+      // compiled runtime); `daemon_builtin` routing is opt-in at 0.2.0.
+      if (
+        platform === 'headless' &&
+        manifest.runtime.execution !== undefined &&
+        manifest.runtime.execution !== 'daemon_builtin'
+      ) {
+        throw new Error(
+          `headless device manifests may not declare runtime.execution='${String(manifest.runtime.execution)}'`
+        );
+      }
       const capAuth = authorizeCapabilities(platform, [manifest.required_capability]);
       if (!capAuth.authorized.includes(manifest.required_capability)) {
         throw new Error(`required_capability '${manifest.required_capability}' is not allowed for '${platform}'`);
@@ -366,6 +391,12 @@ export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
         capabilities,
         manifests: [stored.manifest],
       },
+      // Legacy feed schemas without `operations` stay acceptable here (#3132):
+      // this path revalidates an ALREADY-STORED manifest, and a device that
+      // registered before operations existed must keep its claim authorization.
+      // Same reasoning covers an absent headless `runtime.execution` above —
+      // both are fields a device could not have known to send when it
+      // registered, and neither can be a reason to revoke its claim.
       true
     );
     const validated = validation.manifests[0];
@@ -588,9 +619,9 @@ function connectorKeyAllowedForPlatform(platform: string, key: string): boolean 
       isChromeNamespaceConnectorKey(key) || isLegacyNativeChromeExtensionConnectorKey(key)
     );
   }
-  // Headless devices (servers/VMs/pods, the herdr box) serve the shell
-  // connector: bundled `os.shell` executes `bash -lc` and returns structured
-  // output. Keep this list tight - nothing browser/OS-UI based.
+  // Headless devices (servers/VMs/pods) serve the shell connector: `os.shell`
+  // executes `bash --noprofile --norc -c` and returns structured output.
+  // Keep this list tight - nothing browser/OS-UI based.
   if (platform === 'headless') {
     return key === 'os.shell';
   }

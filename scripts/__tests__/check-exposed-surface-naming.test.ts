@@ -116,6 +116,25 @@ describe("check-exposed-surface-naming", () => {
     expect(runGuard()).toBe(0);
   });
 
+  it("allows the exact Chrome sidePanel identifiers", () => {
+    // The extension calls these as members and stubs them as bare property
+    // keys, so both spellings have to survive the gate. Without this, keeping
+    // the calling file scanned means renaming a Chrome API — which is how #863
+    // broke the toolbar icon.
+    create(
+      GENERIC_BEHAVIOR_PROBE_FILE,
+      "chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })\n" +
+        "await chrome.sidePanel.getPanelBehavior()\n" +
+        "const stub = { setPanelBehavior: fake }\n"
+    );
+    expect(runGuard()).toBe(0);
+  });
+
+  it("does not exempt an owned key that merely resembles the Chrome name", () => {
+    create(GENERIC_BEHAVIOR_PROBE_FILE, '{"panelBehavior":"owned"}\n');
+    expect(runGuard()).toBe(1);
+  });
+
   it("does not exempt an owned AppKit-shaped behavior key", () => {
     create(GENERIC_BEHAVIOR_PROBE_FILE, '{"collectionBehavior":"owned"}\n');
     expect(runGuard()).toBe(1);

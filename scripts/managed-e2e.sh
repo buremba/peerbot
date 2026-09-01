@@ -38,6 +38,8 @@ WT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_HARNESS="$WT/scripts/sdk-e2e"
 HARNESS="$WT/scripts/managed-e2e"
 LOBU="node $WT/packages/cli/bin/lobu.js"
+# shellcheck source=scripts/lib/process-cleanup.sh
+. "$WT/scripts/lib/process-cleanup.sh"
 
 CLOUD_PORT="${CLOUD_PORT:-8901}"
 LOCAL_PORT="${LOCAL_PORT:-8902}"
@@ -75,14 +77,12 @@ kill_pg_orphans() {
   pkill -9 -f "embedded-postgres/darwin-arm64/native/bin/postgres" 2>/dev/null || true
   pkill -9 -f "embedded-postgres/.*/native/bin/postgres" 2>/dev/null || true
 }
-free_port() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | xargs -r kill -9 2>/dev/null || true; }
-
 cleanup() {
   [ -n "$LOCAL_PID" ] && kill -9 "$LOCAL_PID" 2>/dev/null || true
   [ -n "$CLOUD_PID" ] && kill -9 "$CLOUD_PID" 2>/dev/null || true
   [ -n "$MOCK_PID" ] && kill -9 "$MOCK_PID" 2>/dev/null || true
   [ -n "$DATA_PID" ] && kill -9 "$DATA_PID" 2>/dev/null || true
-  for p in "$CLOUD_PORT" "$LOCAL_PORT" "$MOCK_PORT" "$MOCK_DATA_PORT" "$CLOUD_PG_PORT" "$LOCAL_PG_PORT"; do free_port "$p"; done
+  for p in "$CLOUD_PORT" "$LOCAL_PORT" "$MOCK_PORT" "$MOCK_DATA_PORT" "$CLOUD_PG_PORT" "$LOCAL_PG_PORT"; do lobu_kill_listening_port "$p"; done
   kill_pg_orphans
 }
 trap cleanup EXIT

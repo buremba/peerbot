@@ -1,10 +1,14 @@
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../db/client";
+import { fetchCredentialedPublicUrl } from "../gateway/proxy/ssrf-guard";
+import { LOST_LEASE_MESSAGE, runLeaseFence } from "../runs/run-lease";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
+import { readResponseTextWithLimit } from "../utils/bounded-response";
 import { stripNul, stripNulDeep } from "../utils/strip-nul";
 import type { OperationDescriptor } from "./types";
 
 const DEFAULT_HTTP_OPERATION_FETCH_TIMEOUT_MS = 120_000;
+const MAX_HTTP_OPERATION_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 export type HttpOperationExecutionResult =
 	| {
@@ -73,13 +77,20 @@ async function failRun(
 	runId: number,
 	organizationId: string,
 	errorMessage: string,
-	deferTerminalWrite = false,
+	deferTerminalWrite: boolean,
+	claimedBy: string,
 ): Promise<HttpOperationExecutionResult> {
 	// Upstream response text reaches here through getErrorMessage, so the
 	// message can carry NUL (0x00) that Postgres rejects (see streamContent).
 	const message = stripNul(errorMessage);
 	if (!deferTerminalWrite) {
-		await getDb()`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		// Same lease fence as the completed/failed lanes below: a config refusal
+		// or a thrown request still terminalizes the run, and must not overwrite
+		// an outcome the reaper or a re-claim already recorded.
+		const sql = getDb();
+		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
+		if (rows.length === 0)
+			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}
 	return { status: "failed", error_message: message };
 }
@@ -119,6 +130,30 @@ function requestAbortSignal(parent?: AbortSignal): {
 	};
 }
 
+async function readHttpOperationResponse(response: Response): Promise<string> {
+	return stripNul(
+		await readResponseTextWithLimit(
+			response,
+			MAX_HTTP_OPERATION_RESPONSE_BYTES,
+			"HTTP operation response too large",
+		),
+	);
+}
+
+function fetchAuthenticatedHttpOperation(
+	url: string | URL,
+	init: RequestInit,
+): Promise<Response> {
+	return fetchCredentialedPublicUrl(url, init);
+}
+
+export const __httpOperationTestOnly = {
+	fetchAuthenticatedHttpOperation,
+	MAX_HTTP_OPERATION_RESPONSE_BYTES,
+	readHttpOperationResponse,
+	requestAbortSignal,
+};
+
 /** Execute one OpenAPI-derived HTTP operation and finalize its run row. */
 export async function executeHttpOperation(
 	runId: number,
@@ -126,8 +161,9 @@ export async function executeHttpOperation(
 	connection: HttpOperationConnection,
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
-	abortSignal?: AbortSignal,
-	deferTerminalWrite = false,
+	abortSignal: AbortSignal | undefined,
+	deferTerminalWrite: boolean,
+	claimedBy: string,
 ): Promise<HttpOperationExecutionResult> {
 	const sql = getDb();
 	if (operation.backend_config.backend !== "http_operation") {
@@ -136,6 +172,7 @@ export async function executeHttpOperation(
 			organizationId,
 			"Invalid HTTP operation backend config",
 			deferTerminalWrite,
+			claimedBy,
 		);
 	}
 
@@ -150,6 +187,7 @@ export async function executeHttpOperation(
 				organizationId,
 				`No active OAuth credentials found for '${connection.connector_key}'.`,
 				deferTerminalWrite,
+				claimedBy,
 			);
 		}
 
@@ -196,7 +234,7 @@ export async function executeHttpOperation(
 		let response: Response;
 		let text: string;
 		try {
-			response = await fetch(url, {
+			response = await fetchAuthenticatedHttpOperation(url, {
 				method: operation.backend_config.method,
 				headers,
 				body: ["GET", "HEAD"].includes(operation.backend_config.method)
@@ -205,7 +243,7 @@ export async function executeHttpOperation(
 				redirect: "manual",
 				signal: requestAbort.signal,
 			});
-			text = stripNul(await response.text());
+			text = await readHttpOperationResponse(response);
 		} finally {
 			requestAbort.cleanup();
 		}
@@ -239,13 +277,17 @@ export async function executeHttpOperation(
 			const errorText =
 				typeof parsedBody === "string" ? parsedBody : `HTTP ${response.status}`;
 			if (!deferTerminalWrite) {
-				await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+				const updated = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), action_output = ${sql.json(output)}, error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
+				if (updated.length === 0)
+					return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 			}
 			return { status: "failed", error_message: errorText, output };
 		}
 
 		if (!deferTerminalWrite) {
-			await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+			const updated = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId} ${runLeaseFence(sql, claimedBy)} RETURNING id`;
+			if (updated.length === 0)
+				return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 		}
 		return { status: "completed", output, metadata };
 	} catch (error) {
@@ -254,6 +296,7 @@ export async function executeHttpOperation(
 			organizationId,
 			getErrorMessage(error),
 			deferTerminalWrite,
+			claimedBy,
 		);
 	}
 }

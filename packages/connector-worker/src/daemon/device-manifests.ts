@@ -2,22 +2,23 @@
  * Device manifests the connector-worker daemon declares on poll, keyed by
  * platform. A headless device (server/VM/pod) advertises the os.shell
  * connector so an org can create a connection pinned to it and run shell
- * commands (executed by the bundled os.shell connector via bash -lc).
+ * commands through the daemon's built-in shell backend.
  */
 
 /**
  * os.shell manifest for headless platforms. Mirrors the macOS manifest's
  * run action (packages/owletto/apps/mac/.../os_shell.json) but targets
- * linux, where the connector-worker daemon (not a native bridge) serves it.
+ * headless workers, where the connector-worker daemon (not a native bridge or
+ * dynamically compiled connector) serves it.
  */
 export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
   key: 'os.shell',
-  version: '0.1.0',
+  version: '0.2.0',
   name: 'Shell',
   description:
-    'Run shell commands on this device through Lobu. Returns structured stdout/stderr/exit_code. Commands run in the device\'s real environment (host PATH, files) - gate with approval.',
+    'Run shell commands on this device through Lobu. Returns structured stdout/stderr/exit_code. Commands see the device\'s real filesystem and PATH but a minimal environment (no profile, no inherited secrets) - gate with approval.',
   required_capability: 'os.shell',
-  runtime: { platforms: ['headless'] },
+  runtime: { platforms: ['headless'], execution: 'daemon_builtin' },
   auth_schema: { methods: [{ type: 'none' }] },
   feeds_schema: {},
   actions_schema: {
@@ -26,7 +27,7 @@ export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
       kind: 'write',
       name: 'Run command',
       description:
-        'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash -lc`, so pipes, redirects, and && chains work. Prefer one focused command per call.',
+        'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash --noprofile --norc -c`, so pipes, redirects, and && chains work, but shell profile/rc files are NOT loaded - use absolute paths rather than relying on aliases or a login PATH. Prefer one focused command per call.',
       requiresApproval: true,
       inputSchema: {
         type: 'object',
@@ -38,7 +39,7 @@ export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
             maxLength: 20000,
           },
           cwd: { type: 'string' },
-          timeout_ms: { type: 'integer', minimum: 100, maximum: 300000, default: 60000 },
+          timeout_ms: { type: 'integer', minimum: 100, maximum: 150000, default: 60000 },
           stdin: { type: 'string', maxLength: 1000000 },
         },
         additionalProperties: false,

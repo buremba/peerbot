@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { COMPILE_CONFIG_HASH, flattenConnectorSourceFromFile } from '@lobu/connector-worker/compile';
 import type { getDb } from '../db/client';
 import { computeCodeHash } from './compiler-core';
+import { cancelResponseBody, readResponseTextWithLimit } from './bounded-response';
 import {
   compileConnectorFromFile,
   getDefaultConnectorCatalogDir,
@@ -17,7 +18,7 @@ import {
   extractConnectorMetadata,
   validateConnectorMetadata,
 } from './connector-compiler';
-import { isInternalUrl } from '../gateway/proxy/ssrf-guard';
+import { fetchPublicUrl, isInternalUrl } from '../gateway/proxy/ssrf-guard';
 import type { McpOAuthMetadata } from '../mcp-proxy/types';
 import { preflightConnectorRelationshipTypes } from './connector-relationship-declarations';
 import { reconcileConnectorIdentityScopeRegistry } from './connector-identity-scopes';
@@ -168,26 +169,6 @@ async function assertAllowedConnectorSourceUrl(rawUrl: string): Promise<URL> {
   return url;
 }
 
-/** Read a response body, aborting as soon as it exceeds the byte cap (content-length can lie / be absent). */
-async function readBodyWithCap(res: Response, maxBytes: number): Promise<string> {
-  const reader = res.body?.getReader();
-  if (!reader) return '';
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      throw new Error(`Connector source too large (max ${maxBytes} bytes).`);
-    }
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks).toString('utf-8');
-}
-
 /**
  * Fetch connector source with a single timeout covering the whole exchange
  * (headers + body), manual redirect following that re-validates EVERY hop with
@@ -199,23 +180,26 @@ async function fetchConnectorSource(initialUrl: URL): Promise<string> {
   try {
     let url = initialUrl;
     for (let hop = 0; hop <= MAX_CONNECTOR_SOURCE_REDIRECTS; hop++) {
-      const res = await fetch(url, { signal: controller.signal, redirect: 'manual' });
+      const res = await fetchPublicUrl(url, {
+        signal: controller.signal,
+        redirect: 'manual',
+      });
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get('location');
+        await cancelResponseBody(res);
         if (!location) throw new Error(`Redirect from ${url.toString()} had no Location header.`);
         url = await assertAllowedConnectorSourceUrl(new URL(location, url).toString());
         continue;
       }
       if (!res.ok) {
+        await cancelResponseBody(res);
         throw new Error(`Failed to fetch source from ${url.toString()}: ${res.status}`);
       }
-      const declaredLength = Number(res.headers.get('content-length') ?? '0');
-      if (Number.isFinite(declaredLength) && declaredLength > MAX_CONNECTOR_SOURCE_BYTES) {
-        throw new Error(
-          `Connector source too large: ${declaredLength} bytes (max ${MAX_CONNECTOR_SOURCE_BYTES}).`
-        );
-      }
-      return await readBodyWithCap(res, MAX_CONNECTOR_SOURCE_BYTES);
+      return await readResponseTextWithLimit(
+        res,
+        MAX_CONNECTOR_SOURCE_BYTES,
+        'Connector source too large'
+      );
     }
     throw new Error(
       `Too many redirects fetching connector source (max ${MAX_CONNECTOR_SOURCE_REDIRECTS}).`

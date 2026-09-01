@@ -12,7 +12,7 @@
  * Proven here without a real external provider:
  *
  *   1. A public org has a connector (whose oauth method `tokenUrl` points at a
- *      LOCAL fake provider), a managed `oauth_app` (fake client_id/secret), an
+ *      scoped fake public provider), a managed `oauth_app` (fake client_id/secret), an
  *      `oauth_account` profile + `account` row holding an EXPIRING access token
  *      + a refresh token, and a connection OWNED by a member (`created_by`).
  *   2. `POST /oauth/connection-token` is PAT-gated. The owner's PAT → the cloud
@@ -72,9 +72,10 @@ const REFRESHED = {
 const STALE_ACCESS_TOKEN = "stale-access-token-000";
 const MANAGED_SECRET = "managed-secret";
 
-// Fake OAuth provider token endpoint the public org's connector points at.
-let providerServer: ReturnType<typeof serve> | null = null;
-let providerTokenUrl = "";
+// Connector-controlled endpoints must remain public even in tests. A scoped
+// fetch stub serves this URL while delegating every non-provider call.
+const PROVIDER_TOKEN_URL = "https://oauth-provider.example.com/token";
+const originalFetch = globalThis.fetch;
 let lastRefreshBody: Record<string, string> = {};
 
 // Cloud app served on a real port so the local resolver's `fetch` reaches it.
@@ -93,28 +94,6 @@ function buildCloudApp(): Hono<{ Bindings: Env }> {
 
 beforeAll(async () => {
 	await initWorkspaceProvider();
-
-	// Fake provider: a refresh_token grant returns canned refreshed tokens. Record
-	// the form body so we can assert the cloud authed with its own secret.
-	const providerApp = new Hono();
-	providerApp.post("/token", async (c) => {
-		const text = await c.req.text();
-		lastRefreshBody = Object.fromEntries(new URLSearchParams(text));
-		return c.json({
-			access_token: REFRESHED.access_token,
-			refresh_token: REFRESHED.refresh_token,
-			expires_in: REFRESHED.expires_in,
-		});
-	});
-	providerServer = await new Promise((resolve) => {
-		const s = serve(
-			{ fetch: providerApp.fetch, hostname: "127.0.0.1", port: 0 },
-			(info) => {
-				providerTokenUrl = `http://127.0.0.1:${info.port}/token`;
-				resolve(s);
-			},
-		);
-	});
 
 	// Cloud app on a real port (Env carries DATABASE_URL so handlers hit test DB).
 	const cloudApp = buildCloudApp();
@@ -142,11 +121,30 @@ afterAll(async () => {
 	if (savedCloudPat === undefined) delete process.env.LOBU_CLOUD_PAT;
 	else process.env.LOBU_CLOUD_PAT = savedCloudPat;
 	await new Promise<void>((done) =>
-		providerServer ? providerServer.close(() => done()) : done(),
-	);
-	await new Promise<void>((done) =>
 		cloudServer ? cloudServer.close(() => done()) : done(),
 	);
+});
+
+beforeEach(() => {
+	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url =
+			typeof input === "string"
+				? input
+				: input instanceof URL
+					? input.href
+					: input.url;
+		if (url === PROVIDER_TOKEN_URL) {
+			lastRefreshBody = Object.fromEntries(
+				new URLSearchParams(typeof init?.body === "string" ? init.body : ""),
+			);
+			return Response.json(REFRESHED);
+		}
+		return originalFetch(input, init);
+	}) as typeof fetch;
+});
+
+afterEach(() => {
+	globalThis.fetch = originalFetch;
 });
 
 interface SeededManagedConnection {
@@ -202,7 +200,7 @@ async function seedManagedConnection(
 					provider: "demo",
 					requiredScopes: ["read"],
 					authorizationUrl: "https://demo.example/authorize",
-					tokenUrl: providerTokenUrl,
+					tokenUrl: PROVIDER_TOKEN_URL,
 					tokenEndpointAuthMethod: "client_secret_post",
 					clientIdKey: "DEMO_CLIENT_ID",
 					clientSecretKey: "DEMO_CLIENT_SECRET",

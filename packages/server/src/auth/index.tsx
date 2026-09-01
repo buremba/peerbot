@@ -54,8 +54,10 @@ function gravatarUrl(email: string): string {
 	return `https://www.gravatar.com/avatar/${hash}?d=retro&s=256`;
 }
 
-// Cache betterAuth instances per organizationId to avoid re-creating on every request.
-// The config (OAuth providers) rarely changes, so 60s TTL is safe.
+// This cache contains only Better Auth wiring and provider configuration. It is
+// never consulted for session validity, organization membership, role,
+// slug/visibility, or owner resolution; those decisions read PostgreSQL at
+// the authorization boundary.
 const authCache = new TtlCache<ReturnType<typeof betterAuth>>(60_000);
 
 /**
@@ -75,8 +77,8 @@ export function clearAuthCacheForTests(): void {
  * OAuth providers are dynamically loaded from connector_definitions where login_enabled=true.
  * This allows enabling/disabling login providers via the admin UI without code changes.
  */
-// Return type is annotated explicitly (matching `authCache`'s element type)
-// rather than inferred: the inferred `betterAuth({...})` instance type inlines
+// Return type is annotated explicitly rather than inferred: the inferred
+// `betterAuth({...})` instance type inlines
 // a reference to better-auth's bundled `zod/v4/core`, which is non-portable in
 // a clean (Docker) install layout and trips TS2742 during `tsc --noEmit`.
 export async function createAuth(
@@ -381,10 +383,6 @@ export async function createAuth(
 								image: user.image ?? undefined,
 								role: member.role,
 							});
-							const { invalidateMembershipRoleCache } = await import(
-								"../workspace/multi-tenant"
-							);
-							invalidateMembershipRoleCache(org.id, user.id);
 							recordLifecycleEvent({
 								organizationId: org.id,
 								entityType: "member",
@@ -465,10 +463,6 @@ export async function createAuth(
 								role: member.role,
 								status: "active",
 							});
-							const { invalidateMembershipRoleCache } = await import(
-								"../workspace/multi-tenant"
-							);
-							invalidateMembershipRoleCache(org.id, user.id);
 						} catch (err) {
 							// See afterAddMember: a swallow here leaves the accepted
 							// member without a resolvable claim → enforced channels
@@ -507,10 +501,6 @@ export async function createAuth(
 								entityId: user.id,
 								summary: `Member "${user.name || 'a member'}" removed`,
 							});
-							const { invalidateMembershipRoleCache } = await import(
-								"../workspace/multi-tenant"
-							);
-							invalidateMembershipRoleCache(org.id, user.id);
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to clean up $member entity after removeMember:",
@@ -544,10 +534,6 @@ export async function createAuth(
 								role: member.role,
 								status: "active",
 							});
-							const { invalidateMembershipRoleCache } = await import(
-								"../workspace/multi-tenant"
-							);
-							invalidateMembershipRoleCache(org.id, user.id);
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to update $member entity after updateMemberRole:",

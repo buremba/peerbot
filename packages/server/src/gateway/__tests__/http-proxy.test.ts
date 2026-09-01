@@ -439,8 +439,8 @@ describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
     );
   });
 
-  test("allows NAT64 public address — expanded form (64:ff9b:0:0:0:0:cb00:7101 → 203.0.113.1)", async () => {
-    expect(__testOnly.isBlockedIpAddress("64:ff9b:0:0:0:0:cb00:7101")).toBe(
+  test("allows NAT64 public address — expanded form (64:ff9b:0:0:0:0:808:808 → 8.8.8.8)", async () => {
+    expect(__testOnly.isBlockedIpAddress("64:ff9b:0:0:0:0:808:808")).toBe(
       false
     );
   });
@@ -570,7 +570,7 @@ describe("HTTP Proxy DNS pinning", () => {
   test("blocks when DNS returns a mix of public and loopback IPs", async () => {
     mockLookup([
       [
-        { address: "203.0.113.1", family: 4 },
+        { address: "8.8.8.8", family: 4 },
         { address: "127.0.0.1", family: 4 },
       ],
     ]);
@@ -585,7 +585,7 @@ describe("HTTP Proxy DNS pinning", () => {
   test("blocks CONNECT when DNS returns a mix of public and loopback IPs", async () => {
     mockLookup([
       [
-        { address: "203.0.113.1", family: 4 },
+        { address: "8.8.8.8", family: 4 },
         { address: "127.0.0.1", family: 4 },
       ],
     ]);
@@ -609,7 +609,7 @@ describe("HTTP Proxy DNS pinning", () => {
   }
 
   test("performs exactly one DNS lookup per HTTP proxy request", async () => {
-    const state = mockLookup([[{ address: "203.0.113.1", family: 4 }]]);
+    const state = mockLookup([[{ address: "8.8.8.8", family: 4 }]]);
     const token = createValidToken(deploymentName);
     const auth = makeBasicAuth(deploymentName, token);
     const client = await issueRawRequest(
@@ -626,7 +626,7 @@ describe("HTTP Proxy DNS pinning", () => {
   });
 
   test("performs exactly one DNS lookup per CONNECT request", async () => {
-    const state = mockLookup([[{ address: "203.0.113.1", family: 4 }]]);
+    const state = mockLookup([[{ address: "8.8.8.8", family: 4 }]]);
     const token = createValidToken(deploymentName);
     const auth = makeBasicAuth(deploymentName, token);
     const client = await issueRawRequest(
@@ -647,7 +647,7 @@ describe("HTTP Proxy DNS pinning", () => {
     // loopback. The proxy must never issue that second lookup, and must not
     // land a connection on the loopback trap even if it did.
     const state = mockLookup([
-      [{ address: "203.0.113.1", family: 4 }],
+      [{ address: "8.8.8.8", family: 4 }],
       [{ address: "127.0.0.1", family: 4 }],
     ]);
 
@@ -666,7 +666,7 @@ describe("HTTP Proxy DNS pinning", () => {
       // lookup to be called once (signal), then give the event loop a small
       // settle window for any follow-up connect attempt to land on the trap
       // before asserting. We don't wait for the upstream connect to
-      // 203.0.113.1 to fail — that can take seconds on CI.
+      // 8.8.8.8 to fail — that can take seconds on CI.
       const token = createValidToken(deploymentName);
       await new Promise<void>((resolve) => {
         client.on("error", () => resolve());

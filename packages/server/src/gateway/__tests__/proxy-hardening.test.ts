@@ -16,10 +16,11 @@
  * deadline. Tests for timeout semantics are omitted until the feature is re-added.
  *
  * NOTE: NAT64 address translation (64:ff9b::/96 prefix) IS handled. The IP
- * normalization + reserved-range matcher now live in the shared
- * `gateway/proxy/ssrf-guard.ts` (`isReservedIp`); `isBlockedIpAddress` is the
- * proxy-local alias for it. A 64:ff9b::7f00:1 literal decodes to 127.0.0.1 and
- * is blocked — see http-proxy.test.ts and ssrf-guard-matcher.test.ts.
+ * normalization + reserved-range matcher live in the shared
+ * `@lobu/connector-sdk/ip-reachability` (`isReservedIp`); `isBlockedIpAddress`
+ * is the proxy-local alias for it. A 64:ff9b::7f00:1 literal decodes to
+ * 127.0.0.1 and is blocked — see http-proxy.test.ts and
+ * ssrf-guard-matcher.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -201,8 +202,8 @@ describe("isBlockedIpAddress — unit coverage", () => {
     expect(__testOnly.isBlockedIpAddress("100.64.0.1")).toBe(true);
   });
 
-  test("does not block a public IPv4 (203.0.113.1 — TEST-NET-3)", () => {
-    expect(__testOnly.isBlockedIpAddress("203.0.113.1")).toBe(false);
+  test("does not block a public IPv4 (8.8.8.8)", () => {
+    expect(__testOnly.isBlockedIpAddress("8.8.8.8")).toBe(false);
   });
 
   // ── IPv6 ranges ────────────────────────────────────────────────────────
@@ -227,8 +228,8 @@ describe("isBlockedIpAddress — unit coverage", () => {
     expect(__testOnly.isBlockedIpAddress("ff01::1")).toBe(true);
   });
 
-  test("does not block a public IPv6 (2001:db8::1 — documentation range)", () => {
-    expect(__testOnly.isBlockedIpAddress("2001:db8::1")).toBe(false);
+  test("does not block a public IPv6 (2606:4700:4700::1111)", () => {
+    expect(__testOnly.isBlockedIpAddress("2606:4700:4700::1111")).toBe(false);
   });
 
   // ── IPv4-mapped IPv6 — dotted form ─────────────────────────────────────
@@ -241,8 +242,8 @@ describe("isBlockedIpAddress — unit coverage", () => {
     expect(__testOnly.isBlockedIpAddress("::ffff:192.168.1.1")).toBe(true);
   });
 
-  test("allows ::ffff:203.0.113.1 (IPv4-mapped public — dotted form)", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:203.0.113.1")).toBe(false);
+  test("allows ::ffff:8.8.8.8 (IPv4-mapped public — dotted form)", () => {
+    expect(__testOnly.isBlockedIpAddress("::ffff:8.8.8.8")).toBe(false);
   });
 
   // ── IPv4-mapped IPv6 — hex form ─────────────────────────────────────────
@@ -256,9 +257,8 @@ describe("isBlockedIpAddress — unit coverage", () => {
     expect(__testOnly.isBlockedIpAddress("::ffff:c0a8:101")).toBe(true);
   });
 
-  test("allows ::ffff:cb00:7101 (IPv4-mapped 203.0.113.1 — hex form)", () => {
-    // 203 = 0xcb, 0 = 0x00, 113 = 0x71, 1 = 0x01 → cb00:7101
-    expect(__testOnly.isBlockedIpAddress("::ffff:cb00:7101")).toBe(false);
+  test("allows ::ffff:808:808 (IPv4-mapped 8.8.8.8 — hex form)", () => {
+    expect(__testOnly.isBlockedIpAddress("::ffff:808:808")).toBe(false);
   });
 
   // ── Zone IDs ───────────────────────────────────────────────────────────
@@ -315,10 +315,8 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
     __resetEncryptionKeyCacheForTests();
     __testOnly.reset();
     setProxyRevokedTokenStore(NOOP_REVOKED_STORE);
-    // DNS mock: all names resolve to a public TEST-NET address (passes IP check).
-    __testOnly.setDnsLookup(async () => [
-      { address: "203.0.113.1", family: 4 },
-    ]);
+    // DNS mock: all names resolve to a globally reachable address.
+    __testOnly.setDnsLookup(async () => [{ address: "8.8.8.8", family: 4 }]);
   });
 
   afterEach(async () => {
@@ -484,7 +482,7 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
       if (hostname === "localhost") {
         return [{ address: "127.0.0.1", family: 4 }];
       }
-      return [{ address: "203.0.113.1", family: 4 }];
+      return [{ address: "8.8.8.8", family: 4 }];
     });
 
     const res = await connectRequest(proxyPort, "localhost", 443, auth());
@@ -504,7 +502,7 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
     await startProxy();
     // Return a mix — any loopback in the list should block the request
     __testOnly.setDnsLookup(async () => [
-      { address: "203.0.113.1", family: 4 },
+      { address: "8.8.8.8", family: 4 },
       { address: "127.0.0.1", family: 4 },
     ]);
 

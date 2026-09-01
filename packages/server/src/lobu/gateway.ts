@@ -40,8 +40,8 @@ import { BootConfigError } from "../utils/errors";
 import logger from "../utils/logger";
 
 import {
-	getCachedMembershipRole,
-	getCachedOrgBySlug,
+	getMembershipRole,
+	getOrgBySlug,
 } from "../workspace/multi-tenant";
 import { orgContext } from "./stores/org-context";
 import { PostgresSecretStore } from "./stores/postgres-secret-store";
@@ -274,7 +274,7 @@ export function createLobuOrgContextMiddleware() {
 		if (orgHeader) {
 			let resolvedOrg: { id: string } | null;
 			try {
-				resolvedOrg = await getCachedOrgBySlug(orgHeader);
+				resolvedOrg = await getOrgBySlug(orgHeader);
 			} catch {
 				return c.json({ error: "Unable to resolve organization" }, 503);
 			}
@@ -303,7 +303,7 @@ export function createLobuOrgContextMiddleware() {
 				);
 			}
 
-			const role = await getCachedMembershipRole(resolvedOrg.id, user.id);
+			const role = await getMembershipRole(resolvedOrg.id, user.id);
 			if (!role) {
 				return c.json(
 					{ error: `Not a member of organization "${orgHeader}"` },

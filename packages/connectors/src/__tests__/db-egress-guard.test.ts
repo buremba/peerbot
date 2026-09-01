@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { normalizeIpLiteral } from '@lobu/connector-sdk/ip-reachability';
 import {
   assertConnectionStringAllowed,
   assertHostAllowed,
@@ -6,7 +7,6 @@ import {
   extractDbHosts,
   type HostLookup,
   isBlockedIp,
-  normalizeIpLiteral,
   readEgressPolicy,
 } from '../db-egress-guard.ts';
 
@@ -77,6 +77,62 @@ describe('isBlockedIp — genuine public addresses pass under both', () => {
     test(`${ip} not blocked (block-private)`, () => expect(isBlockedIp(ip, BLOCK)).toBe(false));
     test(`${ip} not blocked (allow-private)`, () => expect(isBlockedIp(ip, ALLOW)).toBe(false));
   }
+});
+
+describe('isBlockedIp — IANA global-reachability matrix', () => {
+  const nonGlobal = [
+    '192.0.0.1',
+    '192.0.2.1',
+    '192.88.99.2',
+    '198.51.100.1',
+    '203.0.113.1',
+    '100::1',
+    '100:0:0:1::1',
+    '64:ff9b:1::808:808',
+    '2001:2::1',
+    '2001:5::1',
+    '2001:10::1',
+    '2001:db8::1',
+    '2002::1',
+    '3fff::1',
+    '5f00::1',
+    'fec0::1',
+    '::127.0.0.1',
+    '4000::1',
+  ];
+  for (const ip of nonGlobal) {
+    test(`${ip} is blocked under block-private`, () =>
+      expect(isBlockedIp(ip, BLOCK)).toBe(true)
+    );
+  }
+
+  const globalExceptions = [
+    '192.0.0.9',
+    '192.0.0.10',
+    '192.31.196.1',
+    '192.52.193.1',
+    '192.175.48.1',
+    '2001:1::1',
+    '2001:1::2',
+    '2001:1::3',
+    '2001:3::1',
+    '2001:4:112::1',
+    '2001:20::1',
+    '2001:30::1',
+    '2620:4f:8000::1',
+    '64:ff9b::808:808',
+  ];
+  for (const ip of globalExceptions) {
+    test(`${ip} stays reachable under block-private`, () =>
+      expect(isBlockedIp(ip, BLOCK)).toBe(false)
+    );
+  }
+
+  test('allow-private keeps its trusted self-hosted semantics', () => {
+    expect(isBlockedIp('203.0.113.1', ALLOW)).toBe(false);
+    expect(isBlockedIp('2001:db8::1', ALLOW)).toBe(false);
+    expect(isBlockedIp('64:ff9b:1::808:808', ALLOW)).toBe(false);
+  });
 });
 
 describe('isBlockedIp — IPv4-compatible IPv6 (::a.b.c.d) is unwrapped, not bypassed', () => {
@@ -401,14 +457,14 @@ describe('resolvePinnedDbHosts — resolve-then-pin', () => {
 
   test('multi-host URL pins every host', async () => {
     const byHost: Record<string, string[]> = {
-      h1: ['203.0.113.10'],
-      h2: ['203.0.113.20'],
+      h1: ['8.8.8.8'],
+      h2: ['1.1.1.1'],
     };
     const lookup: HostLookup = async (host) =>
       (byHost[host] ?? []).map((address) => ({ address }));
     const pinned = await resolvePinnedDbHosts('postgres://u:p@h1:5432,h2:5433/x', lookup);
-    expect(pinned.get('h1')).toBe('203.0.113.10');
-    expect(pinned.get('h2')).toBe('203.0.113.20');
+    expect(pinned.get('h1')).toBe('8.8.8.8');
+    expect(pinned.get('h2')).toBe('1.1.1.1');
   });
 
   test('fails closed on an unparseable authority', async () => {
@@ -435,8 +491,8 @@ describe('createPinnedSocketFactory — the socket dials the pinned IP, never re
     const created: FakeSocket[] = [];
     const factory = createPinnedSocketFactory(
       new Map([
-        ['h1', '203.0.113.10'],
-        ['h2', '203.0.113.20'],
+        ['h1', '8.8.8.8'],
+        ['h2', '1.1.1.1'],
       ]),
       fakeSocketFactory(created)
     );
@@ -445,9 +501,9 @@ describe('createPinnedSocketFactory — the socket dials the pinned IP, never re
     factory(opts);
     factory(opts);
     expect(created.map((s) => s.connects[0])).toEqual([
-      { port: 5432, address: '203.0.113.10' },
-      { port: 5433, address: '203.0.113.20' },
-      { port: 5432, address: '203.0.113.10' },
+      { port: 5432, address: '8.8.8.8' },
+      { port: 5433, address: '1.1.1.1' },
+      { port: 5432, address: '8.8.8.8' },
     ]);
   });
 
@@ -455,13 +511,16 @@ describe('createPinnedSocketFactory — the socket dials the pinned IP, never re
     const created: FakeSocket[] = [];
     const factory = createPinnedSocketFactory(
       new Map([
-        ['2001:db8::1', '2001:db8::1'],
+        ['2606:4700:4700::1111', '2606:4700:4700::1111'],
         ['db.example.com', '93.184.216.34'],
       ]),
       fakeSocketFactory(created)
     );
-    const s1 = factory({ host: ['[2001:db8::1]'], port: [5432] }) as unknown as FakeSocket;
-    expect(s1.connects).toEqual([{ port: 5432, address: '2001:db8::1' }]);
+    const s1 = factory({
+      host: ['[2606:4700:4700::1111]'],
+      port: [5432],
+    }) as unknown as FakeSocket;
+    expect(s1.connects).toEqual([{ port: 5432, address: '2606:4700:4700::1111' }]);
     const s2 = factory({ host: ['DB.Example.COM'], port: [5432] }) as unknown as FakeSocket;
     expect(s2.connects).toEqual([{ port: 5432, address: '93.184.216.34' }]);
   });

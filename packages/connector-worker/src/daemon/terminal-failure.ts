@@ -1,4 +1,5 @@
 import type { PollResponse, ExecutorClient } from './client.js';
+import { completeActionOnce } from './terminal-delivery.js';
 
 export async function reportTerminalFailure(
   client: ExecutorClient,
@@ -8,7 +9,7 @@ export async function reportTerminalFailure(
 ): Promise<void> {
   if (job.run_id == null) return;
   if (job.run_type === 'action') {
-    await client.completeAction({
+    await completeActionOnce(client, {
       run_id: job.run_id,
       worker_id: client.id,
       status: 'failed',

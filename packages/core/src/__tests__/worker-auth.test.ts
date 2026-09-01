@@ -222,11 +222,11 @@ describe("worker auth token", () => {
     // unrecognised value reads as LIVE and lets an eval replay perform real
     // side effects. Fail the token instead of defaulting it.
     //
-    // Deliberately minted WITHOUT `automationRunId`: with one present the pair
-    // check rejects the token first and this stays green no matter what the
-    // shape check does. Mutation-verified — dropping the shape check turns
-    // these red only in this shape, which is also the reachable hole: a
-    // garbage mode and no run id is exactly what the pair check waves through.
+    // Nothing else can reject these: the capture check fires only on
+    // `executionMode === "capture"`, so an unrecognised mode never reaches it
+    // and this enum check is the only thing between a garbage mode and a token
+    // that reads as live. Mutation-verified — dropping the enum check turns
+    // these red.
     expect(
       verifyWorkerToken(
         generateWorkerToken("user-1", "conv-1", "deploy-A", {
@@ -251,18 +251,16 @@ describe("worker auth token", () => {
     ).toBe(null);
   });
 
-  test("automationRunId without capture is rejected", () => {
-    // The other direction matters too: a live run addressing an eval row would
-    // let real work stamp a capture record onto a run it never replayed.
-    expect(
-      verifyWorkerToken(
-        generateWorkerToken("user-1", "conv-1", "deploy-A", {
-          channelId: "C1",
-          executionMode: "live",
-          automationRunId: 874626,
-        })
-      )
-    ).toBe(null);
+  test("live Automation provenance round-trips without capture", () => {
+    const verified = verifyWorkerToken(
+      generateWorkerToken("user-1", "conv-1", "deploy-A", {
+        channelId: "C1",
+        executionMode: "live",
+        automationRunId: 874626,
+      })
+    );
+    expect(verified?.executionMode).toBe("live");
+    expect(verified?.automationRunId).toBe(874626);
   });
 
   test("round-trips an admin-tools allowlist with its distinct auth actor", () => {

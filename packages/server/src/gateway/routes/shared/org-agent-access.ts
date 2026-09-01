@@ -1,7 +1,7 @@
 import { createLogger } from "@lobu/core";
 import { agentExistsInOrganization } from "../../../lobu/stores/postgres-stores.js";
 import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
-import { getCachedMembershipRole } from "../../../workspace/multi-tenant.js";
+import { getMembershipRole } from "../../../workspace/multi-tenant.js";
 
 const logger = createLogger("org-agent-access");
 
@@ -33,7 +33,7 @@ export async function authorizeOrgAgentMemberInProvenOrg(args: {
   userId: string;
 }): Promise<OrgAgentMembershipGrant | null> {
   try {
-    const role = await getCachedMembershipRole(
+    const role = await getMembershipRole(
       args.organizationId,
       args.userId
     );

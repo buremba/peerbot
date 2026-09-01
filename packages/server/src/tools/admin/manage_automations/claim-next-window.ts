@@ -19,6 +19,7 @@ import { ensureExpectedAutomationWindowStart } from '../../../utils/window-utils
 import { handleAutomationMode } from '../../get_content/automation-mode';
 import type { ToolContext } from '../../registry';
 import type { ManageAutomationsArgs } from '../manage_automations';
+import { runLeaseFence } from '../../../runs/run-lease';
 
 const DEFAULT_LEASE_SECONDS = 900;
 const MIN_LEASE_SECONDS = 30;
@@ -319,8 +320,7 @@ export async function handleClaimNextWindow(
           error_message = ${`Automation source context failed: ${sourceError}`}
       WHERE id = ${claimedWindow.runId}
         AND automation_id = ${automationId}
-        AND status = 'running'
-        AND claimed_by = ${owner}
+        ${runLeaseFence(sql, owner)}
         AND expires_at = ${claimedWindow.leaseExpiresAt.toISOString()}::timestamptz
     `;
     throw error;

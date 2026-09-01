@@ -31,6 +31,7 @@ import {
 	ensureEncryptionKey,
 	resetTestDatabase,
 	seedAgentRow,
+	seedOrgMembership,
 } from "./helpers/db-setup.js";
 const ORG = "org-webhook";
 const AGENT = "agent-webhook";
@@ -834,6 +835,159 @@ describe("ChatInstanceManager webhook wiring", () => {
 		);
 		expect(stored.status).toBe("active");
 		expect(String(stored.config.token).startsWith("secret://")).toBe(true);
+	});
+
+	test("connections.create and manageAutomations reach the public webhook path", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const ownerId = "webhook-create-owner";
+		await seedOrgMembership(ORG, ownerId, "owner");
+		const { manager } = await buildManager();
+		const { __setChatInstanceManagerForTests } = await import(
+			"../../lobu/gateway.js"
+		);
+		const { manageConnections } = await import(
+			"../../tools/admin/manage_connections.js"
+		);
+		const { manageAutomations } = await import(
+			"../../tools/admin/manage_automations.js"
+		);
+		const token = "supported-create-webhook-token-0123456789";
+		const toolContext = {
+			organizationId: ORG,
+			userId: ownerId,
+			memberRole: "owner",
+			agentId: null,
+			isAuthenticated: true,
+			clientId: null,
+			scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+			tokenType: "oauth",
+			scopedToOrg: true,
+			allowCrossOrg: false,
+			baseUrl: "https://gateway.test/lobu",
+		} as never;
+		__setChatInstanceManagerForTests(manager);
+		try {
+			const missingSlug = await manageConnections(
+				{
+					action: "create",
+					connector_key: "webhook",
+					display_name: "Missing slug webhook",
+					config: { token },
+				},
+				{} as never,
+				toolContext,
+			);
+			expect("error" in missingSlug ? missingSlug.error : "").toMatch(
+				/non-numeric slug/i,
+			);
+
+			const missingToken = await manageConnections(
+				{
+					action: "create",
+					connector_key: "webhook",
+					slug: "missing-token-webhook",
+					display_name: "Missing token webhook",
+				},
+				{} as never,
+				toolContext,
+			);
+			expect("error" in missingToken ? missingToken.error : "").toMatch(/token/i);
+
+			const numericSlug = await manageConnections(
+				{
+					action: "create",
+					connector_key: "webhook",
+					slug: "12345",
+					display_name: "Numeric webhook",
+					config: { token },
+				},
+				{} as never,
+				toolContext,
+			);
+			expect("error" in numericSlug ? numericSlug.error : "").toMatch(
+				/cannot be numeric/i,
+			);
+
+			const created = await manageConnections(
+				{
+					action: "create",
+					connector_key: "webhook",
+					slug: "supported-webhook",
+					display_name: "Supported webhook",
+					config: { token, semanticType: "deployment" },
+				},
+				{} as never,
+				toolContext,
+			);
+			expect("error" in created ? created.error : undefined).toBeUndefined();
+			if (!("connection" in created)) {
+				throw new Error("Webhook connection creation did not return a connection");
+			}
+			const connectionId = Number((created.connection as { id: number }).id);
+			const automation = await manageAutomations(
+				{
+					action: "create",
+					slug: "supported-webhook-automation",
+					name: "Supported webhook Automation",
+					prompt: "Process the incoming deployment.",
+					agent_id: AGENT,
+					triggers: [
+						{
+							kind: "event",
+							source: "connector",
+							connector_key: "webhook",
+							connection_id: connectionId,
+							event_types: ["delivery.received"],
+							match: { semantic_type: "deployment" },
+							execution: "turn",
+							active_run: "queue",
+							output: "silent",
+							skip_if_unchanged: true,
+						},
+					],
+				},
+				{} as never,
+				toolContext,
+			);
+			if (
+				automation.action !== "create" ||
+				!("automation_id" in automation)
+			) {
+				throw new Error("Webhook Automation creation did not complete");
+			}
+
+			const response = await manager.handleIngestWebhook(
+				"supported-webhook",
+				new Request(
+					"http://gateway.test/api/v1/webhooks/supported-webhook",
+					{
+						method: "POST",
+						body: JSON.stringify({ version: "2026.08.31" }),
+						headers: {
+							"content-type": "application/json",
+							authorization: `Bearer ${token}`,
+						},
+					},
+				),
+			);
+			expect(response.status).toBe(202);
+			const rows = await eventRows("supported-webhook");
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toMatchObject({
+				semantic_type: "deployment",
+				payload_data: { version: "2026.08.31" },
+			});
+			const { getDb } = await import("../../db/client.js");
+			const [runCount] = await getDb()<{ count: number }[]>`
+				SELECT count(*)::integer AS count
+				FROM runs
+				WHERE automation_id = ${Number(automation.automation_id)}
+				  AND run_type = 'automation'
+			`;
+			expect(runCount?.count).toBe(1);
+		} finally {
+			__setChatInstanceManagerForTests(null);
+		}
 	});
 
 	test("handleIngestWebhook round-trips a delivery through the real secret store", async () => {

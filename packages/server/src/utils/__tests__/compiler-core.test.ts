@@ -150,3 +150,49 @@ describe('compileSource import validation (#2043)', () => {
     expect(message).toContain('Could not resolve');
   });
 });
+
+/**
+ * The SDK is mapped by an onResolve plugin, not an esbuild `alias`. `alias`
+ * substitutes by PREFIX, so pointing it at the package's entry FILE turned any
+ * subpath into a path *under* that file (`.../dist/index.js/ip-reachability`).
+ * Subpaths also cannot go through `require.resolve`: the SDK is
+ * `"type": "module"` and its subpath exports declare only an `import`
+ * condition, so the CJS resolver skips them.
+ */
+describe('connector SDK resolution', () => {
+  test('resolves the SDK root', async () => {
+    const code = await compileOk(
+      "import { validatePublicUrl } from '@lobu/connector-sdk';\nexport default () => validatePublicUrl;"
+    );
+    expect(code.length).toBeGreaterThan(0);
+  });
+
+  test('resolves the `lobu` alias to the same package', async () => {
+    const code = await compileOk(
+      "import { validatePublicUrl } from 'lobu';\nexport default () => validatePublicUrl;"
+    );
+    expect(code.length).toBeGreaterThan(0);
+  });
+
+  test('resolves an SDK subpath export', async () => {
+    const code = await compileOk(
+      "import { isReservedIp } from '@lobu/connector-sdk/ip-reachability';\nexport default () => isReservedIp('127.0.0.1');"
+    );
+    // Bundled, not left as a bare import, and genuinely the classifier module.
+    // Anchored on IANA prefixes rather than an identifier: esbuild strips
+    // comments and folds hex hextets to decimal, and internal symbol names get
+    // renamed by ordinary refactors, so a name here fails for reasons that have
+    // nothing to do with whether the module was bundled.
+    expect(code).not.toContain('@lobu/connector-sdk/ip-reachability');
+    expect(code).toContain('169.254.0.0');
+    expect(code).toContain('192.0.0.170');
+  });
+
+  test('reports an unknown SDK subpath instead of emitting a broken path', async () => {
+    const message = await compileErr(
+      "import x from '@lobu/connector-sdk/not-a-real-subpath';\nexport default () => x;"
+    );
+    expect(message).toContain('Cannot resolve');
+    expect(message).not.toContain('dist/index.js/not-a-real-subpath');
+  });
+});

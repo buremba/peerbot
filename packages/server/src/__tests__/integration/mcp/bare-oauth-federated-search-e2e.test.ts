@@ -9,6 +9,7 @@
 
 import { createHash, randomBytes } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { createAuthorizationIntent } from '../../../auth/oauth/authorization-intent';
 import { hashToken } from '../../../auth/oauth/utils';
 import { parsePgTextArray } from '../../../db/client';
 import { initWorkspaceProvider } from '../../../workspace';
@@ -100,6 +101,18 @@ describe('bare OAuth /mcp federated search end to end', () => {
         organization_id: workspaceA.id,
         organization_ids: [workspaceA.id, workspaceB.id],
         workspace_access: 'selected',
+        authorization_intent: createAuthorizationIntent(
+          {
+            client_id: clientId,
+            redirect_uri: redirectUri,
+            response_type: 'code',
+            scope: 'mcp:read profile:read',
+            code_challenge: challenge,
+            code_challenge_method: 'S256',
+            resource,
+          },
+          'test-jwt-secret-for-testing-only'
+        ),
         approved: true,
       },
       cookie: session.cookieHeader,

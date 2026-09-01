@@ -453,16 +453,25 @@ async function failBuilderRun(
 	desc: string,
 	errorMessage: string,
 	reviewer: ApprovalReviewer | null,
+	claimedBy: string,
 ): Promise<ManageOperationsResult> {
 	// Atomic: the failed runs write and the 'failed' card supersede commit
 	// together. The card guard runs INSIDE the transaction, so a missing card
 	// throws while the tx is open and rolls the runs write back — the run must
 	// never land terminal with no card.
+	//
+	// Fenced: apply() ran OUTSIDE any transaction, so the reaper or a second
+	// approve can have taken the lease while it was in flight. Without the fence
+	// this write clobbers whatever they recorded and supersedes the card to
+	// 'failed' on a run that is no longer ours.
 	const eventId = await getDb().begin(async (tx) => {
-		await tx`
+		const rows = await tx`
 			UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
 			WHERE id = ${runId} AND organization_id = ${organizationId}
+			${inlineLeaseFence(tx, claimedBy)}
+			RETURNING id
 		`;
+		if (rows.length === 0) return null;
 		const cardId = await supersedeActionEvent(
 			runId,
 			organizationId,
@@ -476,6 +485,12 @@ async function failBuilderRun(
 		requireApprovalCard(runId, cardId, "failed");
 		return cardId;
 	});
+	if (eventId === null) {
+		return {
+			error:
+				"The approval was already decided while this request was in flight. Refresh before acting.",
+		};
+	}
 	return {
 		action: "approve",
 		approved: true,
@@ -687,6 +702,7 @@ async function tryApproveBuilderRun(
 				desc,
 				softFailure,
 				reviewer,
+				claimedBy,
 			);
 		}
 	} catch (error) {
@@ -698,6 +714,7 @@ async function tryApproveBuilderRun(
 			desc,
 			errorMessage,
 			reviewer,
+			claimedBy,
 		);
 	}
 
@@ -1744,13 +1761,21 @@ export async function handleApprove(
 	// Phase 2 (atomic): terminal failed runs write + 'failed' card. The card
 	// guard runs INSIDE the tx so a missing card rolls the failed runs write
 	// back.
-	await sql.begin(async (tx) => {
-		await tx`
+	//
+	// Fenced on the same lease as the completed lane above: with
+	// deferTerminalWrite the inline execution wrote nothing, so this is the ONLY
+	// terminal write for a failed inline apply. Unfenced it would overwrite a
+	// reaper's or a re-claim's outcome and supersede the card to 'failed'.
+	const failed = await sql.begin(async (tx) => {
+		const rows = await tx`
 			UPDATE runs SET status = 'failed', completed_at = NOW(),
 				action_output = ${result.output ? tx.json(result.output) : null},
 				error_message = ${result.error_message}
 			WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+			${inlineLeaseFence(tx, inlineOwner)}
+			RETURNING id
 		`;
+		if (rows.length === 0) return false;
 		const cardId = await supersedeActionEvent(
 			args.run_id,
 			ctx.organizationId,
@@ -1762,8 +1787,14 @@ export async function handleApprove(
 			tx,
 		);
 		requireApprovalCard(args.run_id, cardId, "failed");
-		return cardId;
+		return true;
 	});
+	if (!failed) {
+		return {
+			error:
+				"The approval was already decided while this request was in flight. Refresh before acting.",
+		};
+	}
 	return {
 		action: "approve",
 		approved: true,

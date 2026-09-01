@@ -45,6 +45,12 @@ let postItemsCalls = 0;
  * gateway holds the lease across the whole call.
  */
 let duringExternalCall: (() => Promise<void>) | null = null;
+/**
+ * Make the external POST THROW rather than answer. A thrown request is the one
+ * path that reaches `executeHttpOperation`'s `failRun`; a non-2xx response is
+ * handled by the already-fenced error lane instead.
+ */
+let throwOnPostItems = false;
 const THIEF = "some-other-replica";
 
 const CONNECTOR = "demo.ops.transition.atomic";
@@ -110,6 +116,30 @@ DROP TRIGGER IF EXISTS test_fail_pending_approval_event_trg ON events;
 DROP FUNCTION IF EXISTS test_fail_pending_approval_event();
 `;
 
+// Hand a builder run's lease to another owner at the exact instant the claim
+// commits. `claimBuilderRun` and the 'confirmed' card INSERT share one
+// transaction, so a trigger on that INSERT fires INSIDE it and commits with
+// it — reproducing "the reaper took this run while `apply` was in flight"
+// without a module mock, which this suite's shared registry cannot isolate.
+const STEAL_ON_CONFIRMED_TRIGGER = `
+CREATE OR REPLACE FUNCTION test_steal_lease_on_confirmed() RETURNS trigger AS $fn$
+BEGIN
+  IF NEW.interaction_type = 'approval' AND NEW.interaction_status = 'approved'
+     AND NEW.run_id IS NOT NULL THEN
+    UPDATE runs SET claimed_by = 'some-other-replica' WHERE id = NEW.run_id;
+  END IF;
+  RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql;
+CREATE TRIGGER test_steal_lease_on_confirmed_trg
+  AFTER INSERT ON events
+  FOR EACH ROW EXECUTE FUNCTION test_steal_lease_on_confirmed();
+`;
+const DROP_STEAL_ON_CONFIRMED_TRIGGER = `
+DROP TRIGGER IF EXISTS test_steal_lease_on_confirmed_trg ON events;
+DROP FUNCTION IF EXISTS test_steal_lease_on_confirmed();
+`;
+
 /**
  * Seed a pending agent-ask run + its pending approval card, exactly the shape
  * `queueAgentAsk` produces (legacy ask: no input_schema_validation_version, so
@@ -153,6 +183,45 @@ async function seedAgentAskRun(
 			status: "pending_approval",
 			run_id: runId,
 		},
+		authorName: "agent",
+	});
+	return runId;
+}
+
+/**
+ * A pending `manage_agents` builder run whose apply is guaranteed to THROW:
+ * `applyDelete` requires `agent_id`, and the family's `isValidProposal` only
+ * checks the proposal is non-null, so the run claims cleanly and then fails in
+ * the out-of-transaction apply — the window `failBuilderRun` writes back into.
+ */
+async function seedThrowingBuilderRun(
+	organizationId: string,
+	userId: string,
+): Promise<number> {
+	const sql = getTestDb();
+	const [run] = await sql`
+		INSERT INTO runs (
+			organization_id, run_type, action_key, action_input,
+			created_by_user_id, approval_status, status, created_at
+		) VALUES (
+			${organizationId}, 'internal', 'manage_agents',
+			${sql.json({ action: "delete" })},
+			${userId}, 'pending', 'pending', NOW()
+		)
+		RETURNING id
+	`;
+	const runId = Number(run.id);
+	await insertEvent({
+		entityIds: [],
+		organizationId,
+		originId: `run_${runId}_pending`,
+		title: "Agent: delete undefined — pending",
+		content: null,
+		semanticType: "operation",
+		runId,
+		interactionType: "approval",
+		interactionStatus: "pending",
+		metadata: { action_key: "manage_agents", run_id: runId },
 		authorName: "agent",
 	});
 	return runId;
@@ -315,6 +384,10 @@ describe("approval-run transition atomicity", () => {
 							duringExternalCall = null;
 							await hook();
 						}
+						if (throwOnPostItems) {
+							throwOnPostItems = false;
+							throw new Error("upstream socket hang up");
+						}
 						return new Response(JSON.stringify({ created: true }), {
 							status: 200,
 							headers: { "content-type": "application/json" },
@@ -328,6 +401,8 @@ describe("approval-run transition atomicity", () => {
 
 	afterEach(async () => {
 		duringExternalCall = null;
+		throwOnPostItems = false;
+		await getTestDb().unsafe(DROP_STEAL_ON_CONFIRMED_TRIGGER);
 		// Always drop the failure triggers so they can't leak into other tests
 		// that share this DB under the suite's single-fork registry.
 		await getTestDb().unsafe(DROP_FAIL_TRIGGER);
@@ -622,6 +697,163 @@ describe("approval-run transition atomicity", () => {
 		expect(run.completed_at).toBeNull();
 		expect((await currentApprovalCard(queued.run_id, orgId))?.interaction_status).toBe(
 			"approved",
+		);
+	});
+
+	it("a THROWN external call does not overwrite a run whose lease moved", async () => {
+		const sql = getTestDb();
+		// A thrown request terminalizes through `failRun`, the last unfenced
+		// terminal write on the inline path: it fired on id + organization_id
+		// alone, so it relabelled whatever the new owner had already recorded.
+		throwOnPostItems = true;
+		duringExternalCall = async () => {
+			await sql`
+				UPDATE runs SET claimed_by = ${THIEF}
+				WHERE connection_id = ${autoConnectionId}
+					AND run_type = 'action'
+					AND status = 'running'
+			`;
+		};
+		const result = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: autoConnectionId,
+				operation_key: "create_item",
+				input: { body: { value: "auto-thrown-stolen" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number; status: string; error_message?: string };
+
+		expect(result.status).toBe("failed");
+		expect(result.error_message).toMatch(/lost its run lease/i);
+		const [run] = await sql`
+			SELECT status, claimed_by, error_message, completed_at
+			FROM runs WHERE id = ${result.run_id}
+		`;
+		expect(run.claimed_by).toBe(THIEF);
+		expect(run.status).toBe("running");
+		expect(run.error_message).toBeNull();
+		expect(run.completed_at).toBeNull();
+	});
+
+	it("a THROWN external call still terminalizes a run its owner still holds", async () => {
+		const sql = getTestDb();
+		throwOnPostItems = true;
+		const result = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: autoConnectionId,
+				operation_key: "create_item",
+				input: { body: { value: "auto-thrown-kept" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number; status: string; error_message?: string };
+
+		// The fence blocks a LOST lease, never the ordinary failure path.
+		expect(result.status).toBe("failed");
+		expect(result.error_message).toMatch(/socket hang up/i);
+		const [run] = await sql`
+			SELECT status, error_message FROM runs WHERE id = ${result.run_id}
+		`;
+		expect(run.status).toBe("failed");
+		expect(String(run.error_message)).toMatch(/socket hang up/i);
+	});
+
+	it("approve does not record a FAILURE on a run whose lease was stolen", async () => {
+		const sql = getTestDb();
+		const queued = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: connectionId,
+				operation_key: "create_item",
+				input: { body: { value: "approve-fail-stolen" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number; status: string };
+		expect(queued.status).toBe("pending_approval");
+
+		// deferTerminalWrite means the inline execution wrote nothing, so
+		// handleApprove's failure lane is the ONLY terminal write for this run.
+		throwOnPostItems = true;
+		duringExternalCall = async () => {
+			await sql`UPDATE runs SET claimed_by = ${THIEF} WHERE id = ${queued.run_id}`;
+		};
+		const approved = (await manageOperations(
+			{ action: "approve", run_id: queued.run_id },
+			{} as Env,
+			humanCtx,
+		)) as { approved?: boolean; error?: string };
+
+		expect(approved.approved).toBeUndefined();
+		expect(approved.error).toMatch(
+			/already decided while this request was in flight/i,
+		);
+		const [run] = await sql`
+			SELECT status, claimed_by, error_message, completed_at
+			FROM runs WHERE id = ${queued.run_id}
+		`;
+		expect(run.claimed_by).toBe(THIEF);
+		expect(run.status).toBe("running");
+		expect(run.error_message).toBeNull();
+		expect(run.completed_at).toBeNull();
+		// The card must NOT be superseded to 'failed' on a run we no longer own.
+		expect(
+			(await currentApprovalCard(queued.run_id, orgId))?.interaction_status,
+		).toBe("approved");
+	});
+
+	it("a failed builder apply does not overwrite a run whose lease was stolen", async () => {
+		const sql = getTestDb();
+		const runId = await seedThrowingBuilderRun(orgId, userId);
+		await sql.unsafe(STEAL_ON_CONFIRMED_TRIGGER);
+
+		const result = (await manageOperations(
+			{ action: "approve", run_id: runId },
+			{} as Env,
+			humanCtx,
+		)) as { approved?: boolean; error?: string };
+
+		expect(result.approved).toBeUndefined();
+		expect(result.error).toMatch(
+			/already decided while this request was in flight/i,
+		);
+		const [run] = await sql`
+			SELECT status, claimed_by, error_message, completed_at
+			FROM runs WHERE id = ${runId}
+		`;
+		expect(run.claimed_by).toBe(THIEF);
+		expect(run.status).toBe("running");
+		expect(run.error_message).toBeNull();
+		expect(run.completed_at).toBeNull();
+		expect((await currentApprovalCard(runId, orgId))?.interaction_status).toBe(
+			"approved",
+		);
+	});
+
+	it("a failed builder apply terminalizes a run its owner still holds", async () => {
+		const sql = getTestDb();
+		const runId = await seedThrowingBuilderRun(orgId, userId);
+
+		const result = (await manageOperations(
+			{ action: "approve", run_id: runId },
+			{} as Env,
+			humanCtx,
+		)) as { approved?: boolean; message?: string; error?: string };
+
+		expect(result.error).toBeUndefined();
+		expect(result.approved).toBe(true);
+		expect(result.message).toMatch(/approved but failed/i);
+		const [run] = await sql`
+			SELECT status, claimed_by, error_message FROM runs WHERE id = ${runId}
+		`;
+		expect(run.status).toBe("failed");
+		expect(String(run.claimed_by)).toMatch(/^gateway-inline-/);
+		expect(String(run.error_message)).toMatch(/agent_id is required/i);
+		expect((await currentApprovalCard(runId, orgId))?.interaction_status).toBe(
+			"failed",
 		);
 	});
 

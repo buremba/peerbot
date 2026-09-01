@@ -74,13 +74,20 @@ async function failRun(
 	runId: number,
 	organizationId: string,
 	errorMessage: string,
-	deferTerminalWrite = false,
+	deferTerminalWrite: boolean,
+	claimedBy: string,
 ): Promise<HttpOperationExecutionResult> {
 	// Upstream response text reaches here through getErrorMessage, so the
 	// message can carry NUL (0x00) that Postgres rejects (see streamContent).
 	const message = stripNul(errorMessage);
 	if (!deferTerminalWrite) {
-		await getDb()`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+		// Same lease fence as the completed/failed lanes below: a config refusal
+		// or a thrown request still terminalizes the run, and must not overwrite
+		// an outcome the reaper or a re-claim already recorded.
+		const sql = getDb();
+		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy)} RETURNING id`;
+		if (rows.length === 0)
+			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}
 	return { status: "failed", error_message: message };
 }
@@ -138,6 +145,7 @@ export async function executeHttpOperation(
 			organizationId,
 			"Invalid HTTP operation backend config",
 			deferTerminalWrite,
+			claimedBy,
 		);
 	}
 
@@ -152,6 +160,7 @@ export async function executeHttpOperation(
 				organizationId,
 				`No active OAuth credentials found for '${connection.connector_key}'.`,
 				deferTerminalWrite,
+				claimedBy,
 			);
 		}
 
@@ -260,6 +269,7 @@ export async function executeHttpOperation(
 			organizationId,
 			getErrorMessage(error),
 			deferTerminalWrite,
+			claimedBy,
 		);
 	}
 }

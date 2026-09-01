@@ -78,6 +78,88 @@ export function whatsAppWebAdapterProgram(): void {
     return null;
   }
 
+  /**
+   * The authenticated account's own WID.
+   *
+   * WhatsApp Web renamed this surface: `WAWebUserPrefsMe` / `WAWebUserPrefs` no
+   * longer resolve at all (window.require returns null, it does not throw), and
+   * the accessors `getMaybeMeUser` / `getMeUser` are gone with them. The current
+   * module is `WAWebUserPrefsMeUser`, which splits the identity into a
+   * phone-number WID and a LID WID. Prefer the phone-number form — every JID the
+   * adapter canonicalizes elsewhere is `@s.whatsapp.net`/`@c.us`, so returning a
+   * `@lid` WID here would silently fail to match the self chat.
+   *
+   * Verified live against WhatsApp Web on 2026-09-02: the legacy names returned
+   * null while getMaybeMePnUser() returned {server:"c.us", user, _serialized}.
+   * The old names stay in the list — they cost one lookup and this module has
+   * now been renamed once.
+   */
+  function meUser() {
+    const module = requireFirst([
+      "WAWebUserPrefsMeUser",
+      "WAWebUserPrefsMe",
+      "WAWebUserPrefs",
+    ]);
+    if (!module) return null;
+    for (const accessor of [
+      "getMaybeMePnUser",
+      "getMaybeMeUser",
+      "getMeUser",
+      "getMeUserOrThrow",
+      "getMaybeMeLidUser",
+    ]) {
+      try {
+        const value = module[accessor]?.();
+        if (value) return value;
+      } catch {
+        /* An OrThrow accessor throws while signed out; try the next one. */
+      }
+    }
+    try {
+      return module.me ?? null;
+    } catch {
+      /* WhatsApp's private module graph throws freely; a miss is not fatal. */
+    }
+    return null;
+  }
+
+  /**
+   * Module names for each write op, most-current first.
+   *
+   * WhatsApp Web renames these; the failure is silent because window.require
+   * returns null for a dead name instead of throwing, so a stale list degrades
+   * into "capability unavailable" rather than an error anyone sees. Verified
+   * live on 2026-09-02: the FIRST entry in each list below is the one that
+   * currently resolves, and every legacy name after it returned null. Keep the
+   * legacy names — they cost one lookup and cover older builds.
+   *
+   * These lists are consumed by BOTH operationCapabilities() and the write
+   * implementations. They were duplicated before, which let the capability
+   * probe and the implementation disagree about what exists.
+   */
+  const SEND_MODULES = [
+    "WAWebSendTextMsgChatAction",
+    "WAWebSendMsgChatAction",
+    "WAWebSendMessage",
+  ];
+  const REACTION_MODULES = [
+    "WAWebSendReactionMsgAction",
+    "WAWebSendReactionMsg",
+    "WAWebReactionAction",
+  ];
+  const REVOKE_MODULES = [
+    "WAWebChatSendMessages",
+    "WAWebRevokeMsgAction",
+    "WAWebDeleteChatAction",
+    "WAWebRevokeMessage",
+  ];
+  const EDIT_MODULES = ["WAWebSendMessageEditAction", "WAWebEditMessage"];
+  const DRAFT_MODULES = [
+    "WAWebChatDraftUtils",
+    "WAWebSetDraft",
+    "WAWebComposeBoxActions",
+  ];
+
   function modelData(model) {
     return model?.attributes ?? model?._data ?? model ?? {};
   }
@@ -349,17 +431,7 @@ export function whatsAppWebAdapterProgram(): void {
         reason: "collections_unavailable",
       };
     }
-    const meModule = requireFirst(["WAWebUserPrefsMe", "WAWebUserPrefs"]);
-    let me = null;
-    try {
-      me =
-        meModule?.getMaybeMeUser?.() ??
-        meModule?.getMeUser?.() ??
-        meModule?.me ??
-        null;
-    } catch {
-      /* WhatsApp's private module graph throws freely; a miss is not fatal. */
-    }
+    const me = meUser();
     const qrVisible = Boolean(
       document.querySelector(
         '[data-testid="qrcode"], canvas[aria-label*="Scan" i], [data-ref] canvas'
@@ -469,24 +541,11 @@ export function whatsAppWebAdapterProgram(): void {
       "WAWebMessageSearch",
       "WAWebSearchMessages",
     ]);
-    const draft = requireFirst([
-      "WAWebChatDraftUtils",
-      "WAWebSetDraft",
-      "WAWebComposeBoxActions",
-    ]);
-    const send = requireFirst(["WAWebSendMsgChatAction", "WAWebSendMessage"]);
-    const edit = requireFirst([
-      "WAWebSendMessageEditAction",
-      "WAWebEditMessage",
-    ]);
-    const reaction = requireFirst([
-      "WAWebSendReactionMsg",
-      "WAWebReactionAction",
-    ]);
-    const revoke = requireFirst([
-      "WAWebDeleteChatAction",
-      "WAWebRevokeMessage",
-    ]);
+    const draft = requireFirst(DRAFT_MODULES);
+    const send = requireFirst(SEND_MODULES);
+    const edit = requireFirst(EDIT_MODULES);
+    const reaction = requireFirst(REACTION_MODULES);
+    const revoke = requireFirst(REVOKE_MODULES);
     const media = requireFirst(["WAWebDownloadManager"]);
     const hasFunction = (module, names) =>
       names.some((name) => typeof module?.[name] === "function");
@@ -839,9 +898,7 @@ export function whatsAppWebAdapterProgram(): void {
 
   async function resolveChat(collections, input) {
     if (input?.self_chat === true) {
-      const meModule = requireFirst(["WAWebUserPrefsMe", "WAWebUserPrefs"]);
-      const me =
-        meModule?.getMaybeMeUser?.() ?? meModule?.getMeUser?.() ?? meModule?.me;
+      const me = meUser();
       const selfJid = (await canonicalJid(me)).jid;
       let self = null;
       for (const chat of models(collections.Chat)) {
@@ -1050,11 +1107,7 @@ export function whatsAppWebAdapterProgram(): void {
       mentionedJidList: [],
       quotedMsg: null,
     };
-    const module = requireFirst([
-      "WAWebChatDraftUtils",
-      "WAWebSetDraft",
-      "WAWebComposeBoxActions",
-    ]);
+    const module = requireFirst(DRAFT_MODULES);
     let applied = false;
     for (const fn of [
       module?.setDraft,
@@ -1101,7 +1154,7 @@ export function whatsAppWebAdapterProgram(): void {
     const chat = await resolveChat(collections, input);
     const text = String(input?.text ?? "");
     if (!text.trim()) throw new Error("text is required");
-    const module = requireFirst(["WAWebSendMsgChatAction", "WAWebSendMessage"]);
+    const module = requireFirst(SEND_MODULES);
     const fn =
       module?.sendTextMsgToChat ?? module?.sendMessage ?? chat?.sendMessage;
     if (typeof fn !== "function")
@@ -1145,10 +1198,7 @@ export function whatsAppWebAdapterProgram(): void {
       );
     const text = String(input?.text ?? "");
     if (!text.trim()) throw new Error("text is required");
-    const module = requireFirst([
-      "WAWebSendMessageEditAction",
-      "WAWebEditMessage",
-    ]);
+    const module = requireFirst(EDIT_MODULES);
     const chat = collectionByWid(
       collections.Chat,
       widString(modelData(message).id?.remote)
@@ -1180,10 +1230,7 @@ export function whatsAppWebAdapterProgram(): void {
     const emoji = input?.remove ? "" : String(input?.emoji ?? "");
     if (!input?.remove && !emoji)
       throw new Error("emoji is required unless remove=true");
-    const module = requireFirst([
-      "WAWebSendReactionMsg",
-      "WAWebReactionAction",
-    ]);
+    const module = requireFirst(REACTION_MODULES);
     const fn =
       module?.sendReactionToMsg ?? module?.sendReaction ?? message?.react;
     if (typeof fn !== "function")
@@ -1219,12 +1266,10 @@ export function whatsAppWebAdapterProgram(): void {
       throw new Error(
         "WhatsApp did not affirm that this message is currently revokable"
       );
-    const module = requireFirst([
-      "WAWebDeleteChatAction",
-      "WAWebRevokeMessage",
-    ]);
+    const module = requireFirst(REVOKE_MODULES);
     const fn =
       module?.sendRevokeMsgs ??
+      module?.sendRevoke ??
       module?.revokeMessage ??
       message?.sendRevoke ??
       message?.revoke;

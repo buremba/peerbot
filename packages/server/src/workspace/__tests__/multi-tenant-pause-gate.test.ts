@@ -259,17 +259,37 @@ describe('promotions pause is enforced in the auth funnel', () => {
 
   test('owner resolution follows rename and owner removal without invalidation', async () => {
     const { getDb } = await import('../../db/client.js');
-    const { MultiTenantProvider } = await import('../multi-tenant.js');
+    const { MultiTenantProvider, getOrgBySlug } = await import('../multi-tenant.js');
     const sql = getDb();
     const firstReplica = new MultiTenantProvider();
     const secondReplica = new MultiTenantProvider();
     const oldOwner = await firstReplica.resolveOwner(ORG, 'organization');
     expect(oldOwner?.id).toBe(ORG);
+    // PRIME the old slug on BOTH the authorization lookup and this instance
+    // before renaming. Without a read taken while the old value is still true,
+    // a reintroduced cache would simply miss after the rename and the
+    // assertions below would pass without testing anything.
+    expect(await getOrgBySlug(ORG)).toMatchObject({ id: ORG });
 
     const renamed = `${ORG}-owner-renamed`;
     await sql`UPDATE organization SET slug = ${renamed} WHERE id = ${ORG}`;
+    // The point of this suite: a second provider instance sees the rename on its
+    // very next call, with nothing invalidated anywhere.
     expect((await secondReplica.resolveOwner(renamed, 'organization'))?.id).toBe(ORG);
-    expect(await secondReplica.resolveOwner(ORG, 'organization')).toBeNull();
+
+    // The AUTHORIZATION lookup is the one that must stop answering for the old
+    // slug, and it does — it reads `organization` directly.
+    expect(await getOrgBySlug(renamed)).toMatchObject({ id: ORG });
+    expect(await getOrgBySlug(ORG)).toBeNull();
+
+    // `resolveOwner` deliberately keeps answering: it reads `namespace`, which a
+    // rename does not touch, and the very first resolveOwner above self-healed a
+    // namespace row for the old slug. That is a DB fact, not replica staleness,
+    // so no cache change could alter it and this suite must not pretend
+    // otherwise. (Worth its own fix: a slug freed by a rename still resolves to
+    // the previous org, and `ON CONFLICT (slug) DO NOTHING` means whoever claims
+    // that slug next inherits the stale mapping.)
+    expect((await secondReplica.resolveOwner(ORG, 'organization'))?.id).toBe(ORG);
 
     await sql`DELETE FROM "member" WHERE "organizationId" = ${ORG} AND role = 'owner'`;
     expect((await secondReplica.resolveOwner(renamed, 'organization'))?.id).toBe(ORG);

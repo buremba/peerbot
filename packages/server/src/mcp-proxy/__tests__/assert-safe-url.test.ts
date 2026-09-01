@@ -9,8 +9,14 @@
  * identically to the gateway egress proxy.
  */
 
-import { describe, expect, it } from 'vitest';
-import { assertSafeUrl } from '../client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { __mcpClientTestOnly, assertSafeUrl } from '../client';
+
+const originalFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 describe('assertSafeUrl — shared SSRF guard (F10)', () => {
   it('rejects NAT64-wrapped loopback (the previously-missed bypass)', () => {
@@ -25,6 +31,16 @@ describe('assertSafeUrl — shared SSRF guard (F10)', () => {
     expect(() => assertSafeUrl('https://[64:ff9b::a9fe:a9fe]/latest/meta-data')).toThrow(
       /private\/internal address/i
     );
+  });
+
+  it('rejects the RFC 8215 local-use NAT64 prefix even with a public IPv4 suffix', () => {
+    expect(() => assertSafeUrl('https://[64:ff9b:1::808:808]/')).toThrow(
+      /private\/internal/i
+    );
+  });
+
+  it('rejects deprecated IPv6 site-local unicast', () => {
+    expect(() => assertSafeUrl('https://[fec0::1]/')).toThrow(/private\/internal/i);
   });
 
   it('rejects hex-form IPv4-mapped IPv6 loopback', () => {
@@ -70,5 +86,29 @@ describe('assertSafeUrl — shared SSRF guard (F10)', () => {
   it('allows ordinary public hostnames', () => {
     expect(() => assertSafeUrl('https://mcp.example.com/rpc')).not.toThrow();
     expect(() => assertSafeUrl('https://api.github.com/')).not.toThrow();
+  });
+
+  it('refuses a credentialed HTTP upstream before fetch', async () => {
+    const networkFetch = vi.fn(async () => new Response(null, { status: 200 }));
+    globalThis.fetch = networkFetch as typeof fetch;
+
+    await expect(
+      __mcpClientTestOnly.fetchMcpResponse(
+        'http://mcp.example.com/rpc',
+        { headers: { Authorization: 'Bearer secret' } },
+        1_000
+      )
+    ).rejects.toThrow(/require HTTPS/i);
+    expect(networkFetch).not.toHaveBeenCalled();
+  });
+
+  it('preserves unauthenticated public HTTP transport', async () => {
+    const networkFetch = vi.fn(async () => new Response(null, { status: 204 }));
+    globalThis.fetch = networkFetch as typeof fetch;
+
+    await expect(
+      __mcpClientTestOnly.fetchMcpResponse('http://mcp.example.com/rpc', {}, 1_000)
+    ).resolves.toMatchObject({ status: 204 });
+    expect(networkFetch).toHaveBeenCalledTimes(1);
   });
 });

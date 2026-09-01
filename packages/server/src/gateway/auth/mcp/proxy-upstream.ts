@@ -15,7 +15,10 @@ import {
 	McpTransportError,
 	parseJsonRpcResponse,
 } from "../../../mcp-proxy/http-response.js";
-import { isInternalUrl } from "../../proxy/ssrf-guard.js";
+import {
+	fetchPublicUrl,
+	isInternalUrl,
+} from "../../proxy/ssrf-guard.js";
 import {
 	buildSessionKey,
 	buildUpstreamHeaders,
@@ -199,12 +202,15 @@ export class McpUpstreamClient {
 		let response: Response;
 		try {
 			if (body) assertRequestBodySize(body);
-			response = await fetch(httpServer.upstreamUrl, {
+			const request = {
 				method,
 				headers,
 				body: body || undefined,
 				signal: abortScope.signal,
-			});
+			};
+			response = httpServer.internal
+				? await fetch(httpServer.upstreamUrl, request)
+				: await fetchPublicUrl(httpServer.upstreamUrl, request);
 		} catch (error) {
 			const normalized = normalizeMcpAbortError(error, abortScope.signal);
 			abortScope.cleanup();

@@ -1,8 +1,13 @@
 import { getDb } from "../db/client";
+import { fetchPublicUrl } from "../gateway/proxy/ssrf-guard";
 import { discoverTools } from "../mcp-proxy/client";
 import type { DiscoveredTool, McpProxyConfig } from "../mcp-proxy/types";
 import { errorMessage } from "../utils/errors";
 import { selectedConnectorVersionArtifactSql } from "../utils/connector-execution-placement";
+import {
+	cancelResponseBody,
+	readResponseTextWithLimit,
+} from "../utils/bounded-response";
 import logger from "../utils/logger";
 import { filterOperationsByActionModes } from "./action-modes";
 import type {
@@ -24,6 +29,8 @@ type ConnectorRow = {
 
 const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "head"] as const;
 const OPENAPI_CACHE_TTL_MS = 5 * 60 * 1000;
+const OPENAPI_FETCH_TIMEOUT_MS = 30_000;
+const MAX_OPENAPI_SPEC_BYTES = 5 * 1024 * 1024;
 
 const openApiCache = new Map<
 	string,
@@ -256,22 +263,54 @@ function getOperationInputSchema(
 
 async function fetchOpenApiSpec(
 	specUrl: string,
+	limits: { timeoutMs?: number; maxBytes?: number } = {},
 ): Promise<Record<string, unknown>> {
 	const cached = openApiCache.get(specUrl);
 	if (cached && cached.expiresAt > Date.now()) return cached.spec;
-	const response = await fetch(specUrl);
-	if (!response.ok) {
-		throw new Error(
-			`Failed to fetch OpenAPI spec from ${specUrl}: ${response.status}`,
+	const timeoutMs = limits.timeoutMs ?? OPENAPI_FETCH_TIMEOUT_MS;
+	const maxBytes = limits.maxBytes ?? MAX_OPENAPI_SPEC_BYTES;
+	const controller = new AbortController();
+	const timeout = setTimeout(
+		() =>
+			controller.abort(
+				new Error(`OpenAPI spec fetch timed out after ${timeoutMs}ms`),
+			),
+		timeoutMs,
+	);
+	try {
+		const response = await fetchPublicUrl(specUrl, {
+			signal: controller.signal,
+		});
+		if (!response.ok) {
+			await cancelResponseBody(response);
+			throw new Error(
+				`Failed to fetch OpenAPI spec from ${specUrl}: ${response.status}`,
+			);
+		}
+		const text = await readResponseTextWithLimit(
+			response,
+			maxBytes,
+			"OpenAPI spec too large",
 		);
+		const parsed = JSON.parse(text) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error(`OpenAPI spec from ${specUrl} was not a JSON object.`);
+		}
+		const spec = parsed as Record<string, unknown>;
+		openApiCache.set(specUrl, {
+			spec,
+			expiresAt: Date.now() + OPENAPI_CACHE_TTL_MS,
+		});
+		return spec;
+	} finally {
+		clearTimeout(timeout);
 	}
-	const spec = (await response.json()) as Record<string, unknown>;
-	openApiCache.set(specUrl, {
-		spec,
-		expiresAt: Date.now() + OPENAPI_CACHE_TTL_MS,
-	});
-	return spec;
 }
+
+export const __connectorOperationsTestOnly = {
+	fetchOpenApiSpec,
+	MAX_OPENAPI_SPEC_BYTES,
+};
 
 function getServerUrl(
 	spec: Record<string, unknown>,

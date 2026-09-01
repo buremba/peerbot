@@ -33,32 +33,92 @@
 import net from 'node:net';
 
 /**
- * Reserved (non-publicly-routable) IPv4 ranges.
+ * One entry of an IANA special-purpose address registry: a prefix and whether
+ * addresses inside it are globally reachable.
  *
- * This is also exactly the `block-private` set the database egress guard
- * enforces — the two were maintained as identical copies before this module
- * existed, so consumers share one list rather than drifting apart.
+ * Evaluation is longest-prefix-wins, which is load-bearing rather than a
+ * nicety: several non-global ranges contain globally reachable exceptions
+ * (`192.0.0.0/24` holds the PCP and TURN anycast /32s), and a flat
+ * "any match means blocked" list cannot express that.
  */
-const RESERVED_IPV4_RANGES: ReadonlyArray<readonly [string, number]> = [
-  ['0.0.0.0', 8], // unspecified / "this network"
-  ['10.0.0.0', 8], // RFC1918
-  ['100.64.0.0', 10], // CGNAT
-  ['127.0.0.0', 8], // loopback
-  ['169.254.0.0', 16], // link-local + cloud metadata
-  ['172.16.0.0', 12], // RFC1918
-  ['192.168.0.0', 16], // RFC1918
-  ['198.18.0.0', 15], // benchmarking
-  ['224.0.0.0', 4], // multicast
-  ['240.0.0.0', 4], // reserved + 255.255.255.255 broadcast
+type ReachabilityRule = readonly [
+  base: string,
+  prefix: number,
+  globallyReachable: boolean,
 ];
 
-/** Reserved (non-publicly-routable) IPv6 ranges. */
-const RESERVED_IPV6_RANGES: ReadonlyArray<readonly [string, number]> = [
-  ['fc00::', 7], // unique local (ULA)
-  ['fe80::', 10], // link-local
-  ['ff00::', 8], // multicast
+/**
+ * IANA IPv4 Special-Purpose Address Registry, last reviewed 2025-10-09.
+ *
+ * Multicast and the reserved `240/4` block live in separate IANA registries
+ * but are included here as non-unicast routing boundaries.
+ */
+const IPV4_REACHABILITY_RULES: readonly ReachabilityRule[] = [
+  ['0.0.0.0', 8, false], // "this network"
+  ['10.0.0.0', 8, false], // RFC1918
+  ['100.64.0.0', 10, false], // CGNAT
+  ['127.0.0.0', 8, false], // loopback
+  ['169.254.0.0', 16, false], // link-local + cloud metadata
+  ['172.16.0.0', 12, false], // RFC1918
+  ['192.0.0.0', 24, false], // IETF protocol assignments
+  ['192.0.0.0', 29, false], // DS-Lite
+  ['192.0.0.8', 32, false], // IPv4 dummy address
+  ['192.0.0.9', 32, true], // PCP anycast
+  ['192.0.0.10', 32, true], // TURN anycast
+  ['192.0.0.170', 32, false], // NAT64/DNS64 discovery
+  ['192.0.0.171', 32, false], // NAT64/DNS64 discovery
+  ['192.0.2.0', 24, false], // TEST-NET-1
+  ['192.31.196.0', 24, true], // AS112-v4
+  ['192.52.193.0', 24, true], // AMT
+  ['192.88.99.0', 24, false], // deprecated 6to4 relay anycast
+  ['192.88.99.2', 32, false],
+  ['192.168.0.0', 16, false], // RFC1918
+  ['192.175.48.0', 24, true], // direct delegation AS112
+  ['198.18.0.0', 15, false], // benchmarking
+  ['198.51.100.0', 24, false], // TEST-NET-2
+  ['203.0.113.0', 24, false], // TEST-NET-3
+  ['224.0.0.0', 4, false], // multicast
+  ['240.0.0.0', 4, false], // reserved
+  ['255.255.255.255', 32, false], // limited broadcast
 ];
 
+/**
+ * IANA IPv6 Special-Purpose Address Registry, last reviewed 2025-10-09.
+ *
+ * `2000::/3` is IANA's allocated global-unicast envelope. Anything outside it
+ * is unallocated and fails closed, so the IPv6 default is the opposite of the
+ * IPv4 default — see {@link ipv6IsGloballyReachable}.
+ */
+const IPV6_REACHABILITY_RULES: readonly ReachabilityRule[] = [
+  ['::', 128, false], // unspecified
+  ['::1', 128, false], // loopback
+  ['::ffff:0:0', 96, false], // IPv4-mapped (unwrapped before this table)
+  ['64:ff9b::', 96, true], // NAT64 well-known (v4 suffix checked separately)
+  ['64:ff9b:1::', 48, false], // local-use NAT64
+  ['100::', 64, false], // discard-only
+  ['100:0:0:1::', 64, false], // dummy prefix
+  ['2000::', 3, true], // global unicast
+  ['2001::', 23, false], // IETF protocol assignments
+  ['2001::', 32, false], // TEREDO — registry says N/A; fail closed
+  ['2001:1::1', 128, true], // PCP anycast
+  ['2001:1::2', 128, true], // TURN anycast
+  ['2001:1::3', 128, true], // DNS-SD service registration
+  ['2001:2::', 48, false], // benchmarking
+  ['2001:3::', 32, true], // AMT
+  ['2001:4:112::', 48, true], // AS112-v6
+  ['2001:10::', 28, false], // deprecated ORCHID
+  ['2001:20::', 28, true], // ORCHIDv2
+  ['2001:30::', 28, true], // DRIP
+  ['2001:db8::', 32, false], // documentation
+  ['2002::', 16, false], // 6to4 — registry says N/A; fail closed
+  ['2620:4f:8000::', 48, true], // direct delegation AS112
+  ['3fff::', 20, false], // documentation
+  ['5f00::', 16, false], // SRv6 SIDs
+  ['fc00::', 7, false], // unique local (ULA)
+  ['fec0::', 10, false], // deprecated site-local (RFC 3879)
+  ['fe80::', 10, false], // link-local
+  ['ff00::', 8, false], // multicast
+];
 /** Pack two 16-bit hextets into the dotted-quad IPv4 they encode. */
 function hextetsToIpv4(high: number, low: number): string {
   return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
@@ -255,21 +315,60 @@ export function stripIpv6Brackets(host: string): string {
   return host;
 }
 
-/** Whether a canonical IPv4 address is in a reserved range. */
+/**
+ * Longest-prefix lookup over an IANA registry table.
+ *
+ * `fallback` is the answer when no rule matches: IPv4 space is globally
+ * reachable apart from the carve-outs above, while IPv6 space is mostly
+ * unallocated, so an unmatched IPv6 address is treated as unreachable.
+ */
+function isGloballyReachable(
+  address: string,
+  rules: readonly ReachabilityRule[],
+  matches: (address: string, base: string, prefix: number) => boolean,
+  fallback: boolean,
+): boolean {
+  let decision = fallback;
+  let longestPrefix = -1;
+  for (const [base, prefix, globallyReachable] of rules) {
+    if (prefix > longestPrefix && matches(address, base, prefix)) {
+      decision = globallyReachable;
+      longestPrefix = prefix;
+    }
+  }
+  return decision;
+}
+
+/**
+ * Whether a canonical IPv4 address is in a reserved (non-global) range.
+ *
+ * Unparseable input is blocked explicitly rather than relying on
+ * {@link matchesIpv4Prefix}'s match-everything fallback: under longest-prefix
+ * evaluation that fallback would resolve to whichever rule happens to carry the
+ * longest prefix, so reordering two `/32` entries could silently turn a
+ * malformed address from blocked into allowed.
+ */
 export function isReservedIpv4(address: string): boolean {
-  return RESERVED_IPV4_RANGES.some(([base, prefix]) =>
-    matchesIpv4Prefix(address, base, prefix),
+  if (ipv4ToNumber(address) === undefined) return true;
+  return !isGloballyReachable(
+    address,
+    IPV4_REACHABILITY_RULES,
+    matchesIpv4Prefix,
+    true,
   );
 }
 
-/** Whether a canonical IPv6 address is in a reserved range (incl. `::` / `::1`). */
+/**
+ * Whether a canonical IPv6 address is in a reserved (non-global) range.
+ * Unparseable input fails closed, for the reason on {@link isReservedIpv4}.
+ */
 export function isReservedIpv6(address: string): boolean {
-  return (
-    matchesIpv6Prefix(address, '::', 128) ||
-    matchesIpv6Prefix(address, '::1', 128) ||
-    RESERVED_IPV6_RANGES.some(([base, prefix]) =>
-      matchesIpv6Prefix(address, base, prefix),
-    )
+  if (net.isIPv6(address) === false) return true;
+  return !isGloballyReachable(
+    address,
+    IPV6_REACHABILITY_RULES,
+    matchesIpv6Prefix,
+    false,
   );
 }
 

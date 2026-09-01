@@ -16,9 +16,8 @@
  *      /oauth/connection-token (consent-only blocks feeds, not auth).
  */
 
-import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { connectionTokenRoutes } from '../../../connect/connection-token-route';
 import type { Env } from '../../../index';
 import { manageConnections } from '../../../tools/admin/manage_connections';
@@ -47,8 +46,8 @@ const REFRESHED = {
 };
 const MANAGED_SECRET = 'consent-only-secret';
 
-let providerServer: ReturnType<typeof serve> | null = null;
-let providerTokenUrl = '';
+const PROVIDER_TOKEN_URL = 'https://oauth-provider.example.com/consent/token';
+const originalFetch = globalThis.fetch;
 
 function ctxFor(organizationId: string, userId: string): ToolContext {
   return {
@@ -73,29 +72,18 @@ function buildCloudApp(): Hono<{ Bindings: Env }> {
 
 beforeAll(async () => {
   await initWorkspaceProvider();
-
-  // Fake OAuth provider for the token-resolution test: a refresh_token grant
-  // returns canned tokens.
-  const providerApp = new Hono();
-  providerApp.post('/token', async (c) =>
-    c.json({
-      access_token: REFRESHED.access_token,
-      refresh_token: REFRESHED.refresh_token,
-      expires_in: REFRESHED.expires_in,
-    })
-  );
-  providerServer = await new Promise((resolve) => {
-    const s = serve({ fetch: providerApp.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
-      providerTokenUrl = `http://127.0.0.1:${info.port}/token`;
-      resolve(s);
-    });
-  });
 });
 
-afterAll(async () => {
-  await new Promise<void>((done) =>
-    providerServer ? providerServer.close(() => done()) : done()
-  );
+beforeEach(() => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url === PROVIDER_TOKEN_URL) return Response.json(REFRESHED);
+    return originalFetch(input, init);
+  }) as typeof fetch;
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
 });
 
 describe('consent-only connections — feed creation is rejected by construction', () => {
@@ -228,7 +216,7 @@ describe('consent-only connections — feed creation is rejected by construction
             provider: 'demo',
             requiredScopes: ['read'],
             authorizationUrl: 'https://demo.example/authorize',
-            tokenUrl: providerTokenUrl,
+            tokenUrl: PROVIDER_TOKEN_URL,
             tokenEndpointAuthMethod: 'client_secret_post',
             clientIdKey: 'DEMO_CLIENT_ID',
             clientSecretKey: 'DEMO_CLIENT_SECRET',

@@ -14,12 +14,12 @@
  *    and the unspecified address (no real DB lives there; cheap defense in depth).
  *  - `block-private`  (untrusted cloud): block every non-public address.
  *
- * The IP classifier is ported from the gateway's HTTP egress guard
- * (`packages/server/src/gateway/proxy/http-proxy.ts`) — that package isn't
- * reachable from the bundled connector, so the logic is duplicated, not imported.
- * It collapses the forms an attacker can use to dress up an internal address
- * (IPv4-mapped IPv6, NAT64 `64:ff9b::/96`, zone IDs) and FAILS CLOSED on any
- * IP-looking literal it can't parse.
+ * The IP classifier itself is `@lobu/connector-sdk/ip-reachability`, shared with
+ * the gateway's HTTP egress guard and the connector SDK's URL guard. It collapses
+ * the forms an attacker can use to dress up an internal address (IPv4-mapped and
+ * IPv4-compatible IPv6, NAT64 `64:ff9b::/96`, zone IDs) and FAILS CLOSED on any
+ * IP-looking literal it can't parse. This module owns only the POLICY on top:
+ * which ranges each policy denies, the metadata pins, and the allowlist.
  *
  * Under `block-private` the guard goes beyond classify-and-reject
  * (`buildDbEgressHardening`):
@@ -39,28 +39,15 @@
  */
 import dns from 'node:dns';
 import net from 'node:net';
+import {
+  isReservedIpv4,
+  isReservedIpv6,
+  matchesIpv4Prefix,
+  matchesIpv6Prefix,
+  normalizeIpLiteral,
+} from '@lobu/connector-sdk/ip-reachability';
 
 export type DbEgressPolicy = 'allow-private' | 'block-private';
-
-/** IPv4 CIDRs blocked under `block-private` (the full non-public set). */
-const BLOCK_PRIVATE_V4: ReadonlyArray<readonly [string, number]> = [
-  ['0.0.0.0', 8], // unspecified / "this network"
-  ['10.0.0.0', 8], // RFC1918
-  ['100.64.0.0', 10], // CGNAT
-  ['127.0.0.0', 8], // loopback
-  ['169.254.0.0', 16], // link-local + cloud metadata
-  ['172.16.0.0', 12], // RFC1918
-  ['192.168.0.0', 16], // RFC1918
-  ['198.18.0.0', 15], // benchmarking
-  ['224.0.0.0', 4], // multicast
-  ['240.0.0.0', 4], // reserved + 255.255.255.255 broadcast
-];
-
-const BLOCK_PRIVATE_V6: ReadonlyArray<readonly [string, number]> = [
-  ['fc00::', 7], // unique local (ULA)
-  ['fe80::', 10], // link-local
-  ['ff00::', 8], // multicast
-];
 
 /**
  * The subset blocked even under `allow-private` — addresses no legitimate DB is
@@ -110,164 +97,27 @@ function isMetadataV6(address: string): boolean {
   return METADATA_V6.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix));
 }
 
-type NormalizedHost =
-  | { kind: 'ipv4'; value: string }
-  | { kind: 'ipv6'; value: string }
-  | { kind: 'not-ip' }
-  | { kind: 'invalid' };
-
-function hextetsToIpv4(high: number, low: number): string {
-  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-}
-
-function ipv4ToNumber(address: string): number | undefined {
-  const parts = address.split('.');
-  if (parts.length !== 4) return undefined;
-  let value = 0;
-  for (const part of parts) {
-    if (!/^\d+$/.test(part)) return undefined;
-    const octet = Number.parseInt(part, 10);
-    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return undefined;
-    value = (value << 8) | octet;
-  }
-  return value >>> 0;
-}
-
-function matchesIpv4Prefix(address: string, base: string, prefix: number): boolean {
-  const addressValue = ipv4ToNumber(address);
-  const baseValue = ipv4ToNumber(base);
-  if (addressValue === undefined || baseValue === undefined) return true;
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  return (addressValue & mask) === (baseValue & mask);
-}
-
-/** Expand a valid IPv6 (net.isIP === 6) into 8 unsigned 16-bit hextets. */
-function expandIpv6ToHextets(addr: string): number[] {
-  const lower = addr.toLowerCase();
-  let hexPart = lower;
-  let ipv4Suffix: number[] = [];
-  const dotIdx = lower.lastIndexOf('.');
-  if (dotIdx !== -1) {
-    const colonBeforeDot = lower.lastIndexOf(':', dotIdx);
-    const dotted = lower.slice(colonBeforeDot + 1);
-    hexPart = lower.slice(0, colonBeforeDot + 1);
-    const octets = dotted.split('.').map((o) => Number.parseInt(o, 10));
-    ipv4Suffix = [
-      (((octets[0] ?? 0) << 8) | (octets[1] ?? 0)) >>> 0,
-      (((octets[2] ?? 0) << 8) | (octets[3] ?? 0)) >>> 0,
-    ];
-    if (hexPart.endsWith(':') && !hexPart.endsWith('::')) {
-      hexPart = hexPart.slice(0, -1);
-    }
-  }
-  const halves = hexPart.split('::');
-  const left = halves[0] ? halves[0].split(':').map((h) => Number.parseInt(h, 16)) : [];
-  const right =
-    halves.length === 2 && halves[1] ? halves[1].split(':').map((h) => Number.parseInt(h, 16)) : [];
-  const rightWithSuffix = [...right, ...ipv4Suffix];
-  const zeros = new Array(8 - left.length - rightWithSuffix.length).fill(0);
-  return [...left, ...zeros, ...rightWithSuffix];
-}
-
-function ipv6ToBigInt(address: string): bigint {
-  return expandIpv6ToHextets(address).reduce(
-    (acc, hextet) => (acc << 16n) | BigInt(hextet),
-    0n,
-  );
-}
-
-function matchesIpv6Prefix(address: string, base: string, prefix: number): boolean {
-  const shift = 128n - BigInt(prefix);
-  return ipv6ToBigInt(address) >> shift === ipv6ToBigInt(base) >> shift;
-}
-
+/**
+ * `block-private` denies exactly the shared reserved-range set; `allow-private`
+ * drops to the narrower floor above. Cloud-metadata endpoints are denied under
+ * both, including for allowlisted hosts.
+ */
 function isBlockedV4(address: string, policy: DbEgressPolicy): boolean {
-  const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V4 : ALLOW_PRIVATE_V4;
-  return (
-    isMetadataV4(address) ||
-    ranges.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix))
+  if (isMetadataV4(address)) return true;
+  if (policy === 'block-private') return isReservedIpv4(address);
+  return ALLOW_PRIVATE_V4.some(([base, prefix]) =>
+    matchesIpv4Prefix(address, base, prefix),
   );
 }
 
 function isBlockedV6(address: string, policy: DbEgressPolicy): boolean {
-  const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V6 : ALLOW_PRIVATE_V6;
-  return (
-    isMetadataV6(address) ||
-    matchesIpv6Prefix(address, '::', 128) ||
-    (policy === 'block-private' && matchesIpv6Prefix(address, '::1', 128)) ||
-    ranges.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix))
+  if (isMetadataV6(address) || matchesIpv6Prefix(address, '::', 128)) {
+    return true;
+  }
+  if (policy === 'block-private') return isReservedIpv6(address);
+  return ALLOW_PRIVATE_V6.some(([base, prefix]) =>
+    matchesIpv6Prefix(address, base, prefix),
   );
-}
-
-/**
- * Collapse a host literal to a canonical IPv4/IPv6 (or report not-ip/invalid).
- * Unwraps IPv4-mapped IPv6 (`::ffff:127.0.0.1`, `::ffff:7f00:1`) and NAT64
- * (`64:ff9b::a9fe:a9fe`); strips zone IDs. An IP-looking literal that won't
- * parse returns `invalid` so the caller fails closed.
- */
-export function normalizeIpLiteral(host: string): NormalizedHost {
-  const zoneSplit = host.indexOf('%');
-  const bare = (zoneSplit === -1 ? host : host.slice(0, zoneSplit)).trim();
-  if (bare.length === 0) {
-    return zoneSplit === -1 ? { kind: 'not-ip' } : { kind: 'invalid' };
-  }
-
-  const family = net.isIP(bare);
-  if (family === 4) return { kind: 'ipv4', value: bare };
-  if (family === 0) {
-    return bare.includes(':') ? { kind: 'invalid' } : { kind: 'not-ip' };
-  }
-
-  const lower = bare.toLowerCase();
-  if (lower.startsWith('::ffff:')) {
-    const mapped = lower.slice('::ffff:'.length);
-    if (mapped.includes('.')) {
-      return net.isIP(mapped) === 4 ? { kind: 'ipv4', value: mapped } : { kind: 'invalid' };
-    }
-    const parts = mapped.split(':');
-    if (parts.length !== 2) return { kind: 'invalid' };
-    const high = Number.parseInt(parts[0] || '', 16);
-    const low = Number.parseInt(parts[1] || '', 16);
-    if (
-      !Number.isInteger(high) ||
-      !Number.isInteger(low) ||
-      high < 0 ||
-      high > 0xffff ||
-      low < 0 ||
-      low > 0xffff
-    ) {
-      return { kind: 'invalid' };
-    }
-    return { kind: 'ipv4', value: hextetsToIpv4(high, low) };
-  }
-
-  const hextets = expandIpv6ToHextets(bare);
-  if (
-    hextets[0] === 0x0064 &&
-    hextets[1] === 0xff9b &&
-    hextets[2] === 0 &&
-    hextets[3] === 0 &&
-    hextets[4] === 0 &&
-    hextets[5] === 0
-  ) {
-    return { kind: 'ipv4', value: hextetsToIpv4(hextets[6] ?? 0, hextets[7] ?? 0) };
-  }
-  // IPv4-compatible IPv6 (`::a.b.c.d`, e.g. `::7f00:1` = 127.0.0.1): the first 96
-  // bits are zero with a non-trivial v4 suffix. Unwrap so the v4 blocklist
-  // applies — otherwise swapping `::ffff:` for `::` evades the guard. `::` and
-  // `::1` keep their explicit blocklist entries (suffix 0 or 1).
-  if (
-    hextets[0] === 0 &&
-    hextets[1] === 0 &&
-    hextets[2] === 0 &&
-    hextets[3] === 0 &&
-    hextets[4] === 0 &&
-    hextets[5] === 0 &&
-    (hextets[6] !== 0 || (hextets[7] ?? 0) > 1)
-  ) {
-    return { kind: 'ipv4', value: hextetsToIpv4(hextets[6] ?? 0, hextets[7] ?? 0) };
-  }
-  return { kind: 'ipv6', value: bare };
 }
 
 /**

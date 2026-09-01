@@ -44,6 +44,10 @@
       "types": "./dist/metrics.d.ts",
       "import": "./dist/metrics.js"
     },
+    "./ip-reachability": {
+      "types": "./dist/ip-reachability.d.ts",
+      "import": "./dist/ip-reachability.js"
+    },
     "./browser/cdp": {
       "types": "./dist/browser/cdp.d.ts",
       "import": "./dist/browser/cdp.js"

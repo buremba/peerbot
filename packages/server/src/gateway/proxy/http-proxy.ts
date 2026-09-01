@@ -22,7 +22,7 @@ import {
   isReservedIp,
   normalizeIpLiteral,
   stripIpv6Brackets,
-} from "./ssrf-guard.js";
+} from "@lobu/connector-sdk/ip-reachability";
 
 const logger = createLogger("http-proxy");
 
@@ -270,10 +270,11 @@ interface ProxyCredentials {
 }
 
 // The IP-literal normalization + reserved-range blocklist live in the shared
-// `ssrf-guard.ts` module (imported above). `isReservedIp` and
-// `normalizeIpLiteral` are the single source of truth for every SSRF guard in
-// the server — this proxy used to carry a byte-for-byte duplicate, which is the
-// drift class fixed here. `isBlockedIpAddress` is just the proxy-local alias.
+// `@lobu/connector-sdk/ip-reachability` module (imported above). `isReservedIp`
+// and `normalizeIpLiteral` are the single source of truth for every SSRF guard
+// in the monorepo — the gateway proxy, the database egress guard, and the
+// connector SDK's URL guard all consume it, so none of them can drift.
+// `isBlockedIpAddress` is just the proxy-local alias.
 const isBlockedIpAddress = isReservedIp;
 
 type DnsLookupAllFn = (

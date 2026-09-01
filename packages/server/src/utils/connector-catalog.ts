@@ -92,13 +92,12 @@ const metadataCache = new Map<string, CachedMetadata>();
 
 /**
  * One cache entry per (image file, selected version): compiling and
- * extracting is the expensive half, so both the "does the image attest this
- * key@version" question and the agent-tooling question are answered from a
- * single compile.
+ * extracting is the expensive half, and the resolver asks once per connection
+ * row on every agent turn.
  */
 const bundledAttestationCache = new Map<
 	string,
-	{ mtimeMs: number; value: BundledConnectorAttestation | null }
+	{ mtimeMs: number; value: BundledAgentToolingMetadata | null }
 >();
 const MAX_BUNDLED_ATTESTATION_CACHE = 64;
 
@@ -107,19 +106,19 @@ export interface BundledAgentToolingMetadata {
 	agentTooling: ConnectorAgentTooling | null;
 }
 
-interface BundledConnectorAttestation extends BundledAgentToolingMetadata {
-	filePath: string;
-}
-
 /**
- * Compile the on-image connector file once and keep it only when it attests
- * the exact selected key@version. Returns null when the image carries no
- * file for the key, or carries a different key/version than the one selected.
+ * Resolve only agent metadata from the trusted connector file in this image,
+ * compiled once and kept only when it attests the exact selected key@version.
+ * Returns null when the image carries no file for the key, or carries a
+ * different key/version than the one selected.
+ *
+ * This is intentionally not part of the public catalog projection: Cloud
+ * tooling must never trust connector_definitions JSON for a shared artifact.
  */
-async function attestBundledConnector(
+export async function resolveBundledAgentToolingMetadata(
 	connectorKey: string,
 	selectedVersion: string,
-): Promise<BundledConnectorAttestation | null> {
+): Promise<BundledAgentToolingMetadata | null> {
 	const filePath = findBundledConnectorFile(connectorKey);
 	if (!filePath) return null;
 	const fileStat = await stat(filePath);
@@ -127,13 +126,12 @@ async function attestBundledConnector(
 	const cached = bundledAttestationCache.get(cacheKey);
 	if (cached?.mtimeMs === fileStat.mtimeMs) return cached.value;
 
-	let value: BundledConnectorAttestation | null = null;
+	let value: BundledAgentToolingMetadata | null = null;
 	try {
 		const compiledCode = await compileConnectorFromFile(filePath);
 		const metadata = await extractConnectorMetadata(compiledCode);
 		if (metadata.key === connectorKey && metadata.version === selectedVersion) {
 			value = {
-				filePath,
 				authSchema: metadata.authSchema ?? null,
 				agentTooling: metadata.agentTooling ?? null,
 			};
@@ -261,20 +259,6 @@ export function resolveFileSourcePath(value: string): string | null {
 // Re-exported here so existing server callers keep their import paths.
 export const compileConnectorFromFile =
 	connectorCompiler.compileConnectorFromFile;
-
-/**
- * Resolve only agent metadata from the trusted connector file in this image.
- * This is intentionally not part of the public catalog projection: Cloud
- * tooling must never trust connector_definitions JSON for a shared artifact.
- */
-export async function resolveBundledAgentToolingMetadata(
-	connectorKey: string,
-	selectedVersion: string,
-): Promise<BundledAgentToolingMetadata | null> {
-	const attested = await attestBundledConnector(connectorKey, selectedVersion);
-	if (!attested) return null;
-	return { authSchema: attested.authSchema, agentTooling: attested.agentTooling };
-}
 
 async function extractConnectorCatalogMetadata(
 	filePath: string,

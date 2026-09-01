@@ -237,7 +237,7 @@ async function loadToolingConnections(
            cd.auth_schema,
            cd.version AS definition_version,
            cv.id AS artifact_id,
-           COALESCE(cv.artifact_row_count, 0) AS artifact_row_count,
+           cv.artifact_row_count,
            cv.organization_id AS artifact_organization_id,
            cv.has_compiled_code AS artifact_has_compiled_code,
            cv.has_source_code AS artifact_has_source_code,
@@ -366,6 +366,12 @@ async function resolveToolingMetadata(
   });
   if (!trusted) return null;
 
+  // Deliberately stricter than run admission, which is version-agnostic:
+  // pinning admission to an exact key@version broke version-pinned runs and
+  // pre-refresh drift. Tooling can afford the opposite trade-off because a
+  // near-miss here would widen a worker's egress allowlist to another
+  // version's domains. Contributing nothing until the definition re-syncs is
+  // the safe direction; a wrong declaration is not.
   try {
     const metadata = await resolveBundledAgentToolingMetadata(
       row.connector_key,

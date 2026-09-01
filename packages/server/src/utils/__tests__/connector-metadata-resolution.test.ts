@@ -155,22 +155,22 @@ describe('formatMetadataExtractionError', () => {
 });
 
 describe('resolveBundledAgentToolingMetadata', () => {
-	test('returns tooling and auth only for an exact bundled key and version', async () => {
-		const metadata = await resolveBundledAgentToolingMetadata('github', '1.3.0');
-		expect(metadata?.agentTooling).toMatchObject({
-			nix: { packages: ['gh'] },
-			env: [{ name: 'GH_TOKEN', credential: 'lease' }],
-		});
-		expect(metadata?.authSchema?.methods).toEqual(
-			expect.arrayContaining([expect.objectContaining({ type: 'app_installation' })]),
-		);
-	});
+  test('returns tooling and auth only for an exact bundled key and version', async () => {
+    const metadata = await resolveBundledAgentToolingMetadata('github', '1.3.0');
+    expect(metadata?.agentTooling).toMatchObject({
+      nix: { packages: ['gh'] },
+      env: [{ name: 'GH_TOKEN', credential: 'lease' }],
+    });
+    expect(metadata?.authSchema?.methods).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'app_installation' })]),
+    );
+  });
 
-	test('rejects a selected version that does not match the image metadata', async () => {
-		expect(
-			await resolveBundledAgentToolingMetadata('github', '1.0.0'),
-		).toBeNull();
-	});
+  test('rejects a selected version that does not match the image metadata', async () => {
+    expect(
+      await resolveBundledAgentToolingMetadata('github', '1.0.0'),
+    ).toBeNull();
+  });
 });
 
 /**

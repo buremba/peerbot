@@ -10,6 +10,7 @@
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { createHash } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { createAuthorizationIntent } from '../../../auth/oauth/authorization-intent';
 import { hashToken } from '../../../auth/oauth/utils';
 import { clearInMemoryMcpSessionsForTests } from '../../../mcp-handler';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -362,6 +363,19 @@ describe('MCP Authentication', () => {
           code_challenge: 'test-code-challenge',
           code_challenge_method: 'S256',
           resource: `http://localhost/mcp/${publicOrg.slug}`,
+          authorization_intent: createAuthorizationIntent(
+            {
+              client_id: client.client_id,
+              redirect_uri: client.redirect_uris[0],
+              response_type: 'code',
+              scope: 'mcp:read profile:read',
+              state: 'public-org-consent-test',
+              code_challenge: 'test-code-challenge',
+              code_challenge_method: 'S256',
+              resource: `http://localhost/mcp/${publicOrg.slug}`,
+            },
+            'test-jwt-secret-for-testing-only'
+          ),
           approved: true,
         },
         cookie: sessionCookie,

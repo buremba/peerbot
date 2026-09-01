@@ -855,8 +855,8 @@ function mapConnection(
       `connection "${connection.slug}" cannot combine credentialMode "byo" with managedBy`
     );
   }
-  // A BYO chat connection (a chat connector whose credential is supplied in
-  // `config`, not the hosted bot — hosted is filtered out before this) applies
+  // A BYO connection (chat or adapterless, with its credential supplied in
+  // `config`; hosted chat is filtered out before this) applies
   // through the secret-aware `apply_chat_connection` path. Resolve `secret()` /
   // `$VAR` refs in its config to the REAL value: the chat-write path stores the
   // incoming plaintext as the secret (server-side `normalizeConfigForStorage`
@@ -865,10 +865,11 @@ function mapConnection(
   // auth-profile credentials; the config row never holds cleartext at rest, and
   // the secret name is collected so the apply secrets gate fails loud if unset.
   // `credentialMode` is explicit so connector definitions remain the only
-  // registry of chat capability (`x-lobu-chat-platform`). Validation against
-  // that marker happens after connector definitions are installed/refetched.
-  const isByoChat = connection.credentialMode === "byo";
-  const resolvedConfig = isByoChat
+  // registry of connection capability (`x-lobu-chat-platform` or
+  // `x-lobu-adapterless-platform`). Validation against that marker happens
+  // after connector definitions are installed/refetched.
+  const isByoConnection = connection.credentialMode === "byo";
+  const resolvedConfig = isByoConnection
     ? Object.fromEntries(
         Object.entries(connection.config ?? {}).map(([k, v]) => [
           k,
@@ -893,10 +894,9 @@ function mapConnection(
     ...(authSlug ? { authProfileSlug: authSlug } : {}),
     ...(appAuthSlug ? { appAuthProfileSlug: appAuthSlug } : {}),
     ...(config ? { config } : {}),
-    // Mark BYO chat so apply routes it through `apply_chat_connection` (which
-    // persists a non-null `credential_mode` the gateway needs to treat the row
-    // as chat). Data connectors leave it undefined.
-    ...(isByoChat ? { credentialMode: "byo" as const } : {}),
+    // Mark BYO chat/adapterless connections so apply routes them through the
+    // secret-aware connection path. Feed/data connectors leave it undefined.
+    ...(isByoConnection ? { credentialMode: "byo" as const } : {}),
     ...(connection.deviceWorkerId
       ? { deviceWorkerId: connection.deviceWorkerId }
       : {}),

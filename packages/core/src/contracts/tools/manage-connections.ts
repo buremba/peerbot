@@ -3,15 +3,7 @@
  */
 
 import { type Static, Type } from "@sinclair/typebox";
-
-const PaginationFields = {
-  limit: Type.Optional(
-    Type.Number({ description: "Page size (default: 100)", default: 100 })
-  ),
-  offset: Type.Optional(
-    Type.Number({ description: "Pagination offset (default: 0)", default: 0 })
-  ),
-};
+import { paginationFields } from "./pagination";
 
 const ConnectionFacetsSchema = Type.Object({
   data: Type.Boolean(),
@@ -151,7 +143,7 @@ export const ListAction = Type.Object({
         "Filter to connections correlated with an app-install setup attempt",
     })
   ),
-  ...PaginationFields,
+  ...paginationFields(50),
 });
 
 export const GetAction = Type.Object({

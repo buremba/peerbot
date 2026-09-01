@@ -1,6 +1,9 @@
 import * as Sentry from '@sentry/node';
 import { isSecretKey } from '@lobu/core';
+import { scrubSentryValue } from '@lobu/core';
 import pino from 'pino';
+
+type SentryExtras = Record<string, unknown>;
 
 /**
  * Logger utility using Pino for structured logging
@@ -144,13 +147,13 @@ function fingerprintAndCapture(parsed: Record<string, unknown>): void {
       const reconstructed = new Error(errObj.message);
       if (errObj.stack) reconstructed.stack = errObj.stack;
       Sentry.captureException(reconstructed, {
-        extra: parsed,
+        extra: scrubSentryValue(parsed) as SentryExtras,
         tags: { source: 'pino', level: String(level) },
       });
     } else {
       Sentry.captureMessage(msg, {
         level: level === 'fatal' ? 'fatal' : 'error',
-        extra: parsed,
+        extra: scrubSentryValue(parsed) as SentryExtras,
         tags: { source: 'pino' },
       });
     }

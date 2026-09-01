@@ -40,7 +40,11 @@ export function deriveConnectionFacets(input: {
   hasOperations: boolean;
 }): ConnectionFacets {
   return {
-    data: input.feedCount > 0 || input.connectorHasFeeds,
+    // Generic webhooks ingest directly into events without a feed row.
+    data:
+      input.connectorKey === 'webhook' ||
+      input.feedCount > 0 ||
+      input.connectorHasFeeds,
     chat: input.isChat,
     actions: input.hasOperations,
     audience: AUDIENCE_CONNECTOR_KEYS.has(input.connectorKey),

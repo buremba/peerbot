@@ -231,6 +231,10 @@ jobs:
                       - { name: DATABASE_URL, value: "file:///var/lib/lobu/data/lobu.db" }
                       - { name: NODE_ENV, value: "development" }
                       - { name: CHOKIDAR_USEPOLLING, value: "true" }
+                      # A preview has one backend pod, so it is safe to exercise
+                      # the complete multi-workspace grant path before the
+                      # coordinated production rollout enables it.
+                      - { name: LOBU_OAUTH_MULTI_WORKSPACE_GRANTS, value: "1" }
                       - { name: ENCRYPTION_KEY, valueFrom: { secretKeyRef: { name: preview-encryption, key: key } } }
                       ${LOCK_ENV}
                     ports:
@@ -289,6 +293,68 @@ jobs:
             -n "$PREVIEW_NS" \
             --timeout=600s
 
+      - name: Detect authorization UI changes
+        id: oauth-ui-scope
+        run: |
+          set -euo pipefail
+          changed_files=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+            --paginate \
+            --jq '.[].filename')
+          if grep -Eq '^(packages/owletto$|packages/server/src/auth/oauth/)' <<<"$changed_files"; then
+            echo "capture=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "capture=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Capture authorization UI proof
+        id: oauth-ui-proof
+        if: steps.oauth-ui-scope.outputs.capture == 'true'
+        env:
+          PROOF_BASE_URL: http://127.0.0.1:8787
+          PROOF_OUTPUT_DIR: ${{ runner.temp }}/oauth-authorization-ui
+          PLAYWRIGHT_RUNTIME: ${{ runner.temp }}/oauth-playwright
+        run: |
+          set -euo pipefail
+          mkdir -p "$PROOF_OUTPUT_DIR" "$PLAYWRIGHT_RUNTIME"
+
+          kubectl -n "$PREVIEW_NS" port-forward \
+            service/"$PREVIEW_NAME" 8787:80 \
+            >"$PROOF_OUTPUT_DIR/port-forward.log" 2>&1 &
+          port_forward_pid=$!
+          trap 'kill "$port_forward_pid" 2>/dev/null || true' EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl -fsS "$PROOF_BASE_URL/api/health" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              cat "$PROOF_OUTPUT_DIR/port-forward.log"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          chrome_path=$(command -v google-chrome-stable || command -v google-chrome)
+          npm install \
+            --prefix "$PLAYWRIGHT_RUNTIME" \
+            --no-package-lock \
+            --no-save \
+            playwright-core@1.60.0
+
+          CHROME_PATH="$chrome_path" node scripts/oauth-authorization-ui-proof.mjs \
+            | tee "$PROOF_OUTPUT_DIR/proof.log"
+
+      - name: Upload authorization UI proof
+        id: oauth-ui-proof-upload
+        if: always() && steps.oauth-ui-scope.outputs.capture == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: oauth-authorization-ui-pr-${{ env.PR_NUMBER }}
+          path: ${{ runner.temp }}/oauth-authorization-ui
+          if-no-files-found: error
+          retention-days: 14
+
       # Deploy and cleanup run in disjoint concurrency groups (so teardown is
       # never cancelled), which opens the reverse window: a close/unlabel that
       # lands mid-deploy no longer cancels this run, and the surviving deploy
@@ -334,6 +400,7 @@ jobs:
           script: |
             const prNumber = context.payload.pull_request?.number ?? Number(process.env.PR_NUMBER);
             const previewUrl = `https://lobu-pr-${prNumber}.${{ vars.TAILNET_DOMAIN }}`;
+            const proofUrl = `${{ steps.oauth-ui-proof-upload.outputs.artifact-url || '' }}`;
 
             // Paginate: listComments defaults to 30 per page, and busy PRs
             // (review bots post here) routinely exceed that - the existing
@@ -357,6 +424,7 @@ jobs:
               `| **URL** | [${previewUrl}](${previewUrl}) |`,
               `| **Namespace** | \`lobu-preview-${prNumber}\` |`,
               "| **Status** | Running |",
+              ...(proofUrl ? [`| **OAuth UI proof** | [Download screenshots](${proofUrl}) |`] : []),
               "",
               "_This preview is deleted when the PR closes or when the `preview` label is removed._",
             ].join("\n");

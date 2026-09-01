@@ -24,7 +24,6 @@ import {
   closeTestDb,
   setupTestDatabase,
 } from "../../../__tests__/setup/test-db.js";
-import { invalidateMembershipRoleCache } from "../../../workspace/multi-tenant.js";
 
 let initPromise: Promise<void> | null = null;
 let backend: EmbeddedBackend | null = null;
@@ -48,6 +47,20 @@ export function ensureDbForGatewayTests(): Promise<void> {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     }
     await setupTestDatabase();
+    // Gateway routes reach `getWorkspaceProvider()` (org-slug lookups behind
+    // view URLs, auth resolution), which throws unless the provider was
+    // initialized. Until now no gateway suite initialized it: files that
+    // needed one inherited it from a lane neighbour, because bun shares module
+    // singletons across every file in a `bun test` process and
+    // `interaction-bridge-owner-approval.test.ts` calls it. Lanes are
+    // partitioned by SOURCE SIZE (scripts/run-gateway-test-lanes.mjs), so
+    // editing an unrelated test file reshuffles them and silently strips a
+    // suite of its initializer. Own it here instead of leaving it to the
+    // partition. Dynamically imported: `workspace/index` pulls the whole
+    // multi-tenant auth graph, and only suites that actually start the DB
+    // should pay for it.
+    const { initWorkspaceProvider } = await import("../../../workspace/index.js");
+    await initWorkspaceProvider();
     // Hand the schema-ready DATABASE_URL off to the singleton without keeping
     // setup-time connections around.
     await closeTestDb();
@@ -142,11 +155,7 @@ export async function seedAgentRow(
   return orgId;
 }
 
-/**
- * Seed a `member` row (and the `user` it references) for an org, then drop the
- * membership-role cache entry so the next `getCachedMembershipRole` reads it.
- * Without that invalidation a role seeded after a prior lookup stays invisible.
- */
+/** Seed a `member` row (and the `user` it references) for an org. */
 export async function seedOrgMembership(
   organizationId: string,
   userId: string,
@@ -163,7 +172,6 @@ export async function seedOrgMembership(
     VALUES (${`m-${organizationId}-${userId}`}, ${organizationId}, ${userId}, ${role}, now())
     ON CONFLICT (id) DO NOTHING
   `;
-  invalidateMembershipRoleCache(organizationId, userId);
 }
 
 /**

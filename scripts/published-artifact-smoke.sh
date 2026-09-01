@@ -50,6 +50,8 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HARNESS="$REPO_ROOT/scripts/sdk-e2e"
+# shellcheck source=scripts/lib/process-cleanup.sh
+. "$REPO_ROOT/scripts/lib/process-cleanup.sh"
 LOBU_VERSION="${1:-${LOBU_VERSION:-latest}}"
 GW_PORT="${GW_PORT:-8799}"
 MOCK_PORT="${MOCK_PORT:-11439}"
@@ -65,9 +67,16 @@ fail() { echo "  [FAIL] $*" >&2; FAILS=$((FAILS + 1)); }
 note() { echo ""; echo "== $* =="; }
 
 MOCK_PID=""
+RUN_PID=""
 cleanup() {
-  [ -n "$MOCK_PID" ] && kill -9 "$MOCK_PID" 2>/dev/null
-  pkill -f "lobu-artifact-smoke.*run" 2>/dev/null
+  if [ -n "$RUN_PID" ]; then
+    # Let `lobu run` forward SIGTERM and stop its embedded Postgres before
+    # forcing and reaping the exact tracked process down.
+    lobu_terminate_child "$RUN_PID"
+  fi
+  [ -n "$MOCK_PID" ] && kill -9 "$MOCK_PID" 2>/dev/null || true
+  lobu_kill_listening_port "$GW_PORT"
+  lobu_kill_listening_port "$MOCK_PORT"
   return 0
 }
 trap cleanup EXIT
@@ -107,6 +116,17 @@ pass "installed, bin present"
 
 RESOLVED="$("$LOBU_BIN" --version 2>&1 | tr -d '[:space:]')"
 if [ -n "$RESOLVED" ]; then pass "lobu --version -> $RESOLVED"; else fail "lobu --version produced nothing"; fi
+
+# Run from a directory that is deliberately outside the npm install tree. A
+# compiled connector must load the SDK from connector-worker's package graph,
+# not from an operator cwd that happens to contain a compatible node_modules.
+RUNTIME_CHECK_LOG="$WORK/connector-runtime-self-check.log"
+if (cd "$HOME" && "$LOBU_BIN" connector runtime-self-check --json >"$RUNTIME_CHECK_LOG" 2>&1); then
+  pass "connector runtime self-check from unrelated cwd"
+else
+  fail "connector runtime self-check from unrelated cwd"
+  tail -40 "$RUNTIME_CHECK_LOG" >&2
+fi
 
 # The worker bundle is the artifact that actually has to load under node.
 WORKER_BUNDLE="$INSTALL_DIR/node_modules/@lobu/worker/dist/index.bundle.mjs"
@@ -192,7 +212,8 @@ if grep -qi "is valid" "$WORK/validate.log"; then pass "lobu validate"; else fai
 
 note "lobu run (embedded Postgres + pgvector on THIS glibc, as THIS uid)"
 RUN_LOG="$WORK/run.log"
-( cd "$PROJ" && "$LOBU_BIN" run --port "$GW_PORT" > "$RUN_LOG" 2>&1 ) &
+( cd "$PROJ" && exec "$LOBU_BIN" run --port "$GW_PORT" > "$RUN_LOG" 2>&1 ) &
+RUN_PID=$!
 for _ in $(seq 1 180); do
   grep -qiE "Apply complete|auto-apply skipped|Apply halted" "$RUN_LOG" 2>/dev/null && break
   sleep 1

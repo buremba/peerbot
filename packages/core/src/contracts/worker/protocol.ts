@@ -100,8 +100,52 @@ export const OAuthCredentialsSchema = Type.Object({
 
 // ── poll ────────────────────────────────────────────────────────────────────
 
-/** Server-selected execution path for an exact pinned connector artifact. */
-export const ExecutionBackendSchema = Type.Literal("native_bridge");
+/**
+ * Execution backends a worker can advertise capacity for. Declared here, and
+ * imported by both the daemon that advertises and the gateway that gates on
+ * it, because the two sides only agree by string equality: a typo in either
+ * copy silently disables every claim for that worker rather than failing.
+ */
+export const EXECUTION_BACKENDS = {
+  /** Artifact compiled from connector source and executed by the worker. */
+  compiledConnector: "compiled_connector",
+  /** Built into the daemon binary; no compiler or SDK resolution involved. */
+  daemonBuiltin: "daemon_builtin",
+} as const;
+
+/**
+ * What a worker on `platform` advertises when it sends no `backend_capacity`.
+ *
+ * Every daemon is compiled-capable by construction: `startDaemonCommand`
+ * asserts the compiled runtime resolves and loads before the first poll, so a
+ * polling daemon has already proven it. `headless` — the default platform of
+ * `lobu daemon` — additionally owns the in-process daemon builtin. Platforms
+ * that poll without running a daemon (the Chrome extension, the macOS app)
+ * never run one and so never advertise it.
+ */
+export function defaultBackendCapacity(
+  platform: string | null | undefined
+): Record<string, number> {
+  return platform === "headless"
+    ? {
+        [EXECUTION_BACKENDS.daemonBuiltin]: 1,
+        [EXECUTION_BACKENDS.compiledConnector]: 1,
+      }
+    : { [EXECUTION_BACKENDS.compiledConnector]: 1 };
+}
+
+/**
+ * Server-selected execution path for an exact pinned connector artifact.
+ *
+ * Device-owned paths only. A compiled run ships the code itself and carries no
+ * marker, so `compiled_connector` is a `backend_capacity` key and never a poll
+ * response value — listing it here would widen the wire contract with a value
+ * no producer emits and the worker ignores.
+ */
+export const ExecutionBackendSchema = Type.Union([
+  Type.Literal(EXECUTION_BACKENDS.daemonBuiltin),
+  Type.Literal("native_bridge"),
+]);
 
 /** `POST /api/workers/poll` request body. */
 export const PollRequestSchema = Type.Object({
@@ -110,6 +154,10 @@ export const PollRequestSchema = Type.Object({
   /** Number of additional runs the worker can accept at this instant. */
   capacity_available: Type.Optional(
     Type.Integer({ minimum: 0, maximum: 1024 })
+  ),
+  /** Per-execution-backend capacity. Zero means the backend is not ready. */
+  backend_capacity: Type.Optional(
+    Type.Record(Type.String(), Type.Integer({ minimum: 0, maximum: 1024 }))
   ),
   platform: Type.Optional(Type.String()),
   app_version: Type.Optional(Type.String()),

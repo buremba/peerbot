@@ -248,7 +248,9 @@ export function buildWrapperApp(
 				},
 				extra: {
 					path: c.req.path,
-					url: c.req.url,
+					// `extra`, not `tags`: Host is client-supplied, so as an indexed
+					// tag its value cardinality is unbounded by anything we control.
+					host: c.req.header("host") ?? "unknown",
 					response_body: body,
 				},
 			});
@@ -267,7 +269,8 @@ export function buildWrapperApp(
 				},
 				extra: {
 					path: c.req.path,
-					url: c.req.url,
+					// See above: client-supplied, so never an indexed tag.
+					host: c.req.header("host") ?? "unknown",
 				},
 			});
 			markSentryReported(c);

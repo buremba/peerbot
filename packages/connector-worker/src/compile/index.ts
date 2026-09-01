@@ -32,6 +32,7 @@ export {
   COMPILE_CONFIG_HASH,
   computeCompileConfigHash,
   EXTERNAL_RUNTIME_DEPS,
+  RUNTIME_PROVIDED_PACKAGES,
 } from '../runtime-deps.js';
 
 // Strict regex for connector_key: lowercase letters/digits, optional dots
@@ -91,12 +92,27 @@ export function findBundledConnectorFile(
  * The `lobu` alias specifier is normalized to `@lobu/connector-sdk` so the emitted
  * import resolves to a real package the runtime provides.
  */
+/**
+ * Matches the connector SDK as a root or subpath import, under either the
+ * `lobu` alias or its real package name. Shared with the server's source-text
+ * compiler (`packages/server/src/utils/compiler-core.ts`) so the two compilers
+ * cannot disagree about what counts as an SDK import — one externalizes it,
+ * the other resolves it to a file, and a specifier only one of them recognises
+ * would compile in one runtime and fail in the other.
+ */
+export const SDK_SPECIFIER_RE = /^(lobu|@lobu\/connector-sdk)(\/.*)?$/;
+
+/** Normalize the `lobu` alias to the real package name, preserving any subpath. */
+export function normalizeSdkSpecifier(specifier: string): string {
+  return specifier.replace(/^lobu(?=$|\/)/, '@lobu/connector-sdk');
+}
+
 function createSdkExternalPlugin(): Plugin {
   return {
     name: 'sdk-external',
     setup(b) {
-      b.onResolve({ filter: /^(lobu|@lobu\/connector-sdk)(\/.*)?$/ }, (args) => ({
-        path: args.path.replace(/^lobu(?=$|\/)/, '@lobu/connector-sdk'),
+      b.onResolve({ filter: SDK_SPECIFIER_RE }, (args) => ({
+        path: normalizeSdkSpecifier(args.path),
         external: true,
       }));
     },

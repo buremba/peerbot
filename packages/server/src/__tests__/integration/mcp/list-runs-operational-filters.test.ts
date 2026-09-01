@@ -71,14 +71,26 @@ describe("manage_operations list_runs — operational filters (#2051)", () => {
 
 	const listRuns = async (
 		extra: Record<string, unknown> = {},
-	): Promise<{ runs: Array<Record<string, unknown>>; total: number }> => {
+	): Promise<{
+		runs: Array<Record<string, unknown>>;
+		total: number;
+		has_more: boolean;
+	}> => {
 		const res = (await manageOperations(
 			{ action: "list_runs", limit: 100, ...extra },
 			env,
 			ctx(),
-		)) as { runs?: Array<Record<string, unknown>>; total?: number };
+		)) as {
+			runs?: Array<Record<string, unknown>>;
+			total?: number;
+			has_more?: boolean;
+		};
 		expect(res.runs, JSON.stringify(res)).toBeDefined();
-		return { runs: res.runs ?? [], total: Number(res.total ?? 0) };
+		return {
+			runs: res.runs ?? [],
+			total: Number(res.total ?? 0),
+			has_more: res.has_more === true,
+		};
 	};
 
 	beforeAll(async () => {
@@ -175,10 +187,43 @@ describe("manage_operations list_runs — operational filters (#2051)", () => {
 	});
 
 	it("filters by connector_key", async () => {
-		const { runs, total } = await listRuns({ connector_key: "github" });
+		const { runs, total, has_more } = await listRuns({
+			connector_key: "github",
+			limit: 1,
+		});
 		expect(total).toBe(1);
+		expect(has_more).toBe(false);
 		expect(runs[0]?.connector_key).toBe("github");
 		expect(runs[0]?.operation_key).toBe("create_issue");
+	});
+
+	it("computes has_more from a hidden sentinel for offset and keyset pages", async () => {
+		const first = await listRuns({ limit: 1, offset: 0 });
+		expect(first.runs).toHaveLength(1);
+		expect(first.total).toBe(3);
+		expect(first.has_more).toBe(true);
+
+		const last = await listRuns({ limit: 1, offset: 2 });
+		expect(last.runs).toHaveLength(1);
+		expect(last.has_more).toBe(false);
+
+		const firstRun = first.runs[0];
+		const second = await listRuns({
+			limit: 1,
+			before_id: firstRun.id,
+			before_created_at: (firstRun.created_at as Date).toISOString(),
+		});
+		expect(second.runs).toHaveLength(1);
+		expect(second.has_more).toBe(true);
+
+		const secondRun = second.runs[0];
+		const third = await listRuns({
+			limit: 1,
+			before_id: secondRun.id,
+			before_created_at: (secondRun.created_at as Date).toISOString(),
+		});
+		expect(third.runs).toHaveLength(1);
+		expect(third.has_more).toBe(false);
 	});
 
 	it("filters by created_after / created_before date range", async () => {
@@ -198,5 +243,26 @@ describe("manage_operations list_runs — operational filters (#2051)", () => {
 				ctx(),
 			),
 		).rejects.toThrow(/created_after/i);
+	});
+
+	it("rejects incomplete or invalid keyset cursors cleanly", async () => {
+		await expect(
+			manageOperations(
+				{ action: "list_runs", before_id: 1 },
+				env,
+				ctx(),
+			),
+		).rejects.toThrow(/before_id.*before_created_at/i);
+		await expect(
+			manageOperations(
+				{
+					action: "list_runs",
+					before_id: 1,
+					before_created_at: "not-a-date",
+				},
+				env,
+				ctx(),
+			),
+		).rejects.toThrow(/before_created_at/i);
 	});
 });

@@ -15,16 +15,23 @@
  * gateway, or OAuth, and passes under `docker run --network=none`.
  */
 
-import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createConnectorCompiler } from "../compile/index.js";
+import {
+	createConnectorCompiler,
+	EXTERNAL_RUNTIME_DEPS,
+} from "../compile/index.js";
+import { executeDaemonBuiltin } from "../daemon/builtins/index.js";
 import type { ExecutorJob } from "../executor/interface.js";
+import {
+	registerConnectorRuntimeDependencyLoader,
+	stageConnectorRuntimeDependencies,
+} from "../executor/runtime-dependency-loader.js";
 import { executeCompiledConnector } from "../executor/runtime.js";
-import { RUNTIME_PROVIDED_PACKAGES } from "../runtime-deps.js";
 
 /**
  * Synthetic no-op connector, inline so the check is self-contained and ships
@@ -34,6 +41,8 @@ import { RUNTIME_PROVIDED_PACKAGES } from "../runtime-deps.js";
  */
 const SYNTHETIC_CONNECTOR_SOURCE = `
 import { ConnectorRuntime } from '@lobu/connector-sdk';
+const sharp = require('sharp');
+void sharp;
 
 export default class SelfCheckNoopConnector extends ConnectorRuntime {
   definition = {
@@ -120,29 +129,27 @@ const errMsg = (err: unknown): string =>
 	err instanceof Error ? err.message : String(err);
 
 /**
- * Write `content` to a temp file UNDER cwd, run `fn`, then remove it. Under cwd
- * (not the OS tmpdir) so the bundle's bare `@lobu/connector-sdk` import — left
- * externalized by the compiler — resolves via the runtime's `node_modules`,
- * the same reason `child-runner.ts` stages its module under cwd.
+ * Write `content` inside a private OS temp directory, stage the runtime package
+ * facade used by both ESM and CommonJS resolution, run `fn`, then remove the
+ * directory. This keeps startup independent of whether cwd is writable.
  */
-async function withCwdTempFile<T>(
+async function withRuntimeTempFile<T>(
 	ext: string,
 	content: string,
 	fn: (filePath: string) => Promise<T>,
 ): Promise<T> {
-	const filePath = join(
-		process.cwd(),
-		`.lobu-self-check-${process.pid}-${randomBytes(8).toString("hex")}${ext}`,
-	);
-	await writeFile(filePath, content, {
-		encoding: "utf-8",
-		flag: "wx",
-		mode: 0o600,
-	});
+	const tempDir = await mkdtemp(join(tmpdir(), "lobu-self-check-"));
+	const filePath = join(tempDir, `connector${ext}`);
 	try {
+		await stageConnectorRuntimeDependencies(tempDir);
+		await writeFile(filePath, content, {
+			encoding: "utf-8",
+			flag: "wx",
+			mode: 0o600,
+		});
 		return await fn(filePath);
 	} finally {
-		await rm(filePath, { force: true });
+		await rm(tempDir, { recursive: true, force: true });
 	}
 }
 
@@ -211,7 +218,7 @@ async function instantiateConnector(
 	compile: (filePath: string) => Promise<string>,
 ): Promise<DiscoveredConnector | null> {
 	const compiled = await compile(sourcePath);
-	return withCwdTempFile(".mjs", compiled, async (tmpFile) => {
+	return withRuntimeTempFile(".mjs", compiled, async (tmpFile) => {
 		const mod = (await import(pathToFileURL(tmpFile).href)) as Record<
 			string,
 			unknown
@@ -247,7 +254,7 @@ async function runSyntheticConnector(
 	compile: (filePath: string) => Promise<string>,
 ): Promise<void> {
 	// esbuild needs a file entry, so stage the inline source in a temp `.ts`.
-	const compiled = await withCwdTempFile(
+	const compiled = await withRuntimeTempFile(
 		".ts",
 		SYNTHETIC_CONNECTOR_SOURCE,
 		compile,
@@ -286,6 +293,18 @@ async function runSyntheticConnector(
 }
 
 /**
+ * Fast boot gate for a worker that is about to advertise connector
+ * capabilities. It compiles and executes the synthetic connector through the
+ * real subprocess path, so a runtime that cannot load the SDK fails before its
+ * first poll can claim production work.
+ */
+export async function assertConnectorRuntimeLoadable(): Promise<void> {
+	registerConnectorRuntimeDependencyLoader();
+	const { compileConnectorFromFile } = createConnectorCompiler({ cacheMax: 1 });
+	await runSyntheticConnector(compileConnectorFromFile);
+}
+
+/**
  * Run the shared connector-runtime parity self-check. Each assertion is
  * recorded as a `{ ok }` entry rather than thrown; the top-level `ok` is the
  * AND of all of them.
@@ -293,6 +312,7 @@ async function runSyntheticConnector(
 export async function runConnectorRuntimeSelfCheck(
 	opts?: SelfCheckOptions,
 ): Promise<SelfCheckResult> {
+	registerConnectorRuntimeDependencyLoader();
 	const checks: SelfCheckEntry[] = [];
 	const require_ = createRequire(import.meta.url);
 
@@ -333,11 +353,12 @@ export async function runConnectorRuntimeSelfCheck(
 		() => import(pathToFileURL(sdkRequire().resolve("@lobu/core")).href),
 	);
 
-	// The child runner stages every runtime-provided package from the worker
-	// installation into its private connector directory. Probe that same source;
-	// the compile+subprocess check below proves the staged links work from cwd.
-	for (const dep of RUNTIME_PROVIDED_PACKAGES) {
-		await check(`resolve-runtime:${dep}`, () => require_.resolve(dep));
+	// External runtime deps (native binaries + Playwright) are provided by the
+	// connector-worker package. Compiled modules may live under an unrelated cwd,
+	// but the registered loader deliberately resolves these imports from this
+	// package graph; probe the same anchor here.
+	for (const dep of EXTERNAL_RUNTIME_DEPS) {
+		await check(`resolve:${dep}`, () => require_.resolve(dep));
 	}
 
 	const candidates =
@@ -386,6 +407,26 @@ export async function runConnectorRuntimeSelfCheck(
 	await check("synthetic-connector-subprocess-execute", async () => {
 		await runSyntheticConnector(compileConnectorFromFile);
 		return "compiled + executed via default SubprocessExecutor; emitted >=1 event.";
+	});
+
+	// Recovery/control primitives must remain executable even when the dynamic
+	// connector compiler or its npm resolution graph is unhealthy. This call is
+	// intentionally direct and therefore proves the packaged dist contains the
+	// daemon-owned os.shell backend.
+	await check("daemon-builtin:os.shell/run", async () => {
+		const result = await executeDaemonBuiltin({
+			connectorKey: "os.shell",
+			actionKey: "run",
+			input: { command: "printf 'lobu-shell-self-check\\n'", cwd: process.cwd() },
+		});
+		if (!result.ok) throw new Error(`${result.code}: ${result.error}`);
+		if (result.output.stdout !== "lobu-shell-self-check\n") {
+			throw new Error(`Unexpected stdout: ${JSON.stringify(result.output.stdout)}.`);
+		}
+		if (result.output.stderr !== "" || result.output.exit_code !== 0) {
+			throw new Error(`Unexpected shell result: ${JSON.stringify(result.output)}.`);
+		}
+		return "executed from packaged worker code without connector compilation.";
 	});
 
 	return {

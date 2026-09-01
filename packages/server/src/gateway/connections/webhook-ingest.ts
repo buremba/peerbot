@@ -5,9 +5,10 @@
  * no mention/DM handlers, no thread semantics. It is a push-source primitive —
  * any external system (Sentry, GitHub, Stripe, healthchecks) POSTs JSON to
  * `POST /api/v1/webhooks/:connectionId` and the payload is persisted as an
- * `events` row (`connector_key = 'webhook:<connectionId>'`). Automations consume
- * those rows through their existing checkpointed SQL sources; reaction latency
- * is bounded by the automation cadence, not by this handler.
+ * `events` row (`connector_key = 'webhook:<connectionId>'`). The durable insert
+ * atomically queues matching `webhook / delivery.received` Automations through
+ * the ordinary connector-event path; scheduled/manual Automations may also read
+ * the rows later through checkpointed SQL sources.
  *
  * Request pipeline (persist BEFORE ack — a 202 issued before the insert
  * commits would lose the delivery on pod crash, and providers won't retry a
@@ -32,8 +33,15 @@
  */
 
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import type { ConnectorTriggerSignal } from "@lobu/connector-sdk";
 import type { StoredConnection } from "@lobu/core";
+import {
+	activateAutomationSignal,
+	type AutomationActivationResult,
+	dispatchAutomationRunsBestEffort,
+} from "../../automations/activation.js";
 import { type DbClient, getDb } from "../../db/client.js";
+import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
 import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import { insertEvent } from "../../utils/insert-event.js";
 import logger from "../../utils/logger.js";
@@ -240,6 +248,10 @@ function resolveJsonPointer(root: unknown, pointer: string): unknown {
  * full in `payload_data` — this is only the searchable text projection. */
 export const WEBHOOK_PAYLOAD_TEXT_MAX_CHARS = 8 * 1024;
 
+/** Bound path construction and traversal for adversarially deep/sparse JSON. */
+const WEBHOOK_PAYLOAD_TEXT_MAX_DEPTH = 64;
+const WEBHOOK_PAYLOAD_TEXT_MAX_NODES = 10_000;
+
 /**
  * Render the parsed payload into a flat text document for `events.payload_text`.
  * Without this the column is null, so the embed-backfill (which skips rows with
@@ -258,8 +270,58 @@ export function renderPayloadText(payload: unknown): string {
 		lines.push(clipped);
 		budget -= clipped.length + 1; // + newline
 	};
-	const walk = (node: unknown, path: string): void => {
-		if (budget <= 0) return;
+	type NodeFrame = {
+		kind: "node";
+		node: unknown;
+		path: string;
+		depth: number;
+	};
+	type ChildrenFrame = {
+		kind: "children";
+		iterator: Iterator<[string, unknown]>;
+		path: string;
+		depth: number;
+	};
+	type Frame = NodeFrame | ChildrenFrame;
+	function* children(node: object): Generator<[string, unknown]> {
+		if (Array.isArray(node)) {
+			for (let i = 0; i < node.length; i += 1) {
+				yield [String(i), node[i]];
+			}
+			return;
+		}
+		const record = node as Record<string, unknown>;
+		for (const key in record) {
+			if (Object.hasOwn(record, key)) yield [key, record[key]];
+		}
+	}
+	const stack: Frame[] = [
+		{ kind: "node", node: payload, path: "", depth: 0 },
+	];
+	let visited = 0;
+	while (
+		stack.length > 0 &&
+		budget > 0 &&
+		visited < WEBHOOK_PAYLOAD_TEXT_MAX_NODES
+	) {
+		const frame = stack.pop();
+		if (!frame) break;
+		if (frame.kind === "children") {
+			const next = frame.iterator.next();
+			if (!next.done) {
+				stack.push(frame);
+				const [key, value] = next.value;
+				stack.push({
+					kind: "node",
+					node: value,
+					path: frame.path ? `${frame.path}.${key}` : key,
+					depth: frame.depth + 1,
+				});
+			}
+			continue;
+		}
+		visited += 1;
+		const { node, path, depth } = frame;
 		if (
 			node === null ||
 			typeof node === "string" ||
@@ -267,20 +329,61 @@ export function renderPayloadText(payload: unknown): string {
 			typeof node === "boolean"
 		) {
 			push(path ? `${path}: ${String(node)}` : String(node));
-			return;
+			continue;
 		}
-		if (Array.isArray(node)) {
-			node.forEach((item, i) => walk(item, path ? `${path}.${i}` : String(i)));
-			return;
+		if (depth >= WEBHOOK_PAYLOAD_TEXT_MAX_DEPTH) {
+			push(path ? `${path}: [nested value]` : "[nested value]");
+			continue;
 		}
 		if (typeof node === "object") {
-			for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
-				walk(value, path ? `${path}.${key}` : key);
-			}
+			stack.push({
+				kind: "children",
+				iterator: children(node),
+				path,
+				depth,
+			});
 		}
-	};
-	walk(payload, "");
+	}
 	return lines.join("\n");
+}
+
+/** Stable connector event exposed by the built-in webhook catalog. */
+export const WEBHOOK_DELIVERY_RECEIVED_EVENT = "delivery.received";
+
+/**
+ * Normalize an authenticated webhook delivery into the same connector signal
+ * consumed by feed syncs and chat transports. The durable event remains the
+ * source of truth; this bounded envelope only decides which Automations wake.
+ */
+export function buildWebhookAutomationSignal(args: {
+	connectionId: number;
+	eventId: number;
+	originId: string;
+	semanticType: string;
+	title?: string | null;
+	payload: Record<string, unknown>;
+	occurredAt: Date;
+}): ConnectorTriggerSignal {
+	const fallbackLabel = `Webhook delivery: ${args.semanticType}`;
+	const inputText = renderPayloadText(args.payload);
+	return {
+		connector_key: "webhook",
+		connection_id: args.connectionId,
+		resource_type:
+			args.semanticType.length <= 100 ? args.semanticType : undefined,
+		...(args.originId.length <= 500
+			? { resource_ref: args.originId }
+			: {}),
+		event_type: WEBHOOK_DELIVERY_RECEIVED_EVENT,
+		// events.id is globally bounded and avoids sender-controlled btree keys.
+		delivery_id: `webhook:event:${args.eventId}`,
+		label: (args.title?.trim() || fallbackLabel).slice(0, 300),
+		input_text: inputText || fallbackLabel,
+		occurred_at: args.occurredAt.toISOString(),
+		// Only trusted, connection-configured routing metadata belongs in every
+		// fan-out run. The complete sender payload remains on the durable event.
+		attributes: { semantic_type: args.semanticType.slice(0, 1_000) },
+	};
 }
 
 function extractTitle(
@@ -336,6 +439,13 @@ export interface WebhookActorAttribution {
 export interface WebhookIngestOverrides {
 	title?: string | null;
 	sourceUrl?: string | null;
+	/**
+	 * The caller verified this is a real generic `webhook` connection, rather
+	 * than a synthetic webhook envelope for a connector/app installation.
+	 * Fail-closed so provider bridges cannot activate an unrelated generic
+	 * webhook connection whose generated slug happens to collide.
+	 */
+	activateGenericAutomationEvent?: boolean;
 	/** Provider-specific bearer verification (Atlassian OAuth webhook JWTs). */
 	verifyBearerToken?: (token: string) => Promise<boolean>;
 	/**
@@ -570,23 +680,46 @@ export async function handleWebhookIngest(
 	const eventContent = isSearchableEnabled(config) ? renderPayloadText(parsed) : null;
 
 	try {
-		const landedId = await getDb().begin(async (tx) => {
+		const landed = await getDb().begin(async (tx) => {
+			let automationConnectionId: number | null = null;
+			if (overrides?.activateGenericAutomationEvent) {
+				const [projected] = await tx<{ id: number }>`
+					SELECT id
+					FROM connections
+					WHERE organization_id = ${organizationId}
+					  AND slug = ${runtimeConnectionIdToSlug(stored.id)}
+					  AND connector_key = 'webhook'
+					  AND deleted_at IS NULL
+					LIMIT 1
+				`;
+				if (!projected) {
+					throw new Error(
+						`Generic webhook connection ${stored.id} has no active projection`,
+					);
+				}
+				automationConnectionId = Number(projected.id);
+			}
+
 			// Insert FIRST (empty entity_ids). A concurrent duplicate trips the
 			// delivery-unique index → 23505 → this tx rolls back, so the loser never
 			// reaches actor resolution. Only the winner continues.
+			const occurredAt = new Date();
 			const inserted = await insertEvent(
 				{
 					entityIds: [],
 					organizationId,
 					originId,
 					connectorKey,
+					...(automationConnectionId != null
+						? { connectionId: automationConnectionId }
+						: {}),
 					semanticType,
 					payloadType: "json_template",
 					payloadData,
 					content: eventContent,
 					title: eventTitle,
 					sourceUrl: overrides?.sourceUrl ?? null,
-					occurredAt: new Date(),
+					occurredAt,
 					metadata: eventMetadata,
 				},
 				{ sql: tx as unknown as ReturnType<typeof getDb> },
@@ -638,13 +771,39 @@ export async function handleWebhookIngest(
 					WHERE id = ${inserted.id}
 				`;
 			}
-			return inserted.id;
+
+			// Persisted event + matching Automation runs commit together. Connector
+			// scheduling stays independent: this is the same durable event seam used
+			// by polled feeds, so no webhook-specific scheduler or subscription row
+			// is introduced. Only the generic-webhook route opts in; provider bridges
+			// keep interpreting their own event vocabulary.
+			let activationRuns: AutomationActivationResult[] = [];
+			if (automationConnectionId != null) {
+				activationRuns = await activateAutomationSignal({
+					organizationId,
+					signal: buildWebhookAutomationSignal({
+						connectionId: automationConnectionId,
+						eventId: inserted.id,
+						originId,
+						semanticType,
+						title: eventTitle,
+						payload: payloadData,
+						occurredAt,
+					}),
+					db: tx,
+				});
+			}
+			return { eventId: inserted.id, activationRuns };
 		});
+		// The committed run rows are authoritative. Wake dispatch for low latency,
+		// but never hold the sender's acknowledgement open on agent/session HTTP.
+		// The periodic Automation tick recovers a pending run if this pod exits.
+		void dispatchAutomationRunsBestEffort(landed.activationRuns);
 		logger.info(
-			{ connectionId: stored.id, eventId: landedId, dedupeSource },
+			{ connectionId: stored.id, eventId: landed.eventId, dedupeSource },
 			"[webhook-ingest] delivery persisted",
 		);
-		return json(202, { ok: true, id: landedId });
+		return json(202, { ok: true, id: landed.eventId });
 	} catch (error) {
 		if (isUniqueViolation(error)) {
 			// Lost the concurrent race: the winner's row exists; ack as a duplicate.

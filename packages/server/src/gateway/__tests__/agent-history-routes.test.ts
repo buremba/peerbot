@@ -24,7 +24,6 @@ import { getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { insertEvent } from "../../utils/insert-event.js";
-import { invalidateMembershipRoleCache } from "../../workspace/multi-tenant.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
@@ -108,7 +107,6 @@ describe("agent history routes", () => {
 
 	afterEach(() => {
 		setAuthProvider(null);
-		invalidateMembershipRoleCache(ORG_ID, USER_ID);
 	});
 
 	function createApp() {
@@ -622,11 +620,9 @@ describe("agent history routes", () => {
 			ON CONFLICT (id) DO NOTHING
 		`;
 		await addUserToOrganization(USER_ID, ORG_ID, "owner");
-		invalidateMembershipRoleCache(ORG_ID, USER_ID);
 
 		const member = await createTestUser({ name: "DM-hidden member" });
 		await addUserToOrganization(member.id, ORG_ID, "member");
-		invalidateMembershipRoleCache(ORG_ID, member.id);
 
 		const conversationId = "telegram:6570514069";
 		const jsonl =

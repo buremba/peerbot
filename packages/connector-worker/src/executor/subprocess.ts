@@ -7,8 +7,10 @@
  */
 
 import { type ChildProcess, fork, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EventEnvelope } from '@lobu/connector-sdk';
@@ -133,6 +135,7 @@ const SYSTEM_ENV_KEYS = [
   'NODE_PATH',
   'PLAYWRIGHT_BROWSERS_PATH',
 ];
+const INTERNAL_RUNTIME_TEMP_DIR_ENV = 'LOBU_INTERNAL_RUNTIME_TEMP_DIR';
 function pickSystemEnv(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = {};
   for (const key of SYSTEM_ENV_KEYS) {
@@ -152,6 +155,29 @@ const DEFAULT_OPTIONS: SubprocessExecutorOptions = {
   timeoutMs: 600000,
   maxOldSpaceSize: 512,
 };
+
+async function removeRuntimeTempDir(tempDir: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await rm(tempDir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt === 4) {
+        // Cleanup must never replace the connector's real result/error. This
+        // warning makes a persistent Windows file lock or host FS failure
+        // visible while preserving the execution outcome.
+        console.warn(
+          `[SubprocessExecutor] Failed to remove runtime temp directory ${tempDir}:`,
+          error
+        );
+        return;
+      }
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, 25 * (attempt + 1))
+      );
+    }
+  }
+}
 
 export class SubprocessExecutor implements SyncExecutor {
   private options: SubprocessExecutorOptions;
@@ -174,24 +200,11 @@ export class SubprocessExecutor implements SyncExecutor {
           `connector on a backend that provisions native dependencies.`
       );
     }
+    // The parent owns this directory so a timeout/crash SIGKILL cannot bypass
+    // cleanup in the child. The child also removes it on graceful completion;
+    // both paths use forceful recursive cleanup so the race is harmless.
+    const runtimeTempDir = await mkdtemp(join(tmpdir(), 'lobu-connector-child-'));
     return new Promise<ExecutorResult>((resolve, reject) => {
-      // The parent owns this directory so it can remove connector artifacts
-      // even when untrusted code calls process.exit() or the child is killed.
-      const runtimeDir = mkdtempSync(join(process.cwd(), `.connector-child-${process.pid}-`));
-      let runtimeDirRemoved = false;
-      const removeRuntimeDir = () => {
-        if (runtimeDirRemoved) return;
-        try {
-          rmSync(runtimeDir, { recursive: true, force: true });
-          runtimeDirRemoved = true;
-        } catch (error) {
-          console.error(
-            `[SubprocessExecutor] Failed to clean connector runtime directory: ${
-              error instanceof Error ? error.message : String(error)
-            }`
-          );
-        }
-      };
       let childRunnerPath = join(__dirname, 'child-runner.js');
       const childRunnerTsPath = join(__dirname, 'child-runner.ts');
 
@@ -224,51 +237,39 @@ export class SubprocessExecutor implements SyncExecutor {
       // Node subprocess execution is process isolation, not a security sandbox.
       // Node --experimental-permission flags intentionally NOT enabled — the
       // connector runtime isn't compatible. Revisit if that changes.
-      const env = { ...pickSystemEnv(), ...job.env } as NodeJS.ProcessEnv;
+      const env = {
+        ...pickSystemEnv(),
+        ...job.env,
+        // Set last: connector-controlled job.env must never redirect the
+        // child disconnect handler into deleting an arbitrary path.
+        [INTERNAL_RUNTIME_TEMP_DIR_ENV]: runtimeTempDir,
+      } as NodeJS.ProcessEnv;
       let child: ChildProcess;
-      try {
-        if (nixPackages.length > 0) {
-          // Wrap in nix-shell so the connector's declared native tools are on
-          // PATH. `exec node` replaces the shell with node so the IPC channel
-          // (fd 3 / NODE_CHANNEL_FD created by the 'ipc' stdio slot) and kill()
-          // reach the real process — without `exec`, kill() would hit the shell
-          // and orphan the runtime. execArgv is rebuilt as inline flags.
-          // nix-shell's impure shell keeps the ambient PATH for Node builds;
-          // source-mode Bun uses process.execPath's absolute executable path.
-          // Source-mode Bun workers must keep using Bun here: Node cannot
-          // execute child-runner.ts without the tsx loader, and the tsx loader
-          // itself is incompatible with Bun (see the source-mode regression).
-          const runnerExecutable =
-            isBun && childRunnerPath === childRunnerTsPath ? process.execPath : 'node';
-          const nodeCmd = [
-            'exec',
-            shellQuote(runnerExecutable),
-            ...execArgv,
-            shellQuote(childRunnerPath),
-            shellQuote(runtimeDir),
-          ].join(' ');
-          const nixArgs: string[] = [];
-          // SECURITY: validate + normalize every package name. `nix-shell -p`
-          // evaluates each argument as a Nix expression, so a raw value could run
-          // arbitrary code at eval time. nixPackageAttrRef rejects metacharacters
-          // and re-emits a strict `pkgs.<...>` attr reference.
-          for (const pkg of nixPackages) nixArgs.push('-p', nixPackageAttrRef(pkg));
-          nixArgs.push('--run', nodeCmd);
-          child = spawn('nix-shell', nixArgs, {
-            stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-            env,
-          });
-        } else {
-          child = fork(childRunnerPath, [runtimeDir], {
-            stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-            execArgv,
-            env,
-          });
-        }
-      } catch (error) {
-        removeRuntimeDir();
-        reject(error instanceof Error ? error : new Error(String(error)));
-        return;
+      if (nixPackages.length > 0) {
+        // Wrap in nix-shell so the connector's declared native tools are on
+        // PATH. `exec node` replaces the shell with node so the IPC channel
+        // (fd 3 / NODE_CHANNEL_FD created by the 'ipc' stdio slot) and kill()
+        // reach the real process — without `exec`, kill() would hit the shell
+        // and orphan node. execArgv is rebuilt as inline flags. nix-shell's
+        // impure shell keeps the ambient PATH, so `node` still resolves.
+        const nodeCmd = ['exec', 'node', ...execArgv, shellQuote(childRunnerPath)].join(' ');
+        const nixArgs: string[] = [];
+        // SECURITY: validate + normalize every package name. `nix-shell -p`
+        // evaluates each argument as a Nix expression, so a raw value could run
+        // arbitrary code at eval time. nixPackageAttrRef rejects metacharacters
+        // and re-emits a strict `pkgs.<...>` attr reference.
+        for (const pkg of nixPackages) nixArgs.push('-p', nixPackageAttrRef(pkg));
+        nixArgs.push('--run', nodeCmd);
+        child = spawn('nix-shell', nixArgs, {
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+          env,
+        });
+      } else {
+        child = fork(childRunnerPath, [], {
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+          execArgv,
+          env,
+        });
       }
 
       let resolved = false;
@@ -284,23 +285,32 @@ export class SubprocessExecutor implements SyncExecutor {
       const stdoutTail = new RingBuffer(STREAM_TAIL_CAP_BYTES);
       const stderrTail = new RingBuffer(STREAM_TAIL_CAP_BYTES);
 
-      // Assigned after the settlement helpers are defined below. timeoutMs <=
-      // 0 disables the deadline for interactive auth runs waiting on a human.
-      let timeout: NodeJS.Timeout | null = null;
+      // Set timeout - kill child if it takes too long. timeoutMs <= 0 disables
+      // the timer (used for interactive auth runs that wait on human input).
+      const timeout =
+        this.options.timeoutMs > 0
+          ? setTimeout(() => {
+              if (!resolved) {
+                console.error(
+                  `[SubprocessExecutor] Killing child process after ${this.options.timeoutMs}ms timeout`
+                );
+                timedOut = true;
+                child.kill('SIGKILL');
+              }
+            }, this.options.timeoutMs)
+          : null;
 
       const cleanup = () => {
         if (timeout) clearTimeout(timeout);
         child.removeListener('message', onMessage);
         child.removeListener('error', onError);
         child.removeListener('exit', onExit);
-        child.removeListener('disconnect', onDisconnect);
         child.stdout?.removeListener('data', onStdout);
         child.stderr?.removeListener('data', onStderr);
         // Flush any trailing partial line from each stream so the live tee
         // matches what the persisted tail saw.
         stdoutRedactor.flush((clean) => process.stdout.write(`[subprocess] ${clean}`));
         stderrRedactor.flush((clean) => process.stderr.write(`[subprocess] ${clean}`));
-        removeRuntimeDir();
       };
 
       const settle = (fn: () => void) => {
@@ -337,40 +347,6 @@ export class SubprocessExecutor implements SyncExecutor {
         if (/javascript heap out of memory/i.test(tail)) return 'oom';
         return 'crash';
       };
-
-      // The deadline covers the entire executor contract, including ordered
-      // parent hooks after the child has flushed a terminal message. Merely
-      // killing the child is insufficient: it may already have exited, and its
-      // exit handler intentionally waits for the queued hooks to settle the
-      // result. Reject directly at the deadline; late hook completion is then
-      // harmless because settle() is idempotent.
-      if (this.options.timeoutMs > 0) {
-        timeout = setTimeout(() => {
-          if (resolved) return;
-          console.error(
-            `[SubprocessExecutor] Killing child process after ${this.options.timeoutMs}ms timeout`
-          );
-          timedOut = true;
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            // The child may already have exited after sending its terminal IPC.
-          }
-          settle(() => {
-            const tail = redactOutput(combinedTail());
-            const prefix = `Feed execution timed out after ${this.options.timeoutMs}ms`;
-            const message = tail ? `${prefix}\n${tail}` : prefix;
-            reject(
-              new SubprocessError(message, {
-                exitCode: null,
-                exitSignal: null,
-                outputTail: tail,
-                exitReason: 'timeout',
-              })
-            );
-          });
-        }, this.options.timeoutMs);
-      }
 
       // Handle messages from child. The child runs untrusted connector code,
       // so validate shape at this trust boundary before dereferencing fields.
@@ -550,10 +526,6 @@ export class SubprocessExecutor implements SyncExecutor {
 
       // Handle child exit (single handler for both timeout cleanup and unexpected exits)
       const onExit = (code: number | null, signal: string | null) => {
-        // Artifact lifetime is tied to the OS process, not to hook/result
-        // settlement. A terminal IPC message can be queued behind a slow hook;
-        // the child has still exited and can no longer use this directory.
-        removeRuntimeDir();
         if (terminalMessageReceived) {
           return;
         }
@@ -575,15 +547,6 @@ export class SubprocessExecutor implements SyncExecutor {
           };
           reject(new SubprocessError(message, diagnostics));
         });
-      };
-
-      // `disconnect` normally precedes `exit` when the IPC channel closes.
-      // Clean independently here as well so a child that has already flushed
-      // its terminal message cannot strand artifacts behind a never-resolving
-      // parent hook. The child also performs the same best-effort cleanup when
-      // the *parent* dies and this process can no longer do it.
-      const onDisconnect = () => {
-        removeRuntimeDir();
       };
 
       // Forward child stdout to parent stdout for live tailing AND tap into
@@ -612,7 +575,6 @@ export class SubprocessExecutor implements SyncExecutor {
       child.on('message', onMessage);
       child.on('error', onError);
       child.on('exit', onExit);
-      child.on('disconnect', onDisconnect);
       child.stdout?.on('data', onStdout);
       child.stderr?.on('data', onStderr);
 
@@ -628,6 +590,7 @@ export class SubprocessExecutor implements SyncExecutor {
         {
           compiledCode,
           job,
+          runtimeTempDir,
         },
         (err) => {
           if (err) {
@@ -653,6 +616,6 @@ export class SubprocessExecutor implements SyncExecutor {
           }
         }
       );
-    });
+    }).finally(() => removeRuntimeTempDir(runtimeTempDir));
   }
 }

@@ -31,7 +31,7 @@ import {
 	resolveChannelVisibility,
 } from "../../services/agent-thread-list.js";
 import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
-import { getCachedMembershipRole } from "../../../workspace/multi-tenant.js";
+import { getMembershipRole } from "../../../workspace/multi-tenant.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { findConversationById } from "../../services/conversations-store.js";
 import { readAutomationRunThreads } from "../../services/automation-run-thread.js";
@@ -672,7 +672,7 @@ export function createAgentHistoryRoutes(deps: {
 				? scope.isAdmin ||
 					isAdminOrOwnerRole(
 						scope.memberRole ??
-							(await getCachedMembershipRole(
+							(await getMembershipRole(
 								scope.organizationId,
 								scope.userId,
 							)),
@@ -878,7 +878,7 @@ export function createAgentHistoryRoutes(deps: {
 				bypassChannelFence =
 					scope.isAdmin ||
 					isAdminOrOwnerRole(
-						await getCachedMembershipRole(scope.organizationId, scope.userId),
+						await getMembershipRole(scope.organizationId, scope.userId),
 					);
 			}
 			if (!bypassChannelFence) {

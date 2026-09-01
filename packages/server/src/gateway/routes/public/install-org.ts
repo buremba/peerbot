@@ -3,8 +3,8 @@ import type { Context } from "hono";
 import { getDb } from "../../../db/client.js";
 import { isAdminOrOwnerRole } from "../../../tools/access-control.js";
 import {
-  getCachedMembershipRole,
-  getCachedOrgBySlug,
+  getMembershipRole,
+  getOrgBySlug,
 } from "../../../workspace/multi-tenant.js";
 
 const logger = createLogger("install-org");
@@ -97,7 +97,7 @@ async function resolveRequestedOrgId(
   // as a raw org id when it doesn't resolve as a slug. Membership gates both.
   let orgId: string | null = null;
   try {
-    const bySlug = await getCachedOrgBySlug(requested);
+    const bySlug = await getOrgBySlug(requested);
     orgId = bySlug?.id ?? null;
   } catch (err) {
     logger.warn(
@@ -109,7 +109,7 @@ async function resolveRequestedOrgId(
 
   const userId = readUserId(c);
   if (userId) {
-    const role = await getCachedMembershipRole(orgId, userId);
+    const role = await getMembershipRole(orgId, userId);
     if (role) return orgId;
     logger.warn(
       { requested, orgId },
@@ -167,7 +167,7 @@ export async function verifyInstallOrgAccess(
 ): Promise<boolean> {
   const userId = readUserId(c);
   if (userId) {
-    const role = await getCachedMembershipRole(organizationId, userId);
+    const role = await getMembershipRole(organizationId, userId);
     return role !== null;
   }
   const single = await resolveSingleTenantOrgId();
@@ -187,7 +187,7 @@ export async function verifyInstallOrgAdminAccess(
   const userId = readUserId(c);
   if (userId) {
     return isAdminOrOwnerRole(
-      await getCachedMembershipRole(organizationId, userId)
+      await getMembershipRole(organizationId, userId)
     );
   }
   const single = await resolveSingleTenantOrgId();

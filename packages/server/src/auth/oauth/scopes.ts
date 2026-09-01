@@ -90,6 +90,75 @@ export const CONNECTIONS_TOKEN_SCOPE = 'connections:token';
 /** Default scopes as a space-separated string (for OAuth params) */
 export const DEFAULT_SCOPES_STRING = DEFAULT_SCOPES.join(' ');
 
+const MCP_SCOPE_RANK = new Map<string, number>([
+  ['mcp:read', 0],
+  ['mcp:write', 1],
+  ['mcp:admin', 2],
+]);
+
+/**
+ * Normalize a requested scope string and reject unknown values at the OAuth
+ * boundary. Unknown scopes used to survive storage and disappear only when a
+ * token was used, which made consent promise access the token did not carry.
+ */
+export function normalizeOAuthScopeRequest(
+  scope: string | undefined | null,
+  allowedScopes: readonly string[] = AVAILABLE_SCOPES
+): string | null {
+  const normalized = normalizeScopeList(scope);
+  if (normalized.length === 0) return null;
+  const allowed = new Set(allowedScopes);
+  if (normalized.some((value) => !allowed.has(value))) return null;
+  return normalized.join(' ');
+}
+
+/**
+ * True when a consent-time scope choice is no more powerful than the original
+ * request. MCP scopes are hierarchical: admin includes write and read, while
+ * write includes read. Non-MCP capabilities must be exact requested members.
+ */
+export function isOAuthScopeGrantWithinRequest(
+  requestedScope: string | undefined | null,
+  grantedScope: string | undefined | null
+): boolean {
+  const requested = normalizeScopeList(requestedScope);
+  const granted = normalizeScopeList(grantedScope);
+  if (requested.length === 0 || granted.length === 0) return false;
+
+  const available = new Set<string>(AVAILABLE_SCOPES);
+  if (requested.some((scope) => !available.has(scope))) return false;
+  if (granted.some((scope) => !available.has(scope))) return false;
+
+  const highestMcpRank = (scopes: readonly string[]) => {
+    let rank = -1;
+    for (const scope of scopes) {
+      const candidate = MCP_SCOPE_RANK.get(scope);
+      if (candidate !== undefined && candidate > rank) rank = candidate;
+    }
+    return rank;
+  };
+
+  if (highestMcpRank(granted) > highestMcpRank(requested)) return false;
+  const requestedSet = new Set(requested);
+  return granted.every((scope) => MCP_SCOPE_RANK.has(scope) || requestedSet.has(scope));
+}
+
+/** Persist MCP grants in the same explicit hierarchy the UI displays. */
+export function canonicalizeOAuthScopeGrant(scope: string): string {
+  const normalized = normalizeScopeList(scope);
+  const highestMcpRank = normalized.reduce((rank, value) => {
+    const candidate = MCP_SCOPE_RANK.get(value);
+    return candidate === undefined ? rank : Math.max(rank, candidate);
+  }, -1);
+  const mcpScopes = [
+    ...(highestMcpRank >= 0 ? ['mcp:read'] : []),
+    ...(highestMcpRank >= 1 ? ['mcp:write'] : []),
+    ...(highestMcpRank >= 2 ? ['mcp:admin'] : []),
+  ];
+  const nonMcpScopes = normalized.filter((value) => !MCP_SCOPE_RANK.has(value));
+  return [...mcpScopes, ...nonMcpScopes].join(' ');
+}
+
 /**
  * Drop device-flow-only scopes from an authorization-code request.
  *
@@ -104,6 +173,37 @@ export function stripNonPublicOAuthScopes(scope: string | undefined | null): str
     .filter(Boolean)
     .filter((s) => !(NON_PUBLIC_OAUTH_SCOPES as readonly string[]).includes(s))
     .join(' ');
+}
+
+/**
+ * Narrow an UNTRUSTED client's requested scope to what it may receive,
+ * dropping anything else. The tolerant counterpart to
+ * {@link normalizeOAuthScopeRequest}, and deliberately the same shape so the
+ * choice between them is the only difference at a call site.
+ *
+ * Unknown scopes are IGNORED, not rejected. RFC 6749 §3.3 permits either, but
+ * the clients on these endpoints are strangers: registration is open (DCR),
+ * and Slack, Claude Desktop and Cursor all append standard OIDC scopes
+ * (`openid`, `email`, `profile`, `offline_access`) that Lobu has never issued.
+ * Failing a whole authorization over one unrecognized value breaks the
+ * integration outright, where narrowing it just grants less. Dropping a scope
+ * is never a privilege risk — the user still consents to what remains.
+ *
+ * Reject instead for scope strings WE generate (the consent form), where an
+ * unknown value is a real error rather than someone else's dialect.
+ *
+ * Returns null only when nothing requested is grantable, a genuine
+ * `invalid_scope`.
+ */
+export function filterRequestedScopes(
+  scope: string | undefined | null,
+  allowedScopes: readonly string[] = AVAILABLE_SCOPES
+): string | null {
+  const requested = normalizeScopeList(scope);
+  if (requested.length === 0) return null;
+  const allowed = new Set<string>(allowedScopes);
+  const kept = requested.filter((value) => allowed.has(value));
+  return kept.length > 0 ? kept.join(' ') : null;
 }
 
 /**

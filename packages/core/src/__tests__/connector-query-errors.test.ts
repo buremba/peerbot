@@ -49,6 +49,9 @@ describe("toToolErrorCode", () => {
   test("accepts known codes, rejects everything else", () => {
     expect(toToolErrorCode("RATE_LIMITED")).toBe("RATE_LIMITED");
     expect(toToolErrorCode("NOPE")).toBeUndefined();
+    expect(toToolErrorCode("constructor")).toBeUndefined();
+    expect(toToolErrorCode("toString")).toBeUndefined();
+    expect(toToolErrorCode("__proto__")).toBeUndefined();
     expect(toToolErrorCode(429)).toBeUndefined();
     expect(toToolErrorCode(null)).toBeUndefined();
     expect(toToolErrorCode(undefined)).toBeUndefined();

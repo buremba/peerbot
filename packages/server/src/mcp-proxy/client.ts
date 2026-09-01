@@ -7,7 +7,7 @@
  */
 
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
-import { isReservedIp, stripIpv6Brackets } from '../gateway/proxy/ssrf-guard';
+import { isReservedIp, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';

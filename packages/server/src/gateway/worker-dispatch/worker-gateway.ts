@@ -983,8 +983,9 @@ export class WorkerGateway {
         // Preserve the capture pair, or a long eval replay silently becomes a
         // LIVE run the moment its token rotates: absent `executionMode` reads
         // as live, so every guarded route would start performing real side
-        // effects against the org being scored. Both travel together because
-        // `verifyWorkerToken` rejects one without the other.
+        // effects against the org being scored. `verifyWorkerToken` rejects a
+        // capture claim with no `automationRunId`; a live token may carry the
+        // parent run id on its own, so carry both through explicitly.
         executionMode: tokenData.executionMode,
         automationRunId: tokenData.automationRunId,
       }

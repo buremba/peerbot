@@ -802,9 +802,7 @@ export class GatewayClient {
     // into one prompt under the first message's token; preserve arrival order
     // and execute each subject with its own token instead.
     if (new Set(messages.map((message) => message.payload.userId)).size > 1) {
-      for (const message of messages) {
-        await this.processSingleMessage(message, [message.payload.messageId]);
-      }
+      await this.processMessagesIndividually(messages);
       return;
     }
 
@@ -829,9 +827,7 @@ export class GatewayClient {
         (message) => message.payload.platformMetadata?.bangBash !== undefined
       )
     ) {
-      for (const message of messages) {
-        await this.processSingleMessage(message, [message.payload.messageId]);
-      }
+      await this.processMessagesIndividually(messages);
       return;
     }
 
@@ -876,10 +872,31 @@ export class GatewayClient {
     await this.processSingleMessage(batchedMessage, processedIds);
   }
 
+  private async processMessagesIndividually(
+    messages: QueuedMessage[]
+  ): Promise<void> {
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (!message) continue;
+      try {
+        await this.processSingleMessage(message, [message.payload.messageId]);
+      } catch (error) {
+        // The failing item was attempted and processSingleMessage already
+        // reported its terminal error. Only restore the untouched suffix: all
+        // of its IDs were reserved before batching, so routing it back through
+        // claimMessageId would incorrectly discard it as duplicate delivery.
+        this.messageBatcher.requeueClaimedMessages(messages.slice(index + 1));
+        throw error;
+      }
+    }
+  }
+
   private async processSingleMessage(
     message: QueuedMessage,
     processedIds?: string[]
   ): Promise<void> {
+    if (!this.isRunning) return;
+
     // Get traceparent for distributed tracing
     const traceparent =
       (message.payload.platformMetadata?.traceparent as string) ||

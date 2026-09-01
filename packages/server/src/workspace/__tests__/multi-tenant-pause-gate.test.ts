@@ -82,11 +82,6 @@ beforeEach(async () => {
     ON CONFLICT (id) DO NOTHING
   `;
 
-  // Both caches are module-level and survive resetTestDatabase, so a prior
-  // test's slug→id and org:user→role entries would outlive the rows.
-  const { clearMultiTenantCachesForTests } = await import('../multi-tenant-caches.js');
-  clearMultiTenantCachesForTests();
-
   const { PersonalAccessTokenService } = await import('../../auth/tokens.js');
   token = (await new PersonalAccessTokenService(sql).create(USER, ORG, 'pause-wiring')).token;
 
@@ -150,16 +145,21 @@ async function request(opts: {
   rollbackOf?: string;
   orgSlug?: string;
   auth?: 'pat' | 'oauth' | 'session' | 'settings-cookie' | 'invalid-pat-with-session';
+  provider?: InstanceType<typeof import('../multi-tenant.js').MultiTenantProvider>;
 }): Promise<{ status: number; body: Record<string, unknown>; reached: boolean }> {
   const { MultiTenantProvider } = await import('../multi-tenant.js');
-  const provider = new MultiTenantProvider();
+  const provider = opts.provider ?? new MultiTenantProvider();
 
   let reached = false;
   const app = new Hono<{ Bindings: Env }>();
   app.use('/api/:orgSlug/*', (c, next) => provider.resolveAuth(c, next));
   app.all('/api/:orgSlug/probe', (c) => {
     reached = true;
-    return c.json({ ok: true });
+    return c.json({
+      ok: true,
+      organizationId: c.get('organizationId'),
+      memberRole: c.get('memberRole'),
+    });
   });
 
   const headers: Record<string, string> = {};
@@ -194,9 +194,9 @@ async function request(opts: {
 }
 
 describe('promotions pause is enforced in the auth funnel', () => {
-  test('org slug lookups cache both directions and invalidate together', async () => {
+  test('org slug lookups read renamed workspace state immediately', async () => {
     const { getDb } = await import('../../db/client.js');
-    const { invalidateOrgSlugCache, MultiTenantProvider } = await import('../multi-tenant.js');
+    const { MultiTenantProvider } = await import('../multi-tenant.js');
     const sql = getDb();
     const provider = new MultiTenantProvider();
 
@@ -210,9 +210,104 @@ describe('promotions pause is enforced in the auth funnel', () => {
 
     const renamed = `${ORG}-renamed`;
     await sql`UPDATE organization SET slug = ${renamed} WHERE id = ${ORG}`;
-    expect(await provider.getOrgSlug(ORG)).toBe(ORG);
-    invalidateOrgSlugCache(ORG);
     expect(await provider.getOrgSlug(ORG)).toBe(renamed);
+    expect(await provider.getOrgSlugs([ORG, OTHER_ORG])).toEqual(
+      new Map([
+        [ORG, renamed],
+        [OTHER_ORG, OTHER_ORG],
+      ])
+    );
+  });
+
+  test('session membership revocation takes effect on the next request', async () => {
+    expect(await request({ method: 'GET', auth: 'session' })).toMatchObject({
+      status: 200,
+      reached: true,
+    });
+
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`
+      DELETE FROM "member"
+      WHERE "organizationId" = ${ORG} AND "userId" = ${USER}
+    `;
+
+    expect(await request({ method: 'GET', auth: 'session' })).toMatchObject({
+      status: 403,
+      reached: false,
+    });
+  });
+
+  test('a demotion is visible on the next request from a sibling provider instance', async () => {
+    const firstReplica = new (await import('../multi-tenant.js')).MultiTenantProvider();
+    const secondReplica = new (await import('../multi-tenant.js')).MultiTenantProvider();
+    expect(await request({ method: 'GET', auth: 'session', provider: firstReplica })).toMatchObject({
+      status: 200,
+      body: { memberRole: 'owner' },
+    });
+
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`
+      UPDATE "member" SET role = 'member'
+      WHERE "organizationId" = ${ORG} AND "userId" = ${USER}
+    `;
+
+    expect(await request({ method: 'GET', auth: 'session', provider: secondReplica })).toMatchObject({
+      status: 200,
+      body: { memberRole: 'member' },
+    });
+  });
+
+  test('owner resolution follows rename and owner removal without invalidation', async () => {
+    const { getDb } = await import('../../db/client.js');
+    const { MultiTenantProvider, getOrgBySlug } = await import('../multi-tenant.js');
+    const sql = getDb();
+    const firstReplica = new MultiTenantProvider();
+    const secondReplica = new MultiTenantProvider();
+    const oldOwner = await firstReplica.resolveOwner(ORG, 'organization');
+    expect(oldOwner?.id).toBe(ORG);
+    // PRIME the old slug on BOTH the authorization lookup and this instance
+    // before renaming. Without a read taken while the old value is still true,
+    // a reintroduced cache would simply miss after the rename and the
+    // assertions below would pass without testing anything.
+    expect(await getOrgBySlug(ORG)).toMatchObject({ id: ORG });
+
+    const renamed = `${ORG}-owner-renamed`;
+    await sql`UPDATE organization SET slug = ${renamed} WHERE id = ${ORG}`;
+    // The point of this suite: a second provider instance sees the rename on its
+    // very next call, with nothing invalidated anywhere.
+    expect((await secondReplica.resolveOwner(renamed, 'organization'))?.id).toBe(ORG);
+
+    // The AUTHORIZATION lookup is the one that must stop answering for the old
+    // slug, and it does — it reads `organization` directly.
+    expect(await getOrgBySlug(renamed)).toMatchObject({ id: ORG });
+    expect(await getOrgBySlug(ORG)).toBeNull();
+
+    // `resolveOwner` deliberately keeps answering: it reads `namespace`, which a
+    // rename does not touch, and the very first resolveOwner above self-healed a
+    // namespace row for the old slug. That is a DB fact, not replica staleness,
+    // so no cache change could alter it and this suite must not pretend
+    // otherwise. (Worth its own fix: a slug freed by a rename still resolves to
+    // the previous org, and `ON CONFLICT (slug) DO NOTHING` means whoever claims
+    // that slug next inherits the stale mapping.)
+    expect((await secondReplica.resolveOwner(ORG, 'organization'))?.id).toBe(ORG);
+
+    await sql`DELETE FROM "member" WHERE "organizationId" = ${ORG} AND role = 'owner'`;
+    expect((await secondReplica.resolveOwner(renamed, 'organization'))?.id).toBe(ORG);
+  });
+
+  test('session revocation takes effect on the next request', async () => {
+    expect(await request({ method: 'GET', auth: 'session' })).toMatchObject({
+      status: 200,
+      reached: true,
+    });
+
+    const { getDb } = await import('../../db/client.js');
+    await getDb()`DELETE FROM "session" WHERE id = 'pause-wiring-session'`;
+
+    expect(await request({ method: 'GET', auth: 'session' })).toMatchObject({
+      status: 401,
+      reached: false,
+    });
   });
 
   test('a paused org refuses an apply-run mutation before the handler runs', async () => {

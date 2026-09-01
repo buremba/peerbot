@@ -20,7 +20,6 @@ import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import { invalidateMembershipRoleCache } from "../../workspace/multi-tenant.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
@@ -66,7 +65,6 @@ describe("agent history — org member who does not own the agent", () => {
     await seedOrgMembership(AGENT_ORG, AGENT_OWNER_ID, "member");
     await seedOrgMembership(AGENT_ORG, MEMBER_ID, "member");
     await seedOrgMembership(AGENT_ORG, ADMIN_ID, "admin");
-    invalidateMembershipRoleCache(AGENT_ORG, OUTSIDER_ID);
 
     app = new Hono();
     app.route(

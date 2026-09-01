@@ -1,10 +1,9 @@
 /**
  * Integration tests for `ClientSDK.org()` — the cross-org accessor.
  *
- * Exercises the real `organization` / `member` tables and the shared
- * auth-layer cache (`multi-tenant.ts#memberRoleCache`). Covers slug and id
+ * Exercises the real `organization` / `member` tables. Covers slug and id
  * resolution, AccessDenied / OrgNotFound error shape, public-workspace
- * fallback, and revocation flowing through the explicit cache invalidation.
+ * fallback, and immediate membership revocation.
  */
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -16,7 +15,6 @@ import {
 import type { ToolContext } from "../../../tools/registry";
 import { type AuthContext, toToolContext } from "../../../tools/execute";
 import { querySqlImpl } from "../../../tools/admin/query_sql";
-import { invalidateMembershipRoleCache } from "../../../workspace/multi-tenant";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -120,8 +118,6 @@ describe("ClientSDK.org() accessor", () => {
   describe("buildClientSDK with user1 also a member of orgB", () => {
     beforeAll(async () => {
       await addUserToOrganization(user1.id, orgB.id, "member");
-      // Clear any stale "not-a-member" negative cache from earlier tests.
-      invalidateMembershipRoleCache(orgB.id, user1.id);
     });
 
     it("organizations.list keeps public inventory but hides an ungranted member workspace", async () => {
@@ -169,7 +165,6 @@ describe("ClientSDK.org() accessor", () => {
 
       const sql = getTestDb();
       await sql`DELETE FROM "member" WHERE "userId" = ${user1.id} AND "organizationId" = ${orgB.id}`;
-      invalidateMembershipRoleCache(orgB.id, user1.id);
 
       await expect(sdk.org(orgB.slug)).rejects.toBeInstanceOf(
         CrossOrgAccessDenied

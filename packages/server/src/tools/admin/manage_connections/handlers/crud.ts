@@ -316,6 +316,7 @@ export async function handleList(
 
   let query = sql`
     SELECT c.*,
+           COUNT(*) OVER()::int AS filtered_total,
            cd.name AS connector_name,
            cd.has_feeds_schema,
            cd.declares_chat,
@@ -413,11 +414,26 @@ export async function handleList(
     query = sql`${query} ${sql.unsafe(compileConnectionRowVisibility(authzScopeFromToolContext(ctx), "c"))}`;
   }
 
-  query = sql`${query} ORDER BY c.created_at DESC LIMIT ${limit} OFFSET ${offset}`;
+  // The window count is the true filtered total on every non-empty page. Keep
+  // the complete filtered query for the rare overshoot fallback, where there
+  // is no row from which to read the window value.
+  const filteredQuery = query;
+  query = sql`${filteredQuery} ORDER BY c.created_at DESC, c.id DESC LIMIT ${limit} OFFSET ${offset}`;
 
   const rows = await query;
+  let total: number;
+  if (rows.length > 0) {
+    total = Number(rows[0].filtered_total ?? rows.length);
+  } else {
+    const [countRow] = (await sql`
+      SELECT COUNT(*)::int AS total FROM (${filteredQuery}) filtered
+    `) as Array<{ total: number }>;
+    total = Number(countRow?.total ?? 0);
+  }
   const resolved = await resolveUsernames(
-    rows as unknown as Record<string, unknown>[],
+		(rows as unknown as Record<string, unknown>[]).map(
+			({ filtered_total: _filteredTotal, ...row }) => row,
+		),
 		"created_by",
   );
 
@@ -486,7 +502,7 @@ export async function handleList(
     connections: connections.map((row) =>
       projectConnectionForReader(row, ctx)
     ),
-    total: connections.length,
+    total,
     limit,
     offset,
     view_url: await buildViewUrl(ctx),
@@ -751,13 +767,19 @@ export async function handleCreate(
 		authSchema: connector.auth_schema,
 	});
 
-	const chatPlatform =
+	const connectionPlatform =
 		connector.options_schema &&
 		typeof connector.options_schema === "object" &&
-		(connector.options_schema as Record<string, unknown>)[
+		((connector.options_schema as Record<string, unknown>)[
 			"x-lobu-chat-platform"
-		];
-	if (chatPlatform === args.connector_key) {
+		] ??
+			(connector.options_schema as Record<string, unknown>)[
+				"x-lobu-adapterless-platform"
+			]);
+	if (connectionPlatform === args.connector_key) {
+		if (args.connector_key === "webhook" && !args.slug) {
+			return { error: "Webhook connections require a non-numeric slug." };
+		}
 		try {
 			const stableId = args.slug || randomUUID().replace(/-/g, "").slice(0, 16);
 			const created = await upsertByoChatConnection({

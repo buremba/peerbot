@@ -1283,6 +1283,7 @@ jobs:
           bash scripts/lib/__tests__/review-skip.test.sh
           bash scripts/lib/__tests__/review-cache.test.sh
           bash scripts/lib/__tests__/install-bubblewrap.test.sh
+          bash scripts/lib/__tests__/process-cleanup.test.sh
 
       - name: Preview and staging workflow guards
         # The preview deploy's mid-flight teardown decides whether to delete a

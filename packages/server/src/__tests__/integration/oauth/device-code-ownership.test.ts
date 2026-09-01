@@ -253,4 +253,42 @@ describe('OAuth device verifier ownership', () => {
     expect(rows).toEqual([{ user_id: verifier.id }]);
     expect(rows[0]?.user_id).not.toBe(attacker.id);
   });
+
+  it('persists a reduction that removes MCP access entirely', async () => {
+    const app = buildApp();
+    const verifier = await createTestUser({ name: 'Scope reducer' });
+    const session = await createTestSession(verifier.id);
+    const client = await createTestOAuthClient({
+      grant_types: [DEVICE_GRANT, 'refresh_token'],
+    });
+    const device = await createTestDeviceCode(client.client_id, {
+      scope: 'mcp:read profile:read',
+    });
+
+    const info = await call(app, 'GET', `/oauth/device/info?user_code=${device.userCode}`, {
+      cookie: session.cookieHeader,
+    });
+    expect(info.status).toBe(200);
+
+    const approved = await call(app, 'POST', '/oauth/device/approve', {
+      cookie: session.cookieHeader,
+      body: {
+        user_code: device.userCode,
+        approved: true,
+        scope: 'profile:read',
+      },
+    });
+    expect(approved.status, await approved.clone().text()).toBe(200);
+
+    const token = await call(app, 'POST', '/oauth/token', {
+      body: {
+        grant_type: DEVICE_GRANT,
+        device_code: device.deviceCode,
+        client_id: client.client_id,
+        client_secret: client.client_secret,
+      },
+    });
+    expect(token.status, await token.clone().text()).toBe(200);
+    expect(await token.json()).toMatchObject({ scope: 'profile:read' });
+  });
 });

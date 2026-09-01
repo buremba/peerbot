@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
 	ApproveAction,
 	ApproveBatchAction,
@@ -61,6 +63,7 @@ import {
 	MANAGE_ENTITY_SCHEMA_ACTION_KEY,
 	type StoredManageEntitySchemaProposal,
 } from "../../manage_entity_schema";
+import { runLeaseFence } from "../../../../runs/run-lease";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
 /**
@@ -78,14 +81,15 @@ async function persistDurableApplyOutput(
 	runId: number,
 	organizationId: string,
 	output: Record<string, unknown>,
+	claimedBy: string,
 ): Promise<void> {
 	const sql = getDb();
 	await sql`
 		UPDATE runs SET action_output = ${sql.json(output)}
 		WHERE id = ${runId}
 			AND organization_id = ${organizationId}
-			AND status = 'running'
 			AND approval_status = 'approved'
+			${runLeaseFence(sql, claimedBy)}
 	`;
 }
 
@@ -107,7 +111,7 @@ async function tryReconcileTerminalization(
 ): Promise<ManageOperationsResult | null> {
 	const sql = getDb();
 	const rows = await sql`
-		SELECT run_type, action_key, action_input, action_output
+		SELECT run_type, action_key, action_input, action_output, claimed_by
 		FROM runs
 		WHERE id = ${args.run_id}
 			AND organization_id = ${ctx.organizationId}
@@ -123,6 +127,7 @@ async function tryReconcileTerminalization(
 		action_key: string;
 		action_input: unknown;
 		action_output: Record<string, unknown>;
+		claimed_by: string | null;
 	};
 	const output = row.action_output;
 	let title: string;
@@ -148,6 +153,10 @@ async function tryReconcileTerminalization(
 		output,
 		{ title, content },
 		reviewer,
+		// This request did not claim the run — it is recovering one whose
+		// terminal write failed. Fence on the owner as read so a concurrent
+		// re-claim wins instead of being overwritten.
+		row.claimed_by,
 	);
 	if (eventId === null) {
 		return {
@@ -384,15 +393,24 @@ async function claimBuilderRun(
 	handler: BuilderApprovalHandler;
 	proposal: unknown;
 	requesterUserId: string | null;
+	claimedBy: string;
 } | null> {
 	const sql = db;
 	const handlers = getBuilderApprovalHandlers();
 	const actionKeys = pgTextArray(handlers.map((h) => h.actionKey));
+	// The approve branch runs the handler's apply OUTSIDE this transaction, so
+	// the run sits `running` across a slow external call. Take the lease in the
+	// same statement that approves it — an approved, running, unowned row is
+	// what the reaper and a second approve both grab. The reject branch is
+	// terminal in one statement and has no such window.
+	const claimedBy = `gateway-inline-${randomUUID()}`;
 	const rows =
 		decision === "approved"
 			? await sql`
           UPDATE runs
-          SET approval_status = 'approved', status = 'running'
+          SET approval_status = 'approved', status = 'running',
+              claimed_by = ${claimedBy}, claimed_at = current_timestamp,
+              last_heartbeat_at = current_timestamp
           WHERE id = ${runId}
             AND organization_id = ${organizationId}
             AND approval_status = 'pending'
@@ -423,6 +441,7 @@ async function claimBuilderRun(
 		handler,
 		proposal: row.action_input,
 		requesterUserId: row.created_by_user_id,
+		claimedBy,
 	};
 }
 
@@ -434,16 +453,25 @@ async function failBuilderRun(
 	desc: string,
 	errorMessage: string,
 	reviewer: ApprovalReviewer | null,
+	claimedBy: string,
 ): Promise<ManageOperationsResult> {
 	// Atomic: the failed runs write and the 'failed' card supersede commit
 	// together. The card guard runs INSIDE the transaction, so a missing card
 	// throws while the tx is open and rolls the runs write back — the run must
 	// never land terminal with no card.
+	//
+	// Fenced: apply() ran OUTSIDE any transaction, so the reaper or a second
+	// approve can have taken the lease while it was in flight. Without the fence
+	// this write clobbers whatever they recorded and supersedes the card to
+	// 'failed' on a run that is no longer ours.
 	const eventId = await getDb().begin(async (tx) => {
-		await tx`
+		const rows = await tx`
 			UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
 			WHERE id = ${runId} AND organization_id = ${organizationId}
+			${runLeaseFence(tx, claimedBy)}
+			RETURNING id
 		`;
+		if (rows.length === 0) return null;
 		const cardId = await supersedeActionEvent(
 			runId,
 			organizationId,
@@ -457,6 +485,12 @@ async function failBuilderRun(
 		requireApprovalCard(runId, cardId, "failed");
 		return cardId;
 	});
+	if (eventId === null) {
+		return {
+			error:
+				"The approval was already decided while this request was in flight. Refresh before acting.",
+		};
+	}
 	return {
 		action: "approve",
 		approved: true,
@@ -639,7 +673,7 @@ async function tryApproveBuilderRun(
 	if (!phaseOne) return null;
 	if (phaseOne.kind === "completed") return phaseOne.result;
 
-	const { handler, apply, proposal, requesterUserId, desc } = phaseOne;
+	const { handler, apply, proposal, requesterUserId, desc, claimedBy } = phaseOne;
 
 	// Apply runs OUTSIDE any transaction — the family's write can be
 	// slow/network-bound and must not hold a DB transaction open. The catch
@@ -668,6 +702,7 @@ async function tryApproveBuilderRun(
 				desc,
 				softFailure,
 				reviewer,
+				claimedBy,
 			);
 		}
 	} catch (error) {
@@ -679,6 +714,7 @@ async function tryApproveBuilderRun(
 			desc,
 			errorMessage,
 			reviewer,
+			claimedBy,
 		);
 	}
 
@@ -691,6 +727,7 @@ async function tryApproveBuilderRun(
 		args.run_id,
 		ctx.organizationId,
 		output as unknown as Record<string, unknown>,
+		claimedBy,
 	);
 
 	// Phase 2b (atomic): the terminal completed runs write + the 'completed'
@@ -707,6 +744,7 @@ async function tryApproveBuilderRun(
 			content: `Builder action completed: ${desc}`,
 		},
 		reviewer,
+		claimedBy,
 	);
 	if (eventId === null) {
 		return {
@@ -1611,18 +1649,27 @@ export async function handleApprove(
 	// same transaction as the claim + confirmed card — there is no separate
 	// post-claim status write to race with the card.
 	const setRunning = resolved.operation.backend !== "local_action";
+	// Minted unconditionally so the fence value is never nullable. Only a run
+	// that actually flips to `running` records it as its owner; a `local_action`
+	// run stays unclaimed and returns before any fenced write.
+	const inlineOwner = `gateway-inline-${randomUUID()}`;
 	const claimed = await sql.begin(async (tx) => {
-		const statusSet = setRunning ? tx`, status = 'running'` : tx``;
+		// The lease is taken in the same statement that flips the run to
+		// `running`: an approved, running, unowned row is exactly the window the
+		// stale-run reaper and a second approve would both grab.
+		const runningSet = setRunning
+			? tx`, status = 'running', claimed_by = ${inlineOwner}, claimed_at = current_timestamp, last_heartbeat_at = current_timestamp`
+			: tx``;
 		const rows = await tx`
 			UPDATE runs
 			SET approval_status = 'approved'
-				${statusSet},
+				${runningSet},
 				action_input = ${args.input ? tx.json(args.input) : tx`action_input`}
 			WHERE id = ${args.run_id}
 				AND organization_id = ${ctx.organizationId}
 				AND approval_status = 'pending'
 				AND run_type = 'action'
-			RETURNING id, connection_id, action_key, action_input, created_by_user_id
+			RETURNING id, connection_id, action_key, action_input, created_by_user_id, claimed_by
 		`;
 		if (rows.length === 0) return null;
 		// The confirmed card's event id is the run's approval identity for this
@@ -1673,14 +1720,14 @@ export async function handleApprove(
 		run.created_by_user_id,
 		env,
 		undefined,
-		{ deferTerminalWrite: true },
+		{ deferTerminalWrite: true, claimedBy: inlineOwner },
 	);
 
 	if (result.status === "completed") {
 		// Phase 2a (durable): persist the execution output BEFORE the
 		// terminalization attempt so a failed completed-card write cannot lose
 		// the only durable record of an already-successful external mutation.
-		await persistDurableApplyOutput(args.run_id, ctx.organizationId, result.output);
+		await persistDurableApplyOutput(args.run_id, ctx.organizationId, result.output, inlineOwner);
 
 		// Phase 2b (atomic): terminal completed runs write + 'completed' card.
 		// The card guard runs INSIDE the tx so a missing card rolls the
@@ -1694,6 +1741,7 @@ export async function handleApprove(
 				content: `Operation completed: ${run.action_key}`,
 			},
 			reviewer,
+			inlineOwner,
 		);
 		if (terminalCardId === null) {
 			return {
@@ -1713,13 +1761,21 @@ export async function handleApprove(
 	// Phase 2 (atomic): terminal failed runs write + 'failed' card. The card
 	// guard runs INSIDE the tx so a missing card rolls the failed runs write
 	// back.
-	await sql.begin(async (tx) => {
-		await tx`
+	//
+	// Fenced on the same lease as the completed lane above: with
+	// deferTerminalWrite the inline execution wrote nothing, so this is the ONLY
+	// terminal write for a failed inline apply. Unfenced it would overwrite a
+	// reaper's or a re-claim's outcome and supersede the card to 'failed'.
+	const failed = await sql.begin(async (tx) => {
+		const rows = await tx`
 			UPDATE runs SET status = 'failed', completed_at = NOW(),
 				action_output = ${result.output ? tx.json(result.output) : null},
 				error_message = ${result.error_message}
 			WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+			${runLeaseFence(tx, inlineOwner)}
+			RETURNING id
 		`;
+		if (rows.length === 0) return false;
 		const cardId = await supersedeActionEvent(
 			args.run_id,
 			ctx.organizationId,
@@ -1731,8 +1787,14 @@ export async function handleApprove(
 			tx,
 		);
 		requireApprovalCard(args.run_id, cardId, "failed");
-		return cardId;
+		return true;
 	});
+	if (!failed) {
+		return {
+			error:
+				"The approval was already decided while this request was in flight. Refresh before acting.",
+		};
+	}
 	return {
 		action: "approve",
 		approved: true,

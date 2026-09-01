@@ -15,10 +15,15 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
 	clearConnectionAclError,
+	clearRetainedAclErrorMessage,
 	formatAclErrorMessage,
 	isAclErrorMessage,
+	markConnectionAclFailed,
 } from "../../../authz/acl-observability";
-import { syncGithubConnectionAcl } from "../../../authz/github-acl-sync";
+import {
+	runGithubAclSyncTick,
+	syncGithubConnectionAcl,
+} from "../../../authz/github-acl-sync";
 import { runConnectorHealthCheck } from "../../../connectors/connector-health";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -384,6 +389,165 @@ describe("acl observability", () => {
 			expect(state?.freshness_state).toBe("failed");
 			expect(row?.error_message).toBe(formatAclErrorMessage("newer failure"));
 		});
+
+		it("skips a consent-only grant-holder instead of marking it ACL-failed", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Consent Only Org" });
+			// A consent-only grant-holder holds an OAuth grant for delegation and
+			// `manage_feeds` refuses feeds on it BY CONSTRUCTION, so a feedless sweep
+			// is its steady state — not an outage to downgrade the graph over.
+			const consentOnly = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				config: { consent_only: true },
+				createDefaultFeed: false,
+			});
+			// A NORMAL connection that has no feeds must still fail closed; the skip
+			// is scoped to consent-only, never a blanket "empty means fine".
+			const regular = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				createDefaultFeed: false,
+			});
+
+			await runGithubAclSyncTick({
+				getAppInstallationStore: () => ({}),
+			} as unknown as Parameters<typeof runGithubAclSyncTick>[0]);
+
+			const [consentRow] = await sql`
+        SELECT error_message FROM connections WHERE id = ${consentOnly.id}
+      `;
+			expect(consentRow?.error_message).toBeNull();
+
+			const [regularRow] = await sql`
+        SELECT error_message FROM connections WHERE id = ${regular.id}
+      `;
+			expect(regularRow?.error_message).toBe(
+				formatAclErrorMessage(
+					"GitHub ACL sync unavailable: no repository feeds configured",
+				),
+			);
+		});
+
+		it("releases ACL residue a consent-only grant-holder can no longer clear", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Residue Org" });
+			const conn = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				config: { consent_only: true },
+				createDefaultFeed: false,
+			});
+			// Residue from a tick that ran BEFORE the exclusion existed. The row can
+			// never sync to `fresh`, so `clearConnectionAclError` would never fire —
+			// without an explicit release this is permanent.
+			await markConnectionAclFailed(
+				org.id,
+				String(conn.id),
+				"GitHub ACL sync unavailable: no repository feeds configured",
+			);
+			const [seeded] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(seeded?.error_message).not.toBeNull();
+
+			await runGithubAclSyncTick({
+				getAppInstallationStore: () => ({}),
+			} as unknown as Parameters<typeof runGithubAclSyncTick>[0]);
+
+			const [row] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(row?.error_message).toBeNull();
+		});
+
+		it("keeps the enforcement row on a consent-only connection that was graphed", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Residue Graphed Org" });
+			const conn = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				config: { consent_only: true },
+				createDefaultFeed: false,
+			});
+			// A connection graphed BEFORE it became consent-only: delete its feeds
+			// and flip the flag and this is the live shape. Its already-synced
+			// events are fenced by this row, and `compileResourceVisibility` treats
+			// a MISSING row as never-graphed passthrough — so dropping it here
+			// would turn fail-closed into readable.
+			await sql`
+        INSERT INTO authz_source_acl_state (organization_id, connection_id, acl_support, freshness_state, last_synced_at)
+        VALUES (${org.id}, ${String(conn.id)}, 'full', 'fresh', now())
+      `;
+			await sql`
+        UPDATE connections SET error_message = ${formatAclErrorMessage("GitHub ACL sync unavailable: no repository feeds configured")} WHERE id = ${conn.id}
+      `;
+
+			await runGithubAclSyncTick({
+				getAppInstallationStore: () => ({}),
+			} as unknown as Parameters<typeof runGithubAclSyncTick>[0]);
+
+			const [row] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(row?.error_message).toBeNull();
+			const [state] = await sql`
+        SELECT freshness_state FROM authz_source_acl_state
+        WHERE organization_id = ${org.id} AND connection_id = ${String(conn.id)}
+      `;
+			expect(state?.freshness_state).toBe("fresh");
+		});
+
+		it("clears only acl-prefixed text when called directly", async () => {
+			// The tick's selection predicate already filters on the prefix, so the
+			// guard inside the clear cannot be reached through it. Exercise the
+			// function's own contract: `connections.error_message` is shared, and
+			// this must never blank another subsystem's message.
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Clear Guard Org" });
+			const conn = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				config: { consent_only: true },
+				createDefaultFeed: false,
+			});
+			await sql`
+        UPDATE connections SET error_message = 'oauth: token expired' WHERE id = ${conn.id}
+      `;
+
+			await clearRetainedAclErrorMessage(sql, {
+				organizationId: org.id,
+				connectionId: String(conn.id),
+			});
+
+			const [row] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(row?.error_message).toBe("oauth: token expired");
+		});
+
+		it("leaves a NON-acl error on a consent-only row untouched", async () => {
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Residue Foreign Org" });
+			const conn = await createTestConnection({
+				organization_id: org.id,
+				connector_key: "github",
+				config: { consent_only: true },
+				createDefaultFeed: false,
+			});
+			await sql`
+        UPDATE connections SET error_message = 'oauth: token expired' WHERE id = ${conn.id}
+      `;
+
+			await runGithubAclSyncTick({
+				getAppInstallationStore: () => ({}),
+			} as unknown as Parameters<typeof runGithubAclSyncTick>[0]);
+
+			const [row] = await sql`
+        SELECT error_message FROM connections WHERE id = ${conn.id}
+      `;
+			expect(row?.error_message).toBe("oauth: token expired");
+		});
 	});
 
 	describe("connector-health alerting", () => {
@@ -408,6 +572,40 @@ describe("acl observability", () => {
         SELECT unhealthy_alerted_at FROM connections WHERE id = ${conn.id}
       `;
 			expect(row?.unhealthy_alerted_at).not.toBeNull();
+		});
+
+		it("suppresses the alert for a consent-only github row but not a slack one", async () => {
+			// The retained `failed` row is deliberate — it keeps already-synced
+			// events fenced — but the github tick no longer sweeps consent-only
+			// connections, so it can never clear and alerting on it would be
+			// permanent noise. The slack tick DOES still sweep them, so a failure
+			// it records is live and must still alert.
+			const sql = getTestDb();
+			const org = await createTestOrganization({ name: "Acl Consent Alert Org" });
+			const gh = await seedAclFailedConnection({
+				orgId: org.id,
+				errorMessage: formatAclErrorMessage("GitHub ACL sync failed: 401"),
+			});
+			const slack = await seedAclFailedConnection({
+				orgId: org.id,
+				errorMessage: formatAclErrorMessage("Slack ACL sync failed: 401"),
+			});
+			await sql`
+        UPDATE connections
+        SET config = jsonb_set(COALESCE(config, '{}'::jsonb), '{consent_only}', 'true')
+        WHERE id IN (${gh.id}, ${slack.id})
+      `;
+			await sql`
+        UPDATE connections SET connector_key = 'slack' WHERE id = ${slack.id}
+      `;
+
+			const result = await runConnectorHealthCheck();
+			expect(
+				result.details.find((d) => d.connectionId === gh.id)?.reason,
+			).toBeUndefined();
+			expect(result.details.find((d) => d.connectionId === slack.id)?.reason).toBe(
+				"acl_failed",
+			);
 		});
 
 		it("does not attribute a chat runtime ACL failure to a colliding data slug", async () => {

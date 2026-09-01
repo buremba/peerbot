@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { compileSource } from '../compiler-core';
+import type { Plugin } from 'esbuild';
+import { compileSource, SourceCompileError } from '../compiler-core';
 
 /**
  * #2043 — dependency restrictions must apply only to real module declarations
@@ -35,6 +36,35 @@ async function compileErr(source: string): Promise<string> {
 }
 
 describe('compileSource import validation (#2043)', () => {
+  test('marks source diagnostics but not esbuild output failures', async () => {
+    await expect(compileSource('export default = ;', CONFIG)).rejects.toBeInstanceOf(
+      SourceCompileError
+    );
+
+    const outputFailure = compileSource('export default 1;', {
+      ...CONFIG,
+      buildOptions: { ...CONFIG.buildOptions, outfile: process.cwd() },
+    });
+    await expect(outputFailure).rejects.not.toBeInstanceOf(SourceCompileError);
+  });
+
+  test('does not mark located plugin infrastructure failures as source errors', async () => {
+    const brokenPlugin: Plugin = {
+      name: 'broken-test-plugin',
+      setup(build) {
+        build.onResolve({ filter: /^broken$/ }, () => {
+          throw new Error('plugin infrastructure failed');
+        });
+      },
+    };
+    const pluginFailure = compileSource(`import value from 'broken'; export default value;`, {
+      ...CONFIG,
+      buildOptions: { ...CONFIG.buildOptions, plugins: [brokenPlugin] },
+    });
+
+    await expect(pluginFailure).rejects.not.toBeInstanceOf(SourceCompileError);
+  });
+
   test('rejects a real relative import with a source location', async () => {
     const message = await compileErr(
       `import { sleep } from './scraper-utils.ts';\nexport default sleep;`
@@ -118,5 +148,49 @@ describe('compileSource import validation (#2043)', () => {
       `import missing from 'npm:this-package-does-not-exist-lobu@1.0.0';\nexport default missing;`
     );
     expect(message).toContain('Could not resolve');
+  });
+});
+
+/**
+ * The SDK is mapped by an onResolve plugin, not an esbuild `alias`. `alias`
+ * substitutes by PREFIX, so pointing it at the package's entry FILE turned any
+ * subpath into a path *under* that file (`.../dist/index.js/ip-reachability`).
+ * Subpaths also cannot go through `require.resolve`: the SDK is
+ * `"type": "module"` and its subpath exports declare only an `import`
+ * condition, so the CJS resolver skips them.
+ */
+describe('connector SDK resolution', () => {
+  test('resolves the SDK root', async () => {
+    const code = await compileOk(
+      "import { validatePublicUrl } from '@lobu/connector-sdk';\nexport default () => validatePublicUrl;"
+    );
+    expect(code.length).toBeGreaterThan(0);
+  });
+
+  test('resolves the `lobu` alias to the same package', async () => {
+    const code = await compileOk(
+      "import { validatePublicUrl } from 'lobu';\nexport default () => validatePublicUrl;"
+    );
+    expect(code.length).toBeGreaterThan(0);
+  });
+
+  test('resolves an SDK subpath export', async () => {
+    const code = await compileOk(
+      "import { isReservedIp } from '@lobu/connector-sdk/ip-reachability';\nexport default () => isReservedIp('127.0.0.1');"
+    );
+    // Bundled, not left as a bare import, and genuinely the classifier module.
+    // Assert on values that survive bundling: esbuild folds the hex hextet
+    // literals to decimal and strips comments.
+    expect(code).not.toContain('@lobu/connector-sdk/ip-reachability');
+    expect(code).toContain('RESERVED_IPV4_RANGES');
+    expect(code).toContain('169.254.0.0');
+  });
+
+  test('reports an unknown SDK subpath instead of emitting a broken path', async () => {
+    const message = await compileErr(
+      "import x from '@lobu/connector-sdk/not-a-real-subpath';\nexport default () => x;"
+    );
+    expect(message).toContain('Cannot resolve');
+    expect(message).not.toContain('dist/index.js/not-a-real-subpath');
   });
 });

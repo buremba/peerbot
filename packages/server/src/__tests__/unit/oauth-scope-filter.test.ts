@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  canonicalizeOAuthScopeGrant,
   DISCOVERY_SCOPES,
   filterScopeByRole,
+  isOAuthScopeGrantWithinRequest,
   NON_PUBLIC_OAUTH_SCOPES,
+  AVAILABLE_SCOPES,
+  filterRequestedScopes,
+  normalizeOAuthScopeRequest,
   stripNonPublicOAuthScopes,
 } from '../../auth/oauth/scopes';
 
@@ -33,6 +38,34 @@ describe('stripNonPublicOAuthScopes', () => {
   it('passes public scopes through unchanged', () => {
     expect(stripNonPublicOAuthScopes('mcp:read mcp:write profile:read')).toBe(
       'mcp:read mcp:write profile:read'
+    );
+  });
+});
+
+describe('OAuth scope grant normalization', () => {
+  it('rejects unknown requested scopes at the OAuth boundary', () => {
+    expect(normalizeOAuthScopeRequest('mcp:read invented:scope')).toBeNull();
+    expect(normalizeOAuthScopeRequest('mcp:read profile:read')).toBe(
+      'mcp:read profile:read'
+    );
+  });
+
+  it('treats MCP access as a hierarchy when reducing consent', () => {
+    expect(isOAuthScopeGrantWithinRequest('mcp:read mcp:write', 'mcp:read')).toBe(true);
+    expect(isOAuthScopeGrantWithinRequest('mcp:write', 'mcp:read')).toBe(true);
+    expect(isOAuthScopeGrantWithinRequest('mcp:read', 'mcp:write')).toBe(false);
+    expect(isOAuthScopeGrantWithinRequest('mcp:admin profile:read', 'mcp:write')).toBe(true);
+    expect(
+      isOAuthScopeGrantWithinRequest('mcp:admin', 'mcp:read connections:token')
+    ).toBe(false);
+  });
+
+  it('persists the hierarchy explicitly', () => {
+    expect(canonicalizeOAuthScopeGrant('mcp:write profile:read')).toBe(
+      'mcp:read mcp:write profile:read'
+    );
+    expect(canonicalizeOAuthScopeGrant('mcp:admin connections:token')).toBe(
+      'mcp:read mcp:write mcp:admin connections:token'
     );
   });
 });
@@ -117,5 +150,55 @@ describe('filterScopeByRole', () => {
     );
     expect((owner as string).split(' ')).toContain('connections:token');
     expect((owner as string).split(' ')).toContain('mcp:admin');
+  });
+});
+
+describe('filterRequestedScopes', () => {
+  // The /oauth/authorize endpoint takes a STRANGER's scope string. Slack,
+  // Claude Desktop and Cursor all append standard OIDC scopes that Lobu has
+  // never issued. Rejecting the whole request over one of them breaks the
+  // integration; narrowing it just grants less.
+  it('keeps grantable scopes and ignores OIDC scopes Lobu does not issue', () => {
+    expect(filterRequestedScopes('openid email profile offline_access mcp:read', DISCOVERY_SCOPES)).toBe(
+      'mcp:read'
+    );
+  });
+
+  it('drops non-public scopes without needing stripNonPublicOAuthScopes first', () => {
+    expect(filterRequestedScopes('mcp:read device_worker:run connections:token', DISCOVERY_SCOPES)).toBe(
+      'mcp:read'
+    );
+  });
+
+  it('returns null only when nothing requested is grantable', () => {
+    expect(filterRequestedScopes('openid offline_access', DISCOVERY_SCOPES)).toBeNull();
+    expect(filterRequestedScopes('', DISCOVERY_SCOPES)).toBeNull();
+  });
+
+  // The contrast that motivates the split: the strict form is still correct
+  // for scope strings we generate ourselves (consent form, device flow).
+  it('is deliberately more permissive than the strict normalizer', () => {
+    expect(normalizeOAuthScopeRequest('openid mcp:read', DISCOVERY_SCOPES)).toBeNull();
+    expect(filterRequestedScopes('openid mcp:read', DISCOVERY_SCOPES)).toBe('mcp:read');
+  });
+});
+
+describe('filterRequestedScopes on the device flow', () => {
+  // Device-code registration is open (DCR), so this scope string comes from a
+  // stranger too — but the device flow may legitimately grant the non-public
+  // scopes when a client asks for them explicitly, gated by the user's
+  // device-code consent. So it filters against AVAILABLE_SCOPES, not
+  // DISCOVERY_SCOPES.
+  it('keeps explicitly requested non-public scopes that the authorize path drops', () => {
+    expect(filterRequestedScopes('mcp:read connections:token', AVAILABLE_SCOPES)).toBe(
+      'mcp:read connections:token'
+    );
+    expect(filterRequestedScopes('mcp:read connections:token', DISCOVERY_SCOPES)).toBe('mcp:read');
+  });
+
+  it('still ignores OIDC scopes rather than failing the device authorization', () => {
+    expect(filterRequestedScopes('openid offline_access mcp:read', AVAILABLE_SCOPES)).toBe(
+      'mcp:read'
+    );
   });
 });

@@ -5,9 +5,47 @@ import {
 	restGetAutomations,
 	restInvokeEventAction,
 	restSearchKnowledge,
+	toRestPublicToolResult,
 } from "../../rest-api";
 
 describe("REST ToolUserError responses", () => {
+	it("projects SDK tool results to the documented public shape", () => {
+		const rich = {
+			success: false,
+			error: {
+				name: "ScriptError",
+				message: "boom",
+				code: "INTERNAL",
+				retryable: false,
+				stack: "internal stack",
+				details: { secret: true },
+			},
+			logs: [{ message: "internal log" }],
+			duration_ms: 12,
+			sdk_call_trace: [{ path: "knowledge.search" }],
+			skipped_calls: 0,
+			side_effect_preview: [],
+			dry_run: false,
+		};
+
+		for (const toolName of ["query_sdk", "run_sdk"]) {
+			const projected = toRestPublicToolResult(toolName, rich) as Record<
+				string,
+				unknown
+			>;
+			expect(projected.error).toEqual({
+				name: "ScriptError",
+				message: "boom",
+				code: "INTERNAL",
+				retryable: false,
+			});
+			expect(projected.logs).toBeUndefined();
+			expect(projected.duration_ms).toBeUndefined();
+			expect(projected.sdk_call_trace).toBeUndefined();
+		}
+		expect(toRestPublicToolResult("manage_operations", rich)).toBe(rich);
+	});
+
 	it("preserves the status thrown by the wrapped tool", async () => {
 		const app = new Hono<{ Bindings: Env }>();
 		app.use("*", async (c, next) => {

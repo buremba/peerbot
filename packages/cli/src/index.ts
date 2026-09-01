@@ -1215,7 +1215,7 @@ Memory:
     )
     .action(async (options) => {
       const { daemonCommand } = await import("./commands/daemon.js");
-      await daemonCommand(options);
+      await daemonCommand({ ...options, cliVersion: version });
     });
 
   program

@@ -8,6 +8,13 @@
 {{- fail (printf "embeddings.env cannot override chart-owned %s" $key) }}
 {{- end }}
 {{- end }}
+{{- /*
+  Read from .Values.embeddings.env ONLY. Now that the blanket envFrom is gone,
+  a deployment that set EMBEDDINGS_BACKEND through the shared secret no longer
+  receives the variable at all, so there is nothing else this could read: put
+  the backend in values, not in the secret. The secret keeps exactly the two
+  credentials below.
+*/}}
 {{- $embeddingsBackend := lower (default "local" (index $embeddingsEnv "EMBEDDINGS_BACKEND")) }}
 apiVersion: apps/v1
 kind: Deployment

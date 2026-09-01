@@ -3,7 +3,9 @@ import type { LookupAddress } from "node:dns";
 import {
   __ssrfGuardTestOnly,
   fetchCredentialedPublicUrl,
+  fetchPublicUrl,
   parseCredentialedHttpsUrl,
+  PrivateAddressError,
 } from "../proxy/ssrf-guard.js";
 
 const originalFetch = globalThis.fetch;
@@ -138,5 +140,58 @@ describe("public URL transport boundary", () => {
         redirect: "follow",
       })
     ).rejects.toThrow(/cannot automatically follow redirects/i);
+  });
+});
+
+describe("surfacing the blocked-target decision", () => {
+  // Node reports a connector rejection as `TypeError("fetch failed")` with the
+  // real reason on `cause`, so without unwrapping, a deliberate security block
+  // is indistinguishable from an upstream outage. These pin the unwrapping
+  // itself: the mechanism is `instanceof PrivateAddressError`, and a test that
+  // only asserted on message text would keep passing if that regressed to a
+  // string match against a message someone later reworded.
+  test("unwraps a blocked target from the cause chain", async () => {
+    const blocked = new PrivateAddressError("169.254.169.254");
+    globalThis.fetch = (() => {
+      throw new TypeError("fetch failed", { cause: blocked });
+    }) as typeof globalThis.fetch;
+
+    expect(fetchPublicUrl("https://metadata.example/")).rejects.toBe(blocked);
+  });
+
+  test("unwraps a blocked target nested in an AggregateError", async () => {
+    const blocked = new PrivateAddressError("10.0.0.1");
+    globalThis.fetch = (() => {
+      throw new TypeError("fetch failed", {
+        cause: new AggregateError([new Error("ECONNREFUSED"), blocked]),
+      });
+    }) as typeof globalThis.fetch;
+
+    expect(fetchPublicUrl("https://multi.example/")).rejects.toBe(blocked);
+  });
+
+  test("identifies the error by class, not by message text", async () => {
+    // The discriminating case: this is a genuine PrivateAddressError whose
+    // message no longer carries the old "URL points to a private/internal
+    // address:" prefix. `instanceof` still finds it; the string match this
+    // replaced would not, and would report a security block as an outage.
+    const blocked = new PrivateAddressError("172.16.0.5");
+    blocked.message = "reworded by a later refactor";
+    globalThis.fetch = (() => {
+      throw new TypeError("fetch failed", { cause: blocked });
+    }) as typeof globalThis.fetch;
+
+    expect(fetchPublicUrl("https://reworded.example/")).rejects.toBe(blocked);
+  });
+
+  test("leaves an ordinary upstream failure untouched", async () => {
+    const outage = new TypeError("fetch failed", {
+      cause: new Error("ECONNRESET"),
+    });
+    globalThis.fetch = (() => {
+      throw outage;
+    }) as typeof globalThis.fetch;
+
+    expect(fetchPublicUrl("https://upstream.example/")).rejects.toBe(outage);
   });
 });

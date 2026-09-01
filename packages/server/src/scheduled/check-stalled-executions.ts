@@ -268,7 +268,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
       // staleness predicate, so a worker heartbeat/completion that wins after
       // the candidate read makes this a no-op rather than being overwritten.
       const approvedActionCandidates = (await reserved`
-        SELECT id, organization_id, action_key, action_output
+        SELECT id, organization_id, action_key, action_output, claimed_by
         FROM public.runs
         WHERE ${reserved.unsafe(staleWhereSql)}
           AND run_type = 'action'
@@ -279,6 +279,7 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         organization_id: string;
         action_key: string | null;
         action_output: Record<string, unknown> | null;
+        claimed_by: string | null;
       }>;
       let approvalActionsReaped = 0;
       for (const candidate of approvedActionCandidates) {
@@ -304,6 +305,10 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
                 content: `Operation completed: ${actionKey}`,
               },
               null,
+              // Finalize the run exactly as read: if the gateway or another
+              // pod re-claims it between this candidate read and the write,
+              // the write loses instead of overwriting the new owner.
+              candidate.claimed_by,
               sql
             );
             if (eventId !== null) approvalActionsReaped += 1;

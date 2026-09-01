@@ -7,6 +7,8 @@
  * - JSON utilities for duplicate detection
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { type DbClient, parsePgTextArray, pgTextArray } from '../db/client';
 import {
   resolvedEventExecution,
@@ -1174,6 +1176,7 @@ export async function createConnectorOperationRun(params: {
   approvalStatus: string;
   actionOutput: unknown;
   errorMessage: string | null;
+  claimedBy: string | null;
 }> {
   const sql = params.db ?? getDb();
   if (params.activation && params.approvalMode !== 'inline') {
@@ -1185,6 +1188,10 @@ export async function createConnectorOperationRun(params: {
   const approvalStatus = params.approvalMode === 'queued' ? 'pending' : 'auto';
   const status =
     params.activation || params.approvalMode !== 'inline' ? 'pending' : 'running';
+  const inlineOwner =
+    params.approvalMode === 'inline' && !params.activation
+      ? `gateway-inline-${randomUUID()}`
+      : null;
 
   // Ephemeral device/browser/shell action runs get a bounded claim horizon:
   // a `device` run waits for a device worker to claim it via /poll, and an
@@ -1231,13 +1238,14 @@ export async function createConnectorOperationRun(params: {
     approval_status: string;
     action_output: unknown;
     error_message: string | null;
+    claimed_by: string | null;
   }>`
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approval_status, status,
       automation_id, parent_run_id,
       policy_principal_kind, policy_principal_id, created_by_user_id,
-      action_idempotency_key, expires_at,
+      action_idempotency_key, expires_at, claimed_at, last_heartbeat_at, claimed_by,
       activation_kind, activation_target_urls,
       run_metadata,
       created_at
@@ -1253,6 +1261,9 @@ export async function createConnectorOperationRun(params: {
       ${expiresAtSeconds == null
         ? null
         : sql`current_timestamp + (${expiresAtSeconds}::int * interval '1 second')`},
+      ${inlineOwner === null ? null : sql`current_timestamp`},
+      ${inlineOwner === null ? null : sql`current_timestamp`},
+      ${inlineOwner},
       ${params.activation?.kind ?? null},
       ${params.activation ? pgTextArray(params.activation.urls) : null}::text[],
       ${params.runMetadata == null ? null : sql.json(params.runMetadata)},
@@ -1261,7 +1272,7 @@ export async function createConnectorOperationRun(params: {
     ON CONFLICT (organization_id, action_idempotency_key)
       WHERE run_type = 'action' AND action_idempotency_key IS NOT NULL
     DO NOTHING
-    RETURNING id, status, approval_status, action_output, error_message
+    RETURNING id, status, approval_status, action_output, error_message, claimed_by
   `;
 
   if (inserted.length === 0) {
@@ -1286,12 +1297,13 @@ export async function createConnectorOperationRun(params: {
       approval_status: string;
       action_output: unknown;
       error_message: string | null;
+      claimed_by: string | null;
     }>`
       SELECT id, connection_id, connector_key, action_key, action_input,
              policy_principal_kind, policy_principal_id, created_by_user_id,
              automation_id, parent_run_id, run_metadata,
              activation_kind, activation_target_urls,
-             status, approval_status, action_output, error_message
+             status, approval_status, action_output, error_message, claimed_by
       FROM runs
       WHERE organization_id = ${params.organizationId}
         AND run_type = 'action'
@@ -1389,6 +1401,7 @@ export async function createConnectorOperationRun(params: {
       approvalStatus: prior.approval_status,
       actionOutput: prior.action_output,
       errorMessage: prior.error_message,
+      claimedBy: prior.claimed_by,
     };
   }
 
@@ -1404,5 +1417,6 @@ export async function createConnectorOperationRun(params: {
     approvalStatus: row.approval_status,
     actionOutput: row.action_output,
     errorMessage: row.error_message,
+    claimedBy: row.claimed_by,
   };
 }

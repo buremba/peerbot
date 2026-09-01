@@ -1,5 +1,5 @@
-import type { DbClient } from "../../db/client";
-import { getDb } from "../../db/client";
+import { type DbClient, getDb } from "../../db/client";
+import { runOwnerFence } from "../../runs/inline-lease";
 import { insertEvent } from "../../utils/insert-event";
 
 /**
@@ -42,6 +42,11 @@ export function requireApprovalCard(
  * the loser matches zero rows and writes no card. The card guard runs INSIDE
  * the tx, so a missing card rolls the completed write back (fail-closed).
  *
+ * `expectedOwner` is the lease this write is allowed to finalize under: the
+ * owner the caller claimed, or the one it read off the row when recovering a
+ * run someone else claimed. It is required, because a terminalization that
+ * skips the owner check is exactly the one that overwrites a re-claim.
+ *
  * Returns the completed card event id, or null when the run was no longer in
  * the claimed state (already terminalized concurrently) — the caller returns a
  * "decided concurrently" outcome instead of writing anything.
@@ -52,6 +57,7 @@ export async function terminalizeApprovalRunCompleted(
 	output: Record<string, unknown>,
 	card: { title: string; content: string },
 	reviewer: ApprovalReviewer | null,
+	expectedOwner: string | null,
 	db: DbClient = getDb(),
 ): Promise<number | null> {
 	return db.begin(async (tx) => {
@@ -63,6 +69,7 @@ export async function terminalizeApprovalRunCompleted(
 				AND organization_id = ${organizationId}
 				AND status = 'running'
 				AND approval_status = 'approved'
+				${runOwnerFence(tx, expectedOwner)}
 			RETURNING id
 		`;
 		if (rows.length === 0) return null;

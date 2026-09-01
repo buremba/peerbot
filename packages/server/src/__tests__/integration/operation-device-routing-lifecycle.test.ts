@@ -119,6 +119,19 @@ async function operationReadiness(connectionId: number, ctx: ToolContext) {
 	return result.operations.find((operation) => operation.operation_key === ACTION_KEY);
 }
 
+/**
+ * An inline run is owned by the gateway request that executed it
+ * (`gateway-inline-<uuid>`), so "no device claimed this" is no longer
+ * `claimed_by IS NULL` — it is "the owner is the gateway, not a device".
+ */
+function expectInlineCompleted(run: {
+	status: string;
+	claimed_by: string | null;
+}): void {
+	expect(run.status).toBe("completed");
+	expect(run.claimed_by).toMatch(/^gateway-inline-/);
+}
+
 describe("connection-to-device operation routing lifecycle", () => {
 	beforeAll(async () => {
 		await initWorkspaceProvider();
@@ -315,7 +328,7 @@ describe("connection-to-device operation routing lifecycle", () => {
 			WHERE connection_id = ${chromeAffinityConnection.id}
 			  AND action_idempotency_key = 'device-routing:chrome-affinity'
 		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
-		expect(chromeRun).toEqual({ status: "completed", claimed_by: null });
+		expectInlineCompleted(chromeRun);
 
 		// A connector whose key merely starts with "chrome" is still non-Chrome.
 		// A chrome-extension pin therefore remains delegated browser affinity: the
@@ -388,7 +401,7 @@ describe("connection-to-device operation routing lifecycle", () => {
 			WHERE connection_id = ${chromePrefixConnection.id}
 			  AND action_idempotency_key = ${chromePrefixIdempotencyKey}
 		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
-		expect(chromePrefixRun).toEqual({ status: "completed", claimed_by: null });
+		expectInlineCompleted(chromePrefixRun);
 
 		// The legacy WhatsApp key is native Chrome execution only for a clean,
 		// metadata-only Chrome manifest artifact. Compiled bytes stay delegated even
@@ -467,7 +480,7 @@ describe("connection-to-device operation routing lifecycle", () => {
 			WHERE connection_id = ${compiledWhatsappConnection.id}
 			  AND action_idempotency_key = 'device-routing:compiled-whatsapp-affinity'
 		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
-		expect(compiledWhatsappRun).toEqual({ status: "completed", claimed_by: null });
+		expectInlineCompleted(compiledWhatsappRun);
 
 		await sql`
 			UPDATE connections SET device_worker_id = NULL

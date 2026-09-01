@@ -1,4 +1,4 @@
-import { runShellBuiltin } from './os-shell.js';
+import { ShellInputError, runShellBuiltin } from './os-shell.js';
 
 export type DaemonBuiltinErrorCode =
   | 'invalid_operation_input'
@@ -37,9 +37,13 @@ export async function executeDaemonBuiltin(params: {
     }
     return { ok: true, output: { ...output } };
   } catch (error) {
+    // Only the builtin's own argument checks are input faults. Anything else
+    // reaching here -- a spawn failure, an ENOTDIR on a cwd that turned out to
+    // be a file -- is an execution fault, and reporting it as bad input would
+    // send the caller off to fix a payload that was fine.
     return {
       ok: false,
-      code: 'invalid_operation_input',
+      code: error instanceof ShellInputError ? 'invalid_operation_input' : 'operation_execution_failed',
       error: error instanceof Error ? error.message : String(error),
     };
   }

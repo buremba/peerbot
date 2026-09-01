@@ -1,19 +1,21 @@
 /**
  * One terminal-completion policy for the whole daemon.
  *
- * Both the ordinary executor path and the failure-reporting path must deliver
- * an already-decided outcome under the same bounded budget. They used to carry
- * separate copies with separate constants, and the copies had already drifted:
- * one rethrew a decode error immediately, the other retried it. A retry cannot
- * fix a payload the gateway could not parse, and re-sending hides the protocol
- * fault behind a timeout.
+ * Both the ordinary executor path and the failure-reporting path awaited
+ * `client.completeAction` directly, which neither retries nor bounds its wait:
+ * a single dropped connection lost an already-decided outcome and left the run
+ * to the gateway's stale-run reaper. Route both through one bounded retry so
+ * the outcome survives a transient failure without either caller inventing its
+ * own budget. A `WorkerDecodeError` is rethrown rather than retried -- a retry
+ * cannot fix a payload the gateway could not parse, and re-sending would hide
+ * the protocol fault behind a timeout.
  */
 import { WorkerDecodeError } from './client.js';
 import type { ExecutorClient } from './client.js';
 
-export const TERMINAL_DELIVERY_DEADLINE_MS = 15_000;
+const TERMINAL_DELIVERY_DEADLINE_MS = 15_000;
 
-export async function withTerminalDeliveryTimeout<T>(
+async function withTerminalDeliveryTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number
 ): Promise<T> {

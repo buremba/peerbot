@@ -191,78 +191,78 @@ export function connectorClaimLaneSql(
         -- Trusted/anonymous fleet worker. Execution-pinned connections stay on
         -- their exact device; browser-affinity parent runs stay on fleet.
         (
-        ${!context.isUserScopedWorker}
-        AND (
-          COALESCE(${refs.runRequiredCapability}, '') = ANY(
-            ${pgTextArray(context.capabilityMatchSet)}::text[]
+          ${!context.isUserScopedWorker}
+          AND (
+            COALESCE(${refs.runRequiredCapability}, '') = ANY(
+              ${pgTextArray(context.capabilityMatchSet)}::text[]
+            )
+            OR (${legacyFleetArtifact})
           )
-          OR (${legacyFleetArtifact})
-        )
-        -- The empty capability match is the anonymous fleet lane. A legacy
-        -- whatsapp.local row must still have a runnable selected artifact;
-        -- otherwise it would be claimed and fail only after becoming running.
-        AND (
-          NOT (${refs.connectorKey} = ANY(
-            ${pgTextArray(['whatsapp.local'])}::text[]
-          ))
-          OR (${legacyFleetArtifact})
-        )
-        AND NOT COALESCE(${refs.runManifestBacked}, false)
-        AND (
-          ${!isCloudMode()}
-          OR ${context.workerHardensDbEgress}
-          OR NOT (${refs.connectorKey} = ANY(${dbEgressHardenedKeys}::text[]))
-        )
-        AND (
-          (${pageActivated})
-          OR ${refs.connectionDeviceWorkerId} IS NULL
-          OR (
-            ${delegatedBrowserAffinity}
+          -- The empty capability match is the anonymous fleet lane. A legacy
+          -- whatsapp.local row must still have a runnable selected artifact;
+          -- otherwise it would be claimed and fail only after becoming running.
+          AND (
+            NOT (${refs.connectorKey} = ANY(
+              ${pgTextArray(['whatsapp.local'])}::text[]
+            ))
+            OR (${legacyFleetArtifact})
           )
-        )
+          AND NOT COALESCE(${refs.runManifestBacked}, false)
+          AND (
+            ${!isCloudMode()}
+            OR ${context.workerHardensDbEgress}
+            OR NOT (${refs.connectorKey} = ANY(${dbEgressHardenedKeys}::text[]))
+          )
+          AND (
+            (${pageActivated})
+            OR ${refs.connectionDeviceWorkerId} IS NULL
+            OR (
+              ${delegatedBrowserAffinity}
+            )
+          )
         )
         -- User-scoped worker claiming an unpinned capability connector in its
         -- base org scope. Page-activated work is handled by the fleet parent.
         OR (
-        ${context.isUserScopedWorker}
-        AND ${refs.connectionDeviceWorkerId} IS NULL
-        AND (
-          (
-            COALESCE(${refs.runManifestBacked}, false)
-            AND (${manifestAuthorization})
-          )
-          OR (
-            NOT COALESCE(${refs.runManifestBacked}, false)
-            AND NOT (${legacyFleetArtifact})
-            AND ${refs.runRequiredCapability} IS NOT NULL
-            AND ${refs.runRequiredCapability} = ANY(
-              ${pgTextArray(context.authorizedCapabilities)}::text[]
+          ${context.isUserScopedWorker}
+          AND ${refs.connectionDeviceWorkerId} IS NULL
+          AND (
+            (
+              COALESCE(${refs.runManifestBacked}, false)
+              AND (${manifestAuthorization})
+            )
+            OR (
+              NOT COALESCE(${refs.runManifestBacked}, false)
+              AND NOT (${legacyFleetArtifact})
+              AND ${refs.runRequiredCapability} IS NOT NULL
+              AND ${refs.runRequiredCapability} = ANY(
+                ${pgTextArray(context.authorizedCapabilities)}::text[]
+              )
             )
           )
-        )
-        AND NOT COALESCE(${pageActivated}, false)
-        AND ${refs.organizationId} = ANY(${pgTextArray(context.baseOrgScopeIds)}::text[])
+          AND NOT COALESCE(${pageActivated}, false)
+          AND ${refs.organizationId} = ANY(${pgTextArray(context.baseOrgScopeIds)}::text[])
         )
         -- Exact execution pin. A chrome-extension pin on a connector that does
         -- not execute natively in the extension is delegated browser affinity,
         -- so its parent connector work stays on fleet instead.
         OR (
-        ${context.isUserScopedWorker}
-        AND ${context.deviceWorkerId}::uuid IS NOT NULL
-        AND ${refs.connectionDeviceWorkerId} = ${context.deviceWorkerId}::uuid
-        AND (
-          NOT COALESCE(${refs.runManifestBacked}, false)
-          OR (${manifestAuthorization})
-        )
-        AND NOT COALESCE(${pageActivated}, false)
-        AND (
-          ${refs.runRequiredCapability} IS NULL
-          OR ${refs.runRequiredCapability} = ANY(
-            ${pgTextArray(context.authorizedCapabilities)}::text[]
+          ${context.isUserScopedWorker}
+          AND ${context.deviceWorkerId}::uuid IS NOT NULL
+          AND ${refs.connectionDeviceWorkerId} = ${context.deviceWorkerId}::uuid
+          AND (
+            NOT COALESCE(${refs.runManifestBacked}, false)
+            OR (${manifestAuthorization})
           )
-        )
-        AND ${refs.organizationId} = ANY(${pgTextArray(context.orgScopeIds)}::text[])
-        AND NOT (${delegatedBrowserAffinity})
+          AND NOT COALESCE(${pageActivated}, false)
+          AND (
+            ${refs.runRequiredCapability} IS NULL
+            OR ${refs.runRequiredCapability} = ANY(
+              ${pgTextArray(context.authorizedCapabilities)}::text[]
+            )
+          )
+          AND ${refs.organizationId} = ANY(${pgTextArray(context.orgScopeIds)}::text[])
+          AND NOT (${delegatedBrowserAffinity})
         )
       )
     )

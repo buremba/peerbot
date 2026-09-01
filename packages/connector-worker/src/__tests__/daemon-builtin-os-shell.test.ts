@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executeRun } from '../daemon/executor.js';
+import { executeDaemonBuiltin } from '../daemon/builtins/index.js';
 import { runShellBuiltin } from '../daemon/builtins/os-shell.js';
 
 function processIsLive(pid: number): boolean {
@@ -407,5 +408,31 @@ describe('daemon-builtin os.shell', () => {
       cwd: process.cwd(),
       timeout_ms: 150_001,
     })).rejects.toThrow('between 100 and 150000');
+  });
+
+  test('separates an argument fault from a spawn fault', async () => {
+    const badArgument = await executeDaemonBuiltin({
+      connectorKey: 'os.shell',
+      actionKey: 'run',
+      input: { command: 'printf nope', timeout_ms: 150_001 },
+    });
+    expect(badArgument).toMatchObject({ ok: false, code: 'invalid_operation_input' });
+
+    // A cwd that exists but is a FILE clears the builtin's own checks and then
+    // fails inside spawn with ENOTDIR. Reporting that as bad input would send
+    // the caller off to fix a payload that was fine.
+    const dir = mkdtempSync(join(tmpdir(), 'os-shell-cwd-'));
+    const file = join(dir, 'not-a-directory');
+    writeFileSync(file, 'x');
+    try {
+      const spawnFault = await executeDaemonBuiltin({
+        connectorKey: 'os.shell',
+        actionKey: 'run',
+        input: { command: 'printf nope', cwd: file },
+      });
+      expect(spawnFault).toMatchObject({ ok: false, code: 'operation_execution_failed' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -17,6 +17,18 @@ import {
   terminateChild,
 } from '../automation-process.js';
 
+/**
+ * A caller-supplied argument the builtin rejects before spawning anything.
+ * Distinguishes an input fault from a runtime one so the caller can classify
+ * the failure instead of assuming every throw came from validation.
+ */
+export class ShellInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ShellInputError';
+  }
+}
+
 export interface ShellRunOutput {
   stdout: string;
   stderr: string;
@@ -48,7 +60,7 @@ function appendCapped(current: string, chunk: string): string {
 function readTimeout(value: unknown): number {
   if (value === undefined) return DEFAULT_TIMEOUT_MS;
   if (!Number.isInteger(value) || Number(value) < 100 || Number(value) > MAX_TIMEOUT_MS) {
-    throw new Error(`timeout_ms must be an integer between 100 and ${MAX_TIMEOUT_MS}`);
+    throw new ShellInputError(`timeout_ms must be an integer between 100 and ${MAX_TIMEOUT_MS}`);
   }
   return Number(value);
 }
@@ -69,19 +81,21 @@ export async function runShellBuiltin(
   shutdownSignal?: AbortSignal
 ): Promise<ShellRunOutput> {
   const command = typeof input.command === 'string' ? input.command.trim() : '';
-  if (!command) throw new Error('command is required');
-  if (command.length > 20_000) throw new Error('command must contain at most 20000 characters');
+  if (!command) throw new ShellInputError('command is required');
+  if (command.length > 20_000)
+    throw new ShellInputError('command must contain at most 20000 characters');
 
   const cwdValue = input.cwd;
   const cwd = cwdValue === undefined ? homedir() : String(cwdValue);
   if (!isAbsolute(cwd) || !existsSync(cwd)) {
-    throw new Error(`cwd must be an existing absolute path (got '${cwd}')`);
+    throw new ShellInputError(`cwd must be an existing absolute path (got '${cwd}')`);
   }
   const timeoutMs = readTimeout(input.timeout_ms);
   const stdin = input.stdin;
-  if (stdin !== undefined && typeof stdin !== 'string') throw new Error('stdin must be a string');
+  if (stdin !== undefined && typeof stdin !== 'string')
+    throw new ShellInputError('stdin must be a string');
   if (typeof stdin === 'string' && stdin.length > 1_000_000) {
-    throw new Error('stdin must contain at most 1000000 characters');
+    throw new ShellInputError('stdin must contain at most 1000000 characters');
   }
 
   const startedAt = Date.now();

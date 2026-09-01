@@ -237,6 +237,14 @@ export async function heartbeat(c: Context<{ Bindings: Env }>) {
             )`
 			: sql``;
 
+		// `authorizeRunForWorker` already checked both of these, but it read the
+		// row in a separate statement. This write is not idempotent — it stamps
+		// `device_agent_session` with the reporting worker — so a run cancelled or
+		// re-claimed in the gap would get another device's session pinned onto it
+		// and poll would resume it on the wrong machine. Re-assert the lease in
+		// the UPDATE itself; the 409 below is the same body and status
+		// `authorizeRunForWorker` returns for the same condition, so it is not a
+		// new outcome for the worker to handle.
 		const updated = await sql`
       UPDATE runs
       SET last_heartbeat_at = current_timestamp,

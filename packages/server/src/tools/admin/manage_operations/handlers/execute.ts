@@ -25,7 +25,11 @@ import { notifyActionApprovalNeeded } from "../../../../notifications/triggers";
 import { resolveApprovalChatOrigin } from "../../approval-delivery";
 import { resolveActionMode } from "../../../../operations/action-modes";
 import { getOperationForConnection } from "../../../../operations/connector-operations";
-import { executeHttpOperation } from "../../../../operations/execute-http-operation";
+import {
+	LOST_LEASE_MESSAGE,
+	inlineLeaseFence,
+	executeHttpOperation,
+} from "../../../../operations/execute-http-operation";
 import { validateOperationInput } from "../../../../operations/input-validation";
 import { getMissingKnownOAuthScopes } from "../../../../operations/oauth-scope-readiness";
 import type { OperationDescriptor } from "../../../../operations/types";
@@ -78,8 +82,9 @@ async function failRunInline(
 	const message = stripNul(errorMsg);
 	if (!deferTerminalWrite) {
 		const sql = getDb();
-		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} AND status = 'running' AND claimed_by = ${claimedBy ?? null} RETURNING id`;
-		if (rows.length === 0) return { status: 'failed', error_message: message };
+		const rows = await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${message} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy ?? null)} RETURNING id`;
+		if (rows.length === 0)
+			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}
 	return { status: "failed", error_message: message };
 }
@@ -98,8 +103,9 @@ async function completeRunInline(
 	const sanitized = stripNulDeep(output) as Record<string, unknown>;
 	if (!deferTerminalWrite) {
 		const sql = getDb();
-		const rows = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(sanitized)} WHERE id = ${runId} AND organization_id = ${organizationId} AND status = 'running' AND claimed_by = ${claimedBy ?? null} RETURNING id`;
-		if (rows.length === 0) return { status: 'failed', error_message: 'Inline execution lost its run lease; the durable run state is authoritative.' };
+		const rows = await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(sanitized)} WHERE id = ${runId} AND organization_id = ${organizationId} ${inlineLeaseFence(sql, claimedBy ?? null)} RETURNING id`;
+		if (rows.length === 0)
+			return { status: "failed", error_message: LOST_LEASE_MESSAGE };
 	}
 	return { status: "completed", output: sanitized };
 }
@@ -321,10 +327,10 @@ async function executeMcpToolInline(
     return failRunInline(
       runId,
       organizationId,
-	      errorText,
-	      deferTerminalWrite,
-	      claimedBy,
-	    );
+      errorText,
+      deferTerminalWrite,
+      claimedBy,
+    );
   }
 
 	return completeRunInline(
@@ -964,8 +970,8 @@ export async function handleExecute(
 		input,
 		visibilityUserId,
 		env,
-	ctx.abortSignal,
-	{ claimedBy: claim.claimedBy },
+		ctx.abortSignal,
+		{ claimedBy: claim.claimedBy },
 	);
 	await trackOperationReaction(runId);
 	if (result.status === "completed") {

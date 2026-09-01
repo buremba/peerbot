@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
 	ApproveAction,
 	ApproveBatchAction,
@@ -61,9 +63,9 @@ import {
 	MANAGE_ENTITY_SCHEMA_ACTION_KEY,
 	type StoredManageEntitySchemaProposal,
 } from "../../manage_entity_schema";
+import { inlineLeaseFence } from "../../../../operations/execute-http-operation";
 import { executeOperationInline } from "./execute";
 import { qualifiedOperationKey } from "./shared";
-import { randomUUID } from "node:crypto";
 /**
  * Durably persist a claimed run's apply/execution output in its OWN
  * transaction, BEFORE the terminalization attempt. If the terminal card write
@@ -86,9 +88,8 @@ async function persistDurableApplyOutput(
 		UPDATE runs SET action_output = ${sql.json(output)}
 		WHERE id = ${runId}
 			AND organization_id = ${organizationId}
-			AND status = 'running'
 			AND approval_status = 'approved'
-			AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
+			${inlineLeaseFence(sql, claimedBy ?? null)}
 	`;
 }
 
@@ -1616,13 +1617,16 @@ export async function handleApprove(
 	const setRunning = resolved.operation.backend !== "local_action";
 	const inlineOwner = setRunning ? `gateway-inline-${randomUUID()}` : null;
 	const claimed = await sql.begin(async (tx) => {
-		const statusSet = setRunning ? tx`, status = 'running'` : tx``;
-		const ownerSet = setRunning ? tx`, claimed_by = ${inlineOwner}, claimed_at = current_timestamp, last_heartbeat_at = current_timestamp` : tx``;
+		// The lease is taken in the same statement that flips the run to
+		// `running`: an approved, running, unowned row is exactly the window the
+		// stale-run reaper and a second approve would both grab.
+		const runningSet = setRunning
+			? tx`, status = 'running', claimed_by = ${inlineOwner}, claimed_at = current_timestamp, last_heartbeat_at = current_timestamp`
+			: tx``;
 		const rows = await tx`
 			UPDATE runs
 			SET approval_status = 'approved'
-				${statusSet},
-				${ownerSet},
+				${runningSet},
 				action_input = ${args.input ? tx.json(args.input) : tx`action_input`}
 			WHERE id = ${args.run_id}
 				AND organization_id = ${ctx.organizationId}

@@ -7,6 +7,8 @@
  * - JSON utilities for duplicate detection
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { type DbClient, parsePgTextArray, pgTextArray } from '../db/client';
 import {
   resolvedEventExecution,
@@ -42,7 +44,6 @@ import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { AUTOMATION_RUN_TYPES_PG } from "./run-types.js";
-import { randomUUID } from 'node:crypto';
 
 type AutomationDispatchSource = 'scheduled' | 'manual' | 'event';
 export type AutomationActivationTrigger =
@@ -1260,12 +1261,12 @@ export async function createConnectorOperationRun(params: {
       ${expiresAtSeconds == null
         ? null
         : sql`current_timestamp + (${expiresAtSeconds}::int * interval '1 second')`},
+      ${inlineOwner === null ? null : sql`current_timestamp`},
+      ${inlineOwner === null ? null : sql`current_timestamp`},
+      ${inlineOwner},
       ${params.activation?.kind ?? null},
       ${params.activation ? pgTextArray(params.activation.urls) : null}::text[],
       ${params.runMetadata == null ? null : sql.json(params.runMetadata)},
-      ${inlineOwner ? sql`current_timestamp` : sql`NULL`},
-      ${inlineOwner ? sql`current_timestamp` : sql`NULL`},
-      ${inlineOwner},
       current_timestamp
     )
     ON CONFLICT (organization_id, action_idempotency_key)

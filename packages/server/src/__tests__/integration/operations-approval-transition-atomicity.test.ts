@@ -37,6 +37,16 @@ import {
 // retry that re-executes the mutation is detectable (it must run exactly once).
 let postItemsCalls = 0;
 
+/**
+ * Runs once, inside the external POST — exactly the window between the gateway
+ * taking a run's lease and writing the outcome back. A stale-run reaper, a
+ * cancel, or another replica re-claiming all land in this window in
+ * production, and it is the only place to hit it deterministically: the
+ * gateway holds the lease across the whole call.
+ */
+let duringExternalCall: (() => Promise<void>) | null = null;
+const THIEF = "some-other-replica";
+
 const CONNECTOR = "demo.ops.transition.atomic";
 
 // Force a REAL failure of ONLY the terminal 'completed' card INSERT. The
@@ -185,6 +195,9 @@ describe("approval-run transition atomicity", () => {
 	let userId: string;
 	let humanCtx: ToolContext;
 	let connectionId: number;
+	// Same connector, `create_item` set to `auto`: `execute` runs the operation
+	// inline with no approval round-trip, the other path that takes a lease.
+	let autoConnectionId: number;
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -249,6 +262,20 @@ describe("approval-run transition atomicity", () => {
 			WHERE id = ${connectionId}
 		`;
 
+		const autoConn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: CONNECTOR,
+			created_by: userId,
+			visibility: "private",
+			config: { action_modes: { create_item: "auto" } },
+		});
+		autoConnectionId = autoConn.id;
+		await sql`
+			UPDATE connections
+			SET auth_profile_id = ${profile.id}
+			WHERE id = ${autoConnectionId}
+		`;
+
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(
@@ -283,6 +310,11 @@ describe("approval-run transition atomicity", () => {
 					}
 					if (url === "https://api.example.test/items") {
 						postItemsCalls += 1;
+						if (duringExternalCall) {
+							const hook = duringExternalCall;
+							duringExternalCall = null;
+							await hook();
+						}
 						return new Response(JSON.stringify({ created: true }), {
 							status: 200,
 							headers: { "content-type": "application/json" },
@@ -295,6 +327,7 @@ describe("approval-run transition atomicity", () => {
 	});
 
 	afterEach(async () => {
+		duringExternalCall = null;
 		// Always drop the failure triggers so they can't leak into other tests
 		// that share this DB under the suite's single-fork registry.
 		await getTestDb().unsafe(DROP_FAIL_TRIGGER);
@@ -502,6 +535,93 @@ describe("approval-run transition atomicity", () => {
 		expect(run.action_output).toEqual({ body: { created: true } });
 		expect((await currentApprovalCard(queued.run_id, orgId))?.interaction_status).toBe(
 			"completed",
+		);
+	});
+
+	it("auto-mode execute reports the lost lease instead of overwriting the run", async () => {
+		const sql = getTestDb();
+		const postItemsBefore = postItemsCalls;
+		// An auto-mode `execute` claims the run in the same INSERT that sets it
+		// `running`, so the lease is already held when the external call goes
+		// out. The run id is not knowable before that INSERT, so the thief
+		// targets the connection's one running run.
+		duringExternalCall = async () => {
+			await sql`
+				UPDATE runs SET claimed_by = ${THIEF}
+				WHERE connection_id = ${autoConnectionId}
+					AND run_type = 'action'
+					AND status = 'running'
+			`;
+		};
+		const result = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: autoConnectionId,
+				operation_key: "create_item",
+				input: { body: { value: "auto-stolen-lease" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number; status: string; error_message?: string };
+
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+		expect(result.status).toBe("failed");
+		expect(result.error_message).toMatch(/lost its run lease/i);
+
+		const [run] = await sql`
+			SELECT status, claimed_by, action_output, completed_at
+			FROM runs WHERE id = ${result.run_id}
+		`;
+		expect(run.claimed_by).toBe(THIEF);
+		expect(run.status).toBe("running");
+		expect(run.action_output).toBeNull();
+		expect(run.completed_at).toBeNull();
+	});
+
+	it("approve does not overwrite a run whose lease was stolen mid-execution", async () => {
+		const sql = getTestDb();
+		const postItemsBefore = postItemsCalls;
+		const queued = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: connectionId,
+				operation_key: "create_item",
+				input: { body: { value: "stolen-lease" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number };
+		expect(queued.status).toBe("pending_approval");
+
+		// Approve claims the run under a `gateway-inline-<uuid>` owner. The POST
+		// then hands it to another owner before the terminal write lands.
+		duringExternalCall = async () => {
+			await sql`UPDATE runs SET claimed_by = ${THIEF} WHERE id = ${queued.run_id}`;
+		};
+		const approved = (await manageOperations(
+			{ action: "approve", run_id: queued.run_id },
+			{} as Env,
+			humanCtx,
+		)) as { approved?: boolean; error?: string };
+
+		// The external mutation still ran exactly once — the fence guards the
+		// WRITE-BACK, not the call.
+		expect(postItemsCalls).toBe(postItemsBefore + 1);
+		expect(approved.approved).toBeUndefined();
+		expect(approved.error).toMatch(/already decided while this request was in flight/i);
+
+		const [run] = await sql`
+			SELECT status, claimed_by, action_output, completed_at
+			FROM runs WHERE id = ${queued.run_id}
+		`;
+		// Neither phase wrote: the durable output stays untouched and the run is
+		// left to whoever holds it now.
+		expect(run.claimed_by).toBe(THIEF);
+		expect(run.status).toBe("running");
+		expect(run.action_output).toBeNull();
+		expect(run.completed_at).toBeNull();
+		expect((await currentApprovalCard(queued.run_id, orgId))?.interaction_status).toBe(
+			"approved",
 		);
 	});
 

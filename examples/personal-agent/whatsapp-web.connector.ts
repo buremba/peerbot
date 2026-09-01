@@ -12,7 +12,7 @@
  * already uses (LinkedIn, Revolut, Midas, Hacker News).
  *
  * Three files make up the port:
- *   • `whatsapp-web-adapter.ts`  — the MAIN-world adapter, injected verbatim
+ *   • `whatsapp-web-adapter.js`  — the MAIN-world adapter, injected verbatim
  *     into the page via `Function.prototype.toString()`. It alone touches
  *     WhatsApp's private module graph.
  *   • `whatsapp-web-helpers.ts`  — the transport-neutral normalise/checkpoint
@@ -71,7 +71,7 @@ import {
   WHATSAPP_ORIGIN,
   type WhatsAppMessage,
 } from "./whatsapp-web-helpers.ts";
-import { whatsAppWebAdapterProgram } from "./whatsapp-web-adapter.ts";
+import { whatsAppWebAdapterProgram } from "./whatsapp-web-adapter.js";
 
 const READY_TIMEOUT_MS = 25_000;
 const READY_POLL_INTERVAL_MS = 500;

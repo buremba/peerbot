@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "bun:test";
-import { whatsAppWebAdapterProgram } from "../whatsapp-web-adapter.ts";
+import { whatsAppWebAdapterProgram } from "../whatsapp-web-adapter.js";
 
 /**
  * The connector ships this adapter by serialising the function with
@@ -94,15 +94,15 @@ describe("whatsAppWebAdapterProgram serialisation", () => {
     // The runtime test above only exercises the INSTALL path, so a helper
     // hoisted out of the function and used only by an op would survive it and
     // fail later in the page. This checks the invariant at its source instead:
-    // the module may contain nothing at top level but the type-only page-global
-    // declares and the exported function itself. Verified by mutation — both a
-    // hoisted `const` and a hoisted `function` fail this test.
+    // the module may contain NOTHING at top level but the exported function.
+    // Verified by mutation — both a hoisted `const` and a hoisted `function`
+    // fail this test.
     //
     // (A hoisted simple `const` is in fact constant-folded into the body by the
     // bundler and would still work, but it is not worth distinguishing: the rule
     // "nothing at module scope" is easy to honour and leaves no judgement call.)
     const file = readFileSync(
-      new URL("../whatsapp-web-adapter.ts", import.meta.url),
+      new URL("../whatsapp-web-adapter.js", import.meta.url),
       "utf8"
     );
     const withoutBlockComments = file.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -112,8 +112,7 @@ describe("whatsAppWebAdapterProgram serialisation", () => {
       .filter((line) => !line.startsWith("//"))
       .filter((line) => line !== "}");
 
-    const allowed =
-      /^(declare const |export function whatsAppWebAdapterProgram\(\): void \{$)/;
+    const allowed = /^export function whatsAppWebAdapterProgram\(\) \{$/;
     const offenders = topLevel.filter((line) => !allowed.test(line));
     expect(offenders).toEqual([]);
   });

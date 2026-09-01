@@ -4,7 +4,7 @@
  * Ported from the Owletto extension's `whatsapp-web-adapter-v1.js`, which ran
  * these same functions in the extension service worker. They are deliberately
  * free of WhatsApp private APIs — the unstable MAIN-world surface lives in
- * `whatsapp-web-adapter.ts` and is injected into the page. Everything here runs
+ * `whatsapp-web-adapter.js` and is injected into the page. Everything here runs
  * in the connector-worker.
  *
  * Semantics are preserved verbatim so the new connector's event stream is

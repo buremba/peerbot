@@ -179,11 +179,13 @@ describe('connector SDK resolution', () => {
       "import { isReservedIp } from '@lobu/connector-sdk/ip-reachability';\nexport default () => isReservedIp('127.0.0.1');"
     );
     // Bundled, not left as a bare import, and genuinely the classifier module.
-    // Assert on values that survive bundling: esbuild folds the hex hextet
-    // literals to decimal and strips comments.
+    // Anchored on IANA prefixes rather than an identifier: esbuild strips
+    // comments and folds hex hextets to decimal, and internal symbol names get
+    // renamed by ordinary refactors, so a name here fails for reasons that have
+    // nothing to do with whether the module was bundled.
     expect(code).not.toContain('@lobu/connector-sdk/ip-reachability');
-    expect(code).toContain('RESERVED_IPV4_RANGES');
     expect(code).toContain('169.254.0.0');
+    expect(code).toContain('192.0.0.170');
   });
 
   test('reports an unknown SDK subpath instead of emitting a broken path', async () => {

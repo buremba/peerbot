@@ -68,6 +68,16 @@ beforeEach(() => {
   vi.doMock('../../db/client', () => ({ getDb: () => fakeSql }));
 });
 
+// vitest.config.ts runs this package with `isolate: false` and a single fork,
+// so the module registry is shared by every file in the shard. Without
+// retracting the mock here, whatever this file imported last stays cached with
+// a `getDb()` that returns `fakeSql` — and the next file to import it gets a
+// sql object with no `.begin`, failing far from the cause.
+afterEach(() => {
+  vi.doUnmock('../../db/client');
+  vi.resetModules();
+});
+
 describe('resolveConnectorCode compile-config staleness', () => {
   test('artifact compiled under a different externals config is NOT executed verbatim — recompiled from stored source and persisted', async () => {
     const { resolveConnectorCode } = await import('../ensure-connector-installed');

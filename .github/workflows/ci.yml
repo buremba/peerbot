@@ -246,6 +246,17 @@ jobs:
           bun test packages/core packages/cli --coverage --timeout 30000
           mv coverage/lcov.info coverage/core-cli.lcov.info
 
+      # Repo tooling guards (merge integrity, release ordering, migration
+      # checks, naming gates, the sandbox credential reader). These live in
+      # scripts/__tests__ and matched no `bun test` path above, so the whole
+      # tree ran only on a developer's machine — green locally and unverified
+      # here. `scripts/` is already in the paths filter, so this step runs
+      # whenever the tooling it covers changes.
+      - name: repo scripts (bun:test)
+        run: |
+          bun test scripts --coverage --timeout 30000
+          mv coverage/lcov.info coverage/scripts.lcov.info
+
       - name: native plugin packages (bun:test)
         run: |
           bun test packages/plugin-api packages/plugin-host packages/plugin-toolkit packages/plugin-memory packages/plugin-conversations packages/plugin-media packages/plugin-mcp --coverage --timeout 30000
@@ -338,7 +349,7 @@ jobs:
         if: always()
         uses: codecov/codecov-action@v7
         with:
-          files: coverage/core-cli.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/server-units-activity.lcov.info,coverage/server-units-compiler.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info,coverage/embeddings.lcov.info
+          files: coverage/core-cli.lcov.info,coverage/scripts.lcov.info,coverage/plugin-runtime.lcov.info,coverage/agent-worker.lcov.info,coverage/server-units.lcov.info,coverage/server-units-auth.lcov.info,coverage/server-units-activity.lcov.info,coverage/server-units-compiler.lcov.info,coverage/connector-worker.lcov.info,coverage/client-promptfoo.lcov.info,coverage/connector-sdk.lcov.info,coverage/connectors.lcov.info,coverage/embeddings.lcov.info
           flags: unit
           fail_ci_if_error: false
 

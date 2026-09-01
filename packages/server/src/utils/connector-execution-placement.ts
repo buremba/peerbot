@@ -39,7 +39,7 @@ export function isChromeNamespaceConnectorKey(connectorKey: string): boolean {
 }
 
 /** Every `chrome.*` artifact identity the extension serves natively. */
-export const DEVICE_MANIFEST_SOURCE_PREFIX = 'device-manifest://chrome-extension/';
+const DEVICE_MANIFEST_SOURCE_PREFIX = 'device-manifest://chrome-extension/';
 
 /**
  * The reserved `chrome.*` namespace declares "the Owletto extension implements
@@ -98,7 +98,7 @@ export function isNativeChromeExtensionConnector(facts: ConnectorExecutionSource
   return (
     facts.manifestBacked &&
     facts.artifactSourcePath ===
-      `device-manifest://chrome-extension/${facts.connectorKey}@${facts.connectorVersion}`
+      `${DEVICE_MANIFEST_SOURCE_PREFIX}${facts.connectorKey}@${facts.connectorVersion}`
   );
 }
 
@@ -130,6 +130,10 @@ export function nativeChromeExtensionConnectorSql<TFragment>(
         )
         AND COALESCE(${refs.manifestBacked}, false)
         AND ${refs.artifactSourcePath} =
+          -- Deliberately a literal, not the DEVICE_MANIFEST_SOURCE_PREFIX constant:
+          -- interpolating here would bind a PARAMETER rather than emit SQL text, and
+          -- concatenating an untyped parameter can fail Postgres type inference. Keep
+          -- it in step with the constant by hand; both sit in this file.
           'device-manifest://chrome-extension/' || ${refs.connectorKey} || '@' || ${refs.connectorVersion}
       )
     )

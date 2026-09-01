@@ -20,13 +20,57 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
-import { EXTERNAL_RUNTIME_DEPS, createNpmSpecifierPlugin } from '@lobu/connector-worker/compile';
+import { fileURLToPath } from 'node:url';
+import {
+  EXTERNAL_RUNTIME_DEPS,
+  SDK_SPECIFIER_RE,
+  createNpmSpecifierPlugin,
+  normalizeSdkSpecifier,
+} from '@lobu/connector-worker/compile';
 import { type BuildOptions, type Plugin, build } from 'esbuild';
 import logger from './logger';
 import { getErrorMessage } from "@lobu/core";
 
 const require = createRequire(import.meta.url);
-const SDK_ENTRY = require.resolve('@lobu/connector-sdk');
+
+/**
+ * Resolve `lobu` / `@lobu/connector-sdk` — root OR subpath — to a real file in
+ * the server's own installation, so source compiled in a temp dir outside the
+ * workspace can still find the SDK.
+ *
+ * Shares {@link SDK_SPECIFIER_RE} with the worker's externalizing compiler so
+ * both agree on what an SDK import looks like.
+ *
+ * This is an onResolve plugin rather than an esbuild `alias` because `alias`
+ * substitutes by PREFIX: aliasing `@lobu/connector-sdk` to its entry FILE turned
+ * `@lobu/connector-sdk/ip-reachability` into `.../dist/index.js/ip-reachability`.
+ *
+ * Resolution goes through `import.meta.resolve`, not `require.resolve`: the SDK
+ * is `"type": "module"`, so its subpath `exports` only declare an `import`
+ * condition and the CJS resolver cannot see them. Honouring the exports map
+ * means every current and future subpath resolves without being listed here.
+ */
+function createSdkResolvePlugin(): Plugin {
+  return {
+    name: 'sdk-resolve',
+    setup(b) {
+      b.onResolve({ filter: SDK_SPECIFIER_RE }, (args) => {
+        const specifier = normalizeSdkSpecifier(args.path);
+        try {
+          return { path: fileURLToPath(import.meta.resolve(specifier)) };
+        } catch {
+          return {
+            errors: [
+              {
+                text: `Cannot resolve "${args.path}" from the server's @lobu/connector-sdk installation. If this is a new SDK subpath, add it to the package's "exports" map.`,
+              },
+            ],
+          };
+        }
+      });
+    },
+  };
+}
 
 export interface CompileResult {
   compiledCode: string;
@@ -128,16 +172,13 @@ export async function compileSource(
       bundle: true,
       format: 'esm',
       platform: 'node',
-      alias: {
-        lobu: SDK_ENTRY,
-        '@lobu/connector-sdk': SDK_ENTRY,
-      },
       write: true,
       minify: false,
       sourcemap: false,
       ...buildOverrides,
       plugins: [
         createImportGuardPlugin(inputPath, config.label),
+        createSdkResolvePlugin(),
         // Source-text artifacts must be self-contained: an npm: package that
         // isn't installed in this image is a hard compile error, never a
         // silent externalisation the runtime can't satisfy.

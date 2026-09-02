@@ -1107,11 +1107,13 @@ export class SecretProxy {
    * all, so a 429 on a probe proves the quota wall exactly like one on a
    * completion, and a probe 200 proves the credential works.
    *
-   * Best-effort by design: nothing routes on `status` today (it is a display
-   * signal), so a failure to write must not fail the user's inference call.
-   * That is why this swallows its own errors rather than propagating — the
-   * "fail closed on durable dispatch state" rule governs delivery decisions,
-   * and this is an observation, not a decision.
+   * Best-effort by design: `status` is a display signal plus a routing
+   * PREFERENCE (`resolveDispatchModel` prefers a healthy sibling among the refs
+   * an agent already lists), never a gate — so a failure to write can only cost
+   * that preference, and must not fail the user's inference call. That is why
+   * this swallows its own errors rather than propagating — the "fail closed on
+   * durable dispatch state" rule governs delivery decisions, and this is an
+   * observation, not a decision.
    */
   private async recordProviderHealth(
     organizationId: string | undefined,

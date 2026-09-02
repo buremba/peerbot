@@ -349,6 +349,14 @@ export class ProviderCatalogService {
     modules: ModelProviderModule[];
     /** Ordered exact allow-list, or null when the agent allows all providers. */
     allowedRefs: string[] | null;
+    /**
+     * Org provider slugs currently recorded `error` (quota/credential), taken
+     * from the SAME `inference_providers` read this method already performs to
+     * synthesize org modules. Surfaced so `resolveDispatchModel` can prefer a
+     * healthy sibling without a second query — and so a failing read cannot
+     * introduce a NEW way for dispatch to break: it already fails here.
+     */
+    unhealthyProviderSlugs: Set<string>;
   }> {
     const policy = await resolveAgentModels(
       this.agentSettingsStore,
@@ -361,7 +369,7 @@ export class ProviderCatalogService {
     // modules, so any requested model fails closed. This is the fail-open bug
     // fix — a missing agent must never expose every org/system-key provider.
     if (policy.kind === "not-found") {
-      return { modules: [], allowedRefs: [] };
+      return { modules: [], allowedRefs: [], unhealthyProviderSlugs: new Set() };
     }
 
     const models = policy.kind === "restricted" ? policy.models : [];
@@ -488,7 +496,10 @@ export class ProviderCatalogService {
         if (synthesized) modules.push(synthesized);
       }
     }
-    return { modules, allowedRefs };
+    const unhealthyProviderSlugs = new Set(
+      orgRows.filter((r) => r.status === "error").map((r) => r.slug)
+    );
+    return { modules, allowedRefs, unhealthyProviderSlugs };
   }
 
   /**
@@ -512,6 +523,12 @@ export class ProviderCatalogService {
    * non-sentinel AND ROUTABLE (its provider module is present and keyed) — not
    * merely the first non-sentinel. Returns `{ model, modules, allowedRefs }`;
    * `model` is undefined when nothing routable qualifies (fail closed).
+   *
+   * Among routable refs, a provider recorded `error` (quota/credential, from
+   * `recordProviderHealth`) LOSES to a healthy sibling in the same list —
+   * including when it is the exact request. This is the only place health
+   * influences routing, and it is a preference: it never shrinks the candidate
+   * set, so an agent whose sole provider is unhealthy still dispatches to it.
    */
   async resolveDispatchModel(
     agentId: string,
@@ -524,10 +541,8 @@ export class ProviderCatalogService {
     modules: ModelProviderModule[];
     allowedRefs: string[] | null;
   }> {
-    const { modules, allowedRefs } = await this.getModelPolicy(
-      agentId,
-      organizationId
-    );
+    const { modules, allowedRefs, unhealthyProviderSlugs } =
+      await this.getModelPolicy(agentId, organizationId);
     // A ref is routable when its (non-sentinel) provider module is present in
     // the policy's modules AND has a system key or stored credentials.
     const routableCache = new Map<string, boolean>();
@@ -554,7 +569,29 @@ export class ProviderCatalogService {
         routableCache.set(ref, routable);
       }
     }
-    const gate = enforceModelAllowList(requestedModel, allowedRefs, isRoutable);
+    // Provider HEALTH, as a tie-break among routable refs. A quota-exhausted
+    // provider keeps its key, so `isRoutable` cannot distinguish it from a
+    // working one and the dead head of an ordered `models` list wins every
+    // turn. The slugs come from the `inference_providers` read getModelPolicy
+    // already did, so this adds no query and no new failure mode.
+    //
+    // A Lobu model ref is "<provider-slug>/<model>", and OpenRouter-style refs
+    // keep their own slug first ("openrouter/openai/gpt-4o"), so the leading
+    // segment is the provider — the same prefix `findProviderForModel` falls
+    // back to.
+    const isHealthy = (ref: string): boolean => {
+      const slash = ref.indexOf("/");
+      if (slash <= 0) return true;
+      return !unhealthyProviderSlugs.has(ref.slice(0, slash));
+    };
+    const gate = enforceModelAllowList(
+      requestedModel,
+      allowedRefs,
+      isRoutable,
+      // Omitted when nothing is unhealthy so the predicate cannot perturb the
+      // ordering in the common all-healthy case.
+      unhealthyProviderSlugs.size > 0 ? isHealthy : undefined
+    );
     return { ...gate, modules, allowedRefs };
   }
 

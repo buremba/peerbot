@@ -22,6 +22,12 @@ import { isUnresolvedModelRef } from "../model-sentinel.js";
  *     none routable), the model is dropped (undefined) so the run FAILS CLOSED —
  *     it never escalates to an unlisted model.
  *
+ * Provider health (when an `isHealthy` predicate is supplied) is a tie-breaker
+ * layered on top: among refs that are already routable, a healthy provider is
+ * preferred over an unhealthy one, including over an exact-listed request. It
+ * never shrinks the candidate set, so an agent whose only provider is unhealthy
+ * still runs.
+ *
  * Returns the effective model ref, or undefined to run with no model (fail
  * closed / auto-detect for the allow-all case).
  */
@@ -38,6 +44,21 @@ export function enforceModelAllowList(
    * dead xai/grok-4. Omitted ⇒ first non-sentinel (structural check only).
    */
   isRoutable?: (ref: string) => boolean,
+  /**
+   * Optional provider-health predicate. Health only ever REORDERS candidates
+   * that are already routable — it never removes the last one. A quota-exhausted
+   * provider still holds a valid key, so `isRoutable` cannot tell it apart from
+   * a working one; without this, an agent listing
+   * ["qwen/…" (429), "xai/grok-4" (active)] routes every turn to the dead head
+   * even though the ordered list already names the alternate.
+   *
+   * Deliberately a PREFERENCE, not a filter. `inference_providers.status` is
+   * written best-effort off an upstream response, so it can be stale or a false
+   * positive; letting it exclude a candidate would turn a cosmetic mistake into
+   * a stranded workspace. The strongest thing it may do is lose a tie to a
+   * healthy sibling in the same list.
+   */
+  isHealthy?: (ref: string) => boolean,
 ): { model: string | undefined; replaced: boolean } {
   if (!requestedModel) return { model: undefined, replaced: false };
   // The first LISTED ref that is a legal replacement: non-sentinel, and (when a
@@ -45,7 +66,14 @@ export function enforceModelAllowList(
   // for a disallowed/sentinel request; otherwise we fail closed.
   const isReplacement = (r: string): boolean =>
     !isUnresolvedModelRef(r) && (isRoutable ? isRoutable(r) : true);
-  const firstReplacement = allowedRefs?.find(isReplacement) ?? undefined;
+  const replacements = allowedRefs?.filter(isReplacement) ?? [];
+  // Among legal replacements, a healthy provider wins; absent any healthy one we
+  // still take the first legal replacement, so health can never fail a turn that
+  // routability would have allowed.
+  const firstHealthyReplacement = isHealthy
+    ? replacements.find((r) => isHealthy(r))
+    : undefined;
+  const firstReplacement = firstHealthyReplacement ?? replacements[0];
 
   // A sentinel is never a real, routable model. Drop it, but — for a MIXED
   // list like ["x/__unresolved__","openai/gpt-4o"] — replace it with the first
@@ -63,6 +91,17 @@ export function enforceModelAllowList(
     // ref (e.g. requested "xai/grok-4" with xai uncredentialed) would reach the
     // worker and fail at run.
     if (!isRoutable || isRoutable(requestedModel)) {
+      // Routable — but a provider recorded UNHEALTHY yields to a listed healthy
+      // sibling. Only when the list offers no healthy alternate does the
+      // unhealthy pin still run: better a turn that fails at the provider with
+      // its own 429 than one refused on a status column that may be stale.
+      if (
+        isHealthy &&
+        !isHealthy(requestedModel) &&
+        firstHealthyReplacement !== undefined
+      ) {
+        return { model: firstHealthyReplacement, replaced: true };
+      }
       return { model: requestedModel, replaced: false };
     }
     return { model: firstReplacement, replaced: true };

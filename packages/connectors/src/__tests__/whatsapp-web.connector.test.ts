@@ -15,7 +15,15 @@
  * generic op to carry them.
  */
 
-import { beforeEach, describe, expect, it, mock } from "bun:test";
+import { readFileSync } from "node:fs";
+import {
+  beforeEach,
+  describe,
+  expect,
+  it,
+  mock,
+  setSystemTime,
+} from "bun:test";
 import WhatsAppWebConnector from "../whatsapp_web.js";
 import { whatsAppWebAdapterProgram } from "../whatsapp-web-adapter.js";
 import {
@@ -96,9 +104,11 @@ function makeDispatcher(
         };
       }
       const entry = responses[request.op];
+      // Await a function entry: a response may be a promise the test resolves
+      // later, which is how a slow device answer is modelled.
       const value =
         typeof entry === "function"
-          ? (entry as (r: unknown) => unknown)(request)
+          ? await (entry as (r: unknown) => unknown)(request)
           : entry;
       return {
         value: value ?? {
@@ -468,6 +478,93 @@ describe("media", () => {
         (event) => event.metadata?.media_status === "metadata_only"
       )
     ).toHaveLength(1);
+  });
+
+  /**
+   * A chrome dispatch cannot be cancelled, so a per-dispatch local timeout does
+   * not stop it — it only stops US waiting. The request stays in flight in the
+   * parent worker; the child then finishes and exits, and the device's answer
+   * arrives with nobody to receive it. In prod that failed a sync run which had
+   * already written its events, and once killed the worker daemon outright,
+   * taking every other connector's runs with it. Measured `download_media`
+   * evaluates ran 3.9-5.2s against the old 4s cap, so it orphaned a dispatch on
+   * nearly every media item.
+   *
+   * A runtime test cannot pin this: the cap was a real timer, so proving it
+   * fires means burning that many seconds of wall clock, and it would only
+   * catch a cap shorter than the delay chosen. Guard the shape instead — no
+   * timer may race a dispatch, whatever its constant.
+   */
+  it("never races an uncancellable dispatch against a local timer", () => {
+    const source = readFileSync(
+      new URL("../whatsapp_web.ts", import.meta.url),
+      "utf8"
+    );
+    const races = [...source.matchAll(/Promise\.race/g)];
+    expect(
+      races,
+      "a dispatch abandoned by Promise.race stays in flight and orphans its reply"
+    ).toHaveLength(0);
+  });
+
+  it("uses a media answer that arrives after many turns", async () => {
+    let release: ((value: unknown) => void) | null = null;
+    const { dispatcher, mediaCalls } = makeDispatcher({
+      probe: READY,
+      collect: collectResponse(imageMessages(1, "slow")),
+      download_media: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    });
+
+    const pending = messagesFeed().sync(syncCtx(null, dispatcher));
+    // Let the run reach the media phase and block there.
+    for (let tick = 0; tick < 20; tick += 1) await Promise.resolve();
+    expect(mediaCalls()).toHaveLength(1);
+    expect(release).not.toBeNull();
+
+    // Answer far later than any per-dispatch cap would have allowed. The run
+    // must still be waiting for THIS answer and must use it.
+    (release as unknown as (value: unknown) => void)({
+      ok: true,
+      status: "downloaded",
+      attachment: {
+        kind: "image",
+        filename: "slow.jpg",
+        mime_type: "image/jpeg",
+        data: "AA==",
+        size_bytes: 12,
+      },
+    });
+    const result = await pending;
+    expect(result.events.filter((event) => event.attachments)).toHaveLength(1);
+    expect(result.events[0]?.metadata?.media_status).toBe("downloaded");
+  });
+
+  it("stops starting dispatches once the media phase budget is spent", async () => {
+    const { dispatcher, mediaCalls } = makeDispatcher({
+      probe: READY,
+      collect: collectResponse(imageMessages(3, "budget")),
+      // The first answer burns the whole phase budget. Nothing after it may
+      // start a dispatch this run cannot afford to wait for.
+      download_media: () => {
+        setSystemTime(new Date(Date.now() + 90_000));
+        return { ok: true, status: "unavailable" };
+      },
+    });
+    try {
+      const result = await messagesFeed().sync(syncCtx(null, dispatcher));
+      expect(mediaCalls().length).toBeLessThan(3);
+      // The skipped items stay retryable rather than being reported as gone.
+      expect(
+        result.events.filter(
+          (event) => event.metadata?.media_status === "metadata_only"
+        ).length
+      ).toBeGreaterThan(0);
+    } finally {
+      setSystemTime();
+    }
   });
 
   it("respects media backoff carried in the checkpoint instead of redownloading", async () => {

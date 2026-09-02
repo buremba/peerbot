@@ -75,7 +75,31 @@ import { whatsAppWebAdapterProgram } from "./whatsapp-web-adapter.js";
 
 const READY_TIMEOUT_MS = 25_000;
 const READY_POLL_INTERVAL_MS = 500;
-const MEDIA_TIMEOUT_MS = 4_000;
+/**
+ * Per-item budget, enforced by the ADAPTER inside the page.
+ *
+ * A caller-side timer cannot bound a dispatch: it cannot cancel one, so racing
+ * it only stops us waiting while the request stays in flight in the parent
+ * worker. The child then finishes and exits, the device's answer arrives with
+ * nobody to receive it, and the parent's reply-send finds a dead IPC channel —
+ * which failed a prod sync run that had already written its events, and once
+ * killed the worker daemon outright. Measured `download_media` evaluates take
+ * 3.9-5.2s, so the old 4s caller-side cap orphaned nearly every media item.
+ *
+ * The extension's `evaluate` op takes no timeout and its schema is deliberately
+ * frozen, but the adapter request shape is ours: send the budget with the
+ * request and let the page enforce it, so a slow item comes back as an ordinary
+ * `timeout_retryable` answer instead of an abandoned dispatch. This mirrors how
+ * `x.ts` hands `timeout_ms` to `wait_for_selector` rather than racing it.
+ */
+const MEDIA_ITEM_TIMEOUT_MS = 20_000;
+
+/**
+ * Outer bound on the whole media phase, checked between items. The per-item
+ * budget above caps any single download; this stops a long queue of merely
+ * slow ones from consuming a run. Items past it stay retryable.
+ */
+const MEDIA_PHASE_BUDGET_MS = 60_000;
 const MEDIA_CONCURRENCY = 3;
 const MAX_TOTAL_MEDIA_BYTES = 4 * 1024 * 1024;
 const MAX_DIRTY_MARKERS_PERSISTED = 250;
@@ -294,23 +318,6 @@ async function readyWhatsAppTab(
   );
 }
 
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`${label} timed out`)),
-        timeoutMs
-      );
-    }),
-  ]).finally(() => clearTimeout(timer)) as Promise<T>;
-}
-
 const MEDIA_STATES: ReadonlySet<string> = new Set([
   "downloaded",
   "NEED_POKE",
@@ -408,26 +415,30 @@ async function downloadEligibleMedia(
     queue.push({ message, previous, revision });
   }
 
+  const mediaDeadline = Date.now() + MEDIA_PHASE_BUDGET_MS;
   let cursor = 0;
   const worker = async (): Promise<void> => {
     while (cursor < queue.length) {
       const item = queue[cursor++];
       if (!item) return;
       const { message, previous, revision } = item;
+      if (Date.now() > mediaDeadline) {
+        // Out of phase budget: leave the rest retryable rather than starting a
+        // dispatch this run cannot wait for.
+        defer(message, previous);
+        continue;
+      }
       try {
-        const response = await withTimeout(
-          invokeAdapter<{
-            status?: string;
-            retryable?: boolean;
-            attachment?: MediaRecord["attachment"];
-          }>(dispatcher, tabId, {
-            op: "download_media",
-            message_id: message.id,
-            max_bytes: MAX_MEDIA_BYTES,
-          }),
-          MEDIA_TIMEOUT_MS,
-          `WhatsApp media ${message.id}`
-        );
+        const response = await invokeAdapter<{
+          status?: string;
+          retryable?: boolean;
+          attachment?: MediaRecord["attachment"];
+        }>(dispatcher, tabId, {
+          op: "download_media",
+          message_id: message.id,
+          max_bytes: MAX_MEDIA_BYTES,
+          timeout_ms: MEDIA_ITEM_TIMEOUT_MS,
+        });
         const rawStatus = MEDIA_STATES.has(response.status ?? "")
           ? (response.status as string)
           : "unavailable";
@@ -469,7 +480,11 @@ async function downloadEligibleMedia(
         }
       } catch (error) {
         const attempts = (previous?.attempts ?? 0) + 1;
-        const timedOut = String(error).includes("timed out");
+        // Both the phase budget and the child-side dispatch backstop mean
+        // "try again later", not "this media is gone".
+        const text = String(error);
+        const timedOut =
+          text.includes("timed out") || text.includes("IPC may be wedged");
         const reported =
           error instanceof WhatsAppAdapterError ? error.state : null;
         const explicitState =

@@ -30,7 +30,7 @@
 
 export function whatsAppWebAdapterProgram() {
   const GLOBAL_KEY = "__owlettoWhatsAppAdapterV1";
-  const ADAPTER_VERSION = 8;
+  const ADAPTER_VERSION = 9;
   const SYSTEM_TYPES = new Set([
     "gp2",
     "notification_template",
@@ -1439,9 +1439,35 @@ export function whatsAppWebAdapterProgram() {
     if (isVideo && size <= 0) {
       return { status: "metadata_only", retryable: true, size_bytes: null };
     }
+    // Bound the fetch HERE, where the work happens, so the dispatch always
+    // answers. A caller-side timer cannot cancel an in-flight dispatch: it only
+    // stops the caller waiting, and the reply then arrives with nobody left to
+    // receive it. Racing inside the page is safe — there is no IPC child to
+    // outlive — and it turns "too slow" into an ordinary retryable answer.
+    const budgetMs = Math.max(0, Number(input?.timeout_ms) || 0);
     let downloaded;
+    // Held so a download that wins the race can cancel its own timer. A sync
+    // collects several items, and a stray rejecting timer per item would keep
+    // firing into the page long after its answer shipped.
+    let budgetTimer = null;
     try {
-      downloaded = await blobFromMedia(model);
+      downloaded = budgetMs
+        ? await Promise.race([
+            blobFromMedia(model),
+            new Promise((_, reject) => {
+              budgetTimer = setTimeout(
+                () =>
+                  reject(
+                    Object.assign(
+                      new Error("media download exceeded its budget"),
+                      { state: "timeout_retryable" }
+                    )
+                  ),
+                budgetMs
+              );
+            }),
+          ])
+        : await blobFromMedia(model);
     } catch (error) {
       const detail = String(error);
       const reported = String(error?.state ?? error?.status ?? "");
@@ -1470,6 +1496,8 @@ export function whatsAppWebAdapterProgram() {
         ].includes(explicit ?? "unavailable"),
         detail: detail.slice(0, 200),
       };
+    } finally {
+      if (budgetTimer !== null) clearTimeout(budgetTimer);
     }
     if (!downloaded.blob) return downloaded;
     if (downloaded.blob.size > limit)

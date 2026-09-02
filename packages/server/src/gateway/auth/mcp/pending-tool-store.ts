@@ -112,6 +112,26 @@ export async function listPendingToolsForConversation(
 }
 
 /**
+ * The conversation-id shape a headless Automation run uses
+ * (`<agent>_automation_<id>_run_<id>`).
+ *
+ * Written as a POSIX class rather than `\d` so the one string is valid for
+ * both Postgres's regex operator below and the JS predicate beside it — the
+ * interactive-approval guard in cli/gateway.ts has to refuse exactly the rows
+ * this DELETE refuses, and two hand-written copies would drift.
+ */
+const AUTOMATION_RUN_CONVERSATION_PATTERN = "_automation_[0-9]+_run_[0-9]+$";
+
+/** Is this conversation id a headless Automation run's? */
+export function isAutomationRunConversationId(
+	conversationId: string | null | undefined,
+): boolean {
+	return new RegExp(AUTOMATION_RUN_CONVERSATION_PATTERN).test(
+		conversationId ?? "",
+	);
+}
+
+/**
  * Atomically fetch and delete a pending tool invocation. Used by the
  * interaction bridge / CLI approve handler to claim the row exactly
  * once — Slack/Telegram webhook retries that arrive after the first
@@ -126,7 +146,7 @@ export async function takePendingTool(
     WHERE id = ${requestId}
       AND scope = ${SCOPE}
       AND expires_at > now()
-	  AND COALESCE(payload->>'conversationId', '') !~ '_automation_[0-9]+_run_[0-9]+$'
+	  AND COALESCE(payload->>'conversationId', '') !~ ${AUTOMATION_RUN_CONVERSATION_PATTERN}
     RETURNING payload
   `;
   if (rows.length === 0) return null;

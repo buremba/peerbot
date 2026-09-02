@@ -1413,7 +1413,7 @@ export async function createConnectorOperationRun(params: {
     const prior = existing[0];
     if (!prior) {
       if (params.parentRunId != null) {
-        throw parentRunNoLongerActive(params.parentRunId ?? null);
+        throw parentRunNoLongerActive(params.parentRunId);
       }
       throw new Error('Concurrent action idempotency winner was not readable.');
     }

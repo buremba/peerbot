@@ -10,8 +10,9 @@ import { orgContext } from "../../lobu/stores/org-context.js";
 import { isAllowedCorsOrigin } from "../../utils/cors-origin.js";
 import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
 import {
+  isAutomationRunConversationId,
   pairAdminGrant,
-	peekPendingTool,
+  peekPendingTool,
   takePendingTool,
 } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
@@ -332,7 +333,7 @@ export function createGatewayApp(
           // tool. The Slack/Telegram interaction-bridge path uses the same
           // helper.
 		  const preview = await peekPendingTool(requestId);
-		  if (/_automation_\d+_run_\d+$/.test(preview?.conversationId ?? "")) {
+		  if (isAutomationRunConversationId(preview?.conversationId)) {
 			return {
 			  success: false,
 			  error:

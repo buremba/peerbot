@@ -623,7 +623,7 @@ export async function resolveAutomationRunsByMessageIds(
 	return { resolved };
 }
 
-async function describeFinalizeMiss(
+export async function describeFinalizeMiss(
 	sql: DbClient,
 	runId: number,
 	budget: number
@@ -640,15 +640,27 @@ async function describeFinalizeMiss(
 	// the lifecycle transitions -- call describePendingApproval directly and
 	// still get the throw.
 	let approvalFailure: string | null = null;
+	let approvalReadFailed = false;
 	try {
 		approvalFailure = await describePendingApproval(sql, runId, budget);
 	} catch (error) {
+		approvalReadFailed = true;
 		logger.warn(
 			{ run_id: runId, error: getErrorMessage(error) },
 			"Could not read pending approvals while describing a finalize miss",
 		);
 	}
 	if (approvalFailure) return approvalFailure;
+	// A failed read is not evidence of no approval. This string lands in the
+	// run's error_message, so claiming "none was found" would send whoever
+	// reads it after the agent's MCP wiring instead of the transient fault.
+	if (approvalReadFailed) {
+		return (
+			agentMiss +
+			". Tool approval status could not be checked; inspect the warning log " +
+			"before attributing the miss to the agent."
+		);
+	}
 	return (
 		agentMiss +
 		". No active tool approval was found, so check that the assigned agent has the " +

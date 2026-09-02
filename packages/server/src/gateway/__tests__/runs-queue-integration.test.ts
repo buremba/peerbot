@@ -269,6 +269,71 @@ describe("RunsQueue — action_input JSONB shape", () => {
   });
 });
 
+describe("RunsQueue — worker re-registration", () => {
+  /**
+   * The production trigger is `JobRouter.registerWorker`, which re-registers a
+   * deployment's queue every time that worker's SSE connection comes back. The
+   * queue runs one job at a time, and a reconnect arriving mid-job must not
+   * start the next one early or drop the job already in flight.
+   */
+  test("a reconnect mid-job still runs jobs one at a time and loses none", async () => {
+    if (!queue) throw new Error("queue not started");
+    const sql = getDb();
+    await queue.send("test-reconnect", { turn: 1 });
+    await queue.send("test-reconnect", { turn: 2 });
+
+    let releaseFirst: (() => void) | undefined;
+    let firstStarted: (() => void) | undefined;
+    const started = new Promise<void>((r) => { firstStarted = r; });
+    const order: number[] = [];
+    let active = 0;
+    let maxActive = 0;
+
+    const first = async (job: { data: { turn: number } }) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      order.push(job.data.turn);
+      firstStarted?.();
+      await new Promise<void>((r) => { releaseFirst = r; });
+      active -= 1;
+    };
+    const replacement = async (job: { data: { turn: number } }) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      order.push(job.data.turn);
+      active -= 1;
+    };
+
+    await queue.work("test-reconnect", first);
+    await started;
+
+    // The reconnect.
+    await queue.work("test-reconnect", replacement);
+
+    // Turn 2 must still be waiting on turn 1.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(order).toEqual([1]);
+    expect(maxActive).toBe(1);
+
+    releaseFirst?.();
+
+    const deadline = Date.now() + 10_000;
+    while (order.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(order).toEqual([1, 2]);
+    expect(maxActive).toBe(1);
+
+    // Both rows reached a terminal state rather than being stranded as
+    // `claimed` by a worker that got swapped out from under them.
+    const leftover = await sql<{ count: string }>`
+      SELECT count(*)::text AS count FROM runs
+      WHERE queue_name = 'test-reconnect' AND status <> 'completed'
+    `;
+    expect(leftover[0]?.count).toBe("0");
+  });
+});
+
 describe("RunsQueue — graceful shutdown", () => {
   test("stop() releases claimed rows back to pending", async () => {
     if (!queue) throw new Error("queue not started");

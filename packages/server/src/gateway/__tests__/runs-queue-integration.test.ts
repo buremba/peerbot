@@ -470,6 +470,41 @@ describe("RunsQueue — the claim gate on a linked parent", () => {
     expect(await claimed("thread_message_claim-live")).toBe(true);
   });
 
+  test("still claims a non-chat lane that carries a parent", async () => {
+    // The liveness EXISTS correlates on `dispatched_message_id =
+    // action_input->>'messageId'`, which only a chat_message child carries.
+    // Any other claimable lane (schedule / agent_run / internal) that records a
+    // parent has no messageId, so it satisfies neither the EXISTS nor
+    // `parent_run_id IS NULL` -- and with only 'task' exempted it would sit
+    // pending forever, claimed by nobody and swept by nothing.
+    const sql = getDb();
+    const organizationId = await seedAgentRow("claim-internal-agent", {
+      organizationId: "claim-internal-org",
+    });
+    const [parent] = await sql<{ id: number }>`
+      INSERT INTO runs (organization_id, run_type, status, run_at)
+      VALUES (${organizationId}, 'automation', 'running', now())
+      RETURNING id
+    `;
+    const queueName = "internal:claim-parented";
+    const [child] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, queue_name, action_key, action_input,
+        parent_run_id, status, run_at
+      ) VALUES (
+        ${organizationId}, 'internal', ${queueName}, 'claim-parented',
+        '{}'::jsonb, ${Number(parent.id)}, 'pending', now()
+      )
+      RETURNING id
+    `;
+
+    expect(await claimed(queueName)).toBe(true);
+    const [row] = await sql<{ status: string }>`
+      SELECT status FROM runs WHERE id = ${Number(child.id)}
+    `;
+    expect(row.status).toBe("completed");
+  });
+
   test("refuses a linked child once its Automation parent is terminal", async () => {
     // The other half of the same predicate, and the half with teeth: a parent
     // that already failed has nothing left to consume a reply, so handing the

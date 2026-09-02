@@ -860,12 +860,17 @@ export class RunsQueue implements IMessageQueue {
           AND run_at <= now()
           AND (expires_at IS NULL OR expires_at > now())
           AND (
-            -- Task parents are causal provenance, not a liveness lease. In
-            -- particular, complete_window commits an Automation's terminal
-            -- state and its durable reaction task together; requiring that
-            -- completed parent to remain active would strand every reaction
-            -- forever.
-            run_type = 'task'
+            -- The parent-liveness lease is a chat_message concept and applies
+            -- to nothing else. Only that lane records the messageId the
+            -- EXISTS below correlates on, so demanding it of any other
+            -- claimable lane that carries a parent (schedule / agent_run /
+            -- internal / task) leaves the row unable to satisfy either the
+            -- correlation or the IS NULL branch -- pending forever, claimed
+            -- by nobody. A task parent is also causal provenance rather than
+            -- a lease: complete_window commits an Automation terminal state
+            -- and its durable reaction task together, so requiring that
+            -- completed parent to stay active would strand every reaction.
+            run_type <> 'chat_message'
             OR parent_run_id IS NULL
             OR EXISTS (
               SELECT 1

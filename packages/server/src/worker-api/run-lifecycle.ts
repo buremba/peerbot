@@ -1574,6 +1574,25 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 		});
 	};
 
+	/**
+	 * The reply for a run an approval gate terminalized.
+	 *
+	 * `ok: true` because the report itself succeeded -- the worker did its job
+	 * and must not retry it; `status: "failed"` is the run's outcome. Three gates
+	 * arrive at this same answer, so the shape is written once: a worker
+	 * switching on `reason_code` must not have to recognize three spellings of
+	 * one refusal.
+	 */
+	const approvalBlocked = (reason: string) => {
+		emitCompletionEvent("failed", reason);
+		return c.json({
+			ok: true,
+			status: "failed",
+			reason_code: "pending_approval",
+			error: reason,
+		});
+	};
+
 	if (hasError) {
 		const transitioned = await failRun(body.error as string);
 		if (!transitioned) {
@@ -1763,13 +1782,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			});
 		}
 		if (eventOutcome.status === "failed") {
-			emitCompletionEvent("failed", eventOutcome.error);
-			return c.json({
-				ok: true,
-				status: "failed",
-				reason_code: "pending_approval",
-				error: eventOutcome.error,
-			});
+			return approvalBlocked(eventOutcome.error);
 		}
 		await sql`
       UPDATE automations
@@ -1821,13 +1834,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	if (reportedAttempt < attemptsSoFar) {
 		const approvalState = await failPendingApprovalIfPresent();
 		if (approvalState.status === "blocked") {
-			emitCompletionEvent("failed", approvalState.reason);
-			return c.json({
-				ok: true,
-				status: "failed",
-				reason_code: "pending_approval",
-				error: approvalState.reason,
-			});
+			return approvalBlocked(approvalState.reason);
 		}
 		if (approvalState.status === "missed") {
 			const [final] = (await sql`
@@ -1873,13 +1880,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 			`) as unknown as Array<{ error_message: string | null }>;
 			const blockedReason =
 				failed?.error_message ?? "Automation run blocked on a pending approval.";
-			emitCompletionEvent("failed", blockedReason);
-			return c.json({
-				ok: true,
-				status: "failed",
-				reason_code: "pending_approval",
-				error: blockedReason,
-			});
+			return approvalBlocked(blockedReason);
 		}
 		if (bumpResult === "missed") {
 			const finalRows = (await sql`

@@ -451,6 +451,86 @@ describe("automation contract", () => {
 		expect(automation.schedule_auto_paused_at).toBeNull();
 	});
 
+	// completeAutomationRun answers an approval-blocked run from three separate
+	// gates -- the completion event, the server-side approval re-check, and the
+	// device-held nudge -- and they now share one reply builder. A worker
+	// switches on `reason_code`, so all three must keep saying the same thing:
+	// ok (do not retry the report), failed (the run's own outcome),
+	// pending_approval (why).
+	it("answers an approval-blocked run with pending_approval, not a resume", async () => {
+		const { sql, dbClient, workspace, automationId, agent } =
+			await createAutomatedAutomation();
+
+		const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
+		const { windowStart, windowEnd } = await computePendingWindow(
+			dbClient,
+			automationId,
+			granularity
+		);
+		const queued = await createAutomationRun({
+			organizationId: workspace.org.id,
+			automationId,
+			agentId: agent.agentId,
+			windowStart: windowStart.toISOString(),
+			windowEnd: windowEnd.toISOString(),
+			dispatchSource: "scheduled",
+			deviceWorkerId: "66666666-6666-6666-6666-666666666666",
+			agentKind: "claude-code",
+		});
+		const workerId = "mac-device-approval-blocked";
+		await sql`
+      UPDATE runs
+      SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
+      WHERE id = ${queued.runId}
+    `;
+		// A tool call the run parked for a human. A headless Automation cannot
+		// answer an approval card, so this is terminal, not something a nudge can
+		// unblock -- which is why the device must not be told to resume.
+		await sql`
+      INSERT INTO runs (
+        run_type, action_key, queue_name, action_input, status,
+        approval_status, run_at, organization_id, parent_run_id
+      )
+      VALUES (
+        'action', 'send_email', 'action', '{}'::jsonb, 'pending',
+        'pending', now(), ${workspace.org.id}, ${queued.runId}
+      )
+    `;
+
+		const response = await post(
+			`/api/workers/me/runs/${queued.runId}/complete-automation`,
+			{
+				body: {
+					worker_id: workerId,
+					output: "did the work",
+					duration_ms: 50,
+					exit_code: 0,
+					exit_reason: "ok",
+				},
+			}
+		);
+
+		expect(response.status).toBe(200);
+		const json = (await response.json()) as {
+			ok: boolean;
+			status: string;
+			reason_code?: string;
+			error?: string;
+		};
+		expect(json.ok).toBe(true);
+		expect(json.status).toBe("failed");
+		expect(json.reason_code).toBe("pending_approval");
+		expect(String(json.error ?? "")).toMatch(/blocked on tool approval/i);
+
+		const [run] = await sql`
+      SELECT status, error_message FROM runs WHERE id = ${queued.runId}
+    `;
+		expect(String(run.status)).toBe("failed");
+		expect(String(run.error_message ?? "")).toMatch(
+			/blocked on tool approval/i
+		);
+	});
+
 	it("skips automation runs pinned to a device worker (#802)", async () => {
 		const { sql, dbClient, workspace, automationId, agent } =
 			await createAutomatedAutomation();

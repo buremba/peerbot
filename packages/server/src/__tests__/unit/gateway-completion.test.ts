@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   GatewayCompletionTimeoutError,
+  GatewayCompletionTruncatedError,
   gatewayCompletion,
 } from "../../gateway/inference/gateway-completion";
 
@@ -291,5 +292,114 @@ describe("gatewayCompletion — fail-closed caller options", () => {
 
     expect(err).toBeInstanceOf(GatewayCompletionTimeoutError);
     expect((err as GatewayCompletionTimeoutError).timeoutMs).toBe(10);
+  });
+});
+
+describe("gatewayCompletion — truncated replies", () => {
+  /**
+   * A reasoning model's hidden thinking tokens are charged against
+   * `max_tokens` while being EXCLUDED from `completion_tokens`, so a ceiling
+   * that looks generous next to the visible reply can still cut the answer
+   * off. Measured against gemini-2.5-flash with the judge's production
+   * prompts: `max_tokens: 256` produced `finish_reason: "length"` with
+   * `completion_tokens: 40` but 252 tokens actually generated.
+   *
+   * Returning that truncated body is the dangerous part: the judge's parser
+   * reports it as "no JSON object", which is indistinguishable from a model
+   * that ignored its instructions. A ceiling the operator can raise then looks
+   * like a model that has to be replaced, and the fail-closed deny gets blamed
+   * on the wrong cause.
+   */
+  test("throws rather than returning a body cut off by the token ceiling", async () => {
+    stubFetch({
+      choices: [
+        {
+          message: { content: '```json\n{\n  "verdict": "' },
+          finish_reason: "length",
+        },
+      ],
+    });
+
+    await expect(
+      gatewayCompletion({
+        target: TARGET,
+        systemPrompt: "s",
+        userPrompt: "u",
+        timeoutMs: 1000,
+        maxTokens: 256,
+        maxRetries: 0,
+      })
+    ).rejects.toThrow(GatewayCompletionTruncatedError);
+  });
+
+  test("the error names the ceiling so an operator can act on it", async () => {
+    stubFetch({
+      choices: [{ message: { content: "partial" }, finish_reason: "length" }],
+    });
+
+    const err = await gatewayCompletion({
+      target: TARGET,
+      systemPrompt: "s",
+      userPrompt: "u",
+      timeoutMs: 1000,
+      maxTokens: 256,
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(GatewayCompletionTruncatedError);
+    expect(err.maxTokens).toBe(256);
+  });
+
+  /**
+   * Retrying cannot help: the same ceiling truncates the same way, and for a
+   * fail-closed caller each attempt burns the shared deadline before the deny
+   * it was always going to produce.
+   */
+  test("does NOT retry a truncation — the ceiling will not change", async () => {
+    const { calls } = stubFetch({
+      choices: [{ message: { content: "partial" }, finish_reason: "length" }],
+    });
+
+    await gatewayCompletion({
+      target: TARGET,
+      systemPrompt: "s",
+      userPrompt: "u",
+      timeoutMs: 5000,
+      maxTokens: 256,
+    }).catch(() => {});
+
+    expect(calls.length).toBe(1);
+  });
+
+  test("a normal `stop` finish is unaffected", async () => {
+    stubFetch({
+      choices: [{ message: { content: "complete" }, finish_reason: "stop" }],
+    });
+
+    const out = await gatewayCompletion({
+      target: TARGET,
+      systemPrompt: "s",
+      userPrompt: "u",
+      timeoutMs: 1000,
+    });
+
+    expect(out).toBe("complete");
+  });
+
+  /**
+   * Not every provider returns `finish_reason`. Absence must not be read as
+   * truncation, or a conforming provider that simply omits the field would
+   * have every reply rejected.
+   */
+  test("a missing finish_reason is not treated as truncation", async () => {
+    stubFetch(completionBody("no finish reason here"));
+
+    const out = await gatewayCompletion({
+      target: TARGET,
+      systemPrompt: "s",
+      userPrompt: "u",
+      timeoutMs: 1000,
+    });
+
+    expect(out).toBe("no finish reason here");
   });
 });

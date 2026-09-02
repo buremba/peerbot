@@ -59,6 +59,11 @@ interface GatewayCompletionRequest {
 interface ChatCompletionResponse {
   choices?: Array<{
     message?: { content?: string | null } | null;
+    /**
+     * `"length"` means the ceiling stopped generation. Absent on providers
+     * that omit it, which must NOT be read as truncation.
+     */
+    finish_reason?: string | null;
   } | null> | null;
 }
 
@@ -197,6 +202,32 @@ export class GatewayCompletionTimeoutError extends Error {
 }
 
 /**
+ * The upstream stopped because it hit the output ceiling, so the body is a
+ * PREFIX of the intended reply rather than the reply.
+ *
+ * This needs its own type because a truncated body is not a malformed one. A
+ * reasoning model's hidden thinking tokens are charged against `max_tokens`
+ * while being excluded from `completion_tokens`, so a ceiling that looks
+ * generous beside the visible reply can still cut the answer off — and every
+ * caller here parses strict JSON, which a prefix never satisfies. Handing that
+ * prefix back makes a budget misconfiguration read as a model that ignored its
+ * instructions, which is the wrong thing to fix.
+ */
+export class GatewayCompletionTruncatedError extends Error {
+  readonly maxTokens: number | undefined;
+
+  constructor(maxTokens: number | undefined) {
+    super(
+      `Gateway completion was truncated by the output ceiling${
+        maxTokens === undefined ? "" : ` (max_tokens: ${maxTokens})`
+      }; the reply is incomplete`
+    );
+    this.name = "GatewayCompletionTruncatedError";
+    this.maxTokens = maxTokens;
+  }
+}
+
+/**
  * An upstream HTTP failure that carries its status so the retry policy can
  * distinguish retryable from terminal responses.
  */
@@ -220,6 +251,10 @@ function isRetryableGatewayCompletionError(error: Error): boolean {
   if (error instanceof GatewayCompletionHttpError) {
     return error.status === 429 || (error.status >= 500 && error.status < 600);
   }
+  // A truncation is terminal by construction: the same ceiling truncates the
+  // same way, and for a fail-closed caller each attempt burns the shared
+  // deadline before the deny it was always going to produce.
+  if (error instanceof GatewayCompletionTruncatedError) return false;
   return /network|fetch|ECONN/i.test(error.message);
 }
 
@@ -259,7 +294,16 @@ async function callCompletionOnce(
   }
 
   const data = (await response.json()) as ChatCompletionResponse;
-  const content = data.choices?.[0]?.message?.content;
+  const choice = data.choices?.[0];
+
+  // Checked BEFORE the empty-content guard: a truncation that left nothing
+  // visible is still a truncation, and "returned no text" would send the
+  // operator looking at the model instead of the ceiling.
+  if (choice?.finish_reason === "length") {
+    throw new GatewayCompletionTruncatedError(request.maxTokens);
+  }
+
+  const content = choice?.message?.content;
   if (!content) throw new Error("Gateway completion returned no text");
   return content;
 }

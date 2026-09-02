@@ -25,7 +25,6 @@ import type RevolutTransactionsConnector from "./revolut-transactions.connector.
 import type SpotifyConnector from "./spotify.connector.ts";
 import { takeoutConfig } from "./takeout-dirs.ts";
 import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
-import type WhatsAppWebConnector from "./whatsapp-web.connector.ts";
 
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
@@ -1529,9 +1528,6 @@ export default defineConfig({
     connectorFromFile<typeof LinkedInConnector>("./linkedin.connector.ts"),
     connectorFromFile<typeof HackerNewsConnector>("./hackernews.connector.ts"),
     connectorFromFile<typeof SpotifyConnector>("./spotify.connector.ts"),
-    connectorFromFile<typeof WhatsAppWebConnector>(
-      "./whatsapp-web.connector.ts"
-    ),
     connectorFromFile<typeof GoogleTakeoutConnector>(
       "./google-takeout.connector.ts"
     ),

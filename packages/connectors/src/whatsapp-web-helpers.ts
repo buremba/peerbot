@@ -76,6 +76,12 @@ export interface BackfillChatState {
 export interface BrowserCheckpoint {
   schema: "owletto.whatsapp.browser.v1";
   adapter_version: number;
+  /**
+   * Collect nothing at or before this instant, because another source already
+   * ingested it. Nothing in this repo assigns it: an operator writes it into an
+   * existing feed checkpoint when a connection changes source. Absent on a
+   * fresh connection, which backfills from scratch.
+   */
   cutover_unix_seconds?: number | null;
   head: { timestamp?: number; id?: string | null };
   backfill: {

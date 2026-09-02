@@ -871,9 +871,13 @@ export function whatsAppWebAdapterProgram() {
           message_id: message.id,
         })),
       backfill: {
+        // `chatRows` is empty when the tab answered `probe` but its Chat
+        // collection has not populated yet. A bare `.every()` is vacuously true
+        // there, which would record a finished backfill that never ran.
         complete:
           request.backfill_disabled === true ||
-          chatRows.every((entry) => mergedChats[entry.jid]?.has_more === false),
+          (chatRows.length > 0 &&
+            chatRows.every((entry) => mergedChats[entry.jid]?.has_more === false)),
         cursor_chat_jid: cursor,
         inventory: chatRows.map((entry) => entry.jid),
         chats: updates,

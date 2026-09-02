@@ -29,25 +29,15 @@ describe("whatsAppWebAdapterProgram serialisation", () => {
           /* inert page-global stub */
         },
       },
-      // postMessage is the adapter's push channel to the extension's content
-      // script. On the connector path nothing listens — the connector pulls
-      // via the `collect` op — so it posts into the void, harmlessly.
       window: {
         require: () => null,
         addEventListener: () => {
-          /* inert page-global stub */
-        },
-        postMessage: () => {
           /* inert page-global stub */
         },
       },
       location: { origin: "https://web.whatsapp.com" },
       setTimeout: () => 0,
       clearTimeout: () => {
-        /* inert page-global stub */
-      },
-      setInterval: () => 0,
-      clearInterval: () => {
         /* inert page-global stub */
       },
     };
@@ -105,6 +95,18 @@ describe("whatsAppWebAdapterProgram serialisation", () => {
     expect(quarantine).toContain("key:");
     expect(quarantine).toContain("message_id:");
     expect(quarantine).not.toMatch(/^\s*id:/m);
+  });
+
+  it("never reports a finished backfill from an empty chat list", () => {
+    // `chatRows` is empty when the tab answered `probe` but its Chat collection
+    // has not populated. A bare `.every()` is vacuously true on an empty array,
+    // which would persist backfill.complete for a backfill that never ran.
+    const source = whatsAppWebAdapterProgram.toString();
+    const every = source.indexOf("chatRows.every(");
+    expect(every).toBeGreaterThan(-1);
+    // The emptiness guard must sit in the same expression as the `.every()`.
+    const clause = source.slice(every - 200, every);
+    expect(clause).toContain("chatRows.length > 0");
   });
 
   it("carries no live relay — the connector pulls via `collect`", () => {

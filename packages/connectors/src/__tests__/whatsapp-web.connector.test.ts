@@ -16,7 +16,7 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import WhatsAppWebConnector from "../whatsapp-web.connector.ts";
+import WhatsAppWebConnector from "../whatsapp_web.js";
 import { whatsAppWebAdapterProgram } from "../whatsapp-web-adapter.js";
 import {
   buildCollectionPlan,
@@ -27,7 +27,7 @@ import {
   rawMessageId,
   toEventEnvelope,
   type BrowserCheckpoint,
-} from "../whatsapp-web-helpers.ts";
+} from "../whatsapp-web-helpers.js";
 
 /** The extension suite's fixture, unchanged. */
 function message(

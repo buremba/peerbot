@@ -70,7 +70,7 @@ import {
   WHATSAPP_ADAPTER_VERSION,
   WHATSAPP_ORIGIN,
   type WhatsAppMessage,
-} from "./whatsapp-web-helpers.ts";
+} from "./whatsapp-web-helpers.js";
 import { whatsAppWebAdapterProgram } from "./whatsapp-web-adapter.js";
 
 const READY_TIMEOUT_MS = 25_000;

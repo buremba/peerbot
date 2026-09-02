@@ -16,6 +16,10 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "isolatedModules": true,
+    // The WhatsApp Web adapter is plain JS: it is serialised with
+    // Function.prototype.toString() and injected into the page, so it must
+    // carry no syntax a transform would rewrite.
+    "allowJs": true,
     "types": ["@types/node"]
   },
   "include": ["src/**/*.ts"],

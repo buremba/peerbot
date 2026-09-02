@@ -548,13 +548,13 @@ export class MessageConsumer {
         return;
       }
 
-    // Automation turns are unattended, so their current configured tool
-    // approvals must be durable before a warm worker can consume the thread
-    // job. The normal background worker-ensure path is intentionally async and
-    // therefore too late for this headless readiness guarantee.
-    if (data.parentRunId) {
-    await this.deploymentManager.syncNetworkConfigGrants(data);
-    }
+      // Automation turns are unattended, so their current configured tool
+      // approvals must be durable before a warm worker can consume the thread
+      // job. The normal background worker-ensure path is intentionally async
+      // and therefore too late for this headless readiness guarantee.
+      if (data.parentRunId) {
+        await this.deploymentManager.syncNetworkConfigGrants(data);
+      }
 
       // Arm the turn-liveness marker BEFORE the message is deliverable to the
       // worker. The marker is the durable record that this turn owes the client
@@ -695,8 +695,36 @@ export class MessageConsumer {
   }
 
   /**
-   * Send message to worker queue for the worker to consume
+   * Refuse to let an unattended turn proceed on a model we could not verify.
+   *
+   * Every fail-closed branch in the gate below owes an Automation turn the same
+   * answer: retry. Dropping the model instead would commit an unattended run to
+   * a model nobody approved, and its parent would still be owed a real outcome.
+   * An interactive turn is different -- it drops the requested model, the worker
+   * falls back to the agent/org default, and a person can see that and retry --
+   * so the caller keeps that side. Spelled once so the five branches cannot
+   * drift apart on what an Automation turn is owed.
    */
+  private failAutomationTurnOnUnverifiedModel(
+    data: MessagePayload,
+    reason: string,
+    detail?: Record<string, unknown>,
+    cause?: unknown
+  ): void {
+    if (!data.parentRunId) return;
+    throw new OrchestratorError(
+      ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+      reason,
+      {
+        parentRunId: data.parentRunId,
+        requestedModel: data.agentOptions?.model,
+        ...detail,
+      },
+      true,
+      cause instanceof Error ? cause : undefined
+    );
+  }
+
   /**
    * Enforce the agent's exact-model allow-list on the OUTBOUND payload model,
    * at enqueue time. This is the authoritative gate: every dispatch lane
@@ -735,14 +763,10 @@ export class MessageConsumer {
         { requestedModel: requested },
         "Enqueue-time model gate: missing agentId — dropping the requested model (fail-closed)"
       );
-    if (data.parentRunId) {
-    throw new OrchestratorError(
-      ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-      "Automation model policy cannot be verified without an agent id",
-      { parentRunId: data.parentRunId, requestedModel: requested },
-      true,
-    );
-    }
+      this.failAutomationTurnOnUnverifiedModel(
+        data,
+        "Automation model policy cannot be verified without an agent id"
+      );
       if (data.agentOptions) delete data.agentOptions.model;
       return;
     }
@@ -752,14 +776,10 @@ export class MessageConsumer {
         { agentId: data.agentId, requestedModel: requested },
         "Enqueue-time model gate: ProviderCatalogService not wired — dropping the requested model (fail-closed)"
       );
-    if (data.parentRunId) {
-    throw new OrchestratorError(
-      ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-      "Automation model policy catalog is temporarily unavailable",
-      { parentRunId: data.parentRunId, requestedModel: requested },
-      true,
-    );
-    }
+      this.failAutomationTurnOnUnverifiedModel(
+        data,
+        "Automation model policy catalog is temporarily unavailable"
+      );
       if (data.agentOptions) delete data.agentOptions.model;
       return;
     }
@@ -773,14 +793,10 @@ export class MessageConsumer {
         { agentId: data.agentId, requestedModel: requested },
         "Enqueue-time model gate: missing organizationId — dropping the requested model (fail-closed, cross-tenant guard)"
       );
-    if (data.parentRunId) {
-    throw new OrchestratorError(
-      ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-      "Automation model policy cannot be verified without organization scope",
-      { parentRunId: data.parentRunId, requestedModel: requested },
-      true,
-    );
-    }
+      this.failAutomationTurnOnUnverifiedModel(
+        data,
+        "Automation model policy cannot be verified without organization scope"
+      );
       if (data.agentOptions) delete data.agentOptions.model;
       return;
     }
@@ -792,18 +808,11 @@ export class MessageConsumer {
         data.userId
       );
       if (!resolved.replaced) return;
-    if (data.parentRunId) {
-    throw new OrchestratorError(
-      ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-      "Automation model changed after preflight; retrying before worker enqueue",
-      {
-      parentRunId: data.parentRunId,
-      requestedModel: requested,
-      effectiveModel: resolved.model ?? null,
-      },
-      true,
-    );
-    }
+      this.failAutomationTurnOnUnverifiedModel(
+        data,
+        "Automation model changed after preflight; retrying before worker enqueue",
+        { effectiveModel: resolved.model ?? null }
+      );
       logger.warn(
         {
           agentId: data.agentId,
@@ -819,15 +828,12 @@ export class MessageConsumer {
         else delete data.agentOptions.model;
       }
     } catch (err) {
-    if (data.parentRunId) {
-    throw new OrchestratorError(
-      ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-      `Automation model policy verification failed: ${getErrorMessage(err)}`,
-      { parentRunId: data.parentRunId, requestedModel: requested },
-      true,
-      err instanceof Error ? err : undefined,
-    );
-    }
+      this.failAutomationTurnOnUnverifiedModel(
+        data,
+        `Automation model policy verification failed: ${getErrorMessage(err)}`,
+        undefined,
+        err
+      );
       // FAIL CLOSED: never leave an unvalidated requested model on the payload.
       // The warm path won't re-gate at deployment time, so a lookup failure must
       // drop the model rather than let a possibly-disallowed/sentinel model run.
@@ -885,7 +891,7 @@ export class MessageConsumer {
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
         `Failed to send message to thread queue: ${getErrorMessage(error)}`,
         { deploymentName, data, error },
-    error instanceof OrchestratorError ? error.shouldRetry : true
+        error instanceof OrchestratorError ? error.shouldRetry : true
       );
     }
   }

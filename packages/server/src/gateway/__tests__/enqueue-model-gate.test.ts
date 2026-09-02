@@ -12,6 +12,7 @@
  */
 
 import { describe, expect, mock, test } from "bun:test";
+import { OrchestratorError } from "@lobu/core";
 import type { MessagePayload } from "@lobu/core";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import type {
@@ -217,6 +218,187 @@ async function drive(
   // Let the fire-and-forget ensureWorkerExists settle.
   await new Promise((r) => setTimeout(r, 60));
 }
+
+/**
+ * The Automation lane of the same gate. An interactive turn that cannot have
+ * its model verified drops the model and continues -- a person sees the result
+ * and can retry. An unattended turn has nobody to see it, and its Automation
+ * parent is owed a real outcome, so every fail-closed branch must instead
+ * refuse the job retryably and enqueue NOTHING. These five branches shared one
+ * hand-copied throw before; they now share `failAutomationTurnOnUnverifiedModel`,
+ * so this pins each one to the message and the retryable flag it must carry.
+ */
+describe("the same gate on an Automation turn: retry, never a silent drop", () => {
+  function automationPayload(
+    model: string | undefined,
+    overrides: Partial<MessagePayload> = {}
+  ): MessagePayload {
+    return {
+      ...makePayload(model),
+      parentRunId: 4242,
+      ...overrides,
+    } as unknown as MessagePayload;
+  }
+
+  async function driveAutomation(
+    consumer: MessageConsumer,
+    payload: MessagePayload
+  ): Promise<unknown> {
+    return (
+      consumer as unknown as { handleMessage: (job: unknown) => Promise<void> }
+    ).handleMessage({ id: "1", data: payload });
+  }
+
+  const cases: Array<{
+    what: string;
+    manager: () => DeploymentManager;
+    payload: MessagePayload;
+    message: RegExp;
+  }> = [
+    {
+      what: "the provider catalog is not wired yet",
+      manager: makeUnwiredCatalogDeploymentManager,
+      payload: automationPayload("openai/gpt-4o"),
+      message: /catalog is temporarily unavailable/,
+    },
+    {
+      what: "the effective model no longer matches what preflight approved",
+      manager: () => makeWarmDeploymentManager(["openai/gpt-5"]),
+      payload: automationPayload("openai/gpt-4o"),
+      message: /changed after preflight/,
+    },
+    {
+      what: "the policy lookup itself fails",
+      manager: makeThrowingDeploymentManager,
+      payload: automationPayload("openai/gpt-4o"),
+      message: /verification failed: db down/,
+    },
+  ];
+
+  for (const { what, manager, payload, message } of cases) {
+    test(`refuses the job retryably when ${what}`, async () => {
+      const { queue, sends } = makeCapturingQueue();
+      const consumer = new TestMessageConsumer(
+        makeConfig(),
+        manager(),
+        queue,
+        recordValidInput
+      );
+
+      const err = await driveAutomation(consumer, payload).then(
+        () => null,
+        (e: unknown) => e
+      );
+
+      // handleMessage rewraps whatever the gate threw, carrying the original
+      // through in `details.error` and inheriting its retryability -- so the
+      // gate's own decision has to survive that wrapping to mean anything.
+      expect(err).toBeInstanceOf(OrchestratorError);
+      expect((err as OrchestratorError).message).toMatch(message);
+      // Retryable, so the Automation parent gets another attempt rather than a
+      // terminal failure for a condition that is usually transient.
+      expect((err as OrchestratorError).shouldRetry).toBe(true);
+      const gateError = (err as OrchestratorError).details
+        ?.error as OrchestratorError;
+      expect(gateError).toBeInstanceOf(OrchestratorError);
+      expect(gateError.shouldRetry).toBe(true);
+      expect(gateError.details).toMatchObject({
+        parentRunId: 4242,
+        requestedModel: "openai/gpt-4o",
+      });
+      // The whole point: nothing reached the worker queue.
+      expect(sends).toHaveLength(0);
+    });
+  }
+
+  // The remaining two branches -- no agentId, no organizationId -- cannot be
+  // reached through handleMessage, which refuses such a payload before routing
+  // it at all. They are the gate's own fail-closed floor for any future caller,
+  // and a cross-tenant guard in the org case (a declared agent id like
+  // `lobu-builder` exists in EVERY org, so an unscoped policy read could gate
+  // against the wrong tenant's models list). Driven directly, because the only
+  // honest way to cover an unreachable-by-construction guard is to call it.
+  const guardCases: Array<{ what: string; missing: keyof MessagePayload; message: RegExp }> = [
+    { what: "agent id", missing: "agentId", message: /without an agent id/ },
+    {
+      what: "organization scope",
+      missing: "organizationId",
+      message: /without organization scope/,
+    },
+  ];
+
+  for (const { what, missing, message } of guardCases) {
+    test(`the gate itself still refuses an Automation turn with no ${what}`, async () => {
+      const { queue } = makeCapturingQueue();
+      const consumer = new TestMessageConsumer(
+        makeConfig(),
+        makeWarmDeploymentManager(["openai/gpt-5"]),
+        queue,
+        recordValidInput
+      );
+      const payload = automationPayload("openai/gpt-4o");
+      delete (payload as Record<string, unknown>)[missing];
+
+      const err = await (
+        consumer as unknown as {
+          enforceModelPolicyAtEnqueue: (d: MessagePayload) => Promise<void>;
+        }
+      )
+        .enforceModelPolicyAtEnqueue(payload)
+        .then(
+          () => null,
+          (e: unknown) => e
+        );
+
+      expect(err).toBeInstanceOf(OrchestratorError);
+      expect((err as OrchestratorError).message).toMatch(message);
+      expect((err as OrchestratorError).shouldRetry).toBe(true);
+      // The model is still on the payload: refusing the job is the answer, not
+      // quietly rewriting what the run was approved to use.
+      expect(payload.agentOptions?.model).toBe("openai/gpt-4o");
+    });
+
+    test(`routing refuses an Automation turn with no ${what} before the gate`, async () => {
+      const { queue, sends } = makeCapturingQueue();
+      const consumer = new TestMessageConsumer(
+        makeConfig(),
+        makeWarmDeploymentManager(["openai/gpt-5"]),
+        queue,
+        recordValidInput
+      );
+      const payload = automationPayload("openai/gpt-4o");
+      delete (payload as Record<string, unknown>)[missing];
+
+      const err = await driveAutomation(consumer, payload).then(
+        () => null,
+        (e: unknown) => e
+      );
+
+      expect(err).toBeInstanceOf(OrchestratorError);
+      expect((err as OrchestratorError).message).toMatch(
+        /is required for message routing/
+      );
+      expect(sends).toHaveLength(0);
+    });
+  }
+
+  test("an interactive turn in the same condition drops the model and proceeds", async () => {
+    // Same failure, no parent run: the contrast that shows the branch is keyed
+    // on the turn being unattended, not on the failure itself.
+    const { queue, sends } = makeCapturingQueue();
+    const consumer = new TestMessageConsumer(
+      makeConfig(),
+      makeThrowingDeploymentManager(),
+      queue,
+      recordValidInput
+    );
+
+    await drive(consumer, "openai/gpt-4o");
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0]?.data.agentOptions?.model).toBeUndefined();
+  });
+});
 
 describe("#1: exact-model gate enforced at ENQUEUE time (covers warm/resumed)", () => {
   test("a disallowed model on the WARM path is gated BEFORE the payload is persisted", async () => {

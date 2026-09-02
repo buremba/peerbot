@@ -5,7 +5,7 @@ import { isCloudMode } from '../utils/cloud-mode';
 import { DB_EGRESS_HARDENED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import {
   delegatedBrowserAffinitySql,
-  nativeChromeExtensionConnectorSql,
+  chromeNamespaceConnectorSql,
 } from '../utils/connector-execution-placement';
 import type { ManifestClaimAuthorization } from './device-manifests';
 
@@ -139,7 +139,7 @@ export function connectorClaimLaneSql(
   );
   // A chrome-namespace execution runs inside the advertising extension, so it
   // needs no server-side backend at all.
-  const nativeChromeExecution = nativeChromeExtensionConnectorSql(sql, {
+  const chromeNamespaceExecution = chromeNamespaceConnectorSql(sql, {
     connectorKey: refs.connectorKey,
   });
   // Keep this guard outside the individual lanes: every lane must advertise
@@ -151,7 +151,7 @@ export function connectorClaimLaneSql(
   // closed rather than inheriting the unrestricted branch.
   const selectedBackendReady = sql`
     (
-      ${nativeChromeExecution}
+      ${chromeNamespaceExecution}
       OR (
         NOT COALESCE(${refs.runManifestBacked}, false)
         AND ${compiledBackendReady}

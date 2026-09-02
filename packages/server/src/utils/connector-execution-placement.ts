@@ -85,7 +85,7 @@ export function assertChromeNamespaceInstallIsDeviceManifest(facts: {
 }
 
 /** SQL equivalent of {@link isChromeNamespaceConnectorKey}. */
-export function nativeChromeExtensionConnectorSql<TFragment>(
+export function chromeNamespaceConnectorSql<TFragment>(
   sql: SqlTag<TFragment>,
   refs: { connectorKey: TFragment }
 ): TFragment {
@@ -104,7 +104,7 @@ export function delegatedBrowserAffinitySql<TFragment>(
 ): TFragment {
   return sql`
     ${refs.platform} = 'chrome-extension'
-    AND NOT (${nativeChromeExtensionConnectorSql(sql, refs)})
+    AND NOT (${chromeNamespaceConnectorSql(sql, refs)})
   `;
 }
 

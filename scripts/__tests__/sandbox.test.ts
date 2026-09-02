@@ -171,14 +171,28 @@ describe("sanitizedEnv", () => {
     expect(HOST_ONLY_ENV_KEYS).toContain("DATABASE_URL");
   });
 
+  test("names every key the boot env owns", () => {
+    // The generated fixture below proves each listed key is stripped, but it
+    // shrinks with the list, so it cannot notice a key going missing. These
+    // four are what keep a public preview shut, so name them outright.
+    expect([...SANDBOX_CONTROLLED_ENV_KEYS].sort()).toEqual([
+      "EMBEDDINGS_SERVICE_TOKEN",
+      "LOBU_DEV_DATA_ROOT",
+      "LOBU_SINGLE_USER",
+      "WORKER_API_TOKEN",
+    ]);
+  });
+
   test("drops every sandbox-controlled key", () => {
     // dev-native.sh preserves only a fixed preset list across `source .env`,
     // so any of these left in the file would override the boot env and quietly
     // reopen sign-up or the anonymous worker lane on a public preview.
     const root = temporaryDirectory("sandbox-env-owned-");
+    // Planted from the constant itself so a key added to the strip list can
+    // never sit unexercised here and pass the loop below vacuously.
     writeFileSync(
       join(root, ".env"),
-      "LOBU_SINGLE_USER=0\nWORKER_API_TOKEN=host-token\nLOBU_DEV_DATA_ROOT=/tmp/elsewhere\nKEEP=yes\n"
+      `${SANDBOX_CONTROLLED_ENV_KEYS.map((k) => `${k}=host-value`).join("\n")}\nKEEP=yes\n`
     );
     const out = sanitizedEnv(root) ?? "";
     expect(out).toContain("KEEP=yes");

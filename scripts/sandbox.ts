@@ -1049,6 +1049,10 @@ async function main() {
 
   const link = await sandbox.getPreviewLink(APP_PORT);
   const url: string = link?.url ?? String(link);
+  // Shut the door before the app comes up. On a re-run the sandbox is already
+  // public from the last `up`, so without this the whole build-and-wait window
+  // serves on a public URL before claimSeat and assertSignUpClosed have run.
+  await setPublic(sandbox, false);
   console.log(">> booting app (first boot builds every workspace package)");
   await bootApp(sandbox, url, {
     workerApiToken: generateBearerToken(),
@@ -1065,8 +1069,9 @@ async function main() {
     );
     process.exit(1);
   }
-  // The order is the whole point: take the one seat single-user mode allows,
-  // PROVE that sign-up is shut, and only then drop the preview key.
+  // The order is the whole point: the preview is private above, so we take the
+  // one seat single-user mode allows, PROVE that sign-up is shut, and only then
+  // drop the preview key.
   const { seat, sessionToken } = await claimSeat(sandbox, root);
   await assertSignUpClosed(sandbox);
   await setPublic(sandbox, true);

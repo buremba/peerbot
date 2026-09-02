@@ -254,6 +254,8 @@ describe("the same gate on an Automation turn: retry, never a silent drop", () =
     manager: () => DeploymentManager;
     payload: MessagePayload;
     message: RegExp;
+    /** Detail the gate must carry through, beyond parentRunId/requestedModel. */
+    detail?: Record<string, unknown>;
   }> = [
     {
       what: "the provider catalog is not wired yet",
@@ -265,7 +267,9 @@ describe("the same gate on an Automation turn: retry, never a silent drop", () =
       what: "the effective model no longer matches what preflight approved",
       manager: () => makeWarmDeploymentManager(["openai/gpt-5"]),
       payload: automationPayload("openai/gpt-4o"),
-      message: /changed after preflight/,
+      message: /^Automation model changed after preflight/,
+      // Dropped when this throw was being swallowed and relabelled.
+      detail: { effectiveModel: "openai/gpt-5" },
     },
     {
       what: "the policy lookup itself fails",
@@ -275,7 +279,7 @@ describe("the same gate on an Automation turn: retry, never a silent drop", () =
     },
   ];
 
-  for (const { what, manager, payload, message } of cases) {
+  for (const { what, manager, payload, message, detail } of cases) {
     test(`refuses the job retryably when ${what}`, async () => {
       const { queue, sends } = makeCapturingQueue();
       const consumer = new TestMessageConsumer(
@@ -294,9 +298,10 @@ describe("the same gate on an Automation turn: retry, never a silent drop", () =
       // through in `details.error` and inheriting its retryability -- so the
       // gate's own decision has to survive that wrapping to mean anything.
       expect(err).toBeInstanceOf(OrchestratorError);
-      expect((err as OrchestratorError).message).toMatch(message);
       // Retryable, so the Automation parent gets another attempt rather than a
-      // terminal failure for a condition that is usually transient.
+      // terminal failure for a condition that is usually transient. Asserted on
+      // the wrapper because that is what the queue reads; the message is
+      // asserted on the gate's own error below, where a relabelling shows up.
       expect((err as OrchestratorError).shouldRetry).toBe(true);
       const gateError = (err as OrchestratorError).details
         ?.error as OrchestratorError;
@@ -306,6 +311,13 @@ describe("the same gate on an Automation turn: retry, never a silent drop", () =
         parentRunId: 4242,
         requestedModel: "openai/gpt-4o",
       });
+      // The gate's own message, not a relabelled one. Asserting only that the
+      // reason appears SOMEWHERE let a real defect through: the
+      // changed-after-preflight throw used to be raised inside the lookup's
+      // try, so its own catch re-wrapped it as a failed lookup -- and the
+      // nested text still matched a loose regex.
+      expect(gateError.message).toMatch(message);
+      if (detail) expect(gateError.details).toMatchObject(detail);
       // The whole point: nothing reached the worker queue.
       expect(sends).toHaveLength(0);
     });

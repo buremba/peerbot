@@ -27,6 +27,7 @@ import { validateOperationInput } from "../../../../operations/input-validation"
 import { insertEvent } from "../../../../utils/insert-event";
 import { recordEntityWriteDenial } from "../../../../utils/entity-write-denial-audit";
 import logger from "../../../../utils/logger";
+import { APPROVAL_RUN_TYPES } from "../../../../utils/run-statuses";
 import { isAdminOrOwnerRole } from "../../../access-control";
 import type { ToolContext } from "../../../registry";
 import {
@@ -209,7 +210,7 @@ async function blockHeadlessAutomationApproval(
 			 AND parent.organization_id = child.organization_id
 			WHERE child.id = ${runId}
 			  AND child.organization_id = ${organizationId}
-			  AND child.run_type = ANY(${pgTextArray(["action", "internal"])}::text[])
+			  AND child.run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
 			  AND parent.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
 			FOR UPDATE OF parent
 			LIMIT 1

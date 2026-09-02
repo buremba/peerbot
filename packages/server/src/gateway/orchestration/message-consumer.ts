@@ -800,48 +800,58 @@ export class MessageConsumer {
       if (data.agentOptions) delete data.agentOptions.model;
       return;
     }
-    try {
-      const resolved = await catalog.resolveDispatchModel(
+    // Only the lookup is fallible, so only the lookup is guarded. Wrapping the
+    // enforcement below in the same try let the "model changed after preflight"
+    // throw land in this catch, which relabelled it as a failed lookup, logged
+    // the wrong warning and dropped its effectiveModel detail.
+    const lookup = await catalog
+      .resolveDispatchModel(
         data.agentId,
         data.organizationId,
         requested,
         data.userId
+      )
+      .then(
+        (resolved) => ({ ok: true as const, resolved }),
+        (err: unknown) => ({ ok: false as const, err })
       );
-      if (!resolved.replaced) return;
+    if (!lookup.ok) {
       this.failAutomationTurnOnUnverifiedModel(
         data,
-        "Automation model changed after preflight; retrying before worker enqueue",
-        { effectiveModel: resolved.model ?? null }
-      );
-      logger.warn(
-        {
-          agentId: data.agentId,
-          organizationId: data.organizationId,
-          requestedModel: requested,
-          allowedRefs: resolved.allowedRefs,
-          effectiveModel: resolved.model ?? null,
-        },
-        "Enqueue-time model gate: requested model is not routable under the agent's allowed models list — enforcing (fail-closed)"
-      );
-      if (data.agentOptions) {
-        if (resolved.model) data.agentOptions.model = resolved.model;
-        else delete data.agentOptions.model;
-      }
-    } catch (err) {
-      this.failAutomationTurnOnUnverifiedModel(
-        data,
-        `Automation model policy verification failed: ${getErrorMessage(err)}`,
+        `Automation model policy verification failed: ${getErrorMessage(lookup.err)}`,
         undefined,
-        err
+        lookup.err
       );
       // FAIL CLOSED: never leave an unvalidated requested model on the payload.
       // The warm path won't re-gate at deployment time, so a lookup failure must
       // drop the model rather than let a possibly-disallowed/sentinel model run.
       logger.warn(
-        { agentId: data.agentId, err: getErrorMessage(err) },
+        { agentId: data.agentId, err: getErrorMessage(lookup.err) },
         "Enqueue-time model gate: policy lookup FAILED — dropping the requested model (fail-closed)"
       );
       if (data.agentOptions) delete data.agentOptions.model;
+      return;
+    }
+    const { resolved } = lookup;
+    if (!resolved.replaced) return;
+    this.failAutomationTurnOnUnverifiedModel(
+      data,
+      "Automation model changed after preflight; retrying before worker enqueue",
+      { effectiveModel: resolved.model ?? null }
+    );
+    logger.warn(
+      {
+        agentId: data.agentId,
+        organizationId: data.organizationId,
+        requestedModel: requested,
+        allowedRefs: resolved.allowedRefs,
+        effectiveModel: resolved.model ?? null,
+      },
+      "Enqueue-time model gate: requested model is not routable under the agent's allowed models list — enforcing (fail-closed)"
+    );
+    if (data.agentOptions) {
+      if (resolved.model) data.agentOptions.model = resolved.model;
+      else delete data.agentOptions.model;
     }
   }
 

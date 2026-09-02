@@ -352,15 +352,16 @@ export async function settleAfterTerminalFailure(
 	);
 }
 
-/**
- * Take the Automation row before the run row.
+/*
+ * The terminalization lock order: owning Automation first, run row second.
  *
- * Every terminalization path shares one global lock order -- Automation first,
- * run second -- so they cannot deadlock against complete_window, which takes
- * the same pair in the same order. A caller that already holds this row
- * reacquires it reentrantly. One helper, so the order is stated once instead of
- * restated at every transaction that opens.
+ * Every path that terminalizes a run takes the pair that way, so none can
+ * deadlock against complete_window, which takes it the same way. These three
+ * are the only spellings of it; a fourth is a chance to reverse it. Pinned
+ * under real contention by runs-queue-integration's lock-ORDER test.
  */
+
+/** The Automation row by id. Reentrant for a caller already holding it. */
 export async function lockAutomation(
 	tx: DbClient,
 	automationId: number,
@@ -369,9 +370,8 @@ export async function lockAutomation(
 }
 
 /**
- * Take this worker's own still-running claim on the run, reporting whether it
- * is still there. A false means another worker (or a sweeper) already moved the
- * run on, and the caller must not terminalize it.
+ * This worker's own still-running claim. False means another worker or a
+ * sweeper already moved the run on, and the caller must not terminalize it.
  */
 export async function lockRunningClaim(
 	tx: DbClient,
@@ -388,22 +388,15 @@ export async function lockRunningClaim(
 	return locked.length > 0;
 }
 
-/**
- * Take the `automations` row owning this run FOR UPDATE.
- *
- * The lock ORDER is the invariant: every path that terminalizes a run takes
- * the owning Automation before the run row. Two spellings of this lock are two
- * chances to take them in the other order and deadlock, so there is one.
- */
+/** The Automation row owning `runId`. */
 export async function lockOwningAutomationForRun(
 	tx: DbClient,
 	runId: number,
 	/**
-	 * Present when the caller can assert what this run is: an Automation parent
-	 * in a known org. The linked-child sweeps read both off the child row and
-	 * must not be able to lock another tenant's Automation. The completion paths
-	 * arrive with a run id alone -- reading its org first would invert the very
-	 * lock order this call establishes -- so they omit it.
+	 * Asserts this run is an Automation parent in this org, so a linked-child
+	 * sweep cannot lock another tenant's Automation. Omitted by the completion
+	 * paths, which hold only a run id: reading its org first would invert the
+	 * order this call establishes.
 	 */
 	parent?: { organizationId: string },
 ): Promise<void> {

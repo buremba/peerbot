@@ -27,7 +27,11 @@ import {
   linkedChildIdentityColumns,
   THREAD_MESSAGE_QUEUE_PREFIX,
 } from "../orchestration/deployment-identity.js";
-import { lockOwningAutomationForRun } from "../../automations/run-completion.js";
+import {
+  lockAutomation,
+  lockOwningAutomationForRun,
+  markAutomationRunFailedInTransaction,
+} from "../../automations/run-completion.js";
 import { getDb } from "../../db/client.js";
 import {
   ensureDbForGatewayTests,
@@ -632,6 +636,108 @@ describe("linked-child identity projection", () => {
     expect(row.agent_id).toBeNull();
     expect(row.conversation_id).toBeNull();
     expect(deploymentNameForLinkedChild(row, orgId)).toBe("dep-abc");
+  });
+});
+
+describe("the terminalization lock ORDER", () => {
+  // Every path that terminalizes a run takes the owning Automation FIRST and
+  // the run row second. That ordering is the branch's deadlock argument, and
+  // nothing exercised it: the helpers were tested in isolation, so a path that
+  // took the pair in the other order would still pass every other test and
+  // only deadlock in production, under two replicas, intermittently.
+  //
+  // This pins the order from the outside. Hold the Automation row, start a real
+  // terminalization, and it must block THERE -- if it had taken the run row
+  // first, taking that row from the holder below would deadlock instead of
+  // succeeding.
+  test("a terminalization blocks on the Automation before touching the run", async () => {
+    const sql = getDb();
+    const orgId = await seedAgentRow("lock-order-agent", {
+      organizationId: "lock-order-org",
+    });
+    const creatorId = "lock-order-creator";
+    await seedOrgMembership(orgId, creatorId, "owner");
+    await sql`
+      INSERT INTO automations
+        (organization_id, agent_id, created_by, automation_group_id, name,
+         status, min_cooldown_seconds, created_at, updated_at)
+      VALUES
+        (${orgId}, 'lock-order-agent', ${creatorId}, 0, 'lock order', 'active',
+         0, now(), now())
+    `;
+    const [automation] = await sql<{ id: number }>`
+      SELECT id FROM automations WHERE organization_id = ${orgId}
+      ORDER BY id DESC LIMIT 1
+    `;
+    const automationId = Number(automation.id);
+    const [run] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        run_type, queue_name, action_input, status, run_at, organization_id,
+        automation_id, claimed_by, claimed_at
+      ) VALUES (
+        'automation', 'automation', '{}'::jsonb, 'running', now(), ${orgId},
+        ${automationId}, 'lock-order-worker', now()
+      )
+      RETURNING id
+    `;
+    const runId = Number(run.id);
+
+    let terminalized: boolean | null = null;
+    let terminalizeError: unknown = null;
+    let holderSawRunRow = false;
+    let terminalizing: Promise<void> = Promise.resolve();
+
+    await sql.begin(async (holder) => {
+      // Holder takes the Automation and keeps it for the whole block.
+      await lockAutomation(holder, automationId);
+
+      // Real terminalization, on its own connection, racing the holder.
+      terminalizing = sql
+        .begin(async (tx) =>
+          markAutomationRunFailedInTransaction(tx, {
+            runId,
+            message: "lock order probe",
+            claimedBy: "lock-order-worker",
+          })
+        )
+        .then(
+          (ok) => {
+            terminalized = ok;
+          },
+          (err) => {
+            terminalizeError = err;
+          }
+        );
+
+      // Give it well past the time it would need if it were not blocked.
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(terminalized).toBeNull();
+      expect(terminalizeError).toBeNull();
+
+      // The decisive step: the run row must still be free. It is only free if
+      // the terminalization is parked on the Automation and has not reached
+      // it -- the reverse order would have it holding this row, and this
+      // statement would block until the deadlock detector shot one of us.
+      const [seen] = await holder<{ id: number }>`
+        SELECT id FROM runs WHERE id = ${runId} FOR UPDATE
+      `;
+      holderSawRunRow = Number(seen?.id) === runId;
+      // Deliberately NOT awaited here: it is parked on the row this
+      // transaction holds, so waiting for it inside the block would be the
+      // test deadlocking itself.
+    });
+
+    await terminalizing;
+
+    expect(holderSawRunRow).toBe(true);
+    expect(terminalizeError).toBeNull();
+    expect(terminalized).toBe(true);
+
+    const [after] = await sql<{ status: string; error_message: string | null }>`
+      SELECT status, error_message FROM runs WHERE id = ${runId}
+    `;
+    expect(after.status).toBe("failed");
+    expect(after.error_message).toBe("lock order probe");
   });
 });
 

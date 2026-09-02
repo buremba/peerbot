@@ -41,6 +41,13 @@ interface ConnectorQueryParams {
   limit?: number;
   offset?: number;
   sort?: { column: string; order: 'asc' | 'desc' };
+  /**
+   * Wall-clock deadline for this pushdown, when the caller has one — the same
+   * shape {@link ReadSourceFeedParams} already exposes on the sibling read path.
+   * It can only SHORTEN the budget: {@link PUSHDOWN_QUERY_TIMEOUT_MS} still caps
+   * it, and a deadline already in the past fails before anything is forked.
+   */
+  deadlineAt?: number;
 }
 
 interface ConnectorQueryResult {
@@ -49,7 +56,39 @@ interface ConnectorQueryResult {
   total?: number;
 }
 
+/**
+ * Hard wall-clock cap on ONE pushdown query. Without it `SubprocessExecutor`'s
+ * 600_000ms default applies, so a slow source could pin a gateway-forked
+ * subprocess for ten minutes per request.
+ *
+ * 30s matches what the request path already promises elsewhere:
+ * `manage_feeds`'s batch read cap and the postgres connector's own
+ * `statement_timeout_ms` default. A connector self-limit is courtesy, though —
+ * the next connector need not have one — so the cap belongs here, on the
+ * platform side. It is deliberately a REQUEST-path budget: a connection tuned
+ * for a long sync statement does not get that long on an interactive read.
+ */
+export const PUSHDOWN_QUERY_TIMEOUT_MS = 30_000;
+
+/**
+ * The budget one pushdown gets: the cap, or whatever is left of the caller's
+ * deadline when that is sooner. Throws when the deadline has already passed, so
+ * an expired request never pays for a fork.
+ */
+export function resolvePushdownTimeoutMs(deadlineAt?: number): number {
+  if (deadlineAt === undefined) return PUSHDOWN_QUERY_TIMEOUT_MS;
+  const remaining = Math.trunc(deadlineAt - Date.now());
+  if (remaining <= 0) {
+    throw Object.assign(new Error('pushdown deadline expired before the query ran'), {
+      exitReason: 'timeout' as const,
+    });
+  }
+  return Math.min(PUSHDOWN_QUERY_TIMEOUT_MS, remaining);
+}
+
 export async function runConnectorQuery(p: ConnectorQueryParams): Promise<ConnectorQueryResult> {
+  // Resolved before any work so an already-expired deadline costs nothing.
+  const timeoutMs = resolvePushdownTimeoutMs(p.deadlineAt);
   const sql = getDb();
   // Resolve org-scoped + active, enforcing the same visibility as manage_connections:
   // owner/admin callers reach every connection; everyone else gets the shared
@@ -126,6 +165,7 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       offset: p.offset,
       sort: p.sort,
     },
+    timeoutMs,
   });
 
   if (result.mode !== 'query') {

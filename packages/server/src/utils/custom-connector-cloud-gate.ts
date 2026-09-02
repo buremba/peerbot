@@ -34,10 +34,32 @@ type CloudDenialReason =
 	| 'ambiguous-artifact-scope'
 	| 'not-in-image';
 
+/**
+ * What the org admin reading the run error can do about each denial.
+ *
+ * The reason code alone read as an outage: a refusal surfaced inside a sync or
+ * reaction run as `not eligible (organization-supplied)` with nothing to say
+ * what the supported path is. The three reasons do not share a remedy — one is
+ * a tenant migration, one needs support to delete a row, one is deploy drift —
+ * so each names its own. Every action named here must be one Cloud actually
+ * permits: source-code installs, updates and rollbacks are all refused by
+ * `assertCustomConnectorInstallAllowed`, so an OpenAPI connector (source
+ * metadata) is not a destination and a tenant cannot remove a shadowing
+ * `connector_versions` row themselves.
+ */
+const CLOUD_DENIAL_REMEDY: Record<CloudDenialReason, string> = {
+	'organization-supplied':
+		'Re-express this connector as an MCP server, ship it as a device connector from a paired device, or run it self-hosted.',
+	'ambiguous-artifact-scope':
+		'An organization-scoped copy of this version shadows the shared connector; contact support to remove the organization-scoped copy so one artifact is selected.',
+	'not-in-image':
+		'The running image ships no source file for this connector key — it was removed or renamed since this version was installed, or the deploy is incomplete. Install its replacement from the current catalog, or contact support.',
+};
+
 function denied(reason: CloudDenialReason): never {
 	throw new ToolError(
 		'PERMISSION',
-		`${CUSTOM_CONNECTOR_CLOUD_DISABLED} Lobu Cloud only runs connector code shipped in its own image; this artifact is not eligible (${reason})`,
+		`${CUSTOM_CONNECTOR_CLOUD_DISABLED} Lobu Cloud only runs connector code shipped in its own image; this artifact is not eligible (${reason}). ${CLOUD_DENIAL_REMEDY[reason]}`,
 	);
 }
 

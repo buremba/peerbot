@@ -711,7 +711,6 @@ function urlCases(): [string, string?][] {
 		"http://example.com/path?query#frag",
 		"http://example.com/\\a\\b",
 		"http:\\\\example.com\\path",
-		"http://example.com/a^b",
 		"http://example.com/a|b",
 		'http://example.com/a"b<c>d`e',
 		"http://example.com/a{b}c",
@@ -1126,6 +1125,20 @@ describe("isolate lane: prelude differential against Node", () => {
 		const cases = urlCases();
 		expect(cases.length).toBeGreaterThanOrEqual(150);
 		await differential("URL", URL_PROBE, cases);
+	});
+
+	it("URL: percent-encodes ^ in paths per the living spec on every supported Node line", async () => {
+		// The URL Standard added U+005E (^) to the path percent-encode set, not to the query or
+		// fragment sets. ada 4 (Node 26) follows it; ada 2.9 (Node 22, the worker image) still
+		// serializes a bare ^. The guest is pinned to the spec so a connector sees one behavior
+		// whichever Node the host runs, which is why this input is kept out of `urlCases()`.
+		const [plain, mixed] = await probeGuest<Array<{ href: string; pathname: string; search: string; hash: string }>>(
+			URL_PROBE,
+			[["http://example.com/a^b"], ["http://example.com/a^b?c^d#e^f"]],
+		);
+		expect(plain.href).toBe("http://example.com/a%5Eb");
+		expect(mixed).toMatchObject({ href: "http://example.com/a%5Eb?c^d#e^f", pathname: "/a%5Eb", search: "?c^d", hash: "#e^f" });
+		expect(["/a^b", "/a%5Eb"]).toContain(new URL("http://example.com/a^b").pathname);
 	});
 
 	it("URL: property setters", async () => {

@@ -173,7 +173,7 @@ describe("connector isolate lane", () => {
 		const report = await bundle(join(SDK_DIR, "src/index.ts"));
 		expect(Object.fromEntries(report.builtins)).toEqual({});
 		expect(report.inputs.filter((p) => HEAVY_INPUT.test(p))).toEqual([]);
-		// 340 KB today; the cap trips long before core's 3 MB graph creeps back.
+		// ~330 KB today; the cap trips long before core's 6 MB graph creeps back.
 		expect(report.bytes).toBeLessThan(1_000_000);
 	});
 

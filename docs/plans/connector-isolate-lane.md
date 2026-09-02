@@ -42,7 +42,7 @@ of it. The SDK's own Node surface is small: `browser/*` and `sources/*` (10 file
 Bare `isolated-vm` context globals are ECMAScript plus `console` only. Needed at load: timers
 (hackernews via domino). Needed at call time by `ky`, which the SDK re-exports: `Request`,
 `Response`, `Headers`, `URLSearchParams`, `AbortController`, `TextEncoder`, `URL`. `process.env` is
-read at call time by `browser-network.ts`.
+read at call time by `browser/network.ts`.
 
 ## Target shape
 
@@ -71,7 +71,8 @@ What changed:
 
 - `logger.ts`: SDK-owned console logger with core's level gating and key redaction; no
   `@lobu/core` import. `console` is the only sink, so each host routes logs itself.
-- `retry.ts`: `retryWithBackoff` inlined with core's exact semantics. The remaining core import,
+- `retry.ts`: core's `retryWithBackoff` inlined, reduced to the exponential, capped, full-jitter
+  path `withHttpRetry` uses. The remaining core import,
   `@lobu/core/contracts/tools/manage-automations`, is a pure TypeBox subpath and stays.
 - `browser/*` moved to `@lobu/connector-sdk/browser` and the `FileSystemSource` implementations
   to `@lobu/connector-sdk/sources`; the root index stops re-exporting them and keeps only the
@@ -108,7 +109,7 @@ What changed:
   hooks: `events.emit` chunked to `onEventChunk`, `checkpoint.update` to `onCheckpointUpdate`,
   `device.dispatch` to `onChromeDispatch`, `signal.wait`, `http.fetch` (host fetch, buffered body
   with a cap), `log`, `sleep`.
-- SDK linking: inline per bundle. Proven and cheap now that the root is 340 KB before
+- SDK linking: inline per bundle. Proven and cheap now that the root is ~330 KB before
   tree-shaking; a linked SDK module per process is an optimization to measure later.
 - Limits per lane: memory 512 MB (matches the fork's old-space setting), wall clock 10 min, message
   cap 4 to 16 MB, fetch body cap.

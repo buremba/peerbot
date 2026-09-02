@@ -19,7 +19,6 @@
 import type { AgentInlineGuardrail } from "@lobu/core";
 import { describe, expect, test } from "bun:test";
 import {
-  buildPolicyBundle,
   egressGuardrailsToPolicyBundle,
   PolicyStore,
 } from "../policy-store.js";
@@ -209,110 +208,93 @@ describe("PolicyStore — policyHash", () => {
   });
 });
 
-// ─── buildPolicyBundle ────────────────────────────────────────────────────────
+// ─── egressGuardrailsToPolicyBundle ──────────────────────────────────────────
+//
+// These assertions used to run against `buildPolicyBundle`, the legacy builder
+// that had no production caller and existed only as an oracle. It is deleted;
+// the properties it covered (domain normalisation + dedup, skipping empty
+// domains, per-judge model mapping) are properties of the LIVE builder, so
+// they are asserted on it directly.
 
-describe("buildPolicyBundle", () => {
-  test("returns undefined when no judged domains", () => {
-    expect(buildPolicyBundle({ judgedDomains: [] })).toBeUndefined();
-    expect(buildPolicyBundle({})).toBeUndefined();
-  });
+describe("egressGuardrailsToPolicyBundle", () => {
+  function guardrail(
+    over: Partial<AgentInlineGuardrail> & { name: string }
+  ): AgentInlineGuardrail {
+    return {
+      enabled: true,
+      stage: "egress",
+      policy: "Policy.",
+      ...over,
+    } as AgentInlineGuardrail;
+  }
 
-  test("returns a bundle when at least one judged domain exists", () => {
-    const bundle = buildPolicyBundle({
-      judgedDomains: [{ domain: "api.example.com" }],
-      judges: { default: "Policy." },
-    });
-    expect(bundle).not.toBeUndefined();
+  test("deduplicates equivalent domain patterns", () => {
+    const bundle = egressGuardrailsToPolicyBundle([
+      guardrail({ name: "j1", domains: ["*.example.com"] }),
+      guardrail({ name: "j2", domains: [".example.com"] }),
+    ]);
+    // Both normalise to ".example.com".
     expect(bundle!.judgedDomains).toHaveLength(1);
   });
 
-  test("deduplicates equivalent domain patterns (last wins)", () => {
-    const bundle = buildPolicyBundle({
-      judgedDomains: [
-        { domain: "*.example.com", judge: "j1" },
-        { domain: ".example.com", judge: "j2" }, // same normalized form
-      ],
-      judges: { j1: "First.", j2: "Second." },
-    });
-    // Both normalize to ".example.com", so only one remains.
-    expect(bundle!.judgedDomains).toHaveLength(1);
-    // Last declaration wins — judge should be j2.
-    expect(bundle!.judgedDomains[0]!.judge).toBe("j2");
-  });
-
-  test("skips rules with falsy domain", () => {
-    const bundle = buildPolicyBundle({
-      judgedDomains: [
-        { domain: "" },
-        { domain: "api.example.com" },
-      ],
-      judges: { default: "Policy." },
-    });
-    // Only the non-empty domain should appear.
+  test("skips empty domain entries", () => {
+    const bundle = egressGuardrailsToPolicyBundle([
+      guardrail({ name: "j", domains: ["", "api.example.com"] }),
+    ]);
     expect(bundle!.judgedDomains).toHaveLength(1);
     expect(bundle!.judgedDomains[0]!.domain).toBe("api.example.com");
   });
 
-  test("maps the legacy agent-wide judgeModel onto each named judge", () => {
-    const bundle = buildPolicyBundle({
-      judgedDomains: [{ domain: "api.example.com" }],
-      judges: { default: "Base." },
-      egressConfig: { judgeModel: "claude-haiku-4-5-20251001" },
-    });
-    expect(bundle!.judgeModels?.default).toBe("claude-haiku-4-5-20251001");
+  test("carries each guardrail's own model onto its judge", () => {
+    const bundle = egressGuardrailsToPolicyBundle([
+      guardrail({
+        name: "repo",
+        domains: [".github.com"],
+        model: "openai/gpt-4o-mini",
+      }),
+    ]);
+    expect(bundle!.judgeModels?.repo).toBe("openai/gpt-4o-mini");
   });
 });
 
-// ─── egress-guardrail → policy-bundle equivalence (the safety net) ────────────
+// ─── egress guardrail → resolved judge rule ──────────────────────────────────
 //
-// Proves the NEW source (an `egress`-stage inline guardrail) resolves to the
-// SAME `ResolvedJudgeRule` the EgressJudge consumes as the LEGACY
-// `network.judged`/`judges`/`egressConfig` source did. Only the bundle SOURCE
-// changed; enforcement (PolicyStore.resolve → EgressJudge.decide) is untouched.
+// The equivalence test that lived here compared this path against
+// `buildPolicyBundle`. That oracle is gone, so the same guarantees are pinned
+// as direct assertions on what `PolicyStore.resolve` hands `EgressJudge`.
 
-describe("egressGuardrailsToPolicyBundle — equivalence with the legacy path", () => {
-  test("resolves identically to the old network.judged/judges/judgeModel path", () => {
+describe("egressGuardrailsToPolicyBundle — resolution", () => {
+  test("resolves to the composed policy, judge name, and per-judge model", () => {
     const org = "org-eq";
     const agent = "agent-eq";
     const host = "api.github.com";
 
-    // NEW path: a single egress inline guardrail.
     const guardrail: AgentInlineGuardrail = {
       name: "repo",
       enabled: true,
       stage: "egress",
       policy: "only github",
       domains: [".github.com"],
-      model: "x",
+      model: "openai/gpt-4o-mini",
     };
-    const newBundle = egressGuardrailsToPolicyBundle([guardrail]);
-    expect(newBundle).toBeDefined();
-    const newStore = new PolicyStore();
-    newStore.set(org, agent, newBundle!);
-    const fromNew = newStore.resolve(org, agent, host);
+    const bundle = egressGuardrailsToPolicyBundle([guardrail]);
+    expect(bundle).toBeDefined();
+    const store = new PolicyStore();
+    store.set(org, agent, bundle!);
+    const resolved = store.resolve(org, agent, host);
 
-    // OLD path: the exact inputs the legacy source produced.
-    const oldBundle = buildPolicyBundle({
-      judgedDomains: [{ domain: ".github.com", judge: "repo" }],
-      judges: { repo: "only github" },
-      egressConfig: { judgeModel: "x" },
-    });
-    expect(oldBundle).toBeDefined();
-    // Same (org, agent) so the agent-scoped policyHash is comparable; separate
-    // store instance so the two bundles don't clobber one another.
-    const oldStore = new PolicyStore();
-    oldStore.set(org, agent, oldBundle!);
-    const fromOld = oldStore.resolve(org, agent, host);
-
-    expect(fromNew).toBeDefined();
-    expect(fromOld).toBeDefined();
-    // Semantics-preserving for EgressJudge.decide: identical composed policy,
-    // cache-keying hash, judge name, and per-judge model.
-    expect(fromNew!.policy).toBe(fromOld!.policy);
-    expect(fromNew!.policyHash).toBe(fromOld!.policyHash);
-    expect(fromNew!.judgeName).toBe(fromOld!.judgeName);
-    expect(fromNew!.judgeModel).toBe(fromOld!.judgeModel);
-    expect(fromNew!.judgeModel).toBe("x");
+    expect(resolved).toBeDefined();
+    expect(resolved!.policy).toBe("only github");
+    expect(resolved!.judgeName).toBe("repo");
+    expect(resolved!.judgeModel).toBe("openai/gpt-4o-mini");
+    // The hash is what keys the verdict cache and the circuit breaker; it must
+    // be present and stable for the same (org, agent, judge, policy).
+    expect(resolved!.policyHash).toBeTruthy();
+    const again = new PolicyStore();
+    again.set(org, agent, egressGuardrailsToPolicyBundle([guardrail])!);
+    expect(again.resolve(org, agent, host)!.policyHash).toBe(
+      resolved!.policyHash
+    );
   });
 
   test("returns undefined when no egress guardrail declares a domain", () => {

@@ -62,6 +62,16 @@ export class ProviderRegistryService {
   private loaded?: ProvidersConfigFile;
   private rawLoaded?: ProvidersConfigFile;
   private loadAttempted = false;
+  /**
+   * When a load FAILED, the earliest time we will try again. A failure used to
+   * set `loadAttempted` permanently, so one transient miss — a config volume
+   * not mounted yet, a blip fetching a remote registry — disabled the registry
+   * for the life of the process. Callers that fail closed on an unreadable
+   * registry (the egress judge) would then deny every request forever with no
+   * path back short of a restart. Retry on a cooldown so a transient failure
+   * heals, without hot-looping on a registry that is genuinely absent.
+   */
+  private retryLoadAfter = 0;
 
   constructor(
     configUrl?: string,
@@ -99,14 +109,33 @@ export class ProviderRegistryService {
     this.loaded = undefined;
     this.rawLoaded = undefined;
     this.loadAttempted = false;
+    this.retryLoadAfter = 0;
     if (newUrl !== undefined) {
       this.configUrl = newUrl;
     }
   }
 
+  private static readonly LOAD_RETRY_COOLDOWN_MS = 30_000;
+
+  /**
+   * Mark this attempt failed and schedule the next retry.
+   *
+   * `loadAttempted` stays TRUE — it is what arms the cooldown check. Clearing
+   * it here would make the guard short-circuit false and re-read the config
+   * from disk on every single call, which is the hot loop the cooldown exists
+   * to prevent.
+   */
+  private markLoadFailed(): null {
+    this.loadAttempted = true;
+    this.retryLoadAfter =
+      Date.now() + ProviderRegistryService.LOAD_RETRY_COOLDOWN_MS;
+    return null;
+  }
+
   private async loadConfig(): Promise<ProvidersConfigFile | null> {
     if (this.loaded) return this.loaded;
-    if (this.loadAttempted || !this.configUrl) return null;
+    if (!this.configUrl) return null;
+    if (this.loadAttempted && Date.now() < this.retryLoadAfter) return null;
     this.loadAttempted = true;
     try {
       let raw: string;
@@ -117,21 +146,21 @@ export class ProviderRegistryService {
         const response = await fetch(this.configUrl);
         if (!response.ok) {
           logger.error(`Failed to fetch providers config: ${response.status}`);
-          return null;
+          return this.markLoadFailed();
         }
         raw = await response.text();
       } else {
         raw = await readFile(this.configUrl, "utf-8");
       }
       const resolved = resolveProviderRegistryFromRaw(raw);
-      if (!resolved) return null;
+      if (!resolved) return this.markLoadFailed();
       this.rawLoaded = resolved.raw;
       this.loaded = resolved.resolved;
       logger.info(`Loaded ${this.loaded.providers.length} bundled provider(s)`);
       return this.loaded;
     } catch (error) {
       logger.debug("Providers config not available", { error });
-      return null;
+      return this.markLoadFailed();
     }
   }
 }

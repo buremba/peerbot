@@ -175,44 +175,6 @@ export function egressGuardrailsToPolicyBundle(
   };
 }
 
-/**
- * Reference (oracle) builder for the LEGACY `network.judged`/`judges`/
- * `egressConfig` source. No longer wired into production — kept so the
- * equivalence test can prove {@link egressGuardrailsToPolicyBundle} resolves
- * identically to the path it replaced. The legacy agent-wide `judgeModel` maps
- * onto every named judge.
- */
-export function buildPolicyBundle(input: {
-  judgedDomains?: JudgedDomainRule[];
-  judges?: Record<string, string>;
-  egressConfig?: { judgeModel?: string };
-}): JudgePolicyBundle | undefined {
-  const dedupedByDomain = new Map<string, JudgedDomainRule>();
-  for (const r of input.judgedDomains ?? []) {
-    if (!r?.domain) continue;
-    const normalized = normalizeDomainPattern(r.domain);
-    dedupedByDomain.set(normalized, {
-      domain: normalized,
-      ...(r.judge ? { judge: r.judge } : {}),
-    });
-  }
-  const judgedDomains = Array.from(dedupedByDomain.values());
-  if (judgedDomains.length === 0) return undefined;
-
-  const judges = { ...(input.judges ?? {}) };
-  const judgeModels: Record<string, string> = {};
-  if (input.egressConfig?.judgeModel) {
-    for (const name of Object.keys(judges)) {
-      judgeModels[name] = input.egressConfig.judgeModel;
-    }
-  }
-  return {
-    judgedDomains,
-    judges,
-    ...(Object.keys(judgeModels).length > 0 ? { judgeModels } : {}),
-  };
-}
-
 function prepareBundle(
   organizationId: string,
   agentId: string,

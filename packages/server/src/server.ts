@@ -18,6 +18,7 @@
 // Refuse to boot under an unsupported Node major (isolated-vm gate). The module
 // asserts on load, so this side-effect import MUST be first.
 import "./utils/assert-node-version";
+import { checkConfiguredJudgeModel } from "./gateway/inference/system-judge-target";
 
 // Sentry must init before any other imports for auto-instrumentation.
 import "./instrument";
@@ -215,6 +216,12 @@ async function main(): Promise<void> {
 					logger.error({ err }, "Connector external dependency check failed");
 					process.exit(1);
 				}
+			},
+			// Surface an unusable EGRESS_JUDGE_MODEL at boot rather than at the
+			// first denied request. Not fatal: the judge is optional, and a
+			// misconfigured optional control must not become a gateway outage.
+			async () => {
+				await checkConfiguredJudgeModel();
 			},
 		],
 		extraTeardown,

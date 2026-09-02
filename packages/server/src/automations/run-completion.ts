@@ -119,7 +119,10 @@ export async function bumpDeviceFinalizeNudge(
 		if (locked.length === 0) return "missed";
 		const approvalFailure = await describePendingApproval(tx, runId, 0);
 		if (approvalFailure) {
-			await markAutomationRunFailedInTransaction(tx, runId, approvalFailure);
+			await markAutomationRunFailedInTransaction(tx, {
+				runId,
+				message: approvalFailure,
+			});
 			return "blocked";
 		}
 		const rows = (await tx`
@@ -213,49 +216,53 @@ async function terminalizeSuccessfulTurn(
 		if (locked.length === 0) return false;
 		const approvalFailure = await describePendingApproval(tx, runId, budget);
 		if (approvalFailure) {
-			return markAutomationRunFailedInTransaction(
-				tx,
+			return markAutomationRunFailedInTransaction(tx, {
 				runId,
-				approvalFailure,
-			);
+				message: approvalFailure,
+			});
 		}
 		await markAutomationRunCompleted(tx, runId, "lobu-agent", expectedMessageId, claimedBy);
 		return true;
 	});
 }
 
+/** Everything a failure terminalization needs beyond the run's own row. */
+export type AutomationRunFailure = {
+	runId: number;
+	message: string;
+	/** Hold the schedule until this instant — a provider quota reset. */
+	notBefore?: Date | null;
+	errorCode?: string | null;
+	/** Terminalize only while the run still carries this dispatched message. */
+	expectedMessageId?: string;
+	/** Terminalize only while the run is still claimed by this worker. */
+	claimedBy?: string;
+	/** Pause the Automation instead of advancing its schedule. */
+	permanentConfigurationFailure?: boolean;
+};
+
 async function markAutomationRunFailed(
 	sql: DbClient,
-	runId: number,
-	message: string,
-	notBefore?: Date | null,
-	errorCode?: string | null,
-	expectedMessageId?: string,
-	claimedBy?: string,
+	failure: AutomationRunFailure,
 ): Promise<boolean> {
 	return sql.begin(async (tx) => {
-		return markAutomationRunFailedInTransaction(
-			tx,
-			runId,
-			message,
-			notBefore,
-			errorCode,
-			expectedMessageId,
-			claimedBy,
-		);
+		return markAutomationRunFailedInTransaction(tx, failure);
 	});
 }
 
 export async function markAutomationRunFailedInTransaction(
 	tx: DbClient,
-	runId: number,
-	message: string,
-	notBefore?: Date | null,
-	errorCode?: string | null,
-	expectedMessageId?: string,
-	claimedBy?: string,
-	permanentConfigurationFailure = false,
+	failure: AutomationRunFailure,
 ): Promise<boolean> {
+	const {
+		runId,
+		message,
+		notBefore,
+		errorCode,
+		expectedMessageId,
+		claimedBy,
+		permanentConfigurationFailure = false,
+	} = failure;
 	// completeWindow owns the Automation before its run. Failure, retry, and
 	// queue-dead-letter paths must take the same order or a valid completion can
 	// deadlock against terminalization and lose its transaction.
@@ -465,14 +472,11 @@ export async function failAutomationParentRunFromQueue(
 	const messageId = child?.message_id?.trim();
 	if (!child || !messageId) return false;
 
-	const failed = await markAutomationRunFailedInTransaction(
-		tx,
-		parentRunId,
-		`Automation worker queue run ${childRunId} failed: ${message}`,
-		undefined,
-		undefined,
-		messageId,
-	);
+	const failed = await markAutomationRunFailedInTransaction(tx, {
+		runId: parentRunId,
+		message: `Automation worker queue run ${childRunId} failed: ${message}`,
+		expectedMessageId: messageId,
+	});
 	if (!failed) return false;
 	await tx`
 		UPDATE public.runs
@@ -565,15 +569,14 @@ export async function resolveAutomationRunsByMessageIds(
 				result.errorCode
 			);
 			if (
-				await markAutomationRunFailed(
-					sql,
+				await markAutomationRunFailed(sql, {
 					runId,
-					result.error,
+					message: result.error,
 					notBefore,
-					result.errorCode,
-					typedRow.dispatched_message_id ?? undefined,
-					typedRow.claimed_by ?? undefined
-				)
+					errorCode: result.errorCode,
+					expectedMessageId: typedRow.dispatched_message_id ?? undefined,
+					claimedBy: typedRow.claimed_by ?? undefined,
+				})
 			) {
 				resolved++;
 			}
@@ -594,7 +597,14 @@ export async function resolveAutomationRunsByMessageIds(
 
 		const approvalFailure = await describePendingApproval(sql, runId, budget);
 		if (approvalFailure) {
-			if (await markAutomationRunFailed(sql, runId, approvalFailure, undefined, undefined, typedRow.dispatched_message_id ?? undefined, typedRow.claimed_by ?? undefined)) {
+			if (
+				await markAutomationRunFailed(sql, {
+					runId,
+					message: approvalFailure,
+					expectedMessageId: typedRow.dispatched_message_id ?? undefined,
+					claimedBy: typedRow.claimed_by ?? undefined,
+				})
+			) {
 				resolved++;
 			}
 			continue;
@@ -616,12 +626,12 @@ export async function resolveAutomationRunsByMessageIds(
 			continue;
 		}
 		if (
-			await markAutomationRunFailed(
-				sql,
+			await markAutomationRunFailed(sql, {
 				runId,
-				await describeFinalizeMiss(sql, runId, budget),
-				undefined, undefined, typedRow.dispatched_message_id ?? undefined, typedRow.claimed_by ?? undefined
-			)
+				message: await describeFinalizeMiss(sql, runId, budget),
+				expectedMessageId: typedRow.dispatched_message_id ?? undefined,
+				claimedBy: typedRow.claimed_by ?? undefined,
+			})
 		) {
 			resolved++;
 		}

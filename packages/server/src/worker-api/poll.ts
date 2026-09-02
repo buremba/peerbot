@@ -136,16 +136,13 @@ export async function failClaimedWorkerRun(params: {
 	`;
 	if (!state) return false;
 	if (state.run_type === 'automation' || state.run_type === 'automation_eval') {
-	  return markAutomationRunFailedInTransaction(
-		tx,
-		params.runId,
-		params.errorMessage,
-		undefined,
-		undefined,
-		undefined,
-		params.workerId,
-		params.permanentConfigurationFailure ?? false
-	  );
+	  return markAutomationRunFailedInTransaction(tx, {
+		runId: params.runId,
+		message: params.errorMessage,
+		claimedBy: params.workerId,
+		permanentConfigurationFailure:
+		  params.permanentConfigurationFailure ?? false,
+	  });
 	}
     const rows = await tx<{
       organization_id: string;

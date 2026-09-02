@@ -277,11 +277,22 @@ async function enqueueAutomationRunForRecord(
 	sql: DbClient,
 	automation: DueAutomationRow,
 	dispatchSource: AutomationRunPayload["dispatch_source"],
-	sourceFingerprint?: string,
-	tx?: DbClient,
-	sourcePreflightPending = false,
-	sourceFingerprintRequired = false,
+	options: {
+		sourceFingerprint?: string;
+		/** Write the run inside this open transaction instead of `sql`. */
+		tx?: DbClient;
+		/** Source validation must finish before the run may be dispatched. */
+		sourcePreflightPending?: boolean;
+		/** Also compare source content and skip an unchanged window. */
+		sourceFingerprintRequired?: boolean;
+	} = {},
 ): Promise<QueueAutomationRunResult> {
+	const {
+		sourceFingerprint,
+		tx,
+		sourcePreflightPending = false,
+		sourceFingerprintRequired = false,
+	} = options;
 	if ((automation.status ?? "active") !== "active") {
 		throw new Error(`Automation ${automation.id} is not active.`);
 	}
@@ -552,13 +563,9 @@ async function enqueueAutomationRunForAutomationWithClient(
 		throw new ToolUserError(`Automation ${automationId} not found.`, 404);
 	}
 
-	return enqueueAutomationRunForRecord(
-		sql,
-		automation,
-		dispatchSource,
-		undefined,
+	return enqueueAutomationRunForRecord(sql, automation, dispatchSource, {
 		tx,
-	);
+	});
 }
 
 export async function enqueueAutomationRunForAutomation(
@@ -1154,10 +1161,11 @@ export async function materializeDueAutomationRuns(
 				sql,
 				automation,
 				"scheduled",
-				undefined,
-				undefined,
-				true,
-				scheduleTrigger?.skip_if_unchanged === true,
+				{
+					sourcePreflightPending: true,
+					sourceFingerprintRequired:
+						scheduleTrigger?.skip_if_unchanged === true,
+				},
 			);
 			return result.created ? "created" : "skipped";
 		},

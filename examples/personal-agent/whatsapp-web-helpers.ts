@@ -167,14 +167,6 @@ export interface CollectResponse {
   };
 }
 
-export function isWhatsAppUrl(url: unknown): boolean {
-  try {
-    return new URL(String(url)).origin === WHATSAPP_ORIGIN;
-  } catch {
-    return false;
-  }
-}
-
 export function rawMessageId(value: unknown): string | null {
   if (typeof value === "string") {
     const id = value.trim();

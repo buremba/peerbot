@@ -90,6 +90,33 @@ describe("whatsAppWebAdapterProgram serialisation", () => {
     }
   });
 
+  it("quarantines a message in the DirtyMarker shape the connector reconciles on", () => {
+    // Producer side of the contract the connector suite's fixture assumes.
+    // A quarantine marker needs BOTH fields: `key` is what the connector
+    // matches to DROP a reconciled marker, `message_id` is what a later
+    // `dirty_ranges` request looks the message up by. Emitting `{id, ...}`
+    // instead — as this did — leaves `key` undefined, so the marker can never
+    // be reconciled, and because a non-empty `dirty` list pins
+    // `backfill.complete = false`, the backfill never finishes either.
+    const quarantine = source.slice(
+      source.indexOf("quarantined.push({"),
+      source.indexOf("});", source.indexOf("quarantined.push({"))
+    );
+    expect(quarantine).toContain("key:");
+    expect(quarantine).toContain("message_id:");
+    expect(quarantine).not.toMatch(/^\s*id:/m);
+  });
+
+  it("carries no live relay — the connector pulls via `collect`", () => {
+    // The MAIN-world adapter used to postMessage every add/change to the
+    // extension's content script. On the connector path nothing listens, so
+    // leaving it in bound handlers over WAWebCollections.Msg and normalized
+    // every message in the user's live tab for no consumer, plus a 500ms
+    // readiness retry timer that never stopped.
+    expect(source).not.toContain("postMessage");
+    expect(source).not.toContain("setInterval");
+  });
+
   it("keeps every binding inside the function — no module-scope declarations", () => {
     // The runtime test above only exercises the INSTALL path, so a helper
     // hoisted out of the function and used only by an op would survive it and

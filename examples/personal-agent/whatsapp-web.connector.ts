@@ -489,13 +489,12 @@ async function downloadEligibleMedia(
             : (explicitState ??
               (timedOut ? "timeout_retryable" : "unavailable"))
         ) as MediaStatus;
-        const retryable =
-          !TERMINAL_MEDIA_STATES.has(status) || status === "downloaded";
+        const retryable = !TERMINAL_MEDIA_STATES.has(status);
         remember({
           id: message.id,
           revision,
           status,
-          retryable: retryable && status !== "downloaded",
+          retryable,
           attempts,
           next_attempt_at: retryable ? mediaBackoff(attempts) : null,
           updated_at: Date.now(),
@@ -938,14 +937,21 @@ export default class WhatsAppWebConnector extends ConnectorRuntime<
 
     // Carry forward the markers this run did not reconcile, plus anything the
     // adapter newly quarantined.
-    const dirty: DirtyMarker[] = [
-      ...dirtyBefore.filter((marker) => !reconciledKeys.has(marker.key)),
-      ...(result.quarantined ?? []).map((marker) => ({
+    const dirtyByKey = new Map<string, DirtyMarker>();
+    for (const marker of dirtyBefore) {
+      if (!reconciledKeys.has(marker.key)) dirtyByKey.set(marker.key, marker);
+    }
+    for (const marker of result.quarantined ?? []) {
+      dirtyByKey.set(marker.key, {
         ...marker,
         message_id: marker.message_id ?? null,
         minimum_timestamp: null,
-      })),
-    ].slice(0, MAX_DIRTY_MARKERS_PERSISTED);
+      });
+    }
+    const dirty: DirtyMarker[] = [...dirtyByKey.values()].slice(
+      0,
+      MAX_DIRTY_MARKERS_PERSISTED
+    );
     // `mergeBrowserCheckpoint` spreads the prior checkpoint forward, so every
     // one of these fields must be REPLACED, not conditionally set: a marker
     // the adapter just reconciled has to leave the checkpoint, or the next run

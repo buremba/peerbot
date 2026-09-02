@@ -722,3 +722,76 @@ describe("placement", () => {
     ]);
   });
 });
+
+describe("quarantined messages", () => {
+  /**
+   * The adapter and the connector meet on the DirtyMarker shape. A message with
+   * no stable timestamp is quarantined by the adapter and carried in the
+   * checkpoint's `dirty` list until a later run reconciles it.
+   *
+   * Two fields do that work, and both have to arrive: `key` is what
+   * `reconciledKeys` matches to DROP a marker, and `message_id` is what the
+   * adapter filters `dirty_ranges` on to look one up. A marker missing either
+   * is not "slightly wrong" — it is permanently stuck, and because `dirty`
+   * being non-empty pins `backfill.complete = false`, the backfill never
+   * finishes either.
+   */
+  it("carries a quarantined message forward with a reconcilable identity", async () => {
+    const dispatcher = makeDispatcher({
+      probe: READY,
+      collect: {
+        ok: true,
+        messages: [],
+        quarantined: [
+          {
+            key: "111@s.whatsapp.net:QUARANTINED-1",
+            message_id: "QUARANTINED-1",
+            chat_jid: "111@s.whatsapp.net",
+            reason: "missing_stable_timestamp",
+          },
+        ],
+        chats_seen: 1,
+        backfill: { complete: true },
+      },
+    });
+    const { checkpoint } = await messagesFeed().sync(
+      syncCtx(initializeBrowserCheckpoint({}), dispatcher.dispatcher)
+    );
+
+    const dirty = (checkpoint as { dirty?: unknown[] }).dirty ?? [];
+    expect(dirty).toHaveLength(1);
+    const marker = dirty[0] as Record<string, unknown>;
+    expect(marker.message_id).toBe("QUARANTINED-1");
+    expect(marker.key).toBe("111@s.whatsapp.net:QUARANTINED-1");
+  });
+
+  it("does not accumulate a duplicate when the same message is re-quarantined", async () => {
+    const quarantined = [
+      {
+        key: "111@s.whatsapp.net:QUARANTINED-1",
+        message_id: "QUARANTINED-1",
+        chat_jid: "111@s.whatsapp.net",
+        reason: "missing_stable_timestamp",
+      },
+    ];
+    const run = (checkpoint: BrowserCheckpoint) =>
+      messagesFeed().sync(
+        syncCtx(
+          checkpoint,
+          makeDispatcher({
+            probe: READY,
+            collect: {
+              ok: true,
+              messages: [],
+              quarantined,
+              chats_seen: 1,
+              backfill: { complete: true },
+            },
+          }).dispatcher
+        )
+      );
+    const first = await run(initializeBrowserCheckpoint({}));
+    const second = await run(first.checkpoint as BrowserCheckpoint);
+    expect((second.checkpoint as { dirty?: unknown[] }).dirty).toHaveLength(1);
+  });
+});

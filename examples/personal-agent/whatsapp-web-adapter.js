@@ -30,7 +30,6 @@
 
 export function whatsAppWebAdapterProgram() {
   const GLOBAL_KEY = "__owlettoWhatsAppAdapterV1";
-  const SOURCE = "owletto.whatsapp.web.v1";
   const ADAPTER_VERSION = 2;
   const SYSTEM_TYPES = new Set([
     "gp2",
@@ -42,13 +41,12 @@ export function whatsAppWebAdapterProgram() {
 
   const existing = globalThis[GLOBAL_KEY];
   if (existing?.version === ADAPTER_VERSION) {
-    existing.attach?.();
     return;
   }
-  // A WhatsApp tab survives extension updates. Replace the resident adapter
-  // when its implementation revision is stale; otherwise the newly advertised
-  // operations can keep calling the pre-update invoke table until page reload.
-  existing?.detach?.();
+  // A WhatsApp tab survives a page-lifetime longer than one connector version.
+  // Replace a resident adapter whose implementation revision is stale;
+  // otherwise the newly advertised operations keep calling the pre-update
+  // invoke table until the page reloads.
 
   function requireFirst(names) {
     for (const name of names) {
@@ -390,13 +388,6 @@ export function whatsAppWebAdapterProgram() {
       reactions: normalizeReactions(row),
       event_type: eventType,
     };
-  }
-
-  function post(kind, payload) {
-    window.postMessage(
-      { source: SOURCE, version: ADAPTER_VERSION, kind, payload },
-      location.origin
-    );
   }
 
   function readiness() {
@@ -818,7 +809,8 @@ export function whatsAppWebAdapterProgram() {
       if (!message) continue;
       if (message.timestamp <= 0) {
         quarantined.push({
-          id: message.id,
+          key: `${message.chat_jid}:${message.id}`,
+          message_id: message.id,
           chat_jid: message.chat_jid,
           reason: "missing_stable_timestamp",
         });
@@ -1461,75 +1453,5 @@ export function whatsAppWebAdapterProgram() {
     }
   }
 
-  let attachedCollection = null;
-  let onAdd = null;
-  let onChange = null;
-  let retryTimer = null;
-  const adapterInstalledAt = Date.now();
-  let eventSequence = 0;
-  function relayModel(model, eventType) {
-    const sequence = ++eventSequence;
-    void normalizeMessage(model, eventType).then((message) => {
-      if (!message) return;
-      post("message", {
-        ...message,
-        _capture: { adapter_installed_at: adapterInstalledAt, sequence },
-      });
-    });
-  }
-  function attach() {
-    const status = readiness();
-    if (!status.ready) {
-      post("status", status);
-      if (!retryTimer) {
-        let attempts = 0;
-        retryTimer = setInterval(() => {
-          attempts += 1;
-          if (attach() || attempts >= 120) {
-            clearInterval(retryTimer);
-            retryTimer = null;
-          }
-        }, 500);
-      }
-      return false;
-    }
-    const collection = requireFirst(["WAWebCollections"])?.Msg;
-    if (attachedCollection === collection) {
-      post("status", status);
-      return true;
-    }
-    if (attachedCollection?.off) {
-      try {
-        attachedCollection.off("add", onAdd);
-        attachedCollection.off("change", onChange);
-      } catch {
-        /* WhatsApp's private module graph throws freely; a miss is not fatal. */
-      }
-    }
-    onAdd = (model) => relayModel(model, "add");
-    onChange = (model) => relayModel(model, "change");
-    collection.on("add", onAdd);
-    collection.on("change", onChange);
-    attachedCollection = collection;
-    post("status", status);
-    return true;
-  }
-  function detach() {
-    if (retryTimer) clearInterval(retryTimer);
-    retryTimer = null;
-    if (attachedCollection?.off) {
-      try {
-        attachedCollection.off("add", onAdd);
-        attachedCollection.off("change", onChange);
-      } catch {
-        /* WhatsApp's private module graph throws freely; a miss is not fatal. */
-      }
-    }
-    attachedCollection = null;
-    onAdd = null;
-    onChange = null;
-  }
-
-  globalThis[GLOBAL_KEY] = { version: ADAPTER_VERSION, invoke, attach, detach };
-  attach();
+  globalThis[GLOBAL_KEY] = { version: ADAPTER_VERSION, invoke };
 }

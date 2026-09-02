@@ -352,6 +352,29 @@ describe("whatsAppWebAdapterProgram download_media", () => {
       max_bytes: 10_000_000,
     });
 
+  it("bounds a slow download page-side and reports it retryable", async () => {
+    // The caller cannot bound a dispatch — it cannot cancel one, so a local
+    // timer only stops it waiting while the request stays in flight, and the
+    // answer then arrives with no child left to receive it. The budget travels
+    // WITH the request instead, and the page turns "too slow" into an ordinary
+    // retryable answer, so the dispatch always resolves.
+    const { adapter } = installWithMedia({
+      result: new Promise(() => {
+        /* a download that never settles */
+      }),
+    });
+    const result = await adapter.invoke({
+      op: "download_media",
+      adapter_version: WHATSAPP_ADAPTER_VERSION,
+      message_id: "3EB0MEDIA",
+      max_bytes: 10_000_000,
+      timeout_ms: 20_000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("timeout_retryable");
+    expect(result.retryable).toBe(true);
+  });
+
   it("turns the ArrayBuffer the manager returns into a downloaded attachment", async () => {
     // `downloadAndMaybeDecrypt` resolves RAW BYTES, not a Blob. Only the Blob
     // branches existed, so a real download fell through to `unavailable`.

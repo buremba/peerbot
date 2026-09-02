@@ -76,19 +76,28 @@ import { whatsAppWebAdapterProgram } from "./whatsapp-web-adapter.js";
 const READY_TIMEOUT_MS = 25_000;
 const READY_POLL_INTERVAL_MS = 500;
 /**
- * Budget for the WHOLE media phase, checked between items.
+ * Per-item budget, enforced by the ADAPTER inside the page.
  *
- * It is deliberately not a per-dispatch timeout. A chrome dispatch cannot be
- * cancelled, so racing one against a local timer abandons the request while it
- * is still in flight in the parent worker: the child then finishes and exits,
- * the device's answer arrives with nobody to receive it, and the parent's
- * reply-send finds a dead IPC channel. In prod that failed a sync run that had
- * already written its events, and once killed the worker daemon outright.
- * Measured `download_media` evaluates take 3.9-5.2s, so the old 4s cap
- * orphaned a dispatch on nearly every media item.
+ * A caller-side timer cannot bound a dispatch: it cannot cancel one, so racing
+ * it only stops us waiting while the request stays in flight in the parent
+ * worker. The child then finishes and exits, the device's answer arrives with
+ * nobody to receive it, and the parent's reply-send finds a dead IPC channel —
+ * which failed a prod sync run that had already written its events, and once
+ * killed the worker daemon outright. Measured `download_media` evaluates take
+ * 3.9-5.2s, so the old 4s caller-side cap orphaned nearly every media item.
  *
- * A single wedged dispatch is backstopped by the child-side hard timeout, which
- * fires while the child is still alive, so its reply is safe to deliver.
+ * The extension's `evaluate` op takes no timeout and its schema is deliberately
+ * frozen, but the adapter request shape is ours: send the budget with the
+ * request and let the page enforce it, so a slow item comes back as an ordinary
+ * `timeout_retryable` answer instead of an abandoned dispatch. This mirrors how
+ * `x.ts` hands `timeout_ms` to `wait_for_selector` rather than racing it.
+ */
+const MEDIA_ITEM_TIMEOUT_MS = 20_000;
+
+/**
+ * Outer bound on the whole media phase, checked between items. The per-item
+ * budget above caps any single download; this stops a long queue of merely
+ * slow ones from consuming a run. Items past it stay retryable.
  */
 const MEDIA_PHASE_BUDGET_MS = 60_000;
 const MEDIA_CONCURRENCY = 3;
@@ -428,6 +437,7 @@ async function downloadEligibleMedia(
           op: "download_media",
           message_id: message.id,
           max_bytes: MAX_MEDIA_BYTES,
+          timeout_ms: MEDIA_ITEM_TIMEOUT_MS,
         });
         const rawStatus = MEDIA_STATES.has(response.status ?? "")
           ? (response.status as string)

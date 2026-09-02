@@ -136,32 +136,32 @@ describe('scheduled feed device liveness', () => {
     );
     expect(staleDeferred.last_sync_status).toBeNull();
 
-    const manifestFeedId = await createDueFeed('whatsapp.local');
+    const manifestFeedId = await createDueFeed('local.directory');
     await sql`
       UPDATE connector_definitions
-      SET required_capability = 'whatsapp_local',
+      SET required_capability = 'local_directory',
           runtime = ${sql.json({ platforms: ['macos'] })}
-      WHERE organization_id = ${org.id} AND key = 'whatsapp.local'
+      WHERE organization_id = ${org.id} AND key = 'local.directory'
     `;
     await sql`
       INSERT INTO connector_versions (
         organization_id, connector_key, version, compiled_code,
         compiled_code_hash, compile_config_hash, source_code, source_path, created_at
       ) VALUES (
-        ${org.id}, 'whatsapp.local', '1.0.0', NULL,
-        'mac-whatsapp-manifest-hash', NULL, NULL,
-        'device-manifest://macos/whatsapp.local@1.0.0', NOW()
+        ${org.id}, 'local.directory', '1.0.0', NULL,
+        'mac-directory-manifest-hash', NULL, NULL,
+        'device-manifest://macos/local.directory@1.0.0', NOW()
       )
       ON CONFLICT DO NOTHING
     `;
     await sql`
       UPDATE connector_versions
       SET compiled_code = NULL,
-          compiled_code_hash = 'mac-whatsapp-manifest-hash',
+          compiled_code_hash = 'mac-directory-manifest-hash',
           compile_config_hash = NULL,
           source_code = NULL,
-          source_path = 'device-manifest://macos/whatsapp.local@1.0.0'
-      WHERE connector_key = 'whatsapp.local' AND version = '1.0.0'
+          source_path = 'device-manifest://macos/local.directory@1.0.0'
+      WHERE connector_key = 'local.directory' AND version = '1.0.0'
         AND organization_id = ${org.id}
     `;
     await sql`
@@ -172,7 +172,7 @@ describe('scheduled feed device liveness', () => {
     await sql`
       UPDATE connector_definitions
       SET version = '2.0.0'
-      WHERE organization_id = ${org.id} AND key = 'whatsapp.local'
+      WHERE organization_id = ${org.id} AND key = 'local.directory'
     `;
 
     // A deferred feed sits past next_run_at for as long as its device is away,

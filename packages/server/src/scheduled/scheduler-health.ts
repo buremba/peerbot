@@ -11,7 +11,6 @@ import type { Env } from '../index';
 import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import {
   delegatedBrowserAffinitySql,
-  legacyNonManifestConnectorSql,
   selectedConnectorVersionArtifactSql,
 } from '../utils/connector-execution-placement';
 import logger from '../utils/logger';
@@ -97,9 +96,6 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
                 ${delegatedBrowserAffinitySql(sql, {
                   platform: sql`dw.platform`,
                   connectorKey: sql`c.connector_key`,
-                  connectorVersion: sql`COALESCE(f.pinned_version, cd.version)`,
-                  manifestBacked: sql`run_cv.manifest_backed`,
-                  artifactSourcePath: sql`run_cv.artifact_source_path`,
                 })},
                 false
               )
@@ -110,11 +106,6 @@ export async function getSchedulerHealth(_env: Env): Promise<SchedulerHealthStat
                 cd.run_required_capability IS NOT NULL
                 OR COALESCE(run_cv.manifest_backed, false)
               )
-              AND NOT (${legacyNonManifestConnectorSql(sql, {
-                connectorKey: sql`c.connector_key`,
-                manifestBacked: sql`run_cv.manifest_backed`,
-                artifactCompiledCode: sql`run_cv.artifact_compiled_code`,
-              })})
             )
           ) AS device_deferred
         FROM feeds f

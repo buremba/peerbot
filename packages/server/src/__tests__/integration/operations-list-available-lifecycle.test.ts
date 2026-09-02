@@ -69,7 +69,7 @@ const KEY_DISCONNECTED = "demo.ops.disconnected";
 const KEY_INACTIVE = "demo.ops.inactive";
 const KEY_DEVICE = "demo.ops.device";
 const KEY_DEVICE_SETUP = "chrome.test_readiness";
-const KEY_COMPILED_LEGACY = "whatsapp.local";
+const KEY_COMPILED_LEGACY = "demo.ops.compiled";
 
 const ACTIONS_SCHEMA = {
 	create_issue: {
@@ -521,14 +521,14 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 		await sql`
 			UPDATE connector_definitions
 			SET runtime = ${sql.json({ platforms: ["chrome-extension"] })},
-			    required_capability = 'browser.whatsapp'
+			    required_capability = 'browser.debugger'
 			WHERE organization_id = ${org.id} AND key = ${KEY_DEVICE_SETUP}
 		`;
 		const manifest = {
 			key: KEY_DEVICE_SETUP,
 			version: "1.0.0",
 			name: "Device Setup Connector",
-			required_capability: "browser.whatsapp",
+			required_capability: "browser.debugger",
 			runtime: { platforms: ["chrome-extension"] },
 			auth_schema: { methods: [{ type: "none" }] },
 			feeds_schema: {},
@@ -580,7 +580,7 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 			next_action: { action: "open_setup", manual: true },
 		});
 		expect(create.execution_targets[0]?.reason).toMatch(
-			/browser\.whatsapp.*finish setup.*retry/i,
+			/browser\.debugger.*finish setup.*retry/i,
 		);
 
 		const listed = (await manageFeeds(
@@ -593,7 +593,7 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 				id: feed.id,
 				attention: "setup_required",
 				attention_reason: expect.stringMatching(
-					/browser\.whatsapp.*finish setup.*retry/i,
+					/browser\.debugger.*finish setup.*retry/i,
 				),
 			}),
 		);
@@ -611,7 +611,7 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 				label, organization_id, last_seen_at
 			) VALUES (
 				${user.id}, ${`ext-${Math.random().toString(36).slice(2, 10)}`},
-				'chrome-extension', ${sql.json(["browser.whatsapp"])},
+				'chrome-extension', ${sql.json(["browser.debugger"])},
 				${sql.json({
 					[KEY_DEVICE_SETUP]: {
 						manifest,
@@ -636,7 +636,7 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 
 	it("does not apply newer device inventory to a compiled legacy connector", async () => {
 		const { org, user } = await setupOwner("Ops Compiled Legacy Org");
-		await seedConnector(org.id, KEY_COMPILED_LEGACY, "Compiled WhatsApp");
+		await seedConnector(org.id, KEY_COMPILED_LEGACY, "Compiled Legacy Connector");
 		const sql = getTestDb();
 		await sql`
 			UPDATE connector_definitions
@@ -647,8 +647,8 @@ describe("operations.listAvailable — capability discovery DTO", () => {
 		const inventoryManifest = {
 			key: KEY_COMPILED_LEGACY,
 			version: "2.0.0",
-			name: "WhatsApp Personal",
-			required_capability: "browser.whatsapp",
+			name: "Compiled Legacy Connector",
+			required_capability: "browser.debugger",
 			runtime: { platforms: ["chrome-extension"] },
 			auth_schema: { methods: [{ type: "none" }] },
 			feeds_schema: {},

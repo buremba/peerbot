@@ -305,98 +305,6 @@ describe('browser-affinity poll claim', () => {
     expect(row.claimed_by).toBe('fleet-chrome-prefix-affinity');
   });
 
-  it('keeps a compiled whatsapp.local artifact with stale manifest provenance on the fleet lane', async () => {
-    const { userId, orgId } = await seedOrg();
-    const { deviceWorkerId, workerId } = await seedExtWorker(userId, orgId);
-    const sql = getTestDb();
-    const connectorVersion = `compiled-${generateSecureToken(4)}`;
-    await createTestConnectorDefinition({
-      key: 'whatsapp.local',
-      name: 'WhatsApp compiled override',
-      version: connectorVersion,
-      organization_id: orgId,
-    });
-    await sql`
-      UPDATE connector_definitions
-      SET required_capability = 'browser.scripting',
-          runtime = ${sql.json({ platforms: ['chrome-extension'] })}
-      WHERE organization_id = ${orgId}
-        AND key = 'whatsapp.local'
-        AND status = 'active'
-    `;
-    await sql`
-      INSERT INTO connector_versions (
-        organization_id, connector_key, version, compiled_code,
-        compiled_code_hash, compile_config_hash, source_path, created_at
-      ) VALUES (
-        ${orgId}, 'whatsapp.local', ${connectorVersion},
-        'module.exports = { sync: async () => ({ items: [] }) }',
-        'org-compiled-whatsapp-hash', ${COMPILE_CONFIG_HASH},
-        ${`device-manifest://chrome-extension/whatsapp.local@${connectorVersion}`}, NOW()
-      )
-    `;
-    const connectionId = await seedConnection({
-      orgId,
-      userId,
-      connectorKey: 'whatsapp.local',
-      deviceWorkerId,
-    });
-    const runId = await seedPendingSync({
-      orgId,
-      connectionId,
-      connectorKey: 'whatsapp.local',
-      connectorVersion,
-    });
-
-    const extensionResponse = await pollExtension(workerId);
-    expect(extensionResponse.status).toBe(200);
-    const extensionBody = (await extensionResponse.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(extensionBody.run_id).toBeUndefined();
-    expect(extensionBody.skipped_run_id).toBeUndefined();
-
-    const fleetResponse = await pollFleet('fleet-whatsapp-compiled-override');
-    expect(fleetResponse.status).toBe(200);
-    const fleetBody = (await fleetResponse.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(Number(fleetBody.run_id ?? fleetBody.skipped_run_id)).toBe(runId);
-    const [run] = (await sql`
-      SELECT claimed_by FROM runs WHERE id = ${runId}
-    `) as unknown as Array<{ claimed_by: string | null }>;
-    expect(run.claimed_by).toBe('fleet-whatsapp-compiled-override');
-
-    await sql`
-      UPDATE runs SET status = 'completed', completed_at = NOW() WHERE id = ${runId}
-    `;
-    await sql`
-      UPDATE connections SET device_worker_id = NULL WHERE id = ${connectionId}
-    `;
-    const unpinnedRunId = await seedPendingSync({
-      orgId,
-      connectionId,
-      connectorKey: 'whatsapp.local',
-      connectorVersion,
-    });
-    const unpinnedExtensionResponse = await pollExtension(workerId);
-    expect(unpinnedExtensionResponse.status).toBe(200);
-    expect(
-      ((await unpinnedExtensionResponse.json()) as { run_id?: number }).run_id
-    ).toBeUndefined();
-    const unpinnedFleetResponse = await pollFleet('fleet-whatsapp-unpinned-compiled');
-    expect(unpinnedFleetResponse.status).toBe(200);
-    const unpinnedFleetBody = (await unpinnedFleetResponse.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(Number(unpinnedFleetBody.run_id ?? unpinnedFleetBody.skipped_run_id)).toBe(
-      unpinnedRunId
-    );
-  });
-
   it('does not let Chrome capability-claim a hashless manifest artifact without connector_manifests', async () => {
     const { userId, orgId } = await seedOrg();
     const { workerId } = await seedExtWorker(userId, orgId);
@@ -466,62 +374,6 @@ describe('browser-affinity poll claim', () => {
     expect(run).toEqual({ status: 'pending', claimed_by: null });
   });
 
-  it('does not let the fleet claim an artifact-less whatsapp.local run', async () => {
-    const { userId, orgId } = await seedOrg();
-    const sql = getTestDb();
-    const connectorVersion = `artifactless-${generateSecureToken(4)}`;
-    await createTestConnectorDefinition({
-      key: 'whatsapp.local',
-      name: 'Artifact-less WhatsApp',
-      version: connectorVersion,
-      organization_id: orgId,
-    });
-    await sql`
-      INSERT INTO connector_versions (
-        organization_id, connector_key, version, compiled_code, compile_config_hash, created_at
-      ) VALUES (
-        ${orgId}, 'whatsapp.local', ${connectorVersion},
-        'module.exports = { sync: async () => ({ items: [] }) }',
-        ${COMPILE_CONFIG_HASH}, NOW()
-      )
-      ON CONFLICT DO NOTHING
-    `;
-    await sql`
-      UPDATE connector_versions
-      SET compiled_code = NULL,
-          compiled_code_hash = NULL,
-          compile_config_hash = NULL,
-          source_code = NULL,
-          source_path = NULL
-      WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
-        AND version = ${connectorVersion}
-    `;
-    const connectionId = await seedConnection({
-      orgId,
-      userId,
-      connectorKey: 'whatsapp.local',
-      deviceWorkerId: null,
-    });
-    const runId = await seedPendingSync({
-      orgId,
-      connectionId,
-      connectorKey: 'whatsapp.local',
-      connectorVersion,
-    });
-
-    const response = await pollFleet('fleet-whatsapp-artifactless');
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as { run_id?: number; skipped_run_id?: number };
-    expect(body.run_id).toBeUndefined();
-    expect(body.skipped_run_id).toBeUndefined();
-
-    const [run] = (await sql`
-      SELECT status, claimed_by FROM runs WHERE id = ${runId}
-    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
-    expect(run).toEqual({ status: 'pending', claimed_by: null });
-  });
-
   it('fleet does NOT claim a macos-pinned non-browser-affinity sync (no regression)', async () => {
     const sql = getTestDb();
     const { userId, orgId } = await seedOrg();
@@ -531,20 +383,20 @@ describe('browser-affinity poll claim', () => {
         user_id, worker_id, platform, app_version, capabilities, label, organization_id, last_seen_at
       ) VALUES (
         ${userId}, ${workerId}, 'macos', '0.1.0',
-        ${sql.json(['whatsapp_local'])}, 'Mac', ${orgId}, NOW()
+        ${sql.json(['local_directory'])}, 'Mac', ${orgId}, NOW()
       )
       RETURNING id
     `) as unknown as Array<{ id: string }>;
     const connId = await seedConnection({
       orgId,
       userId,
-      connectorKey: 'whatsapp.local',
+      connectorKey: 'local.directory',
       deviceWorkerId: String(mac.id),
     });
     const runId = await seedPendingSync({
       orgId,
       connectionId: connId,
-      connectorKey: 'whatsapp.local',
+      connectorKey: 'local.directory',
     });
 
     const res = await pollFleet('fleet-no-macos-steal');

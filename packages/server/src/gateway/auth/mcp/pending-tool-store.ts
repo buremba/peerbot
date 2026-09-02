@@ -124,11 +124,11 @@ const AUTOMATION_RUN_CONVERSATION_PATTERN = "_automation_[0-9]+_run_[0-9]+$";
 
 /** Is this conversation id a headless Automation run's? */
 export function isAutomationRunConversationId(
-	conversationId: string | null | undefined,
+  conversationId: string | null | undefined,
 ): boolean {
-	return new RegExp(AUTOMATION_RUN_CONVERSATION_PATTERN).test(
-		conversationId ?? "",
-	);
+  return new RegExp(AUTOMATION_RUN_CONVERSATION_PATTERN).test(
+    conversationId ?? "",
+  );
 }
 
 /**
@@ -146,7 +146,7 @@ export async function takePendingTool(
     WHERE id = ${requestId}
       AND scope = ${SCOPE}
       AND expires_at > now()
-	  AND COALESCE(payload->>'conversationId', '') !~ ${AUTOMATION_RUN_CONVERSATION_PATTERN}
+    AND COALESCE(payload->>'conversationId', '') !~ ${AUTOMATION_RUN_CONVERSATION_PATTERN}
     RETURNING payload
   `;
   if (rows.length === 0) return null;
@@ -156,20 +156,20 @@ export async function takePendingTool(
 
 /** Read-only lookup used to explain why a headless approval cannot be claimed. */
 export async function peekPendingTool(
-	requestId: string,
+  requestId: string,
 ): Promise<PendingToolInvocation | null> {
-	const sql = getDb();
-	const rows = await sql`
-		SELECT payload
-		FROM oauth_states
-		WHERE id = ${requestId}
-		  AND scope = ${SCOPE}
-		  AND expires_at > now()
-		LIMIT 1
-	`;
-	if (rows.length === 0) return null;
-	const payload = (rows[0] as { payload: PendingToolInvocation }).payload;
-	return payload ? withPairedAdminGrant(payload) : null;
+  const sql = getDb();
+  const rows = await sql`
+    SELECT payload
+    FROM oauth_states
+    WHERE id = ${requestId}
+      AND scope = ${SCOPE}
+      AND expires_at > now()
+    LIMIT 1
+  `;
+  if (rows.length === 0) return null;
+  const payload = (rows[0] as { payload: PendingToolInvocation }).payload;
+  return payload ? withPairedAdminGrant(payload) : null;
 }
 
 /** Active tool approvals belonging to this Automation run's agent session. */
@@ -184,7 +184,7 @@ export async function listPendingToolsForRun(
     FROM oauth_states pending
     JOIN runs automation_run
       ON automation_run.id = ${runId}
-	 AND automation_run.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+   AND automation_run.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
     WHERE pending.scope = ${SCOPE}
       AND pending.expires_at > now()
       AND pending.payload->>'organizationId' = automation_run.organization_id

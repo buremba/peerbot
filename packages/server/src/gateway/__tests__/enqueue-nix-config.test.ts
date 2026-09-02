@@ -203,9 +203,9 @@ describe("enqueued payload carries the resolved nixConfig", () => {
           getProxyBaseUrlMappings: (baseUrl: string) => ({ openai: baseUrl }),
         }),
       } as never,
-		grantStore: {
-		isExactDeniedStrict: async () => false,
-	  } as never,
+    grantStore: {
+    isExactDeniedStrict: async () => false,
+    } as never,
       agentMetadataStore: {
         async getMetadata() {
           return { owner: { platform: "api", userId: "user-1" } };

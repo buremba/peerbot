@@ -531,11 +531,11 @@ export async function failTurnIfPending(
 ): Promise<boolean> {
   const sql = getDb();
   const emitted = await sql.begin(async (tx: DbClient) => {
-	return failTurnIfPendingInTransaction(tx, {
-	  deploymentName,
-	  messageId,
-	  code,
-	});
+  return failTurnIfPendingInTransaction(tx, {
+    deploymentName,
+    messageId,
+    code,
+  });
   });
   if (emitted) await notifyThreadResponse();
   return emitted;
@@ -547,75 +547,75 @@ export async function failTurnIfPending(
  * completion, and Automation-parent transition commit together.
  */
 export async function failTurnIfPendingInTransaction(
-	tx: DbClient,
-	params: {
-		deploymentName: string;
-		messageId: string;
-		organizationId?: string;
-		code: AgentErrorCode;
-	},
+  tx: DbClient,
+  params: {
+    deploymentName: string;
+    messageId: string;
+    organizationId?: string;
+    code: AgentErrorCode;
+  },
 ): Promise<boolean> {
-	if (!params.deploymentName || !params.messageId) return false;
-	const rows = await tx<{ action_input: unknown }>`
-		DELETE FROM public.runs
-		WHERE idempotency_key = ${turnMarkerKey(params.deploymentName, params.messageId)}
-		  AND status = 'pending'
-		  AND run_type = 'internal'
-		  AND queue_name = ${TURN_TIMEOUT_QUEUE}
-		  AND action_input->>'deploymentName' = ${params.deploymentName}
-		  AND action_input->>'messageId' = ${params.messageId}
-		  AND (
-		    ${params.organizationId ?? null}::text IS NULL
-		    OR organization_id = ${params.organizationId ?? null}
-		  )
-		RETURNING action_input
-	`;
-	const routing = rows[0] ? asTurnRouting(rows[0].action_input) : null;
-	if (!routing) return false;
-	if (
-		params.organizationId &&
-		routing.organizationId !== params.organizationId
-	) {
-		throw new Error("Turn marker organization does not match its queue child");
-	}
-	await completeAgentRunInputs(
-		tx,
-		params.organizationId ?? routing.organizationId ?? null,
-		params.deploymentName,
-		[params.messageId],
-	);
-	await enqueueTerminalError(tx, routing, params.code);
-	return true;
+  if (!params.deploymentName || !params.messageId) return false;
+  const rows = await tx<{ action_input: unknown }>`
+    DELETE FROM public.runs
+    WHERE idempotency_key = ${turnMarkerKey(params.deploymentName, params.messageId)}
+      AND status = 'pending'
+      AND run_type = 'internal'
+      AND queue_name = ${TURN_TIMEOUT_QUEUE}
+      AND action_input->>'deploymentName' = ${params.deploymentName}
+      AND action_input->>'messageId' = ${params.messageId}
+      AND (
+        ${params.organizationId ?? null}::text IS NULL
+        OR organization_id = ${params.organizationId ?? null}
+      )
+    RETURNING action_input
+  `;
+  const routing = rows[0] ? asTurnRouting(rows[0].action_input) : null;
+  if (!routing) return false;
+  if (
+    params.organizationId &&
+    routing.organizationId !== params.organizationId
+  ) {
+    throw new Error("Turn marker organization does not match its queue child");
+  }
+  await completeAgentRunInputs(
+    tx,
+    params.organizationId ?? routing.organizationId ?? null,
+    params.deploymentName,
+    [params.messageId],
+  );
+  await enqueueTerminalError(tx, routing, params.code);
+  return true;
 }
 
 /** Revoke one exact pending turn without emitting a second user-facing reply. */
 export async function revokeTurnIfPendingInTransaction(
-	tx: DbClient,
-	params: {
-		deploymentName: string;
-		messageId: string;
-		organizationId: string;
-	},
+  tx: DbClient,
+  params: {
+    deploymentName: string;
+    messageId: string;
+    organizationId: string;
+  },
 ): Promise<boolean> {
-	const deleted = await tx`
-		DELETE FROM public.runs
-		WHERE idempotency_key = ${turnMarkerKey(params.deploymentName, params.messageId)}
-		  AND status = 'pending'
-		  AND run_type = 'internal'
-		  AND queue_name = ${TURN_TIMEOUT_QUEUE}
-		  AND organization_id = ${params.organizationId}
-		  AND action_input->>'deploymentName' = ${params.deploymentName}
-		  AND action_input->>'messageId' = ${params.messageId}
-		RETURNING id
-	`;
-	if (deleted.length === 0) return false;
-	await completeAgentRunInputs(
-		tx,
-		params.organizationId,
-		params.deploymentName,
-		[params.messageId],
-	);
-	return true;
+  const deleted = await tx`
+    DELETE FROM public.runs
+    WHERE idempotency_key = ${turnMarkerKey(params.deploymentName, params.messageId)}
+      AND status = 'pending'
+      AND run_type = 'internal'
+      AND queue_name = ${TURN_TIMEOUT_QUEUE}
+      AND organization_id = ${params.organizationId}
+      AND action_input->>'deploymentName' = ${params.deploymentName}
+      AND action_input->>'messageId' = ${params.messageId}
+    RETURNING id
+  `;
+  if (deleted.length === 0) return false;
+  await completeAgentRunInputs(
+    tx,
+    params.organizationId,
+    params.deploymentName,
+    [params.messageId],
+  );
+  return true;
 }
 
 /**

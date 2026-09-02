@@ -332,14 +332,14 @@ export function createGatewayApp(
           // double-clicks, Slack webhook retries) cannot double-execute the
           // tool. The Slack/Telegram interaction-bridge path uses the same
           // helper.
-		  const preview = await peekPendingTool(requestId);
-		  if (isAutomationRunConversationId(preview?.conversationId)) {
-			return {
-			  success: false,
-			  error:
-				"Headless Automation approvals cannot be resumed interactively; configure standing tool access and retry the Automation",
-			};
-		  }
+      const preview = await peekPendingTool(requestId);
+      if (isAutomationRunConversationId(preview?.conversationId)) {
+      return {
+        success: false,
+        error:
+        "Headless Automation approvals cannot be resumed interactively; configure standing tool access and retry the Automation",
+      };
+      }
           const pending = await takePendingTool(requestId);
           if (!pending)
             return { success: false, error: "Request not found or expired" };

@@ -64,8 +64,8 @@ export interface ThreadSession {
   dryRun?: boolean;
   /** Internal automation intent for one-shot system sessions. */
   intent?: { kind: "automation_run"; runId: number; automationId: number };
-	/** Whether this Automation contract must call complete_window/run_sdk. */
-	automationCompletionRequired?: boolean;
+  /** Whether this Automation contract must call complete_window/run_sdk. */
+  automationCompletionRequired?: boolean;
   /**
    * Server-derived side-effect mode for a verified Automation session. Set once
    * from the run row at session creation (automation-run-intent.ts) and never

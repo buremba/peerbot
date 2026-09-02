@@ -368,12 +368,12 @@ export class ProviderCatalogService {
 
     const allModules = getModelProviderModules();
     const moduleMap = new Map(allModules.map((m) => [m.providerId, m]));
-	for (const module of allModules) {
-		const upstreamSlug = module.getUpstreamConfig?.()?.slug;
-		if (upstreamSlug && !moduleMap.has(upstreamSlug)) {
-			moduleMap.set(upstreamSlug, module);
-		}
-	}
+  for (const module of allModules) {
+    const upstreamSlug = module.getUpstreamConfig?.()?.slug;
+    if (upstreamSlug && !moduleMap.has(upstreamSlug)) {
+      moduleMap.set(upstreamSlug, module);
+    }
+  }
 
     // Slugs not backed by a providers.json module may be org-defined inference
     // providers. Load the org's rows once and index by slug so each unmatched

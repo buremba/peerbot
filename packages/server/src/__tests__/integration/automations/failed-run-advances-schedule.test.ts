@@ -2,12 +2,12 @@ import { describe, expect, it } from "vitest";
 import { ApiResponseRenderer } from "../../../gateway/api/response-renderer";
 import { ChatResponseBridge } from "../../../gateway/connections/chat-response-bridge";
 import {
-	dispatchPendingAutomationRuns,
-	materializeDueAutomationRuns,
+  dispatchPendingAutomationRuns,
+  materializeDueAutomationRuns,
 } from "../../../automations/automation";
 import {
-	failAutomationParentRunFromQueue,
-	resolveAutomationRunsByMessageIds,
+  failAutomationParentRunFromQueue,
+  resolveAutomationRunsByMessageIds,
 } from "../../../automations/run-completion";
 import {
   advanceAutomationSchedule,
@@ -832,19 +832,19 @@ describe("a terminally failed Automation run advances next_run_at", () => {
     try {
       await expect(materializeDueAutomationRuns()).resolves.toBeDefined();
 
-			// skip_if_unchanged source reconciliation is intentionally deferred until
-			// dispatch, after the durable parent run exists. Drive that phase before
-			// asserting the schedule cursor outcome.
-			const [pending] = await sql`
-		SELECT id FROM runs
-		WHERE automation_id = ${automationId} AND status = 'pending'
-		ORDER BY id DESC
-		LIMIT 1
-	  `;
-			expect(pending).toBeDefined();
-			await expect(
-				dispatchPendingAutomationRuns({ runIds: [Number(pending.id)] }),
-			).resolves.toMatchObject({ claimed: 1, reconciled: 1 });
+      // skip_if_unchanged source reconciliation is intentionally deferred until
+      // dispatch, after the durable parent run exists. Drive that phase before
+      // asserting the schedule cursor outcome.
+      const [pending] = await sql`
+    SELECT id FROM runs
+    WHERE automation_id = ${automationId} AND status = 'pending'
+    ORDER BY id DESC
+    LIMIT 1
+    `;
+      expect(pending).toBeDefined();
+      await expect(
+        dispatchPendingAutomationRuns({ runIds: [Number(pending.id)] }),
+      ).resolves.toMatchObject({ claimed: 1, reconciled: 1 });
 
       // Asserting the PARK is what makes this bite: without it the tick still
       // resolves (materializeDueItems catches per item), so a bare
@@ -926,46 +926,46 @@ describe("a terminally failed Automation run advances next_run_at", () => {
 });
 
 describe("finalize-miss diagnostics", () => {
-	it("fails before any nudge and cancels a pending connector approval child", async () => {
-		const { sql, organizationId, runId } =
-			await createDueAutomationWithDispatchedRun({
-				slug: "finalize-miss-connector-approval",
-				messageId: "msg-connector-approval",
-				nudgeCount: 0,
-			});
-		const [child] = await sql`
-			INSERT INTO runs (
-				organization_id, run_type, parent_run_id, status,
-				approval_status, action_key, action_input
-			) VALUES (
-				${organizationId}, 'action', ${runId}, 'pending',
-				'pending', 'send_report', '{}'::jsonb
-			)
-			RETURNING id
-		`;
+  it("fails before any nudge and cancels a pending connector approval child", async () => {
+    const { sql, organizationId, runId } =
+      await createDueAutomationWithDispatchedRun({
+        slug: "finalize-miss-connector-approval",
+        messageId: "msg-connector-approval",
+        nudgeCount: 0,
+      });
+    const [child] = await sql`
+      INSERT INTO runs (
+        organization_id, run_type, parent_run_id, status,
+        approval_status, action_key, action_input
+      ) VALUES (
+        ${organizationId}, 'action', ${runId}, 'pending',
+        'pending', 'send_report', '{}'::jsonb
+      )
+      RETURNING id
+    `;
 
-		await resolveAutomationRunsByMessageIds(
-			["msg-connector-approval"],
-			{ ok: true },
-		);
+    await resolveAutomationRunsByMessageIds(
+      ["msg-connector-approval"],
+      { ok: true },
+    );
 
-		const [parent] = await sql`
-			SELECT status, error_message,
-			       approved_input->>'finalize_nudge_count' AS nudge_count
-			FROM runs WHERE id = ${runId}
-		`;
-		expect(parent.status).toBe("failed");
-		expect(parent.error_message).toMatch(/blocked on tool approval/);
-		expect(parent.error_message).toMatch(/send_report/);
-		expect(Number(parent.nudge_count)).toBe(0);
-		const [cancelled] = await sql`
-			SELECT status, approval_status FROM runs WHERE id = ${Number(child.id)}
-		`;
-		expect(cancelled).toMatchObject({
-			status: "cancelled",
-			approval_status: "rejected",
-		});
-	});
+    const [parent] = await sql`
+      SELECT status, error_message,
+             approved_input->>'finalize_nudge_count' AS nudge_count
+      FROM runs WHERE id = ${runId}
+    `;
+    expect(parent.status).toBe("failed");
+    expect(parent.error_message).toMatch(/blocked on tool approval/);
+    expect(parent.error_message).toMatch(/send_report/);
+    expect(Number(parent.nudge_count)).toBe(0);
+    const [cancelled] = await sql`
+      SELECT status, approval_status FROM runs WHERE id = ${Number(child.id)}
+    `;
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      approval_status: "rejected",
+    });
+  });
 
   it("names the pending tool approval instead of blaming the agent", async () => {
     const { sql, organizationId, automationId, runId } =

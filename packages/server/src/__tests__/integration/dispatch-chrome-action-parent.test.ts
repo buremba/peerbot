@@ -90,7 +90,7 @@ describe('dispatchChromeAction parent run authorization', () => {
       )
       RETURNING id
     `;
-			await sql`
+      await sql`
       INSERT INTO connections (
         organization_id, connector_key, slug, display_name, status,
         created_by, visibility, device_worker_id, created_at, updated_at
@@ -99,7 +99,7 @@ describe('dispatchChromeAction parent run authorization', () => {
         ${user.id}, 'org', ${worker.id}::uuid, NOW(), NOW()
       )
     `;
-			const [parent] = await sql`
+      const [parent] = await sql`
       INSERT INTO runs (
         organization_id, run_type, action_key, action_input, status,
         claimed_by, claimed_at, created_by_user_id, run_metadata

@@ -111,8 +111,8 @@ export interface AutomationRunPayload {
   source_fingerprint?: string;
   /** Scheduled skip-if-unchanged source validation must finish before dispatch. */
   source_preflight_pending?: boolean;
-	/** Also compare source content and skip an unchanged window when true. */
-	source_fingerprint_required?: boolean;
+  /** Also compare source content and skip an unchanged window when true. */
+  source_fingerprint_required?: boolean;
 }
 
 function automationEventTriggerKey(trigger: AutomationActivationTrigger): string {
@@ -668,7 +668,7 @@ async function createAutomationRunWithClient(
     agentKind?: string | null;
     sourceFingerprint?: string;
     sourcePreflightPending?: boolean;
-	sourceFingerprintRequired?: boolean;
+  sourceFingerprintRequired?: boolean;
   }
 ): Promise<{ runId: number; status: string; created: boolean }> {
   const existing = await findActiveAutomationRun(sql, params.automationId);
@@ -721,7 +721,7 @@ async function createAutomationRunWithClient(
     agent_kind: normalizedAgentKind,
     source_fingerprint: params.sourceFingerprint,
     source_preflight_pending: params.sourcePreflightPending,
-	source_fingerprint_required: params.sourceFingerprintRequired,
+  source_fingerprint_required: params.sourceFingerprintRequired,
   };
   const idempotencyKey = [
     'automation',
@@ -775,7 +775,7 @@ interface CreateAutomationRunParams {
   agentKind?: string | null;
   sourceFingerprint?: string;
   sourcePreflightPending?: boolean;
-	sourceFingerprintRequired?: boolean;
+  sourceFingerprintRequired?: boolean;
 }
 
 async function createAutomationRunInternal(

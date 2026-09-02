@@ -414,7 +414,7 @@ describe('automation CRUD', () => {
         parent_run_id: number | null;
         approval_status: string;
         status: string;
-				run_metadata: Record<string, unknown> | null;
+        run_metadata: Record<string, unknown> | null;
       }[]
     >`
       SELECT automation_id, parent_run_id, approval_status, status, run_metadata

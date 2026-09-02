@@ -195,32 +195,32 @@ export class GrantStore {
     }
   }
 
-	/** Exact-row deny lookup; configured wildcards must not mask this override. */
-	async isExactDeniedStrict(
-		agentId: string,
-		pattern: string,
-		organizationId?: string,
-	): Promise<boolean> {
-		pattern = normalizeDomainPattern(pattern);
-		const kind = inferGrantKind(pattern);
-		const orgId = requireOrgId(
-			organizationId,
-			"GrantStore.isExactDeniedStrict",
-		);
-		const sql = getDb();
-		const rows = await sql`
-			SELECT 1
-			FROM grants
-			WHERE agent_id = ${agentId}
-			  AND kind = ${kind}
-			  AND pattern = ${pattern}
-			  AND denied = true
-			  AND (expires_at IS NULL OR expires_at > now())
-			  ${orgScope(sql, orgId)}
-			LIMIT 1
-		`;
-		return rows.length > 0;
-	}
+  /** Exact-row deny lookup; configured wildcards must not mask this override. */
+  async isExactDeniedStrict(
+    agentId: string,
+    pattern: string,
+    organizationId?: string,
+  ): Promise<boolean> {
+    pattern = normalizeDomainPattern(pattern);
+    const kind = inferGrantKind(pattern);
+    const orgId = requireOrgId(
+      organizationId,
+      "GrantStore.isExactDeniedStrict",
+    );
+    const sql = getDb();
+    const rows = await sql`
+      SELECT 1
+      FROM grants
+      WHERE agent_id = ${agentId}
+        AND kind = ${kind}
+        AND pattern = ${pattern}
+        AND denied = true
+        AND (expires_at IS NULL OR expires_at > now())
+        ${orgScope(sql, orgId)}
+      LIMIT 1
+    `;
+    return rows.length > 0;
+  }
 
   /**
    * List all active grants for an agent.

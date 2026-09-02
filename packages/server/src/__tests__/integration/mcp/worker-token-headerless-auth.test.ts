@@ -44,8 +44,8 @@ describe('worker-token MCP auth without the direct-auth header', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let otherOrg: Awaited<ReturnType<typeof createTestOrganization>>;
   let workerToken: string;
-	let automationId: number;
-	let automationRunId: number;
+  let automationId: number;
+  let automationRunId: number;
 
   beforeAll(async () => {
     await cleanupTestDatabase();
@@ -66,9 +66,9 @@ describe('worker-token MCP auth without the direct-auth header', () => {
       agentId: AGENT_ID,
       ownerUserId: user.id,
     });
-		automationId = (await getDb().begin(async (tx) => {
-			const id = await getNextNumericId(tx, "automations");
-			await tx`
+    automationId = (await getDb().begin(async (tx) => {
+      const id = await getNextNumericId(tx, "automations");
+      await tx`
         INSERT INTO automations (
           id, automation_group_id, organization_id, created_by,
           agent_id, name, slug
@@ -77,9 +77,9 @@ describe('worker-token MCP auth without the direct-auth header', () => {
           ${AGENT_ID}, 'Headerless Automation', 'headerless-automation'
         )
       `;
-			return id;
-		})) as number;
-		const [automationRun] = await getDb()`
+      return id;
+    })) as number;
+    const [automationRun] = await getDb()`
       INSERT INTO runs (
         organization_id, run_type, automation_id, status, approval_status
       ) VALUES (
@@ -87,11 +87,11 @@ describe('worker-token MCP auth without the direct-auth header', () => {
       )
       RETURNING id
     `;
-		automationRunId = Number(automationRun.id);
+    automationRunId = Number(automationRun.id);
     workerToken = buildAutomationRunWorkerAccess({
       agentId: AGENT_ID,
-			automationId,
-			runId: automationRunId,
+      automationId,
+      runId: automationRunId,
       organizationId: org.id,
     }).token;
   });

@@ -46,8 +46,8 @@ interface DeclaredAutomationSource {
 /** The parts of a ToolContext this resolution reads. */
 interface ActingAutomationSession {
   organizationId: string;
-	/** Authenticated agent making a caller-declared attribution, when any. */
-	agentId?: string | null;
+  /** Authenticated agent making a caller-declared attribution, when any. */
+  agentId?: string | null;
   actingAutomationId?: number | null;
   actingRunId?: number | null;
 }

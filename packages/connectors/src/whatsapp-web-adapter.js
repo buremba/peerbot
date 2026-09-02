@@ -30,7 +30,7 @@
 
 export function whatsAppWebAdapterProgram() {
   const GLOBAL_KEY = "__owlettoWhatsAppAdapterV1";
-  const ADAPTER_VERSION = 3;
+  const ADAPTER_VERSION = 4;
   const SYSTEM_TYPES = new Set([
     "gp2",
     "notification_template",
@@ -1333,6 +1333,14 @@ export function whatsAppWebAdapterProgram() {
       const managerModule = requireFirst(["WAWebDownloadManager"]);
       const manager = managerModule?.downloadManager ?? managerModule;
       if (typeof manager?.downloadAndMaybeDecrypt === "function") {
+        // `downloadQpl` is NOT optional: the very first thing the function
+        // does is call `downloadQpl.addAnnotations(...)`, so omitting it threw
+        // "Cannot read properties of undefined" before a byte was fetched.
+        // It is only WhatsApp's performance logger, so a stub that answers
+        // every method with a no-op satisfies it — and a permissive proxy
+        // keeps working when a future build calls a method we have not seen
+        // (this already happened once: `addAnnotations` alone was not enough,
+        // the build also calls `addPoint`).
         result = await manager.downloadAndMaybeDecrypt({
           directPath: row.directPath,
           encFilehash: row.encFilehash,
@@ -1341,6 +1349,17 @@ export function whatsAppWebAdapterProgram() {
           mediaKeyTimestamp: row.mediaKeyTimestamp,
           type: row.type,
           mimetype: row.mimetype,
+          downloadOrigin: null,
+          partialVideoOpts: null,
+          downloadQpl: new Proxy(
+            {},
+            {
+              get: () => () => {
+                /* WhatsApp's QPL telemetry; nothing to record here. */
+              },
+            }
+          ),
+          signal: new AbortController().signal,
         });
       }
     }
@@ -1349,6 +1368,16 @@ export function whatsAppWebAdapterProgram() {
     const candidate = result?.blob ?? result?.mediaBlob ?? result;
     if (candidate instanceof Blob)
       return { status: "downloaded", blob: candidate };
+    // `downloadAndMaybeDecrypt` resolves the decrypted bytes as a raw
+    // ArrayBuffer, not a Blob. Falling through to the Blob checks below
+    // reported a perfectly good download as `unavailable`.
+    if (candidate instanceof ArrayBuffer || ArrayBuffer.isView(candidate))
+      return {
+        status: "downloaded",
+        blob: new Blob([candidate], {
+          type: row.mimetype || "application/octet-stream",
+        }),
+      };
     if (candidate?.getData) {
       const data = await candidate.getData();
       if (data instanceof Blob) return { status: "downloaded", blob: data };

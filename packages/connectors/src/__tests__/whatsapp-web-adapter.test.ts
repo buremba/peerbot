@@ -247,3 +247,140 @@ describe("whatsAppWebAdapterProgram send_message", () => {
     expect(result.message_id).toBe("3EB0LEGACYID");
   });
 });
+
+/**
+ * Media download, against the module shapes the LIVE build exposes
+ * (captured 2026-09-02 on a paired Chrome).
+ *
+ * Three things were wrong at once, and every one of them turned a perfectly
+ * good download into `unavailable`, which the connector treats as retryable —
+ * so it retried forever and never succeeded. Prod bore this out: 10,969
+ * media messages on the connection against 20 stored attachments.
+ */
+describe("whatsAppWebAdapterProgram download_media", () => {
+  const OGG = new Uint8Array([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02, 0x00, 0x00]);
+
+  function installWithMedia(
+    overrides: {
+      nest?: boolean;
+      result?: unknown;
+      row?: Record<string, unknown>;
+    } = {},
+  ) {
+    const seen: { options?: Record<string, any> } = {};
+    const row = {
+      id: { fromMe: false, id: "3EB0MEDIA", _serialized: "false_x@c.us_3EB0MEDIA" },
+      type: "ptt",
+      mimetype: "audio/ogg; codecs=opus",
+      size: OGG.byteLength,
+      directPath: "/v/t62.7117-24/x",
+      mediaKey: "k",
+      mediaKeyTimestamp: 1,
+      filehash: "f",
+      encFilehash: "e",
+    };
+    const message = { attributes: { ...row, ...(overrides.row ?? {}) } };
+    const downloadManager = {
+      downloadAndMaybeDecrypt: (options: Record<string, any>) => {
+        seen.options = options;
+        // The live build calls BOTH of these before fetching a byte.
+        options.downloadQpl.addAnnotations({});
+        options.downloadQpl.addPoint("x");
+        return overrides.result === undefined
+          ? OGG.buffer.slice(0)
+          : overrides.result;
+      },
+    };
+    const modules: Record<string, unknown> = {
+      WAWebCollections: { Msg: { _models: [message] }, Chat: { _models: [] } },
+      // The real module exports the manager one level down.
+      WAWebDownloadManager:
+        overrides.nest === false ? downloadManager : { downloadManager },
+    };
+    const globals: Record<string, any> = {};
+    const page = {
+      globalThis: globals,
+      document: { querySelector: () => null, querySelectorAll: () => [] },
+      window: { require: (n: string) => modules[n] ?? null },
+      location: { origin: "https://web.whatsapp.com" },
+      setTimeout: (fn: () => void) => {
+        fn();
+        return 0;
+      },
+      clearTimeout: () => {},
+    };
+    const run = new Function(
+      ...Object.keys(page),
+      `"use strict";(${whatsAppWebAdapterProgram.toString()})();`,
+    );
+    run(...Object.values(page));
+    return { adapter: globals.__owlettoWhatsAppAdapterV1, seen };
+  }
+
+  const download = (adapter: any) =>
+    adapter.invoke({
+      op: "download_media",
+      adapter_version: WHATSAPP_ADAPTER_VERSION,
+      message_id: "3EB0MEDIA",
+      max_bytes: 10_000_000,
+    });
+
+  it("turns the ArrayBuffer the manager returns into a downloaded attachment", async () => {
+    // `downloadAndMaybeDecrypt` resolves RAW BYTES, not a Blob. Only the Blob
+    // branches existed, so a real download fell through to `unavailable`.
+    const { adapter } = installWithMedia();
+    const result = await download(adapter);
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("downloaded");
+    expect(result.attachment.kind).toBe("audio");
+    expect(result.attachment.mime_type).toBe("audio/ogg; codecs=opus");
+    expect(result.attachment.size_bytes).toBe(OGG.byteLength);
+    expect(Buffer.from(result.attachment.data, "base64")).toEqual(
+      Buffer.from(OGG),
+    );
+  });
+
+  it("reaches the manager nested under .downloadManager", async () => {
+    // The module root only exports { enforceKaleidoscopeScore,
+    // downloadManager }, so probing the root found nothing and the whole
+    // fallback was unreachable.
+    const { adapter, seen } = installWithMedia();
+    await download(adapter);
+    expect(seen.options).toBeDefined();
+    expect(seen.options?.directPath).toBe("/v/t62.7117-24/x");
+  });
+
+  it("passes a downloadQpl the build can call freely", async () => {
+    // Omitting it threw "Cannot read properties of undefined (reading
+    // 'addAnnotations')" before any fetch. A permissive stub also survives a
+    // build that starts calling a method we have never seen.
+    const { adapter, seen } = installWithMedia();
+    await download(adapter);
+    const qpl = seen.options?.downloadQpl;
+    expect(qpl).toBeDefined();
+    expect(() => qpl.someMethodAddedByAFutureBuild(1, 2, 3)).not.toThrow();
+  });
+
+  it("still accepts a Blob from builds that return one", async () => {
+    const { adapter } = installWithMedia({
+      result: new Blob([OGG], { type: "audio/ogg" }),
+    });
+    const result = await download(adapter);
+    expect(result.status).toBe("downloaded");
+    expect(result.attachment.size_bytes).toBe(OGG.byteLength);
+  });
+
+  it("refuses an oversized item without fetching it", async () => {
+    const { adapter, seen } = installWithMedia({ row: { size: 5_000_000 } });
+    const result = await adapter.invoke({
+      op: "download_media",
+      adapter_version: WHATSAPP_ADAPTER_VERSION,
+      message_id: "3EB0MEDIA",
+      max_bytes: 2_097_152,
+    });
+    expect(result.status).toBe("too_large");
+    expect(result.size_bytes).toBe(5_000_000);
+    // The size gate must short-circuit BEFORE the download.
+    expect(seen.options).toBeUndefined();
+  });
+});

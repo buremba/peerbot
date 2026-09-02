@@ -1446,12 +1446,16 @@ export function whatsAppWebAdapterProgram() {
     // outlive — and it turns "too slow" into an ordinary retryable answer.
     const budgetMs = Math.max(0, Number(input?.timeout_ms) || 0);
     let downloaded;
+    // Held so a download that wins the race can cancel its own timer. A sync
+    // collects several items, and a stray rejecting timer per item would keep
+    // firing into the page long after its answer shipped.
+    let budgetTimer = null;
     try {
       downloaded = budgetMs
         ? await Promise.race([
             blobFromMedia(model),
-            new Promise((_, reject) =>
-              setTimeout(
+            new Promise((_, reject) => {
+              budgetTimer = setTimeout(
                 () =>
                   reject(
                     Object.assign(
@@ -1460,8 +1464,8 @@ export function whatsAppWebAdapterProgram() {
                     )
                   ),
                 budgetMs
-              )
-            ),
+              );
+            }),
           ])
         : await blobFromMedia(model);
     } catch (error) {
@@ -1492,6 +1496,8 @@ export function whatsAppWebAdapterProgram() {
         ].includes(explicit ?? "unavailable"),
         detail: detail.slice(0, 200),
       };
+    } finally {
+      if (budgetTimer !== null) clearTimeout(budgetTimer);
     }
     if (!downloaded.blob) return downloaded;
     if (downloaded.blob.size > limit)

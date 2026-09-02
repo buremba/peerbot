@@ -60,12 +60,28 @@ describe('an orphaned chrome dispatch reply', () => {
    * connector's run on that worker. In prod it did exactly that, and on the
    * next attempt failed a sync run that had already written its events.
    *
-   * Without the fix this test dies with `ERR_IPC_CHANNEL_CLOSED` before
-   * `execute` settles; with it the run resolves normally.
+   * The timing is the whole test: `execute` settles as soon as the child
+   * returns its sync result, so it must NOT be the last thing awaited. Await
+   * the parent's reply attempt instead — assertions placed after `execute`
+   * alone run ~450ms before the risky `child.send` and pass either way, which
+   * is how the first version of this test shipped green against the bug.
+   *
+   * Reverted to the old shape, the send throws ERR_IPC_CHANNEL_CLOSED out of
+   * its own synchronous try/catch and bun fails this test on the unhandled
+   * error — the same `Subprocess.send() cannot be used after the process has
+   * exited` that took down the prod worker.
    */
   test('does not fail the run or kill the parent when the child has exited', async () => {
     const executor = new SubprocessExecutor({ timeoutMs: 30_000, maxOldSpaceSize: 256 });
     let dispatched = false;
+
+    // Resolved once the parent has had a turn to send the late reply. Awaiting
+    // this — not `execute` — is what puts the dangerous send inside the test.
+    let replyAttempted!: () => void;
+    const replySent = new Promise<void>((resolve) => {
+      replyAttempted = resolve;
+    });
+
     const result = await executor.execute(
       compiled(`
         // Fire and DO NOT await: the run finishes while this is in flight.
@@ -78,10 +94,15 @@ describe('an orphaned chrome dispatch reply', () => {
           dispatched = true;
           // Answer after the child is gone, the way a real device does.
           await new Promise((resolve) => setTimeout(resolve, 750));
+          // The parent sends this answer on the microtask after we return;
+          // hand control back to the test only once that has happened.
+          setTimeout(replyAttempted, 50);
           return { value: 1 };
         },
       }
     );
+
+    await replySent;
 
     expect(dispatched).toBe(true);
     expect(result).toMatchObject({ mode: 'sync' });

@@ -279,6 +279,21 @@ describe("release provenance workflow structure", () => {
     ).toBeLessThan(attest.indexOf("uses: actions/checkout"));
   });
 
+  it("does not fail the publish because main moved after dispatch", () => {
+    // The ref pin is the security property; requiring the dispatched SHA to
+    // still be main's HEAD adds none and strands a release off npm whenever
+    // anything merges between dispatch and this job starting -- the failure
+    // this workflow exists to prevent. The release is bound by its tag.
+    const attest = job(read("publish-packages.yml"), "attest-publish");
+    const guard = attest.slice(
+      attest.indexOf("Verify current-main workflow policy"),
+      attest.indexOf("Check out current main")
+    );
+    expect(guard).toContain('"$WORKFLOW_REF" = refs/heads/main');
+    expect(guard).not.toContain("git/ref/heads/main");
+    expect(guard).not.toContain("DISPATCH_SHA");
+  });
+
   it("keeps credentials out of the read-only gate and checks out the attested SHA", () => {
     const publish = read("publish-packages.yml");
     const attest = job(publish, "attest-publish");

@@ -40,19 +40,24 @@ jobs:
     steps:
       # Deliberately before any checkout: this workflow holds the production
       # environment's publish credentials downstream, so nothing from the
-      # repository runs until the dispatch is shown to be current main.
+      # repository runs until the dispatch is shown to carry main's policy.
+      #
+      # The ref is the whole check. A dispatch resolves refs/heads/main to a
+      # tip nobody can forge, so requiring the workflow to run from main is
+      # what pins the policy. Deliberately NOT also requiring that tip to
+      # still be main's HEAD: this job starts a minute or so after
+      # trigger-package-publish dispatches it, any merge landing in that
+      # window would fail the publish permanently, and a release stranded
+      # off npm by a fail-closed race is the exact defect this workflow
+      # exists to fix. The release itself is bound by its tag below, not by
+      # where main happens to be.
       - name: Verify current-main workflow policy
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPOSITORY: ${{ github.repository }}
           BUMP: ${{ inputs.bump }}
           WORKFLOW_REF: ${{ github.ref }}
-          DISPATCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           [ "$WORKFLOW_REF" = refs/heads/main ] || { echo "::error::publish policy must run from current main"; exit 1; }
-          current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-          [ "$DISPATCH_SHA" = "$current_sha" ] || { echo "::error::publish workflow is not at current main"; exit 1; }
           [ "$BUMP" = skip ] || { echo "::error::hosted arbitrary version bumps are forbidden"; exit 1; }
 
       - name: Check out current main

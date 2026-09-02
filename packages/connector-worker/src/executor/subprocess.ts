@@ -341,6 +341,27 @@ export class SubprocessExecutor implements SyncExecutor {
         });
       };
 
+      // A reverse-channel reply can outlive the child: a connector may abandon
+      // an in-flight chrome dispatch (a local timeout it cannot cancel) and
+      // then exit, so the device's answer arrives with nobody to receive it.
+      // That is expected, not an error — but `child.send` does NOT report a
+      // closed channel by throwing. Bun surfaces it asynchronously, so a
+      // synchronous try/catch around the call never runs, the rejection
+      // escapes `queueTask`, and the daemon exits — killing every other run on
+      // this worker. Send through the callback form, which does receive the
+      // error, and treat a dead channel as a no-op.
+      const replyToChild = (payload: Record<string, unknown>): void => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        if (child.connected === false) return;
+        try {
+          child.send(payload, () => {
+            /* ERR_IPC_CHANNEL_CLOSED — the child is gone; nothing to deliver. */
+          });
+        } catch {
+          /* Channel torn down between the liveness check and the send. */
+        }
+      };
+
       const combinedTail = (): string => {
         const out = stdoutTail.toString();
         const err = stderrTail.toString();
@@ -426,39 +447,27 @@ export class SubprocessExecutor implements SyncExecutor {
               : {};
           queueTask(async () => {
             if (!hooks?.onChromeDispatch) {
-              try {
-                child.send({
-                  type: 'chrome_dispatch_response',
-                  requestId,
-                  error:
-                    'chrome_dispatcher is not available in this execution context (no onChromeDispatch hook)',
-                });
-              } catch {
-                /* ignore */
-              }
+              replyToChild({
+                type: 'chrome_dispatch_response',
+                requestId,
+                error:
+                  'chrome_dispatcher is not available in this execution context (no onChromeDispatch hook)',
+              });
               return;
             }
             try {
               const output = await hooks.onChromeDispatch(actionKey, actionInput);
-              try {
-                child.send({
-                  type: 'chrome_dispatch_response',
-                  requestId,
-                  output,
-                });
-              } catch {
-                /* IPC closed — child already exited. */
-              }
+              replyToChild({
+                type: 'chrome_dispatch_response',
+                requestId,
+                output,
+              });
             } catch (err) {
-              try {
-                child.send({
-                  type: 'chrome_dispatch_response',
-                  requestId,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              } catch {
-                /* IPC closed — child already exited. */
-              }
+              replyToChild({
+                type: 'chrome_dispatch_response',
+                requestId,
+                error: err instanceof Error ? err.message : String(err),
+              });
             }
           });
           return;
@@ -470,36 +479,24 @@ export class SubprocessExecutor implements SyncExecutor {
           const timeoutMs: number | null = msg.timeoutMs ?? null;
           queueTask(async () => {
             if (!hooks?.onAwaitAuthSignal) {
-              try {
-                child.send({
-                  type: 'await_signal_response',
-                  requestId,
-                  error: 'awaitSignal is not supported in this context',
-                });
-              } catch {
-                /* ignore */
-              }
+              replyToChild({
+                type: 'await_signal_response',
+                requestId,
+                error: 'awaitSignal is not supported in this context',
+              });
               return;
             }
             try {
               const signal = await hooks.onAwaitAuthSignal(name, {
                 timeoutMs: timeoutMs ?? undefined,
               });
-              try {
-                child.send({ type: 'await_signal_response', requestId, signal });
-              } catch {
-                /* IPC closed — child already exited. */
-              }
+              replyToChild({ type: 'await_signal_response', requestId, signal });
             } catch (err) {
-              try {
-                child.send({
-                  type: 'await_signal_response',
-                  requestId,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-              } catch {
-                /* IPC closed — child already exited. */
-              }
+              replyToChild({
+                type: 'await_signal_response',
+                requestId,
+                error: err instanceof Error ? err.message : String(err),
+              });
             }
           });
           return;

@@ -102,6 +102,8 @@ interface QueueWorker {
   concurrency: number;
   paused: boolean;
   stopped: boolean;
+  /** Claims issued to `claimOne` that have not returned yet. */
+  claiming: number;
   active: number;
   wakeup: () => void;
   pendingWakeup: boolean;
@@ -226,8 +228,11 @@ export class RunsQueue implements IMessageQueue {
 
     const drainStart = Date.now();
     while (Date.now() - drainStart < SHUTDOWN_DRAIN_MS) {
+      // `claiming` as well as `active`: a claim still inside `claimOne` is
+      // about to become a row this process owns, so breaking the drain before
+      // it lands would leave it claimed by an exiting pod.
       const inFlight = Array.from(this.workers.values()).reduce(
-        (sum, w) => sum + w.active,
+        (sum, w) => sum + w.claiming + w.active,
         0,
       );
       if (inFlight === 0) break;
@@ -239,19 +244,9 @@ export class RunsQueue implements IMessageQueue {
     // sweeper. Filter by our per-process claim identity so a sibling pod's
     // in-flight claims aren't released out from under it.
     try {
-      const sql = getDb();
-      const result = await sql`
-        UPDATE public.runs
-        SET status = 'pending',
-            claimed_at = NULL,
-            claimed_by = NULL
-        WHERE claimed_by = ${this.claimedBy}
-          AND status = 'claimed'
-      `;
-      if (result.count > 0) {
-        logger.info(
-          `Released ${result.count} claimed run(s) on shutdown`,
-        );
+      const released = await this.releaseAllClaims();
+      if (released > 0) {
+        logger.info(`Released ${released} claimed run(s) on shutdown`);
       }
     } catch (err) {
       logger.warn(
@@ -443,13 +438,19 @@ export class RunsQueue implements IMessageQueue {
       throw new Error("RunsQueue is shutting down; refusing new work");
     }
 
-    // Replace any existing worker for this queue.
+    // Re-register in place. The worker object is the concurrency boundary, so
+    // swapping it out on a reconnect published a fresh `active: 0` alongside a
+    // handler the old worker was still running, and the replacement's poll loop
+    // then claimed a second row for a queue meant to run one at a time.
+    // `registerWorker` is documented as safe to call repeatedly, so this ran
+    // every time a worker's SSE connection came back.
     const existing = this.workers.get(queueName);
     if (existing) {
-      existing.stopped = true;
-      this.removeFromChannelIndex(existing);
+      existing.handler = handler as JobHandler<unknown>;
+      existing.paused = options?.startPaused ?? false;
       existing.wakeup();
-      this.workers.delete(queueName);
+      await this.ensureChannelListened(notifyChannelFor(queueName));
+      return;
     }
 
     const runType = classifyQueue(queueName);
@@ -461,6 +462,7 @@ export class RunsQueue implements IMessageQueue {
       concurrency: DEFAULT_WORKER_CONCURRENCY,
       paused: options?.startPaused ?? false,
       stopped: false,
+      claiming: 0,
       active: 0,
       pendingWakeup: false,
       wakeup: () => {
@@ -505,7 +507,21 @@ export class RunsQueue implements IMessageQueue {
           continue;
         }
         try {
-          const claimed = await this.claimOne(worker);
+          worker.claiming += 1;
+          let claimed: Awaited<ReturnType<RunsQueue["claimOne"]>>;
+          try {
+            claimed = await this.claimOne(worker);
+          } finally {
+            worker.claiming -= 1;
+          }
+          // `stop()` can flip these flags while the claim above is in flight.
+          // There is no await between this check and `active += 1`, so a row
+          // claimed by a queue that is going away is handed back rather than
+          // started on a process that is exiting.
+          if (claimed && (worker.stopped || this.shuttingDown)) {
+            await this.releaseClaim(claimed.runId);
+            continue;
+          }
           if (!claimed) {
             await this.sleep(intervals.runsPollIntervalMs, worker, () => {
               resolveWake = null;
@@ -786,12 +802,36 @@ export class RunsQueue implements IMessageQueue {
     });
   }
 
-  private removeFromChannelIndex(worker: QueueWorker): void {
-    const channel = notifyChannelFor(worker.queueName);
-    const set = this.subscribersByChannel.get(channel);
-    if (!set) return;
-    set.delete(worker);
-    if (set.size === 0) this.subscribersByChannel.delete(channel);
+  /** Release every row still claimed by this process. Scoped to our own claim
+   *  identity so a sibling pod's in-flight claims are left alone. */
+  private async releaseAllClaims(): Promise<number> {
+    const sql = getDb();
+    const result = await sql`
+      UPDATE public.runs
+      SET status = 'pending',
+          claimed_at = NULL,
+          claimed_by = NULL
+      WHERE claimed_by = ${this.claimedBy}
+        AND status = 'claimed'
+    `;
+    return result.count;
+  }
+
+  /** Hand a just-claimed row straight back to `pending`. Scoped to this
+   *  process's claim identity for the same reason `scheduleRetry` is: a sibling
+   *  pod that reclaimed the row after a heartbeat gap keeps it. */
+  private async releaseClaim(runId: number): Promise<void> {
+    const sql = getDb();
+    await sql`
+      UPDATE public.runs
+      SET status = 'pending',
+          claimed_at = NULL,
+          claimed_by = NULL
+      WHERE id = ${runId}
+        AND status = 'claimed'
+        AND claimed_by = ${this.claimedBy}
+    `;
+    queueBreadcrumb("release", `Released run ${runId} on shutdown`, { runId });
   }
 
   /**

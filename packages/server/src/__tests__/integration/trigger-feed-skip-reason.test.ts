@@ -79,9 +79,14 @@ describe('trigger_feed skip reasons', () => {
       { action: 'trigger_feed', feed_id: feedId },
       {} as Env,
       ctx,
-    )) as { action?: string; message?: string; triggered?: boolean };
+    )) as { action?: string; message?: string; triggered?: boolean; reason?: string };
 
-    expect(res.triggered).toBeUndefined();
+    // `false`, not absent: the skip has to be readable as a skip WITHOUT
+    // parsing the sentence. `toBeUndefined()` here was the old shape, in
+    // which a caller that queued nothing was indistinguishable from one that
+    // did — and no run row is written either, so nothing failed or alerted.
+    expect(res.triggered).toBe(false);
+    expect(res.reason).toBeTruthy();
     // The actionable part: name the real cause.
     expect(res.message).toContain('no longer installed');
     // And explicitly NOT the old catch-all, which sent operators off to wait
@@ -105,9 +110,10 @@ describe('trigger_feed skip reasons', () => {
       { action: 'trigger_feed', feed_id: feedId },
       {} as Env,
       ctx,
-    )) as { message?: string; triggered?: boolean };
+    )) as { message?: string; triggered?: boolean; reason?: string };
 
-    expect(second.triggered).toBeUndefined();
+    expect(second.triggered).toBe(false);
+    expect(second.reason).toBeTruthy();
     expect(second.message).toContain('already pending or running');
   });
 
@@ -123,6 +129,8 @@ describe('trigger_feed skip reasons', () => {
       ctx,
     )) as { error?: string; triggered?: boolean };
 
+    // The ERROR variant, not the skip variant — it carries no `triggered` at
+    // all, which is why this assertion stays `toBeUndefined()`.
     expect(res.triggered).toBeUndefined();
     expect(res.error).toContain('does not support sync');
 

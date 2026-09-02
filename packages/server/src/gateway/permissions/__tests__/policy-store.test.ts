@@ -1,5 +1,5 @@
 /**
- * PolicyStore and buildPolicyBundle hardening tests
+ * PolicyStore and egressGuardrailsToPolicyBundle hardening tests
  *
  * Covers:
  *   - resolve: returns undefined for unknown agent
@@ -9,9 +9,9 @@
  *   - resolve: returns undefined when no judged domains registered
  *   - resolve: returns undefined when hostname not matched by any rule
  *   - resolve: returns undefined when named judge is missing (fails closed)
- *   - buildPolicyBundle: deduplicates equivalent domain patterns
- *   - buildPolicyBundle: returns undefined when no judged domains
- *   - buildPolicyBundle: maps the legacy agent-wide judgeModel onto judges
+ *   - egressGuardrailsToPolicyBundle: deduplicates equivalent domain patterns
+ *   - egressGuardrailsToPolicyBundle: returns undefined when no judged domains
+ *   - egressGuardrailsToPolicyBundle: carries each guardrail's model onto its judge
  *   - set/clear: clear removes the agent's policy
  *   - policyHash: stable between calls for same input
  */

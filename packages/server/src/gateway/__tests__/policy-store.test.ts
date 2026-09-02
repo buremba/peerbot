@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { buildPolicyBundle, PolicyStore } from "../permissions/policy-store.js";
+import type { AgentInlineGuardrail } from "@lobu/core";
+import {
+  egressGuardrailsToPolicyBundle,
+  PolicyStore,
+} from "../permissions/policy-store.js";
 
 describe("PolicyStore.resolve", () => {
   test("returns undefined when no bundle is set", () => {
@@ -129,27 +133,39 @@ describe("PolicyStore.resolve", () => {
   });
 });
 
-describe("buildPolicyBundle", () => {
-  test("returns undefined when there are no judged-domain rules", () => {
-    expect(buildPolicyBundle({ judges: { default: "x" } })).toBeUndefined();
+describe("egressGuardrailsToPolicyBundle", () => {
+  // These ran against `buildPolicyBundle`, an oracle with no production
+  // caller, now deleted. The same properties belong to the live builder.
+  function guardrail(
+    over: Partial<AgentInlineGuardrail> & { name: string }
+  ): AgentInlineGuardrail {
+    return {
+      enabled: true,
+      stage: "egress",
+      policy: "p",
+      ...over,
+    } as AgentInlineGuardrail;
+  }
+
+  test("returns undefined when no guardrail declares a domain", () => {
+    expect(
+      egressGuardrailsToPolicyBundle([guardrail({ name: "default" })])
+    ).toBeUndefined();
   });
 
-  test("builds a bundle when rules are present", () => {
-    const bundle = buildPolicyBundle({
-      judgedDomains: [{ domain: "x.com" }],
-      judges: { default: "p" },
-      egressConfig: { judgeModel: "claude-haiku" },
-    });
+  test("builds a bundle when domains are present", () => {
+    const bundle = egressGuardrailsToPolicyBundle([
+      guardrail({ name: "default", domains: ["x.com"], model: "openai/m" }),
+    ]);
     expect(bundle).toBeDefined();
     expect(bundle?.judgedDomains).toHaveLength(1);
-    expect(bundle?.judgeModels?.default).toBe("claude-haiku");
+    expect(bundle?.judgeModels?.default).toBe("openai/m");
   });
 
   test("normalizes domain patterns in rules", () => {
-    const bundle = buildPolicyBundle({
-      judgedDomains: [{ domain: "*.Example.COM" }],
-      judges: { default: "p" },
-    });
+    const bundle = egressGuardrailsToPolicyBundle([
+      guardrail({ name: "default", domains: ["*.Example.COM"] }),
+    ]);
     expect(bundle?.judgedDomains[0]?.domain).toBe(".example.com");
   });
 });

@@ -144,7 +144,7 @@ export class PolicyStore {
  *
  * This is the sole production path into the policy store; it produces the same
  * bundle shape the legacy `network.judged`/`judges`/`egressConfig` path did
- * (see {@link buildPolicyBundle}, kept as the equivalence-test oracle).
+ * (the legacy builder that produced it has no callers left and is gone).
  */
 export function egressGuardrailsToPolicyBundle(
   guardrails: AgentInlineGuardrail[]

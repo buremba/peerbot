@@ -116,11 +116,15 @@ jobs:
         run: |
           set -euo pipefail
           release=$(gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}")
-          [ "$(jq -r '.draft' <<<"$release")" = false ] && [ "$(jq -r '.prerelease' <<<"$release")" = false ] || { echo "::error::release is not a published stable release"; exit 1; }
           tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
-          tag_sha=$(jq -r '.object.sha' <<<"$tag_ref")
-          if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then tag_sha=$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha'); fi
-          [ "$tag_sha" = "$RELEASE_SHA" ] && [ "$(jq -r '.target_commitish' <<<"$release")" = "$RELEASE_SHA" ] || { echo "::error::release/tag does not bind to workflow SHA"; exit 1; }
+          tag_object=null
+          if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then
+            tag_object=$(gh api "repos/${REPOSITORY}/git/tags/$(jq -r '.object.sha' <<<"$tag_ref")")
+          fi
+          jq -n --argjson release "$release" --argjson tagRef "$tag_ref" --argjson tagObject "$tag_object" \
+            --arg tag "$RELEASE_TAG" --arg sha "$RELEASE_SHA" \
+            '{release: $release, tagRef: $tagRef, tagObject: $tagObject, expectedTag: $tag, expectedSha: $sha}' \
+            | node scripts/release-provenance.mjs verify-release >/dev/null
 
       # Every tag decision lives in scripts/derive-image-tags.mjs so it is
       # covered by scripts/__tests__/derive-image-tags.test.ts. Computed once

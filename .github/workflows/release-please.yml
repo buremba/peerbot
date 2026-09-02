@@ -24,13 +24,23 @@ jobs:
     name: Attest main image and CI runs
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # `types: [completed]` also fires for failure and cancellation. Screening
+    # here keeps a red image build from producing a red Release Please run
+    # beside it; the producer's conclusion is re-read from the API below
+    # regardless, so this is noise control, not the gate.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     outputs:
-      sha: ${{ steps.attest.outputs.sha }}
-      image_run_id: ${{ steps.attest.outputs.image_run_id }}
-      ci_run_id: ${{ steps.attest.outputs.ci_run_id }}
+      sha: ${{ steps.producer.outputs.sha }}
+      image_run_id: ${{ steps.producer.outputs.image_run_id }}
+      ci_run_id: ${{ steps.runs.outputs.ci_run_id }}
     steps:
-      - name: Fetch and attest immutable producer runs
-        id: attest
+      # Deliberately before any checkout: no repository code runs until the
+      # producing run is known to be a completed-success push to the current
+      # main tip.
+      - name: Attest the producing Build Images run
+        id: producer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_IMAGE_RUN_ID: ${{ inputs.image_run_id }}
@@ -63,34 +73,48 @@ jobs:
           current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
           [ "$current_sha" = "$sha" ] || { echo "::error::main moved while attesting Build Images"; exit 1; }
 
-          jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${image_run_id}/jobs?filter=all&per_page=100")
-          selected=$(jq --arg required "$REQUIRED_IMAGE_JOBS" '
-            ( $required | split(" ") ) as $required_jobs
-            | [ .[] | .jobs[] ] as $jobs
-            | $required_jobs | map(. as $name
-              | [ $jobs[] | select(.name == $name) ] as $matches
-              | if ($matches | length) == 0 then error("missing required job") else . end
-              | ($matches | map(.run_attempt // 1) | max) as $latest
-              | [ $matches[] | select((.run_attempt // 1) == $latest) ] as $chosen
-              | if ($chosen | length) != 1 then error("duplicate latest-attempt required job") else $chosen[0] end)
-            | if all(.[]; .status == "completed" and .conclusion == "success") then . else error("required image jobs missing, skipped, failed, or incomplete") end
-          ' <<<"$jobs") || { echo "::error::Build Images required-job attestation failed"; exit 1; }
-          printf '%s\n' "$selected" >/dev/null
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "image_run_id=$image_run_id" >> "$GITHUB_OUTPUT"
 
+      # Pinned to the SHA the step above proved is the current main tip, so the
+      # policy helper cannot come from a ref that moved mid-run.
+      - name: Check out the attested commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.producer.outputs.sha }}
+          fetch-depth: 2
+
+      - name: Attest required image jobs and the exact CI run
+        id: runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ATTESTED_SHA: ${{ steps.producer.outputs.sha }}
+          IMAGE_RUN_ID: ${{ steps.producer.outputs.image_run_id }}
+        run: |
+          set -euo pipefail
+          jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}/jobs?filter=all&per_page=100")
+          jq -n --argjson pages "$jobs" --arg required "$REQUIRED_IMAGE_JOBS" \
+            '{pages: $pages, required: ($required | split(" "))}' \
+            | node scripts/release-provenance.mjs attest-jobs >/dev/null
+
+          ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id' | tr -d '\n')
           ci_run_id=""
-          ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id')
-          for attempt in $(seq 1 20); do
+          for _ in $(seq 1 20); do
             current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-            [ "$current_sha" = "$sha" ] || { echo "::error::main moved while waiting for exact CI"; exit 1; }
-            ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&event=push&branch=main&status=completed&per_page=100")
-            ci_run_id=$(jq -r --arg workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$sha" '[.workflow_runs[] | select((.workflow_id|tostring) == $workflow_id and .repository.full_name == $repo and .event == "push" and .head_branch == "main" and .head_sha == $sha and .status == "completed" and .conclusion == "success")] as $runs | if ($runs|length) == 0 then "" else ($runs | map(.run_attempt // 1) | max) as $latest | [$runs[] | select((.run_attempt // 1) == $latest)] as $chosen | if ($chosen|length) == 1 then ($chosen[0].id|tostring) else error("ambiguous CI latest attempt") end end' <<<"$ci_runs")
-            [ -n "$ci_run_id" ] && break
+            [ "$current_sha" = "$ATTESTED_SHA" ] || { echo "::error::main moved while waiting for exact CI"; exit 1; }
+            ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${ATTESTED_SHA}&event=push&branch=main&status=completed&per_page=100")
+            selection=$(jq -n --argjson body "$ci_runs" --argjson workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$ATTESTED_SHA" \
+              '{runs: [$body.workflow_runs[] | . + {repo: .repository.full_name}],
+                expected: {workflow_id: $workflow_id, repo: $repo, event: "push", head_branch: "main", head_sha: $sha, status: "completed", conclusion: "success"}}' \
+              | node scripts/release-provenance.mjs select-run) || selection=""
+            if [ -n "$selection" ]; then
+              ci_run_id=$(jq -r '.id' <<<"$selection")
+              break
+            fi
             sleep 20
           done
           [ -n "$ci_run_id" ] || { echo "::error::exact successful CI push/main run was not observed within the bounded wait"; exit 1; }
-
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "image_run_id=$image_run_id" >> "$GITHUB_OUTPUT"
           echo "ci_run_id=$ci_run_id" >> "$GITHUB_OUTPUT"
 
   release-please-write:
@@ -103,6 +127,8 @@ jobs:
       contents: write
       pull-requests: write
     steps:
+      # Releases created with GITHUB_TOKEN do not trigger release-event
+      # workflows, including build-images and mac-release.
       - name: Require release automation token
         env:
           RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
@@ -125,13 +151,6 @@ jobs:
           set -euo pipefail
           current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
           [ "$current_sha" = "$ATTESTED_SHA" ] || { echo "::error::main advanced after attestation"; exit 1; }
-
-      - name: Require release automation token immediately before write
-        env:
-          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-        run: |
-          set -euo pipefail
-          [ -n "$RELEASE_PLEASE_TOKEN" ] || { echo "::error::RELEASE_PLEASE_TOKEN is required"; exit 1; }
 
       - name: Run Release Please against main
         id: release
@@ -156,6 +175,9 @@ jobs:
             exit 1
           }
 
+      # release-please only opens the version-bump PR; the release itself is
+      # created here so it is bound to the exact commit that was attested
+      # above, rather than to whatever the action considered HEAD.
       - name: Publish only a real immutable manifest bump
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
@@ -163,35 +185,51 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          parent_sha=$(git rev-parse "$ATTESTED_SHA^1")
-          current_version=$(git show "$ATTESTED_SHA:package.json" | node -e 'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => process.stdout.write(JSON.parse(s).version))')
-          parent_version=$(git show "$parent_sha:package.json" | node -e 'let s=""; process.stdin.on("data", c => s += c); process.stdin.on("end", () => process.stdout.write(JSON.parse(s).version))')
-          if [ "$current_version" = "$parent_version" ]; then
+          read_version() { git show "$1:package.json" | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).version'; }
+          current_version=$(read_version "$ATTESTED_SHA")
+          parent_version=$(read_version "$(git rev-parse "${ATTESTED_SHA}^1")")
+          bump=$(jq -n --arg current "$current_version" --arg parent "$parent_version" \
+            '{current: $current, parent: $parent}' \
+            | node scripts/release-provenance.mjs manifest-bump)
+          if [ "$(jq -r '.bumped' <<<"$bump")" != true ]; then
             echo "No release-version manifest bump at attested SHA; release PR only."
             exit 0
           fi
-          [[ "$current_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::invalid stable release version"; exit 1; }
-          tag="lobu-v${current_version}"
+          tag=$(jq -n --arg version "$current_version" '{version: $version}' \
+            | node scripts/release-provenance.mjs release-tag | jq -r '.tag')
+
           releases=$(gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100")
-          node --input-type=module -e 'import { compareVersions } from "./scripts/release-provenance.mjs"; const pages = JSON.parse(process.argv[1]); const current = process.argv[2]; const versions = pages.flatMap(p => p).filter(r => !r.prerelease && /^lobu-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(r.tag_name)).map(r => r.tag_name.slice(6)); if (versions.some(v => compareVersions(current, v) <= 0 && v !== current)) { throw new Error(`release ${current} is not newer than an existing stable release`); }' "$releases" "$current_version"
-          notes=$(git show "$ATTESTED_SHA:CHANGELOG.md" | head -c 12000)
+          jq -n --argjson pages "$releases" --arg current "$current_version" \
+            '{current: $current, versions: [$pages[][] | select(.prerelease | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
+            | node scripts/release-provenance.mjs assert-newer >/dev/null
+
+          verify_release() {
+            local tag_ref tag_object
+            tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${tag}")
+            tag_object=null
+            if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then
+              tag_object=$(gh api "repos/${REPOSITORY}/git/tags/$(jq -r '.object.sha' <<<"$tag_ref")")
+            fi
+            jq -n --argjson release "$1" --argjson tagRef "$tag_ref" --argjson tagObject "$tag_object" \
+              --arg tag "$tag" --arg sha "$ATTESTED_SHA" \
+              '{release: $release, tagRef: $tagRef, tagObject: $tagObject, expectedTag: $tag, expectedSha: $sha}' \
+              | node scripts/release-provenance.mjs verify-release >/dev/null
+          }
+
           release=$(gh api "repos/${REPOSITORY}/releases/tags/${tag}" 2>/dev/null || true)
           if [ -n "$release" ]; then
-            [ "$(jq -r '.tag_name' <<<"$release")" = "$tag" ] || { echo "::error::existing release name mismatch"; exit 1; }
-            [ "$(jq -r '.target_commitish' <<<"$release")" = "$ATTESTED_SHA" ] || { echo "::error::existing release target mismatch"; exit 1; }
-            [ "$(jq -r '.prerelease' <<<"$release")" = false ] || { echo "::error::stable release is prerelease"; exit 1; }
+            verify_release "$release"
             echo "Immutable release already exists and matches $ATTESTED_SHA."
             exit 0
           fi
-          [ -n "$GH_TOKEN" ] || { echo "::error::RELEASE_PLEASE_TOKEN is required before release write"; exit 1; }
-          tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${tag}" 2>/dev/null || true)
-          if [ -z "$tag_ref" ]; then
-            gh api --method POST "repos/${REPOSITORY}/git/refs" --input <(jq -n --arg ref "refs/tags/$tag" --arg sha "$ATTESTED_SHA" '{ref:$ref, sha:$sha}') >/dev/null
+
+          notes=$(git show "$ATTESTED_SHA:CHANGELOG.md" | head -c 12000)
+          if ! gh api "repos/${REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            gh api --method POST "repos/${REPOSITORY}/git/refs" \
+              --input <(jq -n --arg ref "refs/tags/$tag" --arg sha "$ATTESTED_SHA" '{ref: $ref, sha: $sha}') >/dev/null
           fi
-          tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${tag}")
-          tag_sha=$(jq -r '.object.sha' <<<"$tag_ref")
-          if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then
-            tag_sha=$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')
-          fi
-          [ "$tag_sha" = "$ATTESTED_SHA" ] || { echo "::error::tag does not bind to attested commit"; exit 1; }
-          gh api --method POST "repos/${REPOSITORY}/releases" --input <(jq -n --arg tag "$tag" --arg sha "$ATTESTED_SHA" --arg body "$notes" '{tag_name:$tag,target_commitish:$sha,name:$tag,body:$body,draft:false,prerelease:false,make_latest:true}') >/dev/null
+          gh api --method POST "repos/${REPOSITORY}/releases" \
+            --input <(jq -n --arg tag "$tag" --arg sha "$ATTESTED_SHA" --arg body "$notes" \
+              '{tag_name: $tag, target_commitish: $sha, name: $tag, body: $body, draft: false, prerelease: false, make_latest: "true"}') >/dev/null
+
+          verify_release "$(gh api "repos/${REPOSITORY}/releases/tags/${tag}")"

@@ -35,18 +35,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      version: ${{ steps.attest.outputs.version }}
-      tag_sha: ${{ steps.attest.outputs.tag_sha }}
-      image_run_id: ${{ steps.attest.outputs.image_run_id }}
-      ci_run_id: ${{ steps.attest.outputs.ci_run_id }}
+      version: ${{ steps.release.outputs.version }}
+      tag_sha: ${{ steps.release.outputs.tag_sha }}
+      image_run_id: ${{ steps.producer.outputs.image_run_id }}
+      ci_run_id: ${{ steps.producer.outputs.ci_run_id }}
     steps:
-      - name: Verify current-main workflow policy and release provenance
-        id: attest
+      # Deliberately before any checkout: this workflow holds the production
+      # environment's publish credentials downstream, so nothing from the
+      # repository runs until the dispatch is shown to be current main.
+      - name: Verify current-main workflow policy
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
           BUMP: ${{ inputs.bump }}
           WORKFLOW_REF: ${{ github.ref }}
           DISPATCH_SHA: ${{ github.sha }}
@@ -56,58 +56,67 @@ jobs:
           current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
           [ "$DISPATCH_SHA" = "$current_sha" ] || { echo "::error::publish workflow is not at current main"; exit 1; }
           [ "$BUMP" = skip ] || { echo "::error::hosted arbitrary version bumps are forbidden"; exit 1; }
-          [[ "$RELEASE_TAG" =~ ^lobu-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::release_tag must be an exact lobu-vSemVer tag"; exit 1; }
-          version="${RELEASE_TAG#lobu-v}"
 
+      - name: Check out current main
+        uses: actions/checkout@v7
+
+      - name: Attest the release tag binds to an immutable commit
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
           release=$(gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}")
-          [ "$(jq -r '.draft' <<<"$release")" = false ] || { echo "::error::release is a draft"; exit 1; }
-          [ "$(jq -r '.tag_name' <<<"$release")" = "$RELEASE_TAG" ] || { echo "::error::release tag mismatch"; exit 1; }
-
           tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
-          tag_type=$(jq -r '.object.type' <<<"$tag_ref")
-          tag_sha=$(jq -r '.object.sha' <<<"$tag_ref")
-          if [ "$tag_type" = tag ]; then
-            tag_sha=$(gh api "repos/${REPOSITORY}/git/tags/${tag_sha}" --jq '.object.sha')
+          tag_object=null
+          if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then
+            tag_object=$(gh api "repos/${REPOSITORY}/git/tags/$(jq -r '.object.sha' <<<"$tag_ref")")
           fi
-          [[ "$tag_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not peel release tag"; exit 1; }
-          [ "$(jq -r '.target_commitish' <<<"$release")" = "$tag_sha" ] || { echo "::error::release target does not match peeled tag"; exit 1; }
+          verified=$(jq -n --argjson release "$release" --argjson tagRef "$tag_ref" --argjson tagObject "$tag_object" --arg tag "$RELEASE_TAG" \
+            '{release: $release, tagRef: $tagRef, tagObject: $tagObject, expectedTag: $tag}' \
+            | node scripts/release-provenance.mjs verify-release)
+          tag_sha=$(jq -r '.sha' <<<"$verified")
 
           current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-          compare=$(gh api "repos/${REPOSITORY}/compare/${tag_sha}...${current_sha}")
-          compare_status=$(jq -r '.status' <<<"$compare")
+          compare_status=$(gh api "repos/${REPOSITORY}/compare/${tag_sha}...${current_sha}" --jq '.status')
           [ "$compare_status" = ahead ] || [ "$compare_status" = identical ] || { echo "::error::release tag is not reachable from current main"; exit 1; }
 
+          echo "version=$(jq -r '.version' <<<"$verified")" >> "$GITHUB_OUTPUT"
+          echo "tag_sha=$tag_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the producing image run and its exact CI run
+        id: producer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          TAG_SHA: ${{ steps.release.outputs.tag_sha }}
+        run: |
+          set -euo pipefail
           build_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/build-images.yml" --jq '.id')
           build_run=$(gh api "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}")
           [ "$(jq -r '.workflow_id' <<<"$build_run")" = "$build_workflow_id" ] || { echo "::error::wrong Build Images workflow"; exit 1; }
           [ "$(jq -r '.head_repository.full_name // empty' <<<"$build_run")" = "$REPOSITORY" ] || { echo "::error::Build Images repository mismatch"; exit 1; }
           [ "$(jq -r '.event' <<<"$build_run")" = release ] || { echo "::error::Build Images run must be a release event"; exit 1; }
           [ "$(jq -r '.status' <<<"$build_run")" = completed ] && [ "$(jq -r '.conclusion' <<<"$build_run")" = success ] || { echo "::error::Build Images release run is not completed-success"; exit 1; }
-          [ "$(jq -r '.head_sha' <<<"$build_run")" = "$tag_sha" ] || { echo "::error::Build Images SHA does not match peeled tag"; exit 1; }
+          [ "$(jq -r '.head_sha' <<<"$build_run")" = "$TAG_SHA" ] || { echo "::error::Build Images SHA does not match peeled tag"; exit 1; }
 
           jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}/jobs?filter=all&per_page=100")
-          selected=$(jq --arg required "$REQUIRED_IMAGE_JOBS" '
-            ( $required | split(" ") ) as $required_jobs
-            | [ .[] | .jobs[] ] as $jobs
-            | $required_jobs | map(. as $name
-              | [ $jobs[] | select(.name == $name) ] as $matches
-              | if ($matches | length) == 0 then error("missing required job") else . end
-              | ($matches | map(.run_attempt // 1) | max) as $latest
-              | [ $matches[] | select((.run_attempt // 1) == $latest) ] as $chosen
-              | if ($chosen | length) != 1 then error("duplicate latest-attempt required job") else $chosen[0] end)
-            | if all(.[]; .status == "completed" and .conclusion == "success") then . else error("required release image jobs missing, skipped, failed, or incomplete") end
-          ' <<<"$jobs") || { echo "::error::release image-job attestation failed"; exit 1; }
-          printf '%s\n' "$selected" >/dev/null
+          jq -n --argjson pages "$jobs" --arg required "$REQUIRED_IMAGE_JOBS" \
+            '{pages: $pages, required: ($required | split(" "))}' \
+            | node scripts/release-provenance.mjs attest-jobs >/dev/null
 
-          ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id')
-          ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${tag_sha}&event=push&branch=main&status=completed&per_page=100")
-          ci_run_id=$(jq -r --arg workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$tag_sha" '[.workflow_runs[] | select((.workflow_id|tostring) == $workflow_id and .repository.full_name == $repo and .event == "push" and .head_branch == "main" and .head_sha == $sha and .status == "completed" and .conclusion == "success")] as $runs | if ($runs|length) == 0 then "" else ($runs | map(.run_attempt // 1) | max) as $latest | [$runs[] | select((.run_attempt // 1) == $latest)] as $chosen | if ($chosen|length) == 1 then ($chosen[0].id|tostring) else error("ambiguous CI latest attempt") end end' <<<"$ci_runs")
-          [ -n "$ci_run_id" ] || { echo "::error::no exact successful CI push/main run for release SHA"; exit 1; }
-
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag_sha=$tag_sha" >> "$GITHUB_OUTPUT"
+          ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id' | tr -d '\n')
+          ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${TAG_SHA}&event=push&branch=main&status=completed&per_page=100")
+          ci_run_id=$(jq -n --argjson body "$ci_runs" --argjson workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$TAG_SHA" \
+            '{runs: [$body.workflow_runs[] | . + {repo: .repository.full_name}],
+              expected: {workflow_id: $workflow_id, repo: $repo, event: "push", head_branch: "main", head_sha: $sha, status: "completed", conclusion: "success"}}' \
+            | node scripts/release-provenance.mjs select-run | jq -r '.id')
           echo "image_run_id=$IMAGE_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "ci_run_id=$ci_run_id" >> "$GITHUB_OUTPUT"
+
 
   publish-packages:
     name: Publish attested packages
@@ -158,7 +167,7 @@ jobs:
         if: ${{ env.CLAWHUB_TOKEN_SET == 'true' }}
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
-          run: npx --yes clawhub@latest login --token "$CLAWHUB_TOKEN" --no-browser
+        run: npx --yes clawhub@latest login --token "$CLAWHUB_TOKEN" --no-browser
 
       - name: Gate package version monotonicity
         env:
@@ -166,7 +175,9 @@ jobs:
         run: |
           set -euo pipefail
           published=$(npm view @lobu/cli versions --json 2>/dev/null || echo '[]')
-          node --input-type=module -e 'import { compareVersions } from "./scripts/release-provenance.mjs"; const versions = JSON.parse(process.argv[1]); const current = process.argv[2]; const stable = (Array.isArray(versions) ? versions : [versions]).filter(v => /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(v)); if (stable.some(v => compareVersions(v, current) > 0)) throw new Error(`npm already contains a newer stable version than ${current}`);' "$published" "$EXPECTED_VERSION"
+          jq -n --argjson versions "$published" --arg current "$EXPECTED_VERSION" \
+            '{current: $current, versions: (if ($versions | type) == "array" then $versions else [$versions] end)}' \
+            | node scripts/release-provenance.mjs assert-newer >/dev/null
 
       - name: Publish packages at exact version
         env:

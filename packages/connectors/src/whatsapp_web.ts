@@ -369,7 +369,11 @@ async function downloadEligibleMedia(
   const remember = (record: MediaRecord) => {
     results.set(record.id, record);
     // Terminal rows need no further bookkeeping; only pending retries are
-    // worth a checkpoint slot.
+    // worth a checkpoint slot. So a prior record is ALWAYS retryable — there
+    // is no terminal-prior case to short-circuit. Re-downloading inside the
+    // recent-overlap window costs one fetch and dedupes on content hash;
+    // persisting terminal rows to avoid it would grow the checkpoint without
+    // bound.
     if (record.retryable)
       nextMedia[record.id] = { ...record, attachment: undefined };
   };
@@ -390,13 +394,6 @@ async function downloadEligibleMedia(
     if (!isMediaEligible(message)) continue;
     const revision = messageRevision(message);
     const previous = priorMedia[message.id];
-    if (
-      previous?.revision === revision &&
-      TERMINAL_MEDIA_STATES.has(previous.status)
-    ) {
-      results.set(message.id, previous);
-      continue;
-    }
     if (
       previous?.revision === revision &&
       (previous.next_attempt_at ?? 0) > Date.now()

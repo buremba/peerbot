@@ -464,7 +464,6 @@
       "name": "@lobu/server",
       "version": "1.6.0",
       "dependencies": {
-        "@anthropic-ai/sdk": "^0.104.1",
         "@aws-sdk/client-bedrock": "^3.1028.0",
         "@aws-sdk/client-secrets-manager": "^3.1028.0",
         "@better-auth/passkey": "^1.6.9",

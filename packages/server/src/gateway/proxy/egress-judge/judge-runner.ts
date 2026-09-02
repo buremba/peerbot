@@ -2,10 +2,12 @@ import {
 	createLogger,
 	getErrorMessage,
 } from "@lobu/core";
-import { AnthropicJudgeClient } from "./anthropic-client.js";
 import { VerdictCache } from "./cache.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
-import { JudgeConfigurationError } from "./gateway-judge-client.js";
+import {
+  GatewayJudgeClient,
+  JudgeConfigurationError,
+} from "./gateway-judge-client.js";
 import type { JudgeClient, JudgeVerdict } from "./types.js";
 import {
   DEFAULT_JUDGE_MODEL,
@@ -125,11 +127,11 @@ export abstract class JudgeRunner<TResult> {
 
   /**
    * Defer client construction until the first call so callers with no judge
-   * rules/guardrails never require ANTHROPIC_API_KEY.
+   * rules/guardrails never touch provider resolution.
    */
   private get client(): JudgeClient {
     if (!this._client) {
-      this._client = new AnthropicJudgeClient();
+      this._client = new GatewayJudgeClient();
     }
     return this._client;
   }

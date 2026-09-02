@@ -220,7 +220,7 @@ describe("judge runner — configuration errors vs faults", () => {
       true
     );
     // Once open, the breaker short-circuits without calling the client — the
-    // exact behaviour a configuration error must NOT produce.
+    // exact outcome a configuration error must NOT produce.
     expect(sources).toContain("circuit-open");
     expect(calls).toBeLessThan(8);
   });

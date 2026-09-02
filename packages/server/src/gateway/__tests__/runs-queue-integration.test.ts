@@ -415,6 +415,87 @@ describe("RunsQueue — graceful shutdown", () => {
   });
 });
 
+describe("RunsQueue — the claim gate on a linked parent", () => {
+  /** An Automation parent and one linked chat_message child of it. */
+  async function seedLinkedChild(
+    organizationId: string,
+    queueName: string,
+    parentStatus: string
+  ) {
+    const sql = getDb();
+    const messageId = `msg-${queueName}`;
+    const [parent] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, status, run_at, dispatched_message_id,
+        completed_at
+      ) VALUES (
+        ${organizationId}, 'automation', ${parentStatus}, now(), ${messageId},
+        ${parentStatus === "failed" ? new Date() : null}
+      )
+      RETURNING id
+    `;
+    const [child] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        organization_id, run_type, queue_name, action_input, parent_run_id,
+        status, run_at
+      ) VALUES (
+        ${organizationId}, 'chat_message', ${queueName},
+        ${sql.json({ messageId })}::jsonb, ${Number(parent.id)}, 'pending',
+        now()
+      )
+      RETURNING id
+    `;
+    return { parentId: Number(parent.id), childId: Number(child.id) };
+  }
+
+  /** Did the queue hand this row to a handler within the window? */
+  async function claimed(queueName: string): Promise<boolean> {
+    if (!queue) throw new Error("queue not started");
+    let consumed = false;
+    await queue.work(queueName, async () => {
+      consumed = true;
+    });
+    const start = Date.now();
+    while (!consumed && Date.now() - start < 2500) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return consumed;
+  }
+
+  test("claims a linked child while its Automation parent is still active", async () => {
+    const organizationId = await seedAgentRow("claim-live-agent", {
+      organizationId: "claim-live-org",
+    });
+    await seedLinkedChild(organizationId, "thread_message_claim-live", "running");
+    expect(await claimed("thread_message_claim-live")).toBe(true);
+  });
+
+  test("refuses a linked child once its Automation parent is terminal", async () => {
+    // The other half of the same predicate, and the half with teeth: a parent
+    // that already failed has nothing left to consume a reply, so handing the
+    // child to a worker spends a turn whose result can never be delivered.
+    // Unlike a task parent -- causal provenance, deliberately exempt -- a
+    // chat_message child IS the parent's liveness lease.
+    const organizationId = await seedAgentRow("claim-dead-agent", {
+      organizationId: "claim-dead-org",
+    });
+    const { childId } = await seedLinkedChild(
+      organizationId,
+      "thread_message_claim-dead",
+      "failed"
+    );
+    expect(await claimed("thread_message_claim-dead")).toBe(false);
+
+    const sql = getDb();
+    const [row] = await sql<{ status: string; claimed_by: string | null }>`
+      SELECT status, claimed_by FROM runs WHERE id = ${childId}
+    `;
+    // Left alone, not consumed and not half-claimed.
+    expect(row.status).toBe("pending");
+    expect(row.claimed_by).toBeNull();
+  });
+});
+
 describe("linked-child identity projection", () => {
   // Three sweeps read a linked chat_message child off `runs` and hand the
   // result straight to deploymentNameForLinkedChild, which is what decides

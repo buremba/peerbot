@@ -45,7 +45,10 @@ import {
 } from '../gateway/orchestration/turn-liveness';
 import type { Env } from '../index';
 import { claimPendingAutomationRun } from '../runs/queue-service';
-import { executionModeForRunType } from '../runs/run-types';
+import {
+	AUTOMATION_RUN_TYPES,
+	executionModeForRunType,
+} from '../runs/run-types';
 import { parseAutomationSkillSnapshots } from '../automations/skill-snapshots';
 import {
   type MaterializedDueFeedRun,
@@ -135,10 +138,7 @@ export async function failClaimedWorkerRun(params: {
         AND claimed_by = ${params.workerId}
     `;
     if (!state) return false;
-    if (
-      state.run_type === 'automation' ||
-      state.run_type === 'automation_eval'
-    ) {
+    if (AUTOMATION_RUN_TYPES.includes(state.run_type)) {
       return markAutomationRunFailedInTransaction(tx, {
         runId: params.runId,
         message: params.errorMessage,

@@ -170,9 +170,10 @@ export interface LinkedChildIdentity {
 /**
  * The `action_input` projection that populates a {@link LinkedChildIdentity}.
  *
- * Takes the executing client because a fragment is bound by the statement it
- * is nested into: build it with `tx` inside a transaction and `sql` outside,
- * or the parameters land on the wrong connection.
+ * Takes a client only because that is the only way to construct a nestable
+ * fragment; any client will do, since this projection binds no parameters.
+ * Callers pass the one they are already holding so the call site reads in one
+ * piece.
  */
 export function linkedChildIdentityColumns(sql: DbClient): DbQuery {
   return sql`

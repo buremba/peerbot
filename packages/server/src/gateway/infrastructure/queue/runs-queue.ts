@@ -36,6 +36,11 @@ import {
 } from "../../../automations/run-completion.js";
 import { AUTOMATION_RUN_TYPES_PG } from "../../../runs/run-types.js";
 import {
+  ACTIVE_RUN_STATUSES,
+  isActiveRunStatus,
+  runStatusLiteral,
+} from "../../../utils/run-statuses.js";
+import {
   deploymentNameForLinkedChild,
   type LinkedChildIdentity,
   linkedChildIdentityColumns,
@@ -126,7 +131,7 @@ async function terminalizeLinkedAutomationParent(
   `;
   if (
     !parent ||
-    !['pending', 'claimed', 'running'].includes(parent.status) ||
+    !isActiveRunStatus(parent.status) ||
     parent.dispatched_message_id !== messageId
   ) {
     return { parentFailed: false, responseEmitted: false };
@@ -546,9 +551,7 @@ export class RunsQueue implements IMessageQueue {
           LIMIT 1
         `;
         if (existingChild[0]) return String(existingChild[0].id);
-        if (
-          !["pending", "claimed", "running"].includes(parent[0]?.status ?? "")
-        ) {
+        if (!isActiveRunStatus(parent[0]?.status)) {
           throw new OrchestratorError(
             ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
             "Verified Automation parent run is no longer active",
@@ -870,7 +873,7 @@ export class RunsQueue implements IMessageQueue {
               WHERE parent.id = public.runs.parent_run_id
                 AND parent.organization_id = public.runs.organization_id
                 AND parent.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-                AND parent.status IN ('pending', 'claimed', 'running')
+                AND parent.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
                 AND parent.dispatched_message_id = public.runs.action_input->>'messageId'
             )
           )

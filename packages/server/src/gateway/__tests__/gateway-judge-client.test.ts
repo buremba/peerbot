@@ -42,6 +42,24 @@ function stubFetch(
   return { calls };
 }
 
+/**
+ * Like {@link stubFetch} but takes the whole response body, so a test can set
+ * `finish_reason` — which the content-only helper cannot express.
+ */
+function stubFetchRaw(
+  body: unknown,
+  onRequest?: (parsedBody: Record<string, unknown>) => void
+): void {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (_url: string, requestInit: RequestInit) => {
+    onRequest?.(JSON.parse(String(requestInit.body)));
+    return new Response(JSON.stringify(body), { status: 200 });
+  }) as unknown as typeof fetch;
+  restore = () => {
+    globalThis.fetch = original;
+  };
+}
+
 describe("GatewayJudgeClient", () => {
   // POSITIVE CONTROL. Every other test here asserts a denial, and a client that
   // denied unconditionally would pass all of them while the feature is dead.
@@ -92,7 +110,11 @@ describe("GatewayJudgeClient", () => {
     // The circuit breaker is the retry policy; retrying inside one judge call
     // only delays the fail-closed deny.
     expect(calls).toHaveLength(1);
-    expect(JSON.parse(String(calls[0]?.init.body)).max_tokens).toBe(256);
+    // Pinned deliberately. This was 256 and had to be raised: a reasoning
+    // model's hidden thinking is charged against `max_tokens`, and 252 tokens
+    // were measured generated against the old 256 ceiling, truncating the
+    // verdict. Do not lower this without reading JUDGE_MAX_TOKENS' comment.
+    expect(JSON.parse(String(calls[0]?.init.body)).max_tokens).toBe(1024);
   });
 
   test("uses the operator credential and target, not a caller-supplied one", async () => {
@@ -356,5 +378,75 @@ describe("resolveSystemJudgeTarget", () => {
     const result = await resolveSystemJudgeTarget("openai/gpt-4o-mini");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("no-system-provider");
+  });
+});
+
+describe("GatewayJudgeClient — ceiling truncation", () => {
+  /**
+   * The regression that motivated raising the ceiling. A reasoning model
+   * spends `max_tokens` on hidden thinking, so the verdict arrives as a
+   * prefix. Before this, `gatewayCompletion` handed the prefix back and the
+   * parser reported "no JSON object" — a budget misconfiguration wearing the
+   * costume of a model that ignored its instructions.
+   */
+  test("a verdict cut off by the ceiling reports the ceiling, not a bad verdict", async () => {
+    stubFetchRaw({
+      choices: [
+        {
+          message: { content: '```json\n{\n  "verdict": "' },
+          finish_reason: "length",
+        },
+      ],
+    });
+
+    const client = new GatewayJudgeClient({
+      resolveTarget: async () => OK_TARGET,
+    });
+
+    const err = await client
+      .judge({
+        model: "gemini/gemini-2.5-flash",
+        systemPrompt: "s",
+        userPrompt: "u",
+      })
+      .catch((e: Error) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("ceiling");
+    expect((err as Error).message).toContain("gemini/gemini-2.5-flash");
+    // The old failure mode. If this string comes back, a truncation is being
+    // misreported as malformed model output again.
+    expect((err as Error).message).not.toContain("no JSON object");
+  });
+
+  test("the ceiling it sends is large enough for a reasoning model's thinking", async () => {
+    let sentMaxTokens: unknown;
+    stubFetchRaw(
+      {
+        choices: [
+          {
+            message: { content: '{"verdict":"allow","reason":"ok"}' },
+            finish_reason: "stop",
+          },
+        ],
+      },
+      (body) => {
+        sentMaxTokens = body.max_tokens;
+      }
+    );
+
+    const client = new GatewayJudgeClient({
+      resolveTarget: async () => OK_TARGET,
+    });
+    const verdict = await client.judge({
+      model: "p/m",
+      systemPrompt: "s",
+      userPrompt: "u",
+    });
+
+    expect(verdict.verdict).toBe("allow");
+    // 252 tokens were generated under the old 256 ceiling, so anything at or
+    // near 256 reintroduces the coin flip.
+    expect(sentMaxTokens as number).toBeGreaterThanOrEqual(512);
   });
 });

@@ -21,6 +21,7 @@
 
 import {
   GatewayCompletionTimeoutError,
+  GatewayCompletionTruncatedError,
   gatewayCompletion,
 } from "../../inference/gateway-completion.js";
 import { resolveSystemJudgeTarget } from "../../inference/system-judge-target.js";
@@ -41,12 +42,28 @@ export class JudgeConfigurationError extends Error {
 }
 
 /**
- * Output ceiling for a verdict. A verdict is `{verdict, reason}` with the reason
- * capped at one short sentence by the prompt, so this is a backstop against a
- * model that starts narrating, not a tuning knob. Matches what the Anthropic
- * client sent.
+ * Output ceiling for a verdict. A verdict is `{verdict, reason}` with the
+ * reason capped at one short sentence by the prompt, so this is a backstop
+ * against a model that starts narrating, not a tuning knob.
+ *
+ * It was 256 — what the Anthropic client sent. That did not survive the move
+ * to arbitrary OpenAI-compatible providers, because a REASONING model's hidden
+ * thinking tokens are charged against `max_tokens` while being excluded from
+ * `completion_tokens`. Measured against `gemini/gemini-2.5-flash` with this
+ * judge's own prompts: `finish_reason: "length"`, `completion_tokens: 40`, but
+ * 252 tokens actually generated against the 256 ceiling — so whether a verdict
+ * survived was a coin flip on how much the model thought, and a truncated one
+ * fails closed and DENIES legitimate traffic.
+ *
+ * 1024 clears the observed thinking budget with room to spare while still
+ * bounding a runaway. The judge is asked for one sentence; if a model needs
+ * more than 1024 tokens to produce it, capping is the correct outcome.
+ *
+ * Note this bounds an OUTPUT budget, not billing on thinking — a chatty
+ * reasoning model costs what it costs; the ceiling only decides whether we get
+ * a usable answer for it.
  */
-const JUDGE_MAX_TOKENS = 256;
+const JUDGE_MAX_TOKENS = 1024;
 
 export class GatewayJudgeClient implements JudgeClient {
   private readonly timeoutMs: number;
@@ -88,6 +105,15 @@ export class GatewayJudgeClient implements JudgeClient {
       // aborted here rather than abandoned to finish unobserved.
       if (err instanceof GatewayCompletionTimeoutError) {
         throw new JudgeTimeoutError(err.timeoutMs);
+      }
+      // A truncation is this deployment's ceiling, not the upstream's health,
+      // so it must not read as a provider fault. Rethrown with the model named
+      // because the ceiling only bites for particular (reasoning) models, and
+      // that is the first thing an operator needs in order to act.
+      if (err instanceof GatewayCompletionTruncatedError) {
+        throw new Error(
+          `judge model "${args.model}" did not fit the verdict inside the ${JUDGE_MAX_TOKENS}-token ceiling (${err.message}). A reasoning model spends this budget on hidden thinking; use a smaller-thinking model or raise the ceiling.`
+        );
       }
       throw err;
     }

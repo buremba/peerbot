@@ -48,6 +48,10 @@ export function isolatedVmUnavailableReason(): string | null {
   return null;
 }
 
+/** `isolated-vm@6` (Node 22–24) and the `isolated-vm-next` alias of `isolated-vm@7` (Node 26+). */
+const IVM_MODULE = 'isolated-vm';
+const IVM_NEXT_MODULE = 'isolated-vm-next';
+
 let cached: Promise<IsolatedVm | null> | null = null;
 
 /**
@@ -67,14 +71,12 @@ async function loadIsolatedVmUncached(): Promise<IsolatedVm | null> {
     // Dynamic on purpose: the two builds are optionalDependencies gated by
     // Node major, and a static import of a native addon absent on this host
     // would fail this module (and every static importer of the executor) at
-    // load instead of failing closed for the isolate lane alone.
-    if (major >= 22 && major < 25) {
-      return unwrapIsolatedVm(await import('isolated-vm'));
-    }
-    if (major >= 26) {
-      return unwrapIsolatedVm(await import('isolated-vm-next'));
-    }
-    return null;
+    // load instead of failing closed for the isolate lane alone. The
+    // specifier is a variable so the worker typechecks with neither package
+    // installed; `unwrapIsolatedVm` narrows to the structural `IsolatedVm`.
+    const specifier = major >= 26 ? IVM_NEXT_MODULE : major >= 22 && major < 25 ? IVM_MODULE : null;
+    if (!specifier) return null;
+    return unwrapIsolatedVm(await import(specifier));
   } catch {
     return null;
   }

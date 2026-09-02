@@ -24,7 +24,7 @@
  *  - `dispose()` on a disposed isolate throws; guard with `isDisposed`.
  */
 
-import { GUEST_PRELUDE } from './prelude.js';
+import { GUEST_PRELUDE, PRELUDE_HOST_SYNC } from './prelude.js';
 import type { IsolatedVm, IvmHeapStatistics, IvmIsolate, IvmReference } from './ivm-types.js';
 
 export type HostSyncCapability = (...args: unknown[]) => unknown;
@@ -44,6 +44,7 @@ export interface IsolateHostOptions {
   messageBytes: number;
   /** `process.env` visible to the guest. */
   env: Record<string, string | undefined>;
+  /** The run's own sync capabilities; the prelude's host halves (`PRELUDE_HOST_SYNC`) are always installed too. */
   sync: Record<string, HostSyncCapability>;
   async: Record<string, HostAsyncCapability>;
 }
@@ -97,6 +98,7 @@ export class IsolateHost {
   private readonly isolate: IvmIsolate;
   private readonly context: { global: IvmReference };
   private readonly options: IsolateHostOptions;
+  private readonly sync: Record<string, HostSyncCapability>;
   private terminalState: IsolateTerminalState | null = null;
   private timedOut = false;
 
@@ -104,6 +106,7 @@ export class IsolateHost {
     this.isolate = isolate;
     this.context = context;
     this.options = options;
+    this.sync = { ...PRELUDE_HOST_SYNC, ...options.sync };
   }
 
   static async create(options: IsolateHostOptions): Promise<IsolateHost> {
@@ -168,7 +171,7 @@ export class IsolateHost {
   private dispatchSync(name: unknown, args: unknown[]): Envelope {
     if (this.terminalState) return this.terminalEnvelope();
     if (!this.guardArgs(args)) return this.terminalEnvelope();
-    const fn = typeof name === 'string' ? this.options.sync[name] : undefined;
+    const fn = typeof name === 'string' ? this.sync[name] : undefined;
     if (!fn) {
       return { __lobu: 1, ok: false, error: { name: 'UnknownHostCapability', message: `no sync host capability '${String(name)}'` } };
     }

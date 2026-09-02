@@ -678,8 +678,9 @@ const URL_SETTER_PROBE = String.raw`function (cases) {
     try {
       var u = new URL(c.start);
       Object.keys(c.set).forEach(function (k) { u[k] = c.set[k]; });
+      var sp = []; u.searchParams.forEach(function (v, k) { sp.push([k, v]); });
       return { href: u.href, host: u.host, port: u.port, pathname: u.pathname, search: u.search, hash: u.hash,
-        username: u.username, password: u.password, protocol: u.protocol, origin: u.origin };
+        username: u.username, password: u.password, protocol: u.protocol, origin: u.origin, searchParams: sp };
     } catch (e) { return { error: e.constructor.name }; }
   });
 }`;
@@ -722,166 +723,44 @@ const BASE64_PROBE = String.raw`function (input) {
 }`;
 
 function urlCases(): [string, string?][] {
+	// Parsing is the host's (Node's own URL), so this is a wiring check, not a
+	// parser conformance suite: components, errors, IDNA, relative resolution.
 	const absolute = [
 		"http://example.com",
-		"http://example.com/",
-		"HTTP://EXAMPLE.com/A/B",
-		"http://example.com:80/",
-		"https://example.com:443/",
-		"http://example.com:8080/x",
-		"https://example.com:80/",
-		"http://user:pass@example.com/",
-		"http://user@example.com/",
-		"http://:pw@example.com/",
-		"http://@example.com/",
-		"http://user:@example.com/",
-		"http://user:p@ss@example.com/",
+		"HTTP://EXAMPLE.com:80/A/./B/../C?Q=1#F",
+		"https://user:p%40ss@example.com:8443/x y?a=1&a=2#h",
 		"http://us er@example.com/",
-		"http://user%40@example.com/",
-		"http://example.com/a/./b/../c",
-		"http://example.com/a/b/../../../c",
-		"http://example.com/%7Efoo",
-		"http://example.com/~foo",
-		"http://example.com/a b",
-		"http://example.com/a?b c#d e",
-		"http://example.com/?q=1&r=2",
-		"http://example.com/#frag",
-		"http://example.com/#",
-		"http://example.com/?",
-		"http://example.com/?#",
-		"http://example.com/path?query#frag",
-		"http://example.com/\\a\\b",
-		"http:\\\\example.com\\path",
-		"http://example.com/a|b",
-		'http://example.com/a"b<c>d`e',
-		"http://example.com/a{b}c",
-		'http://example.com/?a"b<c>d`e',
-		"http://example.com/?a'b",
-		"https://example.com/?a'b",
-		"foo://example.com/?a'b",
-		'http://example.com/#a"b<c>d`e',
-		"http://192.168.0.1/",
-		"http://192.168.0.1:8080/",
-		"http://0x7f.0.0.1/",
-		"http://0177.0.0.1/",
-		"http://2130706433/",
-		"http://127.1/",
-		"http://1.2.3.4.5/",
-		"http://256.0.0.1/",
-		"http://999999999999/",
-		"http://[::1]/",
+		"http://example.com/a^b?c^d#e^f",
+		"http://example.com/€?€#€",
+		"http://example.com/%zz/%2e%2E/..",
+		"http://exämple.com/",
+		"http://例え.jp/",
+		"http://xn--r8jz45g.jp/",
 		"http://[::1]:8080/",
-		"http://[2001:db8::1]/",
-		"http://[2001:0db8:0000:0000:0000:0000:0000:0001]/",
-		"http://[::ffff:192.168.0.1]/",
-		"http://[1:2:3:4:5:6:7:8]/",
-		"http://[1::]/",
-		"http://[::]/",
-		"http://[1:2:3:4:5:6:7::]/",
-		"http://[1:0:0:2:0:0:0:3]/",
-		"http://[0:0:0:1:0:0:0:0]/",
-		"http://[::1",
-		"http://[]/",
-		"http://[:::1]/",
-		"http://[1:2:3:4:5:6:7:8:9]/",
-		"http://example.com./",
-		"http://ex ample.com/",
-		"http://exa%20mple.com/",
-		"http://exa%41mple.com/",
-		"http://example.com:abc/",
-		"http://example.com:99999/",
-		"http://example.com:0/",
-		"http://example.com:00080/",
-		"http://example.com:/",
-		"http://example.com:8080:90/",
-		"http://[::1]:abc/",
-		"http://",
-		"http:",
-		"http:/example.com",
-		"http:example.com",
-		"http:///example.com",
-		"http:////example.com/a",
-		"file:///etc/passwd",
-		"file://host/share/x",
-		"file:///C:/Windows",
-		"file:C|/x",
-		"file:",
-		"file://",
-		"file:///a/../b",
-		"file://localhost/x",
-		"ftp://example.com/",
+		"http://[::ffff:1.2.3.4]/",
+		"http://0x7f.1/",
+		"http://4294967296/",
+		"http://1.2.3.4:5/",
+		"file:///C:/Windows/../x",
+		"file://host/share",
 		"ftp://example.com:21/",
-		"ws://example.com/",
 		"ws://example.com:80/",
-		"wss://example.com:443/",
 		"foo://bar/baz?q#h",
-		"foo:bar",
-		"foo:/bar",
-		"foo://",
-		"foo:",
-		"foo://host:1234/p",
-		"foo:// spaced/x",
-		"foo://a b/x",
+		"foo:bar baz",
 		"mailto:a@b.com",
 		"data:text/plain,hello world",
 		"javascript:alert(1)",
-		"about:blank",
 		"blob:https://example.com/uuid",
-		"urn:isbn:123",
-		"sc://x/y",
-		"sc:a b",
-		"sc:/a b",
-		"sc:a\\b",
-		"http://a.b.c.d.example.com/",
-		"http://EXAMPLE.COM/PATH?Q=1",
-		"http://example.com/%zz",
-		"http://example.com/%",
-		"http://example.com/?%zz",
-		"http://example.com/#%zz",
-		"http://example.com/a%2Fb",
-		"http://example.com/a/%2e%2E/b",
-		"http://example.com/a/.%2e",
-		"http://example.com/..",
-		"http://example.com/.",
-		"http://example.com/a/..",
-		"http://example.com/a/../..",
-		"http://example.com//a//b",
-		"http://example.com/a?b?c",
-		"http://example.com/a#b#c",
-		"http://example.com/a?b#c?d",
-		"http://example.com/€",
-		"http://example.com/?€",
-		"http://example.com/#€",
-		"http://example.com/é",
-		"http://example.com/𝄞?𝄞#𝄞",
 		"  http://example.com/  ",
 		"\thttp://exam\nple.com/\r",
-		"http://example.com/a\tb",
-		"http://1.2.3.4:5/",
-		"http://%30.0.0.1/",
-		"http://0.0.0.0/",
-		"http://255.255.255.255/",
-		"http://0x/",
-		"http://0x100000000/",
-		"http://4294967295/",
-		"http://4294967296/",
-		"http://1.0x2.3/",
-		"http://a.0x2.3/",
-		"http://1.2.3.0x/",
-		"http://09/",
-		"http://1..2/",
-		"http://.1.2.3.4/",
-		"http://example.com%2F/",
-		"http://example.com/?a=1&a=2&b=%20&c",
-		"http://example.com/?a=+b&c=%2B",
-		"http://ex%61mple.com/",
-		"http://example.com/a?b=c d&e=f+g",
-		"http://example.com/a#b c",
+		"http://",
+		"http:",
+		"http:/example.com",
+		"http:///example.com",
 		"not a url",
 		"",
 		"//example.com/x",
 		"/x",
-		"x",
 		"?q",
 		"#h",
 	];
@@ -896,35 +775,14 @@ function urlCases(): [string, string?][] {
 		["//other.com/c", base],
 		["?x", base],
 		["#y", base],
-		["c?x#y", base],
 		["https:c", base],
-		["http:c", base],
 		["\\c", base],
-		["..\\c", base],
-		["../../../c/d", base],
-		[".//c", base],
-		["c/./d/../e", base],
-		["a b", base],
-		["%2e", base],
 		["%2e%2e/c", base],
-		["c/", base],
-		["/c/../d", base],
-		["", "foo://bar/x"],
-		["c", "foo://bar/x"],
+		["a b", base],
 		["c", "foo:opaque"],
 		["#f", "foo:opaque"],
-		["?q", "foo:opaque"],
-		["/c", "file:///x/y"],
-		["c", "file:///x/y"],
 		["//h/c", "file:///x/y"],
-		["x", "sc:/a/b"],
 		["x", "not a url"],
-		["http://other.com", base],
-		["//user:pw@other.com:81/p?q#h", base],
-		["c", "http://user:pw@example.com:8080/a/b"],
-		["../c", "http://example.com/"],
-		["?", base],
-		["#", base],
 	];
 	return [...absolute.map((u): [string, string?] => [u]), ...relative];
 }
@@ -1162,25 +1020,12 @@ function base64Inputs(): { plain: string[]; encoded: string[] } {
 }
 
 describe("isolate lane: prelude differential against Node", () => {
-	it("URL: parsing, serialization and relative resolution over 150+ inputs", async () => {
+	it("URL: parsing, serialization and relative resolution agree with Node, which parses for the guest", async () => {
 		const cases = urlCases();
-		expect(cases.length).toBeGreaterThanOrEqual(150);
+		expect(cases.length).toBeGreaterThanOrEqual(40);
 		await differential("URL", URL_PROBE, cases);
 	});
 
-	it("URL: percent-encodes ^ in paths per the living spec on every supported Node line", async () => {
-		// The URL Standard added U+005E (^) to the path percent-encode set, not to the query or
-		// fragment sets. ada 4 (Node 26) follows it; ada 2.9 (Node 22, the worker image) still
-		// serializes a bare ^. The guest is pinned to the spec so a connector sees one result
-		// whichever Node the host runs, which is why this input is kept out of `urlCases()`.
-		const [plain, mixed] = await probeGuest<Array<{ href: string; pathname: string; search: string; hash: string }>>(
-			URL_PROBE,
-			[["http://example.com/a^b"], ["http://example.com/a^b?c^d#e^f"]],
-		);
-		expect(plain.href).toBe("http://example.com/a%5Eb");
-		expect(mixed).toMatchObject({ href: "http://example.com/a%5Eb?c^d#e^f", pathname: "/a%5Eb", search: "?c^d", hash: "#e^f" });
-		expect(["/a^b", "/a%5Eb"]).toContain(new URL("http://example.com/a^b").pathname);
-	});
 
 	it("URL: property setters", async () => {
 		const cases = [
@@ -1199,6 +1044,10 @@ describe("isolate lane: prelude differential against Node", () => {
 			{ start: "http://example.com/a/b", set: { pathname: "/../x" } },
 			{ start: "http://example.com/a/b", set: { search: "" } },
 			{ start: "http://example.com/a/b?q", set: { search: "?" } },
+			// searchParams must follow a setter that changes the query, and survive one that does not.
+			{ start: "http://example.com/?a=1", set: { search: "b=2&c=3" } },
+			{ start: "http://example.com/?a=1", set: { href: "http://other.org/?z=9&z=8" } },
+			{ start: "http://example.com/?a=1", set: { pathname: "/p", hash: "#h" } },
 			{ start: "http://example.com/a/b#f", set: { hash: "" } },
 			{ start: "http://example.com/a/b", set: { hash: "#" } },
 			{ start: "http://example.com/a/b", set: { href: "https://x.y/z" } },
@@ -1246,8 +1095,4 @@ describe("isolate lane: prelude differential against Node", () => {
 		for (let i = 0; i < node.length; i += 1) expect(guest[i], labels[i]).toEqual(node[i]);
 	});
 
-	it("URL fails closed on non-ASCII hosts instead of guessing at IDNA", async () => {
-		const out = await probeGuest<{ error?: string; href?: string }[]>(URL_PROBE, [["http://exämple.com/"], ["http://例え.jp/"]]);
-		expect(out.map((o) => o.error)).toEqual(["TypeError", "TypeError"]);
-	});
 });

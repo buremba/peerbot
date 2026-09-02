@@ -14,7 +14,9 @@
  *    uncaught exception ends the process lane's child.
  *  - `process = { env }` from the job env.
  *  - `TextEncoder`/`TextDecoder` (UTF-8), `atob`/`btoa`.
- *  - `URL`/`URLSearchParams` per the WHATWG URL Standard for ASCII hosts.
+ *  - `URL` over the host `urlParse`/`urlSet` capabilities: the host runs Node's
+ *    own URL, so both lanes agree on every input by construction.
+ *    `URLSearchParams` is guest-side and writes back through `search`.
  *  - `AbortController`/`AbortSignal`.
  *  - `Headers`, `Response` and `fetch` over the host `fetch` capability. The
  *    host performs the network call and returns status, headers and a bounded
@@ -61,6 +63,58 @@ export const PRELUDE_GLOBALS = [
   'Response',
   'fetch',
 ] as const;
+
+/** What the guest `URL` holds: the components Node's URL reports. */
+interface GuestUrlRecord {
+  href: string;
+  origin: string;
+  protocol: string;
+  username: string;
+  password: string;
+  host: string;
+  hostname: string;
+  port: string;
+  pathname: string;
+  search: string;
+  hash: string;
+}
+
+const URL_SETTABLE = new Set(['href', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash']);
+
+function guestUrlRecord(url: URL): GuestUrlRecord {
+  return {
+    href: url.href,
+    origin: url.origin,
+    protocol: url.protocol,
+    username: url.username,
+    password: url.password,
+    host: url.host,
+    hostname: url.hostname,
+    port: url.port,
+    pathname: url.pathname,
+    search: url.search,
+    hash: url.hash,
+  };
+}
+
+/**
+ * Host halves of prelude globals that delegate to Node. `IsolateHost` installs
+ * them under every run, so they are part of the guest's standard library
+ * rather than a capability a particular executor grants. Parsing only: no
+ * network, no filesystem.
+ */
+export const PRELUDE_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> = {
+  urlParse: (input: unknown, base: unknown): GuestUrlRecord =>
+    guestUrlRecord(base === undefined || base === null ? new URL(String(input)) : new URL(String(input), String(base))),
+  urlSet: (href: unknown, name: unknown, value: unknown): GuestUrlRecord => {
+    if (typeof name !== 'string' || !URL_SETTABLE.has(name)) {
+      throw new TypeError(`URL has no settable property '${String(name)}'`);
+    }
+    const url = new URL(String(href));
+    (url as unknown as Record<string, string>)[name] = String(value);
+    return guestUrlRecord(url);
+  },
+};
 
 export const GUEST_PRELUDE = String.raw`
 var module = { exports: {} };
@@ -485,19 +539,15 @@ var exports = module.exports;
   };
 
   // ---------------------------------------------------------------------------
-  // Percent-encoding (WHATWG URL Standard sets)
+  // application/x-www-form-urlencoded percent-encoding (URLSearchParams only;
+  // URL itself is parsed by the host, see below)
   // ---------------------------------------------------------------------------
 
-  function inC0ControlSet(c) { return c < 0x20 || c > 0x7e; }
-  function inFragmentSet(c) { return inC0ControlSet(c) || c === 0x20 || c === 0x22 || c === 0x3c || c === 0x3e || c === 0x60; }
-  function inQuerySet(c) { return inC0ControlSet(c) || c === 0x20 || c === 0x22 || c === 0x23 || c === 0x3c || c === 0x3e; }
-  function inSpecialQuerySet(c) { return inQuerySet(c) || c === 0x27; }
-  function inPathSet(c) { return inQuerySet(c) || c === 0x3f || c === 0x5e || c === 0x60 || c === 0x7b || c === 0x7d; }
-  function inUserinfoSet(c) {
-    return inPathSet(c) || c === 0x2f || c === 0x3a || c === 0x3b || c === 0x3d || c === 0x40 || (c >= 0x5b && c <= 0x5e) || c === 0x7c;
+  // The form-urlencoded percent-encode set: only ASCII alphanumerics and
+  // * - . _ stay literal; space becomes '+'.
+  function inFormUrlencodedSet(b) {
+    return !((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a) || b === 0x2a || b === 0x2d || b === 0x2e || b === 0x5f);
   }
-  function inComponentSet(c) { return inUserinfoSet(c) || (c >= 0x24 && c <= 0x26) || c === 0x2b || c === 0x2c; }
-  function inFormUrlencodedSet(c) { return inComponentSet(c) || c === 0x21 || (c >= 0x27 && c <= 0x29) || c === 0x7e; }
 
   var HEX = '0123456789ABCDEF';
   function percentEncodeBytes(bytes, inSet, spaceAsPlus) {
@@ -512,9 +562,6 @@ var exports = module.exports;
   }
   function percentEncodeString(str, inSet, spaceAsPlus) {
     return percentEncodeBytes(utf8Encode(str), inSet, !!spaceAsPlus);
-  }
-  function percentEncodeCodePoint(cp, inSet) {
-    return percentEncodeString(String.fromCodePoint(cp), inSet, false);
   }
 
   function isHexDigit(c) { return (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66); }
@@ -531,685 +578,6 @@ var exports = module.exports;
       }
     }
     return out.subarray(0, o);
-  }
-  function percentDecodeString(str) { return percentDecodeBytes(utf8Encode(str)); }
-
-  // ---------------------------------------------------------------------------
-  // Host parsing
-  // ---------------------------------------------------------------------------
-
-  var SPECIAL_SCHEMES = { ftp: 21, file: null, http: 80, https: 443, ws: 80, wss: 443 };
-  function isSpecialScheme(scheme) { return Object.prototype.hasOwnProperty.call(SPECIAL_SCHEMES, scheme); }
-
-  function isForbiddenHostCodePoint(c) {
-    return c === 0 || c === 0x09 || c === 0x0a || c === 0x0d || c === 0x20 || c === 0x23 || c === 0x2f || c === 0x3a ||
-      c === 0x3c || c === 0x3e || c === 0x3f || c === 0x40 || c === 0x5b || c === 0x5c || c === 0x5d || c === 0x5e || c === 0x7c;
-  }
-  function isForbiddenDomainCodePoint(c) {
-    return isForbiddenHostCodePoint(c) || (c >= 0 && c <= 0x1f) || c === 0x25 || c === 0x7f;
-  }
-
-  function parseIPv4Number(input) {
-    if (input === '') return NaN;
-    var radix = 10;
-    if (input.length >= 2 && input[0] === '0' && (input[1] === 'x' || input[1] === 'X')) {
-      input = input.slice(2);
-      radix = 16;
-    } else if (input.length >= 2 && input[0] === '0') {
-      input = input.slice(1);
-      radix = 8;
-    }
-    if (input === '') return 0;
-    var re = radix === 10 ? /^[0-9]+$/ : radix === 16 ? /^[0-9a-fA-F]+$/ : /^[0-7]+$/;
-    if (!re.test(input)) return NaN;
-    return parseInt(input, radix);
-  }
-
-  function endsInANumber(input) {
-    var parts = input.split('.');
-    if (parts[parts.length - 1] === '') {
-      if (parts.length === 1) return false;
-      parts.pop();
-    }
-    var last = parts[parts.length - 1];
-    if (last !== '' && /^[0-9]+$/.test(last)) return true;
-    return /^0[xX][0-9a-fA-F]*$/.test(last);
-  }
-
-  // Returns a number, or null on failure.
-  function parseIPv4(input) {
-    var parts = input.split('.');
-    if (parts[parts.length - 1] === '' && parts.length > 1) parts.pop();
-    if (parts.length > 4) return null;
-    var numbers = [];
-    for (var i = 0; i < parts.length; i++) {
-      var n = parseIPv4Number(parts[i]);
-      if (Number.isNaN(n)) return null;
-      numbers.push(n);
-    }
-    for (var j = 0; j < numbers.length - 1; j++) if (numbers[j] > 255) return null;
-    if (numbers[numbers.length - 1] >= Math.pow(256, 5 - numbers.length)) return null;
-    var ipv4 = numbers[numbers.length - 1];
-    for (var k = 0; k < numbers.length - 1; k++) ipv4 += numbers[k] * Math.pow(256, 3 - k);
-    return ipv4;
-  }
-
-  function serializeIPv4(address) {
-    var out = [];
-    var n = address;
-    for (var i = 0; i < 4; i++) {
-      out.unshift(String(n % 256));
-      n = Math.floor(n / 256);
-    }
-    return out.join('.');
-  }
-
-  // Returns an array of 8 pieces, or null on failure.
-  function parseIPv6(input) {
-    var address = [0, 0, 0, 0, 0, 0, 0, 0];
-    var pieceIndex = 0;
-    var compress = null;
-    var p = 0;
-    var c = function () { return p < input.length ? input.charCodeAt(p) : -1; };
-    if (c() === 0x3a) {
-      if (input.charCodeAt(p + 1) !== 0x3a) return null;
-      p += 2;
-      pieceIndex++;
-      compress = pieceIndex;
-    }
-    while (c() !== -1) {
-      if (pieceIndex === 8) return null;
-      if (c() === 0x3a) {
-        if (compress !== null) return null;
-        p++;
-        pieceIndex++;
-        compress = pieceIndex;
-        continue;
-      }
-      var value = 0, length = 0;
-      while (length < 4 && isHexDigit(c())) {
-        value = value * 16 + parseInt(input[p], 16);
-        p++;
-        length++;
-      }
-      if (c() === 0x2e) {
-        if (length === 0) return null;
-        p -= length;
-        if (pieceIndex > 6) return null;
-        var numbersSeen = 0;
-        while (c() !== -1) {
-          var ipv4Piece = null;
-          if (numbersSeen > 0) {
-            if (c() === 0x2e && numbersSeen < 4) p++;
-            else return null;
-          }
-          if (!(c() >= 0x30 && c() <= 0x39)) return null;
-          while (c() >= 0x30 && c() <= 0x39) {
-            var number = c() - 0x30;
-            if (ipv4Piece === null) ipv4Piece = number;
-            else if (ipv4Piece === 0) return null;
-            else ipv4Piece = ipv4Piece * 10 + number;
-            if (ipv4Piece > 255) return null;
-            p++;
-          }
-          address[pieceIndex] = address[pieceIndex] * 0x100 + ipv4Piece;
-          numbersSeen++;
-          if (numbersSeen === 2 || numbersSeen === 4) pieceIndex++;
-        }
-        if (numbersSeen !== 4) return null;
-        break;
-      } else if (c() === 0x3a) {
-        p++;
-        if (c() === -1) return null;
-      } else if (c() !== -1) {
-        return null;
-      }
-      address[pieceIndex] = value;
-      pieceIndex++;
-    }
-    if (compress !== null) {
-      var swaps = pieceIndex - compress;
-      pieceIndex = 7;
-      while (pieceIndex !== 0 && swaps > 0) {
-        var tmp = address[compress + swaps - 1];
-        address[compress + swaps - 1] = address[pieceIndex];
-        address[pieceIndex] = tmp;
-        pieceIndex--;
-        swaps--;
-      }
-    } else if (pieceIndex !== 8) {
-      return null;
-    }
-    return address;
-  }
-
-  function serializeIPv6(address) {
-    // Find the longest run (length >= 2) of zero pieces.
-    var bestStart = -1, bestLen = 0;
-    for (var i = 0; i < 8; i++) {
-      if (address[i] !== 0) continue;
-      var j = i;
-      while (j < 8 && address[j] === 0) j++;
-      if (j - i > bestLen) { bestStart = i; bestLen = j - i; }
-      i = j;
-    }
-    if (bestLen < 2) bestStart = -1;
-    var out = '';
-    var ignore0 = false;
-    for (var k = 0; k < 8; k++) {
-      if (ignore0 && address[k] === 0) continue;
-      ignore0 = false;
-      if (bestStart === k) {
-        out += k === 0 ? '::' : ':';
-        ignore0 = true;
-        continue;
-      }
-      out += address[k].toString(16);
-      if (k !== 7) out += ':';
-    }
-    return '[' + out + ']';
-  }
-
-  // Returns the serialized host string, or null on failure.
-  function parseHost(input, isOpaque) {
-    if (input.length > 0 && input.charCodeAt(0) === 0x5b) {
-      if (input.charCodeAt(input.length - 1) !== 0x5d) return null;
-      var v6 = parseIPv6(input.slice(1, -1));
-      return v6 ? serializeIPv6(v6) : null;
-    }
-    if (isOpaque) {
-      for (var i = 0; i < input.length; i++) {
-        if (isForbiddenHostCodePoint(input.charCodeAt(i))) return null;
-      }
-      return percentEncodeString(input, inC0ControlSet, false);
-    }
-    var domain = utf8Decode(percentDecodeString(input), false, true);
-    if (domain === '') return null;
-    // ASCII hosts only: lowercasing is the whole of domain-to-ASCII for them.
-    // A non-ASCII label would need IDNA (punycode); fail closed instead of
-    // guessing a different host than Node would resolve.
-    for (var j = 0; j < domain.length; j++) {
-      var c = domain.charCodeAt(j);
-      if (c > 0x7f || isForbiddenDomainCodePoint(c)) return null;
-    }
-    var ascii = domain.toLowerCase();
-    if (endsInANumber(ascii)) {
-      var v4 = parseIPv4(ascii);
-      return v4 === null ? null : serializeIPv4(v4);
-    }
-    return ascii;
-  }
-
-  // ---------------------------------------------------------------------------
-  // URL parser (WHATWG basic URL parser)
-  // ---------------------------------------------------------------------------
-
-  function isAsciiAlpha(c) { return (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a); }
-  function isAsciiAlphanumeric(c) { return isAsciiAlpha(c) || (c >= 0x30 && c <= 0x39); }
-  function isWindowsDriveLetter(s) { return s.length === 2 && isAsciiAlpha(s.charCodeAt(0)) && (s[1] === ':' || s[1] === '|'); }
-  function isNormalizedWindowsDriveLetter(s) { return s.length === 2 && isAsciiAlpha(s.charCodeAt(0)) && s[1] === ':'; }
-  function startsWithWindowsDriveLetter(cps, i) {
-    if (cps.length - i < 2) return false;
-    if (!isAsciiAlpha(cps[i]) || !(cps[i + 1] === 0x3a || cps[i + 1] === 0x7c)) return false;
-    if (cps.length - i === 2) return true;
-    var c = cps[i + 2];
-    return c === 0x2f || c === 0x5c || c === 0x3f || c === 0x23;
-  }
-  function isSingleDot(s) { return s === '.' || s.toLowerCase() === '%2e'; }
-  function isDoubleDot(s) {
-    var l = s.toLowerCase();
-    return l === '..' || l === '.%2e' || l === '%2e.' || l === '%2e%2e';
-  }
-
-  function newRecord() {
-    return { scheme: '', username: '', password: '', host: null, port: null, path: [], opaquePath: null, query: null, fragment: null };
-  }
-  function hasOpaquePath(url) { return url.opaquePath !== null; }
-  function includesCredentials(url) { return url.username !== '' || url.password !== ''; }
-  function cannotHaveUsernamePasswordPort(url) { return url.host === null || url.host === '' || url.scheme === 'file'; }
-  function shortenPath(url) {
-    if (url.scheme === 'file' && url.path.length === 1 && isNormalizedWindowsDriveLetter(url.path[0])) return;
-    url.path.pop();
-  }
-
-  var S_SCHEME_START = 1, S_SCHEME = 2, S_NO_SCHEME = 3, S_SPECIAL_RELATIVE_OR_AUTHORITY = 4, S_PATH_OR_AUTHORITY = 5, S_RELATIVE = 6,
-    S_RELATIVE_SLASH = 7, S_SPECIAL_AUTHORITY_SLASHES = 8, S_SPECIAL_AUTHORITY_IGNORE_SLASHES = 9, S_AUTHORITY = 10, S_HOST = 11,
-    S_HOSTNAME = 12, S_PORT = 13, S_FILE = 14, S_FILE_SLASH = 15, S_FILE_HOST = 16, S_PATH_START = 17, S_PATH = 18,
-    S_OPAQUE_PATH = 19, S_QUERY = 20, S_FRAGMENT = 21;
-
-  function toCodePoints(str) {
-    var cps = [];
-    for (var i = 0; i < str.length; i++) {
-      var c = str.charCodeAt(i);
-      if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
-        var n = str.charCodeAt(i + 1);
-        if (n >= 0xdc00 && n <= 0xdfff) {
-          cps.push(0x10000 + ((c - 0xd800) << 10) + (n - 0xdc00));
-          i++;
-          continue;
-        }
-      }
-      cps.push(c);
-    }
-    return cps;
-  }
-  function fromCodePoints(cps) { return codePointsToString(cps); }
-
-  // Returns a URL record, or null on failure. stateOverride and url follow the spec's setter hooks.
-  function basicParse(input, base, url, stateOverride) {
-    if (!url) {
-      url = newRecord();
-      // Strip leading/trailing C0 control or space.
-      input = input.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '');
-    }
-    // Remove ASCII tab or newline.
-    input = input.replace(/[\t\n\r]/g, '');
-    var state = stateOverride || S_SCHEME_START;
-    var buffer = '';
-    var atSignSeen = false, insideBrackets = false, passwordTokenSeen = false;
-    var cps = toCodePoints(input);
-    var pointer = 0;
-    var EOF = -1;
-    for (;; pointer++) {
-      var c = pointer < cps.length ? cps[pointer] : EOF;
-      var remaining = function (i) { return pointer + i < cps.length ? cps[pointer + i] : EOF; };
-      switch (state) {
-        case S_SCHEME_START:
-          if (isAsciiAlpha(c)) {
-            buffer += String.fromCharCode(c).toLowerCase();
-            state = S_SCHEME;
-          } else if (!stateOverride) {
-            state = S_NO_SCHEME;
-            pointer--;
-          } else {
-            return null;
-          }
-          break;
-        case S_SCHEME:
-          if (isAsciiAlphanumeric(c) || c === 0x2b || c === 0x2d || c === 0x2e) {
-            buffer += String.fromCharCode(c).toLowerCase();
-          } else if (c === 0x3a) {
-            if (stateOverride) {
-              if (isSpecialScheme(url.scheme) !== isSpecialScheme(buffer)) return url;
-              if ((includesCredentials(url) || url.port !== null) && buffer === 'file') return url;
-              if (url.scheme === 'file' && url.host === '') return url;
-            }
-            url.scheme = buffer;
-            if (stateOverride) {
-              if (url.port === SPECIAL_SCHEMES[url.scheme]) url.port = null;
-              return url;
-            }
-            buffer = '';
-            if (url.scheme === 'file') {
-              state = S_FILE;
-            } else if (isSpecialScheme(url.scheme) && base && base.scheme === url.scheme) {
-              state = S_SPECIAL_RELATIVE_OR_AUTHORITY;
-            } else if (isSpecialScheme(url.scheme)) {
-              state = S_SPECIAL_AUTHORITY_SLASHES;
-            } else if (remaining(1) === 0x2f) {
-              state = S_PATH_OR_AUTHORITY;
-              pointer++;
-            } else {
-              url.opaquePath = '';
-              state = S_OPAQUE_PATH;
-            }
-          } else if (!stateOverride) {
-            buffer = '';
-            state = S_NO_SCHEME;
-            pointer = -1;
-          } else {
-            return null;
-          }
-          break;
-        case S_NO_SCHEME:
-          if (!base || (hasOpaquePath(base) && c !== 0x23)) return null;
-          if (hasOpaquePath(base) && c === 0x23) {
-            url.scheme = base.scheme;
-            url.path = base.path.slice();
-            url.opaquePath = base.opaquePath;
-            url.query = base.query;
-            url.fragment = '';
-            state = S_FRAGMENT;
-          } else if (base.scheme !== 'file') {
-            state = S_RELATIVE;
-            pointer--;
-          } else {
-            state = S_FILE;
-            pointer--;
-          }
-          break;
-        case S_SPECIAL_RELATIVE_OR_AUTHORITY:
-          if (c === 0x2f && remaining(1) === 0x2f) {
-            state = S_SPECIAL_AUTHORITY_IGNORE_SLASHES;
-            pointer++;
-          } else {
-            state = S_RELATIVE;
-            pointer--;
-          }
-          break;
-        case S_PATH_OR_AUTHORITY:
-          if (c === 0x2f) {
-            state = S_AUTHORITY;
-          } else {
-            state = S_PATH;
-            pointer--;
-          }
-          break;
-        case S_RELATIVE:
-          url.scheme = base.scheme;
-          if (c === 0x2f) {
-            state = S_RELATIVE_SLASH;
-          } else if (isSpecialScheme(url.scheme) && c === 0x5c) {
-            state = S_RELATIVE_SLASH;
-          } else {
-            url.username = base.username;
-            url.password = base.password;
-            url.host = base.host;
-            url.port = base.port;
-            url.path = base.path.slice();
-            url.query = base.query;
-            if (c === 0x3f) {
-              url.query = '';
-              state = S_QUERY;
-            } else if (c === 0x23) {
-              url.fragment = '';
-              state = S_FRAGMENT;
-            } else if (c !== EOF) {
-              url.query = null;
-              shortenPath(url);
-              state = S_PATH;
-              pointer--;
-            }
-          }
-          break;
-        case S_RELATIVE_SLASH:
-          if (isSpecialScheme(url.scheme) && (c === 0x2f || c === 0x5c)) {
-            state = S_SPECIAL_AUTHORITY_IGNORE_SLASHES;
-          } else if (c === 0x2f) {
-            state = S_AUTHORITY;
-          } else {
-            url.username = base.username;
-            url.password = base.password;
-            url.host = base.host;
-            url.port = base.port;
-            state = S_PATH;
-            pointer--;
-          }
-          break;
-        case S_SPECIAL_AUTHORITY_SLASHES:
-          if (c === 0x2f && remaining(1) === 0x2f) {
-            state = S_SPECIAL_AUTHORITY_IGNORE_SLASHES;
-            pointer++;
-          } else {
-            state = S_SPECIAL_AUTHORITY_IGNORE_SLASHES;
-            pointer--;
-          }
-          break;
-        case S_SPECIAL_AUTHORITY_IGNORE_SLASHES:
-          if (c !== 0x2f && c !== 0x5c) {
-            state = S_AUTHORITY;
-            pointer--;
-          }
-          break;
-        case S_AUTHORITY:
-          if (c === 0x40) {
-            if (atSignSeen) buffer = '%40' + buffer;
-            atSignSeen = true;
-            var bufCps = toCodePoints(buffer);
-            for (var bi2 = 0; bi2 < bufCps.length; bi2++) {
-              var cp = bufCps[bi2];
-              if (cp === 0x3a && !passwordTokenSeen) {
-                passwordTokenSeen = true;
-                continue;
-              }
-              var encoded = percentEncodeCodePoint(cp, inUserinfoSet);
-              if (passwordTokenSeen) url.password += encoded;
-              else url.username += encoded;
-            }
-            buffer = '';
-          } else if (c === EOF || c === 0x2f || c === 0x3f || c === 0x23 || (isSpecialScheme(url.scheme) && c === 0x5c)) {
-            if (atSignSeen && buffer === '') return null;
-            pointer -= toCodePoints(buffer).length + 1;
-            buffer = '';
-            state = S_HOST;
-          } else {
-            buffer += String.fromCodePoint(c);
-          }
-          break;
-        case S_HOST:
-        case S_HOSTNAME:
-          if (stateOverride && url.scheme === 'file') {
-            pointer--;
-            state = S_FILE_HOST;
-          } else if (c === 0x3a && !insideBrackets) {
-            if (buffer === '') return null;
-            if (stateOverride === S_HOSTNAME) return null;
-            var host1 = parseHost(buffer, !isSpecialScheme(url.scheme));
-            if (host1 === null) return null;
-            url.host = host1;
-            buffer = '';
-            state = S_PORT;
-          } else if (c === EOF || c === 0x2f || c === 0x3f || c === 0x23 || (isSpecialScheme(url.scheme) && c === 0x5c)) {
-            pointer--;
-            if (isSpecialScheme(url.scheme) && buffer === '') return null;
-            if (stateOverride && buffer === '' && (includesCredentials(url) || url.port !== null)) return null;
-            var host2 = parseHost(buffer, !isSpecialScheme(url.scheme));
-            if (host2 === null) return null;
-            url.host = host2;
-            buffer = '';
-            state = S_PATH_START;
-            if (stateOverride) return url;
-          } else {
-            if (c === 0x5b) insideBrackets = true;
-            if (c === 0x5d) insideBrackets = false;
-            buffer += String.fromCodePoint(c);
-          }
-          break;
-        case S_PORT:
-          if (c >= 0x30 && c <= 0x39) {
-            buffer += String.fromCharCode(c);
-          } else if (c === EOF || c === 0x2f || c === 0x3f || c === 0x23 || (isSpecialScheme(url.scheme) && c === 0x5c) || stateOverride) {
-            if (buffer !== '') {
-              var port = parseInt(buffer, 10);
-              if (port > 65535) return null;
-              url.port = port === SPECIAL_SCHEMES[url.scheme] ? null : port;
-              buffer = '';
-            } else if (stateOverride) {
-              return null;
-            }
-            if (stateOverride) return url;
-            state = S_PATH_START;
-            pointer--;
-          } else {
-            return null;
-          }
-          break;
-        case S_FILE:
-          url.scheme = 'file';
-          url.host = '';
-          if (c === 0x2f || c === 0x5c) {
-            state = S_FILE_SLASH;
-          } else if (base && base.scheme === 'file') {
-            url.host = base.host;
-            url.path = base.path.slice();
-            url.query = base.query;
-            if (c === 0x3f) {
-              url.query = '';
-              state = S_QUERY;
-            } else if (c === 0x23) {
-              url.fragment = '';
-              state = S_FRAGMENT;
-            } else if (c !== EOF) {
-              url.query = null;
-              if (!startsWithWindowsDriveLetter(cps, pointer)) shortenPath(url);
-              else url.path = [];
-              state = S_PATH;
-              pointer--;
-            }
-          } else {
-            state = S_PATH;
-            pointer--;
-          }
-          break;
-        case S_FILE_SLASH:
-          if (c === 0x2f || c === 0x5c) {
-            state = S_FILE_HOST;
-          } else {
-            if (base && base.scheme === 'file') {
-              url.host = base.host;
-              if (!startsWithWindowsDriveLetter(cps, pointer) && base.path.length > 0 && isNormalizedWindowsDriveLetter(base.path[0])) {
-                url.path.push(base.path[0]);
-              }
-            }
-            state = S_PATH;
-            pointer--;
-          }
-          break;
-        case S_FILE_HOST:
-          if (c === EOF || c === 0x2f || c === 0x5c || c === 0x3f || c === 0x23) {
-            pointer--;
-            if (!stateOverride && isWindowsDriveLetter(buffer)) {
-              state = S_PATH;
-            } else if (buffer === '') {
-              url.host = '';
-              if (stateOverride) return url;
-              state = S_PATH_START;
-            } else {
-              var fileHost = parseHost(buffer, false);
-              if (fileHost === null) return null;
-              url.host = fileHost === 'localhost' ? '' : fileHost;
-              if (stateOverride) return url;
-              buffer = '';
-              state = S_PATH_START;
-            }
-          } else {
-            buffer += String.fromCodePoint(c);
-          }
-          break;
-        case S_PATH_START:
-          if (isSpecialScheme(url.scheme)) {
-            state = S_PATH;
-            if (c !== 0x2f && c !== 0x5c) pointer--;
-          } else if (!stateOverride && c === 0x3f) {
-            url.query = '';
-            state = S_QUERY;
-          } else if (!stateOverride && c === 0x23) {
-            url.fragment = '';
-            state = S_FRAGMENT;
-          } else if (c !== EOF) {
-            state = S_PATH;
-            if (c !== 0x2f) pointer--;
-          } else if (stateOverride && url.host === null) {
-            url.path.push('');
-          }
-          break;
-        case S_PATH:
-          if (c === EOF || c === 0x2f || (isSpecialScheme(url.scheme) && c === 0x5c) || (!stateOverride && (c === 0x3f || c === 0x23))) {
-            var slashy = c === 0x2f || (isSpecialScheme(url.scheme) && c === 0x5c);
-            if (isDoubleDot(buffer)) {
-              shortenPath(url);
-              if (!slashy) url.path.push('');
-            } else if (isSingleDot(buffer) && !slashy) {
-              url.path.push('');
-            } else if (!isSingleDot(buffer)) {
-              if (url.scheme === 'file' && url.path.length === 0 && isWindowsDriveLetter(buffer)) {
-                buffer = buffer[0] + ':';
-              }
-              url.path.push(buffer);
-            }
-            buffer = '';
-            if (c === 0x3f) {
-              url.query = '';
-              state = S_QUERY;
-            }
-            if (c === 0x23) {
-              url.fragment = '';
-              state = S_FRAGMENT;
-            }
-          } else {
-            buffer += percentEncodeCodePoint(c, inPathSet);
-          }
-          break;
-        case S_OPAQUE_PATH:
-          if (c === 0x3f) {
-            url.query = '';
-            state = S_QUERY;
-          } else if (c === 0x23) {
-            url.fragment = '';
-            state = S_FRAGMENT;
-          } else if (c === 0x20) {
-            var r1 = remaining(1);
-            if (r1 === 0x3f || r1 === 0x23) url.opaquePath += '%20';
-            else url.opaquePath += ' ';
-          } else if (c !== EOF) {
-            url.opaquePath += percentEncodeCodePoint(c, inC0ControlSet);
-          }
-          break;
-        case S_QUERY:
-          if ((!stateOverride && c === 0x23) || c === EOF) {
-            var querySet = isSpecialScheme(url.scheme) ? inSpecialQuerySet : inQuerySet;
-            url.query += percentEncodeString(buffer, querySet, false);
-            buffer = '';
-            if (c === 0x23) {
-              url.fragment = '';
-              state = S_FRAGMENT;
-            }
-          } else if (c !== EOF) {
-            buffer += String.fromCodePoint(c);
-          }
-          break;
-        case S_FRAGMENT:
-          if (c !== EOF) url.fragment += percentEncodeCodePoint(c, inFragmentSet);
-          break;
-      }
-      // A state may step the pointer back at EOF to re-run EOF in the next
-      // state (authority -> host, slashes -> authority): only stop once EOF
-      // was processed without a step back.
-      if (c === EOF && pointer >= cps.length) break;
-    }
-    return url;
-  }
-
-  function serializePath(url) {
-    if (hasOpaquePath(url)) return url.opaquePath;
-    var out = '';
-    for (var i = 0; i < url.path.length; i++) out += '/' + url.path[i];
-    return out;
-  }
-
-  function serializeURL(url, excludeFragment) {
-    var out = url.scheme + ':';
-    if (url.host !== null) {
-      out += '//';
-      if (includesCredentials(url)) {
-        out += url.username;
-        if (url.password !== '') out += ':' + url.password;
-        out += '@';
-      }
-      out += url.host;
-      if (url.port !== null) out += ':' + url.port;
-    } else if (!hasOpaquePath(url) && url.path.length > 1 && url.path[0] === '') {
-      out += '/.';
-    }
-    out += serializePath(url);
-    if (url.query !== null) out += '?' + url.query;
-    if (!excludeFragment && url.fragment !== null) out += '#' + url.fragment;
-    return out;
-  }
-
-  function serializeOrigin(url) {
-    switch (url.scheme) {
-      case 'blob':
-        try {
-          var inner = basicParse(serializePath(url), null);
-          if (inner && (inner.scheme === 'http' || inner.scheme === 'https' || inner.scheme === 'file')) return serializeOrigin(inner);
-        } catch (e) {}
-        return 'null';
-      case 'ftp': case 'http': case 'https': case 'ws': case 'wss':
-        return url.scheme + '://' + url.host + (url.port !== null ? ':' + url.port : '');
-      default:
-        return 'null';
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1275,13 +643,10 @@ var exports = module.exports;
     this._list = parseFormUrlencoded(str);
   }
   URLSearchParams.prototype._update = function () {
+    // The spec's update steps: serialize the list and set the URL's query
+    // (empty list = no query). The host's URL setter does the rest.
     if (!this._url) return;
-    var serialized = serializeFormUrlencoded(this._list);
-    this._url._record.query = serialized === '' ? null : serialized;
-    if (serialized === '' && this._url._record.fragment === null) {
-      // "potentially strip trailing spaces from an opaque path"
-      if (hasOpaquePath(this._url._record)) this._url._record.opaquePath = this._url._record.opaquePath.replace(/ +$/, '');
-    }
+    this._url._record = hostSync('urlSet', this._url._record.href, 'search', serializeFormUrlencoded(this._list));
   };
   Object.defineProperty(URLSearchParams.prototype, 'size', { get: function () { return this._list.length; }, enumerable: true });
   URLSearchParams.prototype.append = function (name, value) {
@@ -1354,28 +719,23 @@ var exports = module.exports;
   Object.defineProperty(URLSearchParams.prototype, Symbol.toStringTag, { value: 'URLSearchParams', configurable: true });
 
   // ---------------------------------------------------------------------------
-  // URL
+  // URL: parsed by the host
   // ---------------------------------------------------------------------------
 
-  function invalidUrlError(input) {
-    var err = new TypeError('Invalid URL');
-    err.code = 'ERR_INVALID_URL';
-    err.input = input;
-    return err;
-  }
+  // The guest holds a plain record of the components. Every parse and every
+  // setter is one synchronous host call into Node's own URL, so the isolate
+  // and process lanes agree on every input by construction, IDNA hosts and
+  // the percent-encode sets included (those have drifted between Node lines).
+
+  var URL_SETTABLE = ['href', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash'];
+
+  function stripQuestion(search) { return search.length > 0 && search[0] === '?' ? search.slice(1) : search; }
 
   function URL(input, base) {
     if (!(this instanceof URL)) throw new TypeError("Class constructor URL cannot be invoked without 'new'");
     if (arguments.length === 0) throw new TypeError('The "url" argument must be specified');
-    var baseRecord = null;
-    if (base !== undefined) {
-      baseRecord = basicParse(String(base), null);
-      if (!baseRecord) throw invalidUrlError(String(base));
-    }
-    var record = basicParse(String(input), baseRecord);
-    if (!record) throw invalidUrlError(String(input));
-    this._record = record;
-    this._searchParams = new URLSearchParams(record.query === null ? '' : record.query);
+    this._record = hostSync('urlParse', String(input), base === undefined ? undefined : String(base));
+    this._searchParams = new URLSearchParams(stripQuestion(this._record.search));
     this._searchParams._url = this;
   }
   URL.canParse = function canParse(input, base) {
@@ -1393,98 +753,22 @@ var exports = module.exports;
       return null;
     }
   };
-  function defineUrlAccessor(name, get, set) {
-    Object.defineProperty(URL.prototype, name, { get: get, set: set, enumerable: true, configurable: true });
-  }
-  defineUrlAccessor('href',
-    function () { return serializeURL(this._record, false); },
-    function (value) {
-      var record = basicParse(String(value), null);
-      if (!record) throw invalidUrlError(String(value));
-      this._record = record;
-      this._searchParams._list = parseFormUrlencoded(record.query === null ? '' : record.query);
+  URL_SETTABLE.forEach(function (name) {
+    Object.defineProperty(URL.prototype, name, {
+      get: function () { return this._record[name]; },
+      set: function (value) {
+        this._record = hostSync('urlSet', this._record.href, name, String(value));
+        // Node re-parses searchParams whenever the URL is re-serialized.
+        this._searchParams._list = parseFormUrlencoded(stripQuestion(this._record.search));
+      },
+      enumerable: true,
+      configurable: true
     });
-  defineUrlAccessor('origin', function () { return serializeOrigin(this._record); });
-  defineUrlAccessor('protocol',
-    function () { return this._record.scheme + ':'; },
-    function (value) { basicParse(String(value) + ':', null, this._record, S_SCHEME_START); });
-  defineUrlAccessor('username',
-    function () { return this._record.username; },
-    function (value) {
-      if (cannotHaveUsernamePasswordPort(this._record)) return;
-      this._record.username = percentEncodeString(String(value), inUserinfoSet, false);
-    });
-  defineUrlAccessor('password',
-    function () { return this._record.password; },
-    function (value) {
-      if (cannotHaveUsernamePasswordPort(this._record)) return;
-      this._record.password = percentEncodeString(String(value), inUserinfoSet, false);
-    });
-  defineUrlAccessor('host',
-    function () {
-      var r = this._record;
-      if (r.host === null) return '';
-      return r.port === null ? r.host : r.host + ':' + r.port;
-    },
-    function (value) {
-      if (hasOpaquePath(this._record)) return;
-      basicParse(String(value), null, this._record, S_HOST);
-    });
-  defineUrlAccessor('hostname',
-    function () { return this._record.host === null ? '' : this._record.host; },
-    function (value) {
-      if (hasOpaquePath(this._record)) return;
-      basicParse(String(value), null, this._record, S_HOSTNAME);
-    });
-  defineUrlAccessor('port',
-    function () { return this._record.port === null ? '' : String(this._record.port); },
-    function (value) {
-      if (cannotHaveUsernamePasswordPort(this._record)) return;
-      var str = String(value);
-      if (str === '') {
-        this._record.port = null;
-        return;
-      }
-      basicParse(str, null, this._record, S_PORT);
-    });
-  defineUrlAccessor('pathname',
-    function () { return serializePath(this._record); },
-    function (value) {
-      if (hasOpaquePath(this._record)) return;
-      this._record.path = [];
-      basicParse(String(value), null, this._record, S_PATH_START);
-    });
-  defineUrlAccessor('search',
-    function () { return this._record.query === null || this._record.query === '' ? '' : '?' + this._record.query; },
-    function (value) {
-      var str = String(value);
-      if (str === '') {
-        this._record.query = null;
-        this._searchParams._list = [];
-        if (hasOpaquePath(this._record) && this._record.fragment === null) this._record.opaquePath = this._record.opaquePath.replace(/ +$/, '');
-        return;
-      }
-      if (str[0] === '?') str = str.slice(1);
-      this._record.query = '';
-      basicParse(str, null, this._record, S_QUERY);
-      this._searchParams._list = parseFormUrlencoded(this._record.query);
-    });
-  defineUrlAccessor('searchParams', function () { return this._searchParams; });
-  defineUrlAccessor('hash',
-    function () { return this._record.fragment === null || this._record.fragment === '' ? '' : '#' + this._record.fragment; },
-    function (value) {
-      var str = String(value);
-      if (str === '') {
-        this._record.fragment = null;
-        if (hasOpaquePath(this._record) && this._record.query === null) this._record.opaquePath = this._record.opaquePath.replace(/ +$/, '');
-        return;
-      }
-      if (str[0] === '#') str = str.slice(1);
-      this._record.fragment = '';
-      basicParse(str, null, this._record, S_FRAGMENT);
-    });
-  URL.prototype.toString = function () { return serializeURL(this._record, false); };
-  URL.prototype.toJSON = function () { return serializeURL(this._record, false); };
+  });
+  Object.defineProperty(URL.prototype, 'origin', { get: function () { return this._record.origin; }, enumerable: true, configurable: true });
+  Object.defineProperty(URL.prototype, 'searchParams', { get: function () { return this._searchParams; }, enumerable: true, configurable: true });
+  URL.prototype.toString = function () { return this._record.href; };
+  URL.prototype.toJSON = function () { return this._record.href; };
   Object.defineProperty(URL.prototype, Symbol.toStringTag, { value: 'URL', configurable: true });
 
   global.URL = URL;

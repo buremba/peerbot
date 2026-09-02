@@ -11,8 +11,8 @@ import {
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
-  runReviewScrape,
 } from "@lobu/connector-sdk";
+import { runReviewScrape } from "@lobu/connector-sdk/browser";
 
 interface TrustpilotReview {
   rating: number;

@@ -12,6 +12,7 @@ Install into your org from this directory:
 lobu apply
 ```
 
-Shared browser helpers (`runReviewScrape`, `validateUrlDomain`, checkpoint
-pipeline) live in `@lobu/connector-sdk`. Each file here is a site-specific
+Shared browser helpers live in `@lobu/connector-sdk` (`runReviewScrape` behind the
+`@lobu/connector-sdk/browser` subpath; `validateUrlDomain` and the checkpoint pipeline on
+the root). Each file here is a site-specific
 connector only.

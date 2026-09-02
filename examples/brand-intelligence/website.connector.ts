@@ -13,12 +13,12 @@ import {
   type RuntimeConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
-  launchBrowser,
   sleep,
   type SyncContext,
   type SyncResult,
   validatePublicUrl,
 } from "@lobu/connector-sdk";
+import { launchBrowser } from "@lobu/connector-sdk/browser";
 import type { Page } from "playwright";
 
 interface PageSection {

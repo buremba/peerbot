@@ -114,8 +114,6 @@ export function connectorSdkMock() {
     throw new Error(`${name} is not used in connector unit tests`);
   };
   return {
-    acquireBrowser: notUsed("acquireBrowser"),
-    captureErrorArtifacts: notUsed("captureErrorArtifacts"),
     extensionNetworkSync: notUsed("extensionNetworkSync"),
     // Connectors create their HTTP client as a class field at construction, so a
     // throwing stub would break `new XConnector()`. Return an inert client whose

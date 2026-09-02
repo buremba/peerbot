@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
-import { deviceManifestHash } from "@lobu/connector-sdk";
+import { deviceManifestHash } from "@lobu/connector-sdk/device-manifest-hash";
 import { validateDeviceConnectorManifests } from "../../../server/src/worker-api/device-manifests";
 import {
   macDeviceConnectorDefinitions,

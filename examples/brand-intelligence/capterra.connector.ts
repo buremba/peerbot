@@ -8,10 +8,10 @@ import {
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
-  runReviewScrape,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
+import { runReviewScrape } from "@lobu/connector-sdk/browser";
 
 interface CapterraReview {
   id: string;

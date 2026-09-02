@@ -1069,9 +1069,12 @@ export async function runScript(
 	try {
 		// Deferred: `compiler-core` pulls in esbuild and resolves the connector
 		// SDK entry at module scope, neither of which a run-free process needs.
-		const { compileSource, computeCodeHash, SourceCompileError } = await import(
-			"../utils/compiler-core"
-		);
+		const {
+			compileSource,
+			computeCodeHash,
+			ISOLATE_LANE_BUILD_OPTIONS,
+			SourceCompileError,
+		} = await import("../utils/compiler-core");
 		SourceCompileErrorClass = SourceCompileError;
 		// Compilation is `mkdtemp` + `writeFile` + a full esbuild bundle + read
 		// back — filesystem I/O and a bundler per call. Measured locally, a cold
@@ -1096,12 +1099,7 @@ export async function runScript(
 			const result = await compileSource(options.source, {
 				tmpPrefix: ".execute-compile-",
 				label: "ExecuteCompiler",
-				buildOptions: {
-					format: "cjs",
-					target: "esnext",
-					platform: "node",
-					external: [],
-				},
+				buildOptions: ISOLATE_LANE_BUILD_OPTIONS,
 			});
 			compiled = result.compiledCode;
 			const bytes = Buffer.byteLength(compiled, "utf8");

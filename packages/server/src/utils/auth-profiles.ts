@@ -177,7 +177,7 @@ async function resolveReachableBrowserSessionCdpUrl(cdpUrl: string | null): Prom
   if (!configuredUrl) return null;
 
   try {
-    const { fetchCdpVersionInfo, resolveCdpUrl } = await import('@lobu/connector-sdk');
+    const { fetchCdpVersionInfo, resolveCdpUrl } = await import('@lobu/connector-sdk/browser/cdp');
 
     if (configuredUrl.toLowerCase() === 'auto') {
       return await resolveCdpUrl('auto');

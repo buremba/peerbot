@@ -5,6 +5,7 @@ Read root `AGENTS.md` first. This package is the contract every connector compil
 ## Boundaries
 - This is a published contract consumed by external connectors. A breaking change to an exported type or runtime method breaks compiled connectors in the wild — additive changes only unless a migration is planned.
 - `playwright` is a **peer** dependency aliased to patchright, and it is optional. Never make a top-level import of it a hard requirement of the package entrypoint; browser code must stay reachable only from the browser paths.
+- The **package root must stay loadable inside a V8 isolate**: no `node:` import and no `@lobu/core` root import anywhere in its graph (core's index drags winston, Sentry and OpenTelemetry into every connector bundle; core *subpaths* such as `@lobu/core/contracts/...` are fine). Node-only code lives behind the `./browser`, `./sources` and `./device-manifest-hash` subpaths. `packages/server/src/__tests__/integration/sandbox/connector-isolate-lane.test.ts` bundles the root and every bundled connector with the isolate lane's compile config and fails on the first builtin.
 - `url-guards.ts` provides SSRF and domain checks; call them before outbound requests whose URL is caller- or content-controlled. `createHttpClient` handles auth and retries, but it does not validate URLs.
 
 ## Browser automation

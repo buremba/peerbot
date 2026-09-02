@@ -51,12 +51,25 @@
     "./browser/cdp": {
       "types": "./dist/browser/cdp.d.ts",
       "import": "./dist/browser/cdp.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "import": "./dist/browser/index.js"
+    },
+    "./sources": {
+      "types": "./dist/sources/index.d.ts",
+      "import": "./dist/sources/index.js"
+    },
+    "./device-manifest-hash": {
+      "types": "./dist/device-manifest-hash.d.ts",
+      "import": "./dist/device-manifest-hash.js"
     }
   },
   "files": [
     "dist",
     "!**/*.map"
   ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",

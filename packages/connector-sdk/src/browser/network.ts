@@ -11,9 +11,9 @@
  */
 
 import type { Browser, BrowserContext, Page, Response } from 'playwright';
-import { resolveCdpUrl } from './browser/cdp.js';
-import { captureErrorArtifacts, launchBrowser } from './browser/launcher.js';
-import { sdkLogger } from './logger.js';
+import { resolveCdpUrl } from './cdp.js';
+import { captureErrorArtifacts, launchBrowser } from './launcher.js';
+import { sdkLogger } from '../logger.js';
 
 export interface BrowserNetworkConfig {
   /** URL patterns to intercept (glob or regex). Matched against response URLs. */

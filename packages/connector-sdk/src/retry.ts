@@ -1,14 +1,59 @@
 /**
  * HTTP retry helper for connector SDK.
  *
- * Thin wrapper around `@lobu/core`'s generic `retryWithBackoff` that provides
- * HTTP-aware retry semantics: exponential backoff with full jitter (5 retries,
- * 1s → 16s), retry on transient network/rate-limit/server errors, abort on
- * permanent client errors (401/403/404/etc.).
+ * Exponential backoff with full jitter (5 retries, 1s → 16s), retry on
+ * transient network/rate-limit/server errors, abort on permanent client errors
+ * (401/403/404/etc.).
+ *
+ * The backoff loop lives here rather than being imported from `@lobu/core`:
+ * core's root entry drags winston, Sentry and OpenTelemetry into every
+ * connector bundle, and the package root must stay loadable inside a V8
+ * isolate. It keeps the semantics of core's `retryWithBackoff` for the one
+ * configuration `withHttpRetry` uses: exponential, capped, full jitter.
  */
 
-import { retryWithBackoff } from '@lobu/core';
 import { sdkLogger } from './logger.js';
+
+interface BackoffOptions {
+  maxRetries: number;
+  baseDelay: number;
+  /** Cap on the computed delay, applied before jitter. */
+  maxDelay: number;
+  shouldRetry: (error: Error) => boolean;
+  onRetry: (attempt: number, error: Error) => void;
+}
+
+async function retryWithBackoff<T>(fn: () => Promise<T>, options: BackoffOptions): Promise<T> {
+  const { maxRetries, baseDelay, maxDelay, shouldRetry, onRetry } = options;
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error as Error;
+      if (!shouldRetry(lastError)) throw lastError;
+
+      if (attempt < maxRetries) {
+        // Full jitter: the capped exponential delay multiplied by [1, 2).
+        const delay = Math.min(baseDelay * 2 ** attempt, maxDelay) * (1 + Math.random());
+
+        // A throwing caller callback must not swallow the retry.
+        try {
+          onRetry(attempt + 1, lastError);
+        } catch (callbackError) {
+          sdkLogger.warn('onRetry callback threw', {
+            error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+          });
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  throw lastError;
+}
 
 const TRANSIENT_KEYWORDS = [
   // network
@@ -89,8 +134,6 @@ export async function withHttpRetry<T>(fn: () => Promise<T>, options?: RetryOpti
     maxRetries: totalRetries,
     baseDelay: 1000,
     maxDelay: 16000,
-    strategy: 'exponential',
-    jitter: 'full',
     shouldRetry: (error) => {
       const msg = errorMessage(error);
       if (PERMANENT_KEYWORDS.some((k) => msg.includes(k))) return false;

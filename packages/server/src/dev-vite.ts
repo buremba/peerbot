@@ -12,7 +12,7 @@ import type http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setViteDev } from './index';
-import { devViteFsDeny } from './utils/dev-fs-deny';
+import { devViteFsAllow, devViteFsDeny } from './utils/dev-fs-deny';
 import logger from './utils/logger';
 
 // …/packages/server/src/dev-vite.ts → repo root
@@ -77,8 +77,12 @@ export async function mountViteDev(
         middlewareMode: true,
         hmr: { server: httpServer },
         // searchForWorkspaceRoot(webRoot) is what Vite defaults `fs.allow` to,
-        // i.e. the tree `/@fs/` can reach — the denials are anchored to it.
-        fs: { deny: devViteFsDeny(searchForWorkspaceRoot(webRoot)) },
+        // i.e. the tree `/@fs/` would otherwise reach. Narrow it to the trees
+        // the SPA actually loads from, and anchor the denials to the same root.
+        fs: {
+          allow: devViteFsAllow(searchForWorkspaceRoot(webRoot), webRoot),
+          deny: devViteFsDeny(searchForWorkspaceRoot(webRoot)),
+        },
         // The worker scratch dir (packages/server/workspaces/<agent>/.lobu/*)
         // is written constantly while an agent runs; without this Vite triggers
         // a full browser page reload on every session.jsonl write, which kills

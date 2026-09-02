@@ -75,6 +75,8 @@ import {
 	bumpDeviceFinalizeNudge,
 	cleanupAutomationParentLineageInTransaction,
 	describePendingApproval,
+	lockAutomation,
+	lockRunningClaim,
 	resolveFinalizeNudgeBudget,
 } from "../automations/run-completion";
 import {
@@ -115,42 +117,6 @@ const DRY_RUN_CONTENT_CHARS = 500;
  * exit metadata) and is spliced into the SET list. `returning` is the
  * handler's RETURNING column list. Both are nested `sql` fragments.
  */
-/**
- * Take the Automation row before the run row.
- *
- * Every terminalization path in this file shares one global lock order --
- * Automation first, run second -- so they cannot deadlock against
- * complete_window, which takes the same pair in the same order. A caller that
- * already holds this row reacquires it reentrantly. Kept as one helper so the
- * order is stated once rather than restated at each transaction that opens.
- */
-async function lockAutomation(
-	tx: DbClient,
-	automationId: number,
-): Promise<void> {
-	await tx`SELECT id FROM automations WHERE id = ${automationId} FOR UPDATE`;
-}
-
-/**
- * Take this worker's own still-running claim on the run, reporting whether it
- * is still there. A false means another worker (or a sweeper) already moved
- * the run on, and the caller must not terminalize it.
- */
-async function lockRunningClaim(
-	tx: DbClient,
-	runId: number,
-	workerId: string,
-): Promise<boolean> {
-	const locked = await tx`
-		SELECT id FROM runs
-		WHERE id = ${runId}
-		  AND status = 'running'
-		  AND claimed_by = ${workerId}
-		FOR UPDATE
-	`;
-	return locked.length > 0;
-}
-
 async function finalizeRun(
 	sql: DbClient,
 	params: {

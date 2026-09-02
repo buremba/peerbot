@@ -108,19 +108,8 @@ export async function bumpDeviceFinalizeNudge(
 	outputTail: string | null
 ): Promise<"bumped" | "blocked" | "missed"> {
 	return sql.begin(async (tx) => {
-		await tx`
-			SELECT id FROM automations
-			WHERE id = ${automationId}
-			FOR UPDATE
-		`;
-		const locked = await tx`
-			SELECT id FROM runs
-			WHERE id = ${runId}
-			  AND status = 'running'
-			  AND claimed_by = ${workerId}
-			FOR UPDATE
-		`;
-		if (locked.length === 0) return "missed";
+		await lockAutomation(tx, automationId);
+		if (!(await lockRunningClaim(tx, runId, workerId))) return "missed";
 		const approvalFailure = await describePendingApproval(tx, runId, 0);
 		if (approvalFailure) {
 			await markAutomationRunFailedInTransaction(tx, {
@@ -332,6 +321,42 @@ export async function markAutomationRunFailedInTransaction(
 		);
 	}
 	return true;
+}
+
+/**
+ * Take the Automation row before the run row.
+ *
+ * Every terminalization path shares one global lock order -- Automation first,
+ * run second -- so they cannot deadlock against complete_window, which takes
+ * the same pair in the same order. A caller that already holds this row
+ * reacquires it reentrantly. One helper, so the order is stated once instead of
+ * restated at every transaction that opens.
+ */
+export async function lockAutomation(
+	tx: DbClient,
+	automationId: number,
+): Promise<void> {
+	await tx`SELECT id FROM automations WHERE id = ${automationId} FOR UPDATE`;
+}
+
+/**
+ * Take this worker's own still-running claim on the run, reporting whether it
+ * is still there. A false means another worker (or a sweeper) already moved the
+ * run on, and the caller must not terminalize it.
+ */
+export async function lockRunningClaim(
+	tx: DbClient,
+	runId: number,
+	workerId: string,
+): Promise<boolean> {
+	const locked = await tx`
+		SELECT id FROM runs
+		WHERE id = ${runId}
+		  AND status = 'running'
+		  AND claimed_by = ${workerId}
+		FOR UPDATE
+	`;
+	return locked.length > 0;
 }
 
 /**

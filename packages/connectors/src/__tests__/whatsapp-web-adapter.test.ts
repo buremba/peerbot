@@ -16,6 +16,30 @@ import { whatsAppWebAdapterProgram } from "../whatsapp-web-adapter.js";
 describe("whatsAppWebAdapterProgram serialisation", () => {
   const source = whatsAppWebAdapterProgram.toString();
 
+  it("carries no helper the program never calls", () => {
+    // Everything here lives INSIDE one function, so knip and the bundler both
+    // see a single used export and cannot flag an unused inner helper. Three
+    // consecutive reviews found dead helpers in this file for exactly that
+    // reason; this closes the gap. Every serialised byte is shipped to the
+    // page on every injection, so an uncalled helper is pure payload.
+    const declared = [...source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/g)].map(
+      (match) => match[1],
+    );
+    expect(declared.length).toBeGreaterThan(20);
+
+    // The outer program function is referenced by the connector, not by itself.
+    const inner = [...new Set(declared)].filter(
+      (name) => name !== "whatsAppWebAdapterProgram",
+    );
+    const unreferenced = inner.filter((name) => {
+      const uses = source.match(new RegExp(`\\b${name}\\b`, "g")) ?? [];
+      const declarations =
+        source.match(new RegExp(`function\\s+${name}\\s*\\(`, "g")) ?? [];
+      return uses.length === declarations.length;
+    });
+    expect(unreferenced).toEqual([]);
+  });
+
   it("serialises to a self-contained program that installs the adapter", () => {
     // Evaluate the serialised source the way the connector does, against a
     // stub page. If any binding escaped to module scope this throws

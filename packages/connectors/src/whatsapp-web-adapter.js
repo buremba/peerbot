@@ -228,15 +228,6 @@ export function whatsAppWebAdapterProgram() {
     return null;
   }
 
-  function collectionByWid(collection, jid) {
-    if (!jid) return null;
-    for (const model of models(collection)) {
-      const row = modelData(model);
-      if (widString(row.id ?? model?.id) === jid) return model;
-    }
-    return null;
-  }
-
   function reactionTargetId(row) {
     return (
       rawId(row.reactionParentKey) ??

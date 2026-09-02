@@ -5,8 +5,7 @@ import { isCloudMode } from '../utils/cloud-mode';
 import { DB_EGRESS_HARDENED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import {
   delegatedBrowserAffinitySql,
-  legacyNonManifestConnectorSql,
-  nativeChromeExtensionConnectorSql,
+  chromeNamespaceConnectorSql,
 } from '../utils/connector-execution-placement';
 import type { ManifestClaimAuthorization } from './device-manifests';
 
@@ -54,7 +53,6 @@ interface ConnectorClaimLaneRefs {
   runManifestBacked: SqlFragment;
   runManifestHash: SqlFragment;
   runArtifactSourcePath: SqlFragment;
-  runArtifactCompiledCode: SqlFragment;
   runRuntime: SqlFragment;
 }
 
@@ -127,18 +125,6 @@ export function connectorClaimLaneSql(
   const delegatedBrowserAffinity = delegatedBrowserAffinitySql(sql, {
     platform: refs.pinPlatform,
     connectorKey: refs.connectorKey,
-    connectorVersion: refs.connectorVersion,
-    manifestBacked: refs.runManifestBacked,
-    artifactSourcePath: refs.runArtifactSourcePath,
-  });
-  // During a manifest-to-compiled cutover the active definition can still
-  // advertise its former device capability. The selected artifact is the
-  // execution truth: fleet workers do not advertise browser/OS capabilities,
-  // so a non-manifest legacy artifact must not inherit that stale gate.
-  const legacyFleetArtifact = legacyNonManifestConnectorSql(sql, {
-    connectorKey: refs.connectorKey,
-    manifestBacked: refs.runManifestBacked,
-    artifactCompiledCode: refs.runArtifactCompiledCode,
   });
   // A worker may be able to run the daemon-owned backend while its connector
   // compiler/SDK runtime is unavailable. Never let a compiled artifact enter
@@ -152,14 +138,9 @@ export function connectorClaimLaneSql(
     EXECUTION_BACKENDS.daemonBuiltin
   );
   // A chrome-namespace execution runs inside the advertising extension, so it
-  // needs no server-side backend at all. The helper is narrow by construction:
-  // a reserved chrome key, or a legacy key only while the selected artifact is
-  // exactly its validated Chrome manifest.
-  const nativeChromeExecution = nativeChromeExtensionConnectorSql(sql, {
+  // needs no server-side backend at all.
+  const chromeNamespaceExecution = chromeNamespaceConnectorSql(sql, {
     connectorKey: refs.connectorKey,
-    connectorVersion: refs.connectorVersion,
-    manifestBacked: refs.runManifestBacked,
-    artifactSourcePath: refs.runArtifactSourcePath,
   });
   // Keep this guard outside the individual lanes: every lane must advertise
   // the backend that the selected artifact actually needs. A manifest-backed
@@ -170,7 +151,7 @@ export function connectorClaimLaneSql(
   // closed rather than inheriting the unrestricted branch.
   const selectedBackendReady = sql`
     (
-      ${nativeChromeExecution}
+      ${chromeNamespaceExecution}
       OR (
         NOT COALESCE(${refs.runManifestBacked}, false)
         AND ${compiledBackendReady}
@@ -200,16 +181,6 @@ export function connectorClaimLaneSql(
             COALESCE(${refs.runRequiredCapability}, '') = ANY(
               ${pgTextArray(context.capabilityMatchSet)}::text[]
             )
-            OR (${legacyFleetArtifact})
-          )
-          -- The empty capability match is the anonymous fleet lane. A legacy
-          -- whatsapp.local row must still have a runnable selected artifact;
-          -- otherwise it would be claimed and fail only after becoming running.
-          AND (
-            NOT (${refs.connectorKey} = ANY(
-              ${pgTextArray(['whatsapp.local'])}::text[]
-            ))
-            OR (${legacyFleetArtifact})
           )
           AND NOT COALESCE(${refs.runManifestBacked}, false)
           AND (
@@ -237,7 +208,6 @@ export function connectorClaimLaneSql(
             )
             OR (
               NOT COALESCE(${refs.runManifestBacked}, false)
-              AND NOT (${legacyFleetArtifact})
               AND ${refs.runRequiredCapability} IS NOT NULL
               AND ${refs.runRequiredCapability} = ANY(
                 ${pgTextArray(context.authorizedCapabilities)}::text[]

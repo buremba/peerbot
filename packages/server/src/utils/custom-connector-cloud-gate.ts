@@ -17,8 +17,8 @@ export type ConnectorArtifactProvenance =
  * `rowCount` is how many rows the reader's own scope query saw for the
  * selected (connector_key, version) — 0 when no stored row exists at all, and
  * >1 when an org-scoped copy shadows the shared row. Readers select the same
- * ORDER BY organization_id NULLS LAST row, so the count is what distinguishes
- * "the shared row" from "the shared row plus an org override".
+ * ORDER BY organization_id NULLS LAST row, so a shadowed selection always
+ * surfaces as the org-scoped row itself; only 0 changes the verdict.
  */
 export interface ConnectorArtifactFacts {
 	organizationId: string | null;
@@ -29,15 +29,30 @@ export interface ConnectorArtifactFacts {
 }
 
 /** Why Cloud will not run an artifact. Surfaced to operators in the error. */
-type CloudDenialReason =
-	| 'organization-supplied'
-	| 'ambiguous-artifact-scope'
-	| 'not-in-image';
+type CloudDenialReason = 'organization-supplied' | 'not-in-image';
+
+/**
+ * What the org admin reading the run error can do about each denial.
+ *
+ * The reason code alone read as an outage: a refusal surfaced inside a sync or
+ * reaction run as `not eligible (organization-supplied)` with nothing to say
+ * what the supported path is. The two reasons do not share a remedy — one is
+ * a tenant migration, one is deploy drift — so each names its own. Every
+ * action named here must be one Cloud actually permits: source-code installs,
+ * updates and rollbacks are all refused by `assertCustomConnectorInstallAllowed`,
+ * so an OpenAPI connector (source metadata) is not a destination.
+ */
+const CLOUD_DENIAL_REMEDY: Record<CloudDenialReason, string> = {
+	'organization-supplied':
+		'Re-express this connector as an MCP server, ship it as a device connector from a paired device, or run it self-hosted.',
+	'not-in-image':
+		'The running image ships no source file for this connector key — it was removed or renamed since this version was installed, or the deploy is incomplete. Install its replacement from the current catalog, or contact support.',
+};
 
 function denied(reason: CloudDenialReason): never {
 	throw new ToolError(
 		'PERMISSION',
-		`${CUSTOM_CONNECTOR_CLOUD_DISABLED} Lobu Cloud only runs connector code shipped in its own image; this artifact is not eligible (${reason})`,
+		`${CUSTOM_CONNECTOR_CLOUD_DISABLED} Lobu Cloud only runs connector code shipped in its own image; this artifact is not eligible (${reason}). ${CLOUD_DENIAL_REMEDY[reason]}`,
 	);
 }
 
@@ -103,10 +118,25 @@ function cloudDenialReason(params: {
 	// in connector_versions to refuse, and demanding an image file here would
 	// take every device-executed connector offline in Cloud.
 	if (provenance === 'bundled') return null;
-	if (provenance === 'organization') return 'organization-supplied';
-	// An org-scoped copy shadowing the shared row makes the selection ambiguous
-	// across readers; fail closed rather than pick a winner here.
-	if (params.facts.rowCount > 1) return 'ambiguous-artifact-scope';
+	// An org-scoped row for a key the image ships is admitted, because the org
+	// bytes still never execute: `resolveConnectorCode` compiles the image file
+	// in Cloud whatever the stored row's scope. Denying took the connector
+	// offline and prevented nothing — the same argument already applied to
+	// version drift and to a shared row holding non-image bytes.
+	//
+	// This is the ordinary state of a long-lived workspace, not an exotic one:
+	// readers select `ORDER BY organization_id NULLS LAST`, so an org copy wins
+	// the selection over the shared row, and `apply` wrote org copies for years
+	// before the shared-row convention. A key the image does NOT ship is the
+	// genuinely organization-authored case and stays denied.
+	if (provenance === 'organization') {
+		return findBundledConnectorFile(params.connectorKey) === null
+			? 'organization-supplied'
+			: null;
+	}
+	// A selected shared row is the only row in scope: readers order org rows
+	// first and the two partial unique indexes allow one row per scope, so
+	// there is no second candidate left to disambiguate.
 	if (findBundledConnectorFile(params.connectorKey) === null) return 'not-in-image';
 	return null;
 }

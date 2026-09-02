@@ -5,11 +5,16 @@ The published packages ship as a synchronized release: `@lobu/core`, `@lobu/cli`
 ## Flow
 
 1. Merge feature PRs into `main` with conventional commit messages.
-2. release-please opens a `chore(main): release lobu <version>` PR with bumped `package.json`s and a generated `CHANGELOG.md`.
-3. Merge the release PR (squash). This creates the `lobu-v<version>` tag + GitHub release, which starts `build-images.yml`.
-4. Once that run's `app-image-smoke` boots the tagged app image, its `trigger-package-publish` job dispatches `publish-packages.yml` against the release tag. Automated npm publication is therefore downstream of a green image smoke — a red or still-queued image build leaves the version unpublished rather than shipping an unverified tree.
+2. The push to `main` starts `build-images.yml`. When it finishes, `release-please.yml` runs on its `workflow_run` and attests the producer before touching anything: the run must be a completed-success push to the current `main` tip, all six required image jobs must be completed-success, and there must be an exact successful `ci.yml` run for the same commit.
+3. Against that attested commit, release-please opens a `chore(main): release lobu <version>` PR with bumped `package.json`s and a generated `CHANGELOG.md`. It runs with `skip-github-release: true`, so it never creates the tag or the release itself.
+4. Merging the release PR repeats steps 2–3 for the new commit. This time the manifest version differs from its parent's, so the workflow creates the `lobu-v<version>` tag and GitHub release bound to that exact attested SHA. Publishing the release starts `build-images.yml` again, now on a `release` event.
+5. Once that run's `app-image-smoke` boots the tagged app image, its `trigger-package-publish` job dispatches `publish-packages.yml` from `main` with the release tag and its own run id. Automated npm publication is therefore downstream of a green image smoke — a red or still-queued image build leaves the version unpublished rather than shipping an unverified tree.
 
-To force a specific version (for example, `6.2.0-beta.1`), land a commit on `main` whose body contains `Release-As: 6.2.0-beta.1`; release-please then opens or updates the release PR for that version.
+Every gate in that chain is one subcommand of `scripts/release-provenance.mjs`, covered by `scripts/__tests__/release-publish-order.test.ts`. Change the policy there, not in the workflow YAML.
+
+To force a specific version, land a commit on `main` whose body contains `Release-As: 7.2.0`; release-please then opens or updates the release PR for that version.
+
+Only stable `X.Y.Z` versions can be released. The attestation chain rejects anything else — `parseStableVersion` in `scripts/release-provenance.mjs` throws, so a prerelease `Release-As:` fails the release step with `invalid stable Lobu version` rather than shipping. Release a prerelease by publishing from a branch by hand instead.
 
 ## Commit prefixes → version bump
 
@@ -45,7 +50,14 @@ BREAKING CHANGE: RuntimeProviderCredentialResolver now returns
 **Publish step fails after release PR merge** — re-running `release-please.yml` does NOT re-publish: the release already exists, so no new release event fires and nothing dispatches the publish. Recover from the artifact side instead:
 
 - **`build-images` failed or was evicted** — re-run that run (`gh run rerun <id>`). A green `app-image-smoke` re-fires `trigger-package-publish` on its own.
-- **`build-images` is green but `publish-packages` failed** — re-dispatch it directly against the release tag: `gh workflow run publish-packages.yml --ref lobu-v<version> -f bump=skip`. Omitting `image_run_id` makes the guard resolve the newest build-images run for that exact commit itself.
+- **`build-images` is green but `publish-packages` failed** — re-dispatch it from `main`, naming the release tag and the exact producing run. Both inputs are required and there is no fallback that guesses either one:
+  ```bash
+  gh workflow run publish-packages.yml --ref main \
+    -f release_tag=lobu-v<version> \
+    -f image_run_id=<the build-images run id for the release event>
+  ```
+  The workflow must be dispatched from `main` so it runs main's policy; the release tag is data, not the ref.
+- **`release-please.yml` skipped a push because `main` moved** — the attestation binds to one commit, so a merge landing mid-attestation aborts that run rather than releasing a commit it did not verify. The next push re-attests from scratch; nothing needs unsticking. To release without waiting, dispatch it manually from `main` with the exact producing run: `gh workflow run release-please.yml --ref main -f image_run_id=<build-images run id>`.
 
 `publish-packages.mjs` is idempotent (skips already-published packages), so re-running is safe.
 

@@ -469,9 +469,6 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
               WHEN ${delegatedBrowserAffinitySql(reserved, {
                 platform: reserved`dw.platform`,
                 connectorKey: reserved`t.connector_key`,
-                connectorVersion: reserved`t.connector_version`,
-                manifestBacked: reserved`run_cv.manifest_backed`,
-                artifactSourcePath: reserved`run_cv.artifact_source_path`,
               })}
                 THEN 'fleet_or_browser_affinity_no_claim'
               WHEN dw.last_seen_at < t.created_at

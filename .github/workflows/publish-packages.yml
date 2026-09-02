@@ -3,125 +3,150 @@ name: Publish Packages
 on:
   workflow_dispatch:
     inputs:
-      bump:
-        description: "Version bump: patch | minor | major | explicit like 3.1.0 | skip"
-        required: false
-        default: "skip"
+      release_tag:
+        description: "Exact published lobu-vSemVer release tag"
+        required: true
+        type: string
+      image_run_id:
+        description: "Exact Build and Push Images release run"
+        required: true
         type: string
       provenance:
-        description: "Attach npm provenance (requires trusted publisher configured on npmjs.com)"
+        description: "Attach npm provenance"
         required: false
         default: false
         type: boolean
-      image_run_id:
-        description: "Exact build-images run whose app-image-smoke must be green (release automation sets this)"
-        required: false
-        type: string
 
 permissions:
   contents: read
-  # The image gate reads workflow/run/job metadata through the Actions API.
   actions: read
-  # Needed for npm trusted publishing (OIDC). Only effective when each
-  # package is registered on npmjs.com → Settings → Publishing access →
-  # Add trusted publisher → Workflow: .github/workflows/publish-packages.yml,
-  # Environment: production.
-  id-token: write
+
+env:
+  REQUIRED_IMAGE_JOBS: generate-tag connector-parity-smoke build-worker build-embeddings-service build-app app-image-smoke
 
 jobs:
-  publish-packages:
+  attest-publish:
+    name: Attest release, image, and CI provenance
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    environment: production
+    timeout-minutes: 15
     outputs:
-      published-version: ${{ steps.published-version.outputs.version }}
-    env:
-      # Step-level env is not visible to the same step's `if:` evaluator.
-      CLAWHUB_TOKEN_SET: ${{ secrets.CLAWHUB_TOKEN != '' }}
+      version: ${{ steps.release.outputs.version }}
+      tag_sha: ${{ steps.release.outputs.sha }}
     steps:
-      - uses: actions/checkout@v7
-
-      # Refuse to publish off a commit whose post-merge image smoke is red.
+      # Deliberately before any checkout: this workflow holds the production
+      # environment's publish credentials downstream, so nothing from the
+      # repository runs until the dispatch is shown to carry main's policy.
       #
-      # `app-image-smoke` (in build-images.yml) BOOTS the app image built from
-      # this exact commit. If that is failing, the tree is known-broken at
-      # runtime and a release would ship it — every bug this guards against
-      # (#2231, #2183, __filename, GLIBC_2.38, uid-0) was green on every check
-      # that does not run the artifact.
-      #
-      # Deliberately NOT gated on "Published-artifact smoke": that one installs
-      # `@lobu/cli@latest` from npm, i.e. the PREVIOUS release. It is red
-      # precisely when a fix is waiting to be published, so gating on it would
-      # deadlock the release that repairs it. Its job is to alert on what users
-      # can install right now, and to verify the new version after publishing.
-      - name: Require a green app-image smoke for this commit
+      # The ref is the whole check. A dispatch resolves refs/heads/main to a
+      # tip nobody can forge, so requiring the workflow to run from main is
+      # what pins the policy. Deliberately NOT also requiring that tip to
+      # still be main's HEAD: this job starts a minute or so after
+      # trigger-package-publish dispatches it, any merge landing in that
+      # window would fail the publish permanently, and a release stranded
+      # off npm by a fail-closed race is the exact defect this workflow
+      # exists to fix. The release itself is bound by its tag below, not by
+      # where main happens to be.
+      - name: Verify current-main workflow policy
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Read the dispatch input through env, never `${{ }}` inside `run:`.
-          # This job holds `id-token: write` and the production environment's
-          # NPM_TOKEN, so a template-expanded input is a publish-credential
-          # injection, not just a broken script.
-          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          sha="$(git rev-parse HEAD)"
-          echo "publishing from ${sha}"
+          [ "$WORKFLOW_REF" = refs/heads/main ] || { echo "::error::publish policy must run from current main"; exit 1; }
 
-          run_id="$IMAGE_RUN_ID"
-          if [ -z "$run_id" ]; then
-            # Manual publishes do not know the producer run ID. Resolve the
-            # newest exact-SHA build server-side rather than scanning a busy
-            # main branch client-side.
-            run_id=$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml/runs?head_sha=${sha}&per_page=1" \
-              --jq '.workflow_runs[0].id // empty')
-          fi
-          if [ -z "$run_id" ]; then
-            echo "::error::No build-images run for ${sha}. The app image for this commit has never been built or smoked; publish would ship an unverified tree."
-            exit 1
-          fi
+      - name: Check out current main
+        uses: actions/checkout@v7
 
-          expected_workflow_id=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/build-images.yml" \
-            --jq '.id')
-          metadata=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" \
-            --jq '[.workflow_id, .head_sha] | @tsv')
-          IFS=$'\t' read -r workflow_id run_sha <<< "$metadata"
-          if [ "$workflow_id" != "$expected_workflow_id" ]; then
-            echo "::error::Run ${run_id} belongs to workflow ${workflow_id}, not build-images.yml (${expected_workflow_id})."
-            exit 1
-          fi
-          if [ "$run_sha" != "$sha" ]; then
-            echo "::error::Run ${run_id} built ${run_sha}, but publish checked out ${sha}."
-            exit 1
-          fi
+      - name: Attest the release tag binds to an immutable commit
+        id: release
+        uses: ./.github/actions/verify-release
+        with:
+          tag: ${{ inputs.release_tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-          smoke=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
-            --jq '[.jobs[] | select(.name == "app-image-smoke")]
-                  | if length == 0 then "missing"
-                    else "\(.[0].status) \(.[0].conclusion // "none")" end')
-          status="${smoke%% *}"
-          conclusion="${smoke#* }"
-          echo "build-images run ${run_id} app-image-smoke: ${status}, ${conclusion}"
-          if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
-            echo "::error::app-image-smoke for build-images run ${run_id} is not green. Wait for it to complete successfully before publishing."
-            exit 1
-          fi
-          echo "app-image smoke green for ${sha} in run ${run_id} — proceeding."
+      - name: Require the release commit to be reachable from main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          compare_status=$(gh api "repos/${REPOSITORY}/compare/${TAG_SHA}...${current_sha}" --jq '.status')
+          [ "$compare_status" = ahead ] || [ "$compare_status" = identical ] || { echo "::error::release tag is not reachable from current main"; exit 1; }
+
+      - name: Attest the producing image run and its exact CI run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          TAG_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          build_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/build-images.yml" --jq '.id')
+          build_run=$(gh api "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}")
+          [ "$(jq -r '.workflow_id' <<<"$build_run")" = "$build_workflow_id" ] || { echo "::error::wrong Build Images workflow"; exit 1; }
+          [ "$(jq -r '.head_repository.full_name // empty' <<<"$build_run")" = "$REPOSITORY" ] || { echo "::error::Build Images repository mismatch"; exit 1; }
+          [ "$(jq -r '.event' <<<"$build_run")" = release ] || { echo "::error::Build Images run must be a release event"; exit 1; }
+          [ "$(jq -r '.head_sha' <<<"$build_run")" = "$TAG_SHA" ] || { echo "::error::Build Images SHA does not match peeled tag"; exit 1; }
+          # Deliberately no run-level status/conclusion assertion. This publish
+          # is dispatched by trigger-package-publish, a job *inside* the run it
+          # names, so that run is still in_progress while this gate reads it --
+          # asserting "completed" here strands the release off npm, which is
+          # the defect this workflow exists to prevent. The per-job attestation
+          # below is stronger evidence anyway: it proves all six required image
+          # jobs are completed-success, which an unfinished producer cannot
+          # fake, and none of the six is the job doing the dispatching.
+
+          jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}/jobs?filter=all&per_page=100")
+          jq -n --argjson pages "$jobs" --arg required "$REQUIRED_IMAGE_JOBS" \
+            '{pages: $pages, required: ($required | split(" "))}' \
+            | node scripts/release-provenance.mjs attest-jobs >/dev/null
+
+          ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id' | tr -d '\n')
+          ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${TAG_SHA}&event=push&branch=main&status=completed&per_page=100")
+          ci_run_id=$(jq -n --argjson body "$ci_runs" --argjson workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$TAG_SHA" \
+            '{runs: [$body.workflow_runs[] | . + {repo: .repository.full_name}],
+              expected: {workflow_id: $workflow_id, repo: $repo, event: "push", head_branch: "main", head_sha: $sha, status: "completed", conclusion: "success"}}' \
+            | node scripts/release-provenance.mjs select-run | jq -r '.id')
+          echo "attested CI run for ${TAG_SHA}: ${ci_run_id}"
+
+  publish-packages:
+    name: Publish attested packages
+    needs: attest-publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: publish-packages-${{ needs.attest-publish.outputs.version }}
+      cancel-in-progress: false
+    environment: production
+    env:
+      CLAWHUB_TOKEN_SET: ${{ secrets.CLAWHUB_TOKEN != '' }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      published-version: ${{ steps.published-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.attest-publish.outputs.tag_sha }}
 
       - uses: ./.github/actions/setup-submodule
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
+      - name: Require exact release version
+        env:
+          EXPECTED_VERSION: ${{ needs.attest-publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual=$(node -p "require('./packages/cli/package.json').version")
+          [ "$actual" = "$EXPECTED_VERSION" ] || { echo "::error::package version does not match attested release"; exit 1; }
+
       - uses: actions/setup-node@v7
         with:
-          # Node 24 ships with npm >= 11.5.1 which supports OIDC trusted
-          # publishing. Do NOT downgrade below 24 without re-adding the
-          # npm self-upgrade step (which has a known MODULE_NOT_FOUND bug
-          # on hosted runners).
           node-version: 24
-          registry-url: "https://registry.npmjs.org"
+          registry-url: https://registry.npmjs.org
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -131,45 +156,34 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: ClawHub login
-        # clawhub CLI v0.16 doesn't expose an explicit OIDC flag; use a
-        # long-lived org token stored as a repo + production-environment
-        # secret. Skipped if CLAWHUB_TOKEN is unset (e.g. forks).
         if: ${{ env.CLAWHUB_TOKEN_SET == 'true' }}
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
         run: npx --yes clawhub@latest login --token "$CLAWHUB_TOKEN" --no-browser
 
-      - name: Publish packages
+      - name: Gate package version monotonicity
         env:
-          # Auth precedence (npm 11+):
-          #   1. OIDC trusted publishing (preferred) — npm CLI exchanges the
-          #      GitHub Actions OIDC token for a short-lived publish token
-          #      automatically when id-token: write is granted AND the package
-          #      is registered as a trusted publisher on npmjs.com.
-          #   2. NODE_AUTH_TOKEN fallback — used for new packages that haven't
-          #      been registered as trusted publishers yet (chicken-and-egg:
-          #      npmjs.com only lets you register packages that already exist).
-          # Once each new package has been registered on npmjs.com → Settings
-          # → Trusted Publishers, OIDC takes over automatically.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          # NPM_CONFIG_PROVENANCE enables provenance attestations when the
-          # provenance input is true (requires trusted publisher on npmjs.com).
-          NPM_CONFIG_PROVENANCE: "${{ inputs.provenance }}"
-          # Same reason as IMAGE_RUN_ID above: dispatch inputs reach the shell
-          # as env vars, not as `${{ }}` expansions inside the script body.
-          BUMP: ${{ inputs.bump }}
+          EXPECTED_VERSION: ${{ needs.attest-publish.outputs.version }}
         run: |
-          if [ "$BUMP" = "skip" ]; then
-            node scripts/publish-packages.mjs --skip-bump
-          else
-            node scripts/publish-packages.mjs "$BUMP"
-          fi
+          set -euo pipefail
+          # npm writes its --json error object to STDOUT, so the exit status is
+          # the only trustworthy signal. Failing closed here is deliberate: an
+          # unreadable registry must not read as "nothing newer is published".
+          published=$(npm view @lobu/cli versions --json 2>/dev/null) || published=""
+          [ -n "$published" ] || { echo "::error::could not read published @lobu/cli versions"; exit 1; }
+          jq -n --argjson versions "$published" --arg current "$EXPECTED_VERSION" \
+            '{current: $current, versions: (if ($versions | type) == "array" then $versions else [$versions] end)}' \
+            | node scripts/release-provenance.mjs assert-newer >/dev/null
+
+      - name: Publish packages at exact version
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "${{ inputs.provenance }}"
+        run: node scripts/publish-packages.mjs --skip-bump
 
       - name: Record the exact published CLI version
         id: published-version
-        run: |
-          version=$(node -p "require('./packages/cli/package.json').version")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node -p "require('./packages/cli/package.json').version")" >> "$GITHUB_OUTPUT"
 
   verify-published-artifact:
     needs: publish-packages

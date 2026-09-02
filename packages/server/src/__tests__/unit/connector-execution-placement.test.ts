@@ -1,99 +1,44 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertChromeNamespaceInstallIsDeviceManifest,
-  isDelegatedBrowserAffinityConnector,
   isChromeNamespaceConnectorKey,
-  isLegacyNonManifestConnector,
-  isLegacyNativeChromeExtensionConnectorKey,
-  isNativeChromeExtensionConnector,
-  legacyNativeChromeExtensionRequiredCapability,
-  LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS,
-  LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS,
+  isDelegatedBrowserAffinityConnector,
 } from '../../utils/connector-execution-placement';
 
 describe('Chrome-extension connector execution placement', () => {
-  it('keeps the legacy native allowlist exact', () => {
-    expect(LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS).toEqual({
-      'whatsapp.local': { requiredCapability: 'browser.whatsapp' },
-    });
-    expect(LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS).toEqual(['whatsapp.local']);
-    expect(isLegacyNativeChromeExtensionConnectorKey('whatsapp.local')).toBe(true);
-    expect(isLegacyNativeChromeExtensionConnectorKey('whatsapp')).toBe(false);
-    expect(legacyNativeChromeExtensionRequiredCapability('whatsapp.local')).toBe(
-      'browser.whatsapp'
-    );
-    expect(legacyNativeChromeExtensionRequiredCapability('whatsapp')).toBeNull();
-  });
-
-  it('recognizes only the exact Chrome namespace intrinsically', () => {
+  it('recognizes exactly the reserved Chrome namespace', () => {
     expect(isChromeNamespaceConnectorKey('chrome')).toBe(true);
     expect(isChromeNamespaceConnectorKey('chrome.history')).toBe(true);
+    // A prefix match is not a namespace match.
     expect(isChromeNamespaceConnectorKey('chromecast.demo')).toBe(false);
+    expect(isChromeNamespaceConnectorKey('linkedin')).toBe(false);
+    // `whatsapp.local` was the one connector outside the namespace that the
+    // extension implemented natively. It has been retired; nothing may take
+    // its place without going through the namespace.
     expect(isChromeNamespaceConnectorKey('whatsapp.local')).toBe(false);
+    expect(isChromeNamespaceConnectorKey('whatsapp.web')).toBe(false);
   });
 
-  it('distinguishes legacy non-manifest artifacts from device manifests', () => {
-    expect(
-      isLegacyNonManifestConnector({ connectorKey: 'whatsapp.local', manifestBacked: false })
-    ).toBe(true);
-    expect(
-      isLegacyNonManifestConnector({ connectorKey: 'whatsapp.local', manifestBacked: true })
-    ).toBe(false);
-    expect(
-      isLegacyNonManifestConnector({ connectorKey: 'linkedin', manifestBacked: false })
-    ).toBe(false);
+  it('treats a Chrome pin on any other connector as delegated browser affinity', () => {
+    // Native: the extension hosts the run itself.
+    expect(isDelegatedBrowserAffinityConnector('chrome-extension', 'chrome')).toBe(false);
+    expect(isDelegatedBrowserAffinityConnector('chrome-extension', 'chrome.history')).toBe(
+      false
+    );
+    // Delegated: the pin only lends the connector a browser; the parent run
+    // stays on fleet.
+    expect(isDelegatedBrowserAffinityConnector('chrome-extension', 'whatsapp.web')).toBe(true);
+    expect(isDelegatedBrowserAffinityConnector('chrome-extension', 'linkedin')).toBe(true);
+    expect(isDelegatedBrowserAffinityConnector('chrome-extension', 'chromecast.demo')).toBe(
+      true
+    );
   });
 
-  it('requires the exact Chrome manifest source facts for the legacy key', () => {
-    const chromeManifest = {
-      connectorKey: 'whatsapp.local',
-      connectorVersion: '2.0.0',
-      manifestBacked: true,
-      artifactSourcePath: 'device-manifest://chrome-extension/whatsapp.local@2.0.0',
-    };
-    expect(isNativeChromeExtensionConnector(chromeManifest)).toBe(true);
-    expect(isNativeChromeExtensionConnector({ ...chromeManifest, manifestBacked: false })).toBe(false);
-    expect(
-      isNativeChromeExtensionConnector({
-        ...chromeManifest,
-        artifactSourcePath: 'device-manifest://macos/whatsapp.local@1.9.0',
-      })
-    ).toBe(false);
-    expect(
-      isNativeChromeExtensionConnector({
-        ...chromeManifest,
-        connectorVersion: '2.0.1',
-      })
-    ).toBe(false);
-    expect(
-      isNativeChromeExtensionConnector({
-        ...chromeManifest,
-        artifactSourcePath: 'org-overrides/whatsapp.ts',
-      })
-    ).toBe(false);
-  });
-
-  it('distinguishes delegated browser affinity from source-backed native execution', () => {
-    const facts = {
-      connectorKey: 'whatsapp.local',
-      connectorVersion: '2.0.0',
-      manifestBacked: true,
-      artifactSourcePath: 'device-manifest://chrome-extension/whatsapp.local@2.0.0',
-    };
-    expect(isDelegatedBrowserAffinityConnector('chrome-extension', facts)).toBe(false);
-    expect(
-      isDelegatedBrowserAffinityConnector('chrome-extension', {
-        ...facts,
-        manifestBacked: false,
-      })
-    ).toBe(true);
-    expect(
-      isDelegatedBrowserAffinityConnector('chrome-extension', {
-        ...facts,
-        connectorKey: 'chromecast.demo',
-      })
-    ).toBe(true);
-    expect(isDelegatedBrowserAffinityConnector('macos', facts)).toBe(false);
+  it('is a Chrome-only classification', () => {
+    expect(isDelegatedBrowserAffinityConnector('macos', 'linkedin')).toBe(false);
+    expect(isDelegatedBrowserAffinityConnector('headless', 'linkedin')).toBe(false);
+    expect(isDelegatedBrowserAffinityConnector(null, 'linkedin')).toBe(false);
+    expect(isDelegatedBrowserAffinityConnector(undefined, 'linkedin')).toBe(false);
   });
 
   describe('reserved-namespace install guard', () => {

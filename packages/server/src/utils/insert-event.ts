@@ -215,9 +215,9 @@ export function stableJson(value: unknown): string {
  *
  * Everything else on the reference is minted per publication and says nothing
  * about whether the attachment changed. `artifact_id` and `download_url` are
- * obviously so. `filename` is too, and less obviously: the whatsapp.local
- * bridge names voice notes with a fresh UUID each time, so prod carries
- * supersede chains where the same 18623 bytes were stored as
+ * obviously so. `filename` is too, and less obviously: the retired
+ * whatsapp.local bridge named voice notes with a fresh UUID each time, so prod
+ * still carries supersede chains where the same 18623 bytes were stored as
  * `1c692a09-….opus` and then `cc9eab3c-….opus`. `size_bytes` and `duration_ms`
  * are derived from the bytes, so `sha256` already covers them.
  */

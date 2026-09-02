@@ -8,8 +8,6 @@ import type { DbClient } from '../db/client';
 import type { ConnectorMetadata } from '../utils/connector-compiler';
 import {
   isChromeNamespaceConnectorKey,
-  isLegacyNativeChromeExtensionConnectorKey,
-  legacyNativeChromeExtensionRequiredCapability,
 } from '../utils/connector-execution-placement';
 import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import logger from '../utils/logger';
@@ -137,18 +135,6 @@ function validateDeviceConnectorManifestsInternal(
 
       if (!connectorKeyAllowedForPlatform(platform, manifest.key)) {
         throw new Error(`connector key '${manifest.key}' is not allowed for platform '${platform}'`);
-      }
-      const legacyChromeCapability =
-        platform === 'chrome-extension'
-          ? legacyNativeChromeExtensionRequiredCapability(manifest.key)
-          : null;
-      if (
-        legacyChromeCapability !== null &&
-        manifest.required_capability !== legacyChromeCapability
-      ) {
-        throw new Error(
-          `chrome-extension connector '${manifest.key}' requires required_capability '${legacyChromeCapability}'`
-        );
       }
       if (!manifest.runtime.platforms.includes(platform)) {
         throw new Error(`runtime.platforms must include '${platform}'`);
@@ -606,18 +592,15 @@ function connectorKeyAllowedForPlatform(platform: string, key: string): boolean 
     return (
       key.startsWith('apple.') ||
       key === 'local.directory' ||
-      key === 'whatsapp.local' ||
       key === 'os.shell'
     );
   }
   if (platform === 'chrome-extension') {
-    // The extension intentionally keeps the stable connector key so existing
-    // connection/feed/event identity survives the move from Mac to Chrome.
-    // This is the sole non-chrome namespace admitted for Chrome; capability
-    // semantics remain manifest-declared and platform-allowlisted.
-    return (
-      isChromeNamespaceConnectorKey(key) || isLegacyNativeChromeExtensionConnectorKey(key)
-    );
+    // The reserved namespace is the whole allowlist: the extension implements
+    // these itself and ships no bundle for them. A connector that needs its own
+    // code is an ordinary key that the extension never sees — it drives the page
+    // through the generic browser ops instead.
+    return isChromeNamespaceConnectorKey(key);
   }
   // Headless devices (servers/VMs/pods) serve the shell connector: `os.shell`
   // executes `bash --noprofile --norc -c` and returns structured output.

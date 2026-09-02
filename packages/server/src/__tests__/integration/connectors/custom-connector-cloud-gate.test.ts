@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveAgentToolingDeclaration } from '../../../gateway/agent-tooling/resolver';
 import type { Env } from '../../../index';
-import { createSyncRun } from '../../../runs/queue-service';
+import { createSyncRun, describeSyncRunSkip } from '../../../runs/queue-service';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { post } from '../../setup/test-helpers';
 import {
@@ -22,20 +22,34 @@ import {
 
 /** `postgres` ships in the image, so the key itself is always attested. */
 const CONNECTOR_KEY = 'postgres';
+/**
+ * A key the running image ships no source file for — the genuinely
+ * organization-authored shape.
+ *
+ * Provenance and in-image status used to be independently testable, so these
+ * suites pinned `organization` denial against an attested key. They are no
+ * longer independent: an org-scoped row is refused only when the image cannot
+ * supply the code, because otherwise the image file is what executes and
+ * denying just takes the connector offline. Asserting the policy therefore
+ * requires a key the image genuinely lacks.
+ */
+const UNATTESTED_KEY = 'custom_test_connector';
 const CONNECTOR_VERSION = '1.0.0';
 
-async function setupFeed(): Promise<{ feedId: number; connId: number; orgId: string }> {
+async function setupFeed(
+  connectorKey: string = CONNECTOR_KEY,
+): Promise<{ feedId: number; connId: number; orgId: string }> {
   const sql = getTestDb();
   const org = await createTestOrganization();
   await createTestConnectorDefinition({
-    key: CONNECTOR_KEY,
-    name: 'PostgreSQL',
+    key: connectorKey,
+    name: connectorKey === CONNECTOR_KEY ? 'PostgreSQL' : 'Custom Test Connector',
     version: CONNECTOR_VERSION,
     organization_id: org.id,
   });
   const conn = await createTestConnection({
     organization_id: org.id,
-    connector_key: CONNECTOR_KEY,
+    connector_key: connectorKey,
   });
   const [feed] = await sql`SELECT id FROM feeds WHERE connection_id = ${conn.id}`;
   return { feedId: Number((feed as { id: number }).id), connId: conn.id, orgId: org.id };
@@ -46,13 +60,16 @@ async function setupFeed(): Promise<{ feedId: number; connId: number; orgId: str
  * bytes — the shape `install_connector` used to produce before the install
  * gate closed, and the one Cloud must never execute.
  */
-async function makeArtifactOrgSupplied(orgId: string): Promise<void> {
+async function makeArtifactOrgSupplied(
+  orgId: string,
+  connectorKey: string = CONNECTOR_KEY
+): Promise<void> {
   const sql = getTestDb();
   await sql`
     UPDATE connector_versions
     SET organization_id = ${orgId},
         source_code = ${'export default { sync: async () => ({ items: [] }) }'}
-    WHERE connector_key = ${CONNECTOR_KEY} AND version = ${CONNECTOR_VERSION}
+    WHERE connector_key = ${connectorKey} AND version = ${CONNECTOR_VERSION}
   `;
 }
 
@@ -60,7 +77,8 @@ async function makeArtifactOrgSupplied(orgId: string): Promise<void> {
 async function insertPendingRun(
   orgId: string,
   feedId: number,
-  connId: number
+  connId: number,
+  connectorKey: string = CONNECTOR_KEY
 ): Promise<number> {
   const sql = getTestDb();
   const [run] = await sql`
@@ -68,7 +86,7 @@ async function insertPendingRun(
       organization_id, run_type, feed_id, connection_id, connector_key, connector_version,
       status, approval_status, created_at
     ) VALUES (
-      ${orgId}, 'sync', ${feedId}, ${connId}, ${CONNECTOR_KEY}, ${CONNECTOR_VERSION},
+      ${orgId}, 'sync', ${feedId}, ${connId}, ${connectorKey}, ${CONNECTOR_VERSION},
       'pending', 'auto', current_timestamp
     )
     RETURNING id
@@ -86,14 +104,24 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
 
   it('queue admission refuses to create a sync run for org-supplied code', async () => {
     const sql = getTestDb();
-    const { feedId, orgId } = await setupFeed();
-    await makeArtifactOrgSupplied(orgId);
+    const { feedId, orgId } = await setupFeed(UNATTESTED_KEY);
+    await makeArtifactOrgSupplied(orgId, UNATTESTED_KEY);
 
     process.env.LOBU_CLOUD_MODE = '1';
     const created = await createSyncRun(feedId, {} as Env, sql);
 
     expect(created.ok).toBe(false);
     expect(created.ok ? null : created.reason).toBe('cloud_restricted');
+    // The reason code alone reads as an outage. `cloud_restricted` collapses
+    // two unrelated causes, and the sentence it maps to ("cannot run on Lobu
+    // Cloud yet") gave an operator nowhere to go — verified against prod,
+    // where that string is all a denied trigger_feed returns. The gate's own
+    // message names the provenance AND the supported path, so it rides along
+    // and wins in `describeSyncRunSkip`.
+    const detail = created.ok ? null : created.detail;
+    expect(detail).toContain('organization-supplied');
+    expect(detail).toMatch(/MCP/);
+    expect(describeSyncRunSkip('cloud_restricted', detail ?? undefined)).toBe(detail);
     const runs = await sql`SELECT id FROM runs WHERE feed_id = ${feedId}`;
     expect(runs.length).toBe(0);
   });
@@ -113,9 +141,9 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
 
   it('worker dispatch fails an already-claimed run rather than shipping org code', async () => {
     const sql = getTestDb();
-    const { feedId, connId, orgId } = await setupFeed();
-    const runId = await insertPendingRun(orgId, feedId, connId);
-    await makeArtifactOrgSupplied(orgId);
+    const { feedId, connId, orgId } = await setupFeed(UNATTESTED_KEY);
+    const runId = await insertPendingRun(orgId, feedId, connId, UNATTESTED_KEY);
+    await makeArtifactOrgSupplied(orgId, UNATTESTED_KEY);
 
     process.env.LOBU_CLOUD_MODE = '1';
     const res = await post('/api/workers/poll', {
@@ -185,6 +213,71 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
   });
 
   /**
+   * The shadow shape, end to end — the state that took ~160 active feeds dark.
+   *
+   * A long-lived workspace has BOTH a shared row and an org-scoped copy for an
+   * image-shipped key, because `apply` wrote org copies for years before the
+   * shared-row convention. Readers select `ORDER BY organization_id NULLS
+   * LAST`, so the org row wins and the artifact classified `organization`.
+   *
+   * Three fences had to move together, which is why this is an integration
+   * test rather than three unit assertions: queue admission denied it,
+   * `resolveConnectorCode` refused an org-scoped row before consulting the
+   * image, and poll's stored-bytes suppression was scoped to shared rows only.
+   * Fixing admission alone would have converted a clean queue-time skip into a
+   * FAILED already-claimed run — strictly worse than the bug.
+   *
+   * The planted bytes assertion is the safety half: admitting the row must not
+   * put organization-supplied code on a worker.
+   */
+  it('admits an image-shipped key shadowed by an org row, without shipping its bytes', async () => {
+    const sql = getTestDb();
+    const planted = 'PLANTED_ORG_SHADOW_BYTES_MUST_NEVER_REACH_A_WORKER';
+    const { feedId, orgId } = await setupFeed();
+
+    // The org-scoped copy that shadows the fixture's shared row.
+    await sql`
+      INSERT INTO connector_versions (
+        connector_key, version, organization_id, compiled_code, compile_config_hash, created_at
+      ) VALUES (
+        ${CONNECTOR_KEY}, ${CONNECTOR_VERSION}, ${orgId},
+        ${`export default class P { m(){ return '${planted}'; } }`},
+        (SELECT compile_config_hash FROM connector_versions
+          WHERE connector_key = ${CONNECTOR_KEY} AND organization_id IS NULL LIMIT 1),
+        NOW()
+      )
+    `;
+    const rows = await sql`
+      SELECT organization_id FROM connector_versions
+      WHERE connector_key = ${CONNECTOR_KEY} AND version = ${CONNECTOR_VERSION}
+    `;
+    // Guard the fixture itself: without both rows this test proves nothing.
+    expect(rows.length).toBe(2);
+
+    process.env.LOBU_CLOUD_MODE = '1';
+    const created = await createSyncRun(feedId, {} as Env, sql);
+    expect(created.ok).toBe(true);
+
+    const runId = created.ok ? created.runId : -1;
+    const res = await post('/api/workers/poll', {
+      body: { worker_id: 'cloud-shadow-worker', capabilities: { db_egress_hardening: true } },
+      token: 'test-fleet-token',
+      env: { WORKER_API_TOKEN: 'test-fleet-token' },
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    // Dispatched, not skipped or failed.
+    expect(text).not.toContain('CUSTOM_CONNECTOR_CLOUD_DISABLED');
+    expect(text).not.toContain('Refusing organization-supplied code');
+    expect(JSON.parse(text).run_id).toBe(runId);
+    // And the org bytes stayed on the gateway.
+    expect(text).not.toContain(planted);
+
+    const [row] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+    expect((row as { status: string }).status).toBe('running');
+  });
+
+  /**
    * The availability half. Both layers must still admit the row every Cloud
    * connector actually has — shared scope, pointing at the image source.
    */
@@ -243,12 +336,14 @@ describe('Cloud agent tooling comes from the image, not the stored declaration',
   const PLANTED_PACKAGE = 'curl';
   const PLANTED_DOMAIN = 'planted.example.com';
 
-  async function setupToolingConnection(): Promise<string> {
+  async function setupToolingConnection(
+    connectorKey: string = TOOLING_KEY
+  ): Promise<string> {
     const sql = getTestDb();
     const org = await createTestOrganization();
     await createTestConnectorDefinition({
-      key: TOOLING_KEY,
-      name: 'GitHub',
+      key: connectorKey,
+      name: connectorKey === TOOLING_KEY ? 'GitHub' : 'Custom Test Connector',
       version: TOOLING_VERSION,
       organization_id: org.id,
     });
@@ -258,11 +353,11 @@ describe('Cloud agent tooling comes from the image, not the stored declaration',
         nix: { packages: [PLANTED_PACKAGE] },
         domains: [PLANTED_DOMAIN],
       })}
-      WHERE key = ${TOOLING_KEY} AND organization_id = ${org.id}
+      WHERE key = ${connectorKey} AND organization_id = ${org.id}
     `;
     await createTestConnection({
       organization_id: org.id,
-      connector_key: TOOLING_KEY,
+      connector_key: connectorKey,
     });
     return org.id;
   }
@@ -297,7 +392,14 @@ describe('Cloud agent tooling comes from the image, not the stored declaration',
     expect(declared.domains).toContain(IMAGE_DOMAIN);
   });
 
-  it('Cloud contributes nothing for an org-scoped artifact', async () => {
+  /**
+   * An org-scoped row over an image-shipped key is attestable, so the image's
+   * own declaration is what builds the worker. The planted org declaration is
+   * still dropped — that, not the emptiness, is the security property. Before
+   * the shadow-row fix this returned nothing and took the connector's tooling
+   * offline along with its runs.
+   */
+  it('Cloud uses the image declaration for an org-scoped row over a shipped key', async () => {
     const sql = getTestDb();
     const orgId = await setupToolingConnection();
     await sql`
@@ -310,8 +412,30 @@ describe('Cloud agent tooling comes from the image, not the stored declaration',
     process.env.LOBU_CLOUD_MODE = '1';
     const declared = await resolveAgentToolingDeclaration({ organizationId: orgId });
 
-    // Not the planted declaration, and not the image's either — an artifact
-    // Cloud cannot attest gets no tooling at all.
+    expect(declared.packages).not.toContain(PLANTED_PACKAGE);
+    expect(declared.domains).not.toContain(PLANTED_DOMAIN);
+    expect(declared.packages).toContain(IMAGE_PACKAGE);
+    expect(declared.domains).toContain(IMAGE_DOMAIN);
+  });
+
+  /**
+   * The unattestable case the assertion above used to stand for: an org-scoped
+   * row for a key the image does not ship contributes nothing at all, so a
+   * tenant cannot widen a worker's deny-by-default egress allowlist.
+   */
+  it('Cloud contributes nothing for an org-scoped artifact it cannot attest', async () => {
+    const sql = getTestDb();
+    const orgId = await setupToolingConnection(UNATTESTED_KEY);
+    await sql`
+      UPDATE connector_versions
+      SET organization_id = ${orgId},
+          source_code = ${'export default { sync: async () => ({ items: [] }) }'}
+      WHERE connector_key = ${UNATTESTED_KEY} AND version = ${TOOLING_VERSION}
+    `;
+
+    process.env.LOBU_CLOUD_MODE = '1';
+    const declared = await resolveAgentToolingDeclaration({ organizationId: orgId });
+
     expect(declared.packages).toEqual([]);
     expect(declared.domains).toEqual([]);
   });

@@ -88,7 +88,6 @@ export async function materializeDueFeeds(
         runManifestBacked: sql`run_cv.manifest_backed`,
         runManifestHash: sql`run_cv.artifact_hash`,
         runArtifactSourcePath: sql`run_cv.artifact_source_path`,
-        runArtifactCompiledCode: sql`run_cv.artifact_compiled_code`,
         runRuntime: sql`cd.run_runtime`,
       })
     : sql`true`;
@@ -196,9 +195,6 @@ export async function materializeDueFeeds(
                 OR (${delegatedBrowserAffinitySql(sql, {
                   platform: sql`dw.platform`,
                   connectorKey: sql`c.connector_key`,
-                  connectorVersion: sql`COALESCE(f.pinned_version, cd.version)`,
-                  manifestBacked: sql`run_cv.manifest_backed`,
-                  artifactSourcePath: sql`run_cv.artifact_source_path`,
                 })})
               )
           )

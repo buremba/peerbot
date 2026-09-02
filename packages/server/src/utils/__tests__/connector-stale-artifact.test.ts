@@ -81,6 +81,9 @@ beforeEach(() => {
 // sql object with no `.begin`, failing far from the cause.
 afterEach(() => {
   vi.doUnmock('../../db/client');
+  // The logger mock is set inside a single test, but `isolate: false` shares
+  // the registry across files — retract it here for the same reason.
+  vi.doUnmock('../logger');
   vi.resetModules();
 });
 
@@ -286,12 +289,68 @@ describe('Cloud executes image bytes, never the stored row', () => {
     expect(code.length).toBeGreaterThan(PLANTED_BUNDLE.length);
   });
 
-  test('Cloud refuses outright when the row is organization-scoped', async () => {
+  /**
+   * INVERTED from "Cloud refuses outright when the row is organization-scoped".
+   *
+   * Refusing here is what turned an admitted run into a failed CLAIMED run:
+   * readers select `ORDER BY organization_id NULLS LAST`, so an org-scoped
+   * copy of an image-shipped key wins the selection, and the whole default
+   * catalog went dark for any workspace old enough to have one. Compiling the
+   * image file honours the identical invariant the refusal did — the planted
+   * bytes still never execute, asserted below — while keeping it online.
+   */
+  test('Cloud compiles the image for an org-scoped row, and its bytes never execute', async () => {
+    process.env.LOBU_CLOUD_MODE = 'true';
+    const { resolveConnectorCode } = await import('../ensure-connector-installed');
+
+    const code = await resolveConnectorCode('github', {
+      ...sharedRow,
+      organization_id: 'org_planted',
+    });
+
+    expect(code).not.toContain(PLANTED_MARKER);
+    expect(code).not.toBe(PLANTED_BUNDLE);
+    expect(code).toContain('github');
+  });
+
+  /**
+   * The substitution above is invisible from the run: the org's bytes are
+   * discarded and the image runs instead. An org that deliberately overrode a
+   * catalog key would otherwise see a connector that "works" while executing
+   * code it did not install, so the resolver is the one place that can say so.
+   * The line's volume is also how the shadow-row cleanup gets measured.
+   */
+  test('Cloud logs the substitution, and stays quiet for a shared row', async () => {
+    process.env.LOBU_CLOUD_MODE = 'true';
+    const warn = vi.fn();
+    vi.doMock('../logger', () => ({
+      default: { warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    }));
+    const { resolveConnectorCode } = await import('../ensure-connector-installed');
+
+    await resolveConnectorCode('github', { ...sharedRow, organization_id: 'org_planted' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({
+      connector_key: 'github',
+      organization_id: 'org_planted',
+    });
+
+    // A shared row is the ordinary Cloud shape — every connector would log.
+    warn.mockClear();
+    await resolveConnectorCode('github', sharedRow);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test('Cloud still refuses an org-scoped row for a key the image does not ship', async () => {
     process.env.LOBU_CLOUD_MODE = 'true';
     const { resolveConnectorCode } = await import('../ensure-connector-installed');
 
     await expect(
-      resolveConnectorCode('github', { ...sharedRow, organization_id: 'org_planted' })
+      resolveConnectorCode('zz.staleprobe', {
+        ...sharedRow,
+        organization_id: 'org_planted',
+        version: '1.0.0',
+      })
     ).rejects.toThrow(/organization-supplied/i);
   });
 

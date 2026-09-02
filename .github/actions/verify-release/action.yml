@@ -1,0 +1,61 @@
+name: "Verify release binding"
+description: >
+  Assert that a release tag, the commit it peels to, and the GitHub release
+  itself are one published stable artifact. Fetching the three API documents
+  is identical at every call site, so it lives here rather than being pasted
+  into build-images, release-please and publish-packages; the policy the
+  documents are judged against lives in scripts/release-provenance.mjs, which
+  scripts/__tests__/release-publish-order.test.ts covers.
+
+  Requires the repository to be checked out, for the helper.
+
+inputs:
+  tag:
+    description: "Release tag to verify, e.g. lobu-v17.3.0"
+    required: true
+  expected-sha:
+    description: >
+      Commit the tag must peel to. Omit when the caller is deriving the commit
+      from the tag rather than checking it against one it already trusts.
+    required: false
+    default: ""
+  token:
+    description: "Token with read access to releases and git refs"
+    required: true
+
+outputs:
+  sha:
+    description: "The commit the release tag peels to"
+    value: ${{ steps.verify.outputs.sha }}
+  version:
+    description: "The stable version the tag encodes"
+    value: ${{ steps.verify.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Verify the release binds to an immutable commit
+      id: verify
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPOSITORY: ${{ github.repository }}
+        TAG: ${{ inputs.tag }}
+        EXPECTED_SHA: ${{ inputs.expected-sha }}
+      run: |
+        set -euo pipefail
+        release=$(gh api "repos/${REPOSITORY}/releases/tags/${TAG}")
+        tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}")
+        tag_object=null
+        # An annotated tag's ref names the tag object, not the commit, so the
+        # peeled object has to be fetched before anything can be compared.
+        if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then
+          tag_object=$(gh api "repos/${REPOSITORY}/git/tags/$(jq -r '.object.sha' <<<"$tag_ref")")
+        fi
+        verified=$(jq -n --argjson release "$release" --argjson tagRef "$tag_ref" \
+          --argjson tagObject "$tag_object" --arg tag "$TAG" --arg sha "$EXPECTED_SHA" \
+          '{release: $release, tagRef: $tagRef, tagObject: $tagObject, expectedTag: $tag}
+           + (if $sha == "" then {} else {expectedSha: $sha} end)' \
+          | node "${GITHUB_WORKSPACE}/scripts/release-provenance.mjs" verify-release)
+        echo "sha=$(jq -r '.sha' <<<"$verified")" >> "$GITHUB_OUTPUT"
+        echo "version=$(jq -r '.version' <<<"$verified")" >> "$GITHUB_OUTPUT"

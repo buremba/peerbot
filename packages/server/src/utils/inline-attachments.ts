@@ -1,7 +1,7 @@
 /**
  * Connector-emitted inline attachments → ArtifactStore + transcription.
  *
- * Connectors (today: the Mac bridge's whatsapp.local) ship binary attachments
+ * Some connectors ship binary attachments
  * inline inside a stream batch:
  *
  *   { kind: 'audio', filename: 'AUD-…opus', mime_type: 'audio/opus',

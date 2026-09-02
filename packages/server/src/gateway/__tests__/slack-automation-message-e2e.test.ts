@@ -441,16 +441,21 @@ describe("Slack Enterprise Grid event -> chat Automation -> Slack reply", () => 
         { platform_message_id: linkedDmTs, team_id: WORKSPACE_TEAM_ID },
       ]);
     });
-    const [dmAutomation] = await sql<
-      { id: number; last_event_activation_at: Date | null }[]
-    >`
-      SELECT id, last_event_activation_at
-      FROM automations
-      WHERE organization_id = 'org-slack-grid-e2e'
-        AND triggers->0->'match'->>'channel_id' = ${DM_ID}
-      LIMIT 1
-    `;
-    expect(dmAutomation?.last_event_activation_at).not.toBeNull();
+    // The activation stamp lands in a different statement from the `runs` and
+    // `channel_messages` rows polled above, so a bare read here races it: the
+    // rows can be present while `last_event_activation_at` is still null.
+    await waitFor(async () => {
+      const [dmAutomation] = await sql<
+        { id: number; last_event_activation_at: Date | null }[]
+      >`
+        SELECT id, last_event_activation_at
+        FROM automations
+        WHERE organization_id = 'org-slack-grid-e2e'
+          AND triggers->0->'match'->>'channel_id' = ${DM_ID}
+        LIMIT 1
+      `;
+      expect(dmAutomation?.last_event_activation_at).not.toBeNull();
+    });
     const activationTimesBeforeBots = new Map(
       (
         await sql<{ id: number; last_event_activation_at: Date | null }[]>`

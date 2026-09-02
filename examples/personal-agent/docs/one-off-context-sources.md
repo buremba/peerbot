@@ -20,7 +20,7 @@ For durable facts, ingest into `learning` entities or `save_memory` — not as f
 |-----------|----------------|---------------|
 | LinkedIn | `linkedin` | Home feed, company pages |
 | Spotify | `spotify` | Recently played, playlists, top tracks |
-| WhatsApp | `whatsapp` | Messages (`whatsapp.local` on a paired device) |
+| WhatsApp | `whatsapp` | Messages (`whatsapp.web` through the paired browser) |
 | Gmail | `gmail` | The `threads` feed supports both indexed sync and direct source reads. Optional `config.query` scope; agents pass a per-feed `query` to `feeds.readMany` (Gmail merges it as search syntax). Default: unbounded mailbox |
 | X | `x` | `my_tweets`, `liked_tweets`, `bookmarks`, `direct_messages`, `home_feed` — OAuth when scopes allow, otherwise paired Owletto Chrome |
 | YouTube | `youtube` | `liked_videos`, `playlists` (OAuth). **Watch history** is not in the YouTube API — use Google Takeout |
@@ -225,7 +225,7 @@ Full step-by-step: [LinkedIn → Download your archive](#download-your-linkedin-
 |---|---|
 | **Download** | In app: chat → ⋮ → More → Export chat |
 | **Format** | `.zip` with `_chat.txt` + media |
-| **Ingest** | `whatsapp` / `whatsapp.local` is primary; exports for chats outside the paired device |
+| **Ingest** | `whatsapp` / `whatsapp.web` is primary; exports for chats outside the paired browser |
 | **Status** | _Not started_ |
 
 ---

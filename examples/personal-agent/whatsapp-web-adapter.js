@@ -22,29 +22,13 @@
  * throw a ReferenceError at runtime, with nothing failing at build time.
  * whatsapp-web-adapter.test.ts pins that invariant; do not delete it.
  *
- * The declarations below are page globals, not Node ones. They are type-only
- * and emit nothing, so they never reach the serialised source.
- *
- * @ts-nocheck is deliberate and scoped to this one file. Everything here runs
- * inside WhatsApp's private, undeclared module graph — `window.require("WAWeb…")`
- * returns shapes TypeScript cannot describe, so a full annotation pass would add
- * ~90 `any`s and permanently break the line-by-line diff against
- * whatsapp-web-main-v1.js, which is the property that makes this port
- * reviewable. Correctness is proven by actually running the program: the
- * companion test evaluates the serialised source against a stub page (catching
- * the ReferenceError class the invariant above guards) and the live probe
- * exercises it against real WhatsApp Web. Every other file in the port is
- * ordinary, fully checked TypeScript.
+ * It is a .js file on purpose. It is not TypeScript and never was: it reaches
+ * into WhatsApp's own undeclared module registry via window.require, and its
+ * globals are the page's, not Node's. Giving it a .ts extension bought nothing
+ * and cost a @ts-nocheck plus a set of `declare const` shims.
  */
-// @ts-nocheck
 
-declare const document: any;
-declare const window: any;
-declare const location: any;
-declare const Blob: any;
-declare const btoa: (data: string) => string;
-
-export function whatsAppWebAdapterProgram(): void {
+export function whatsAppWebAdapterProgram() {
   const GLOBAL_KEY = "__owlettoWhatsAppAdapterV1";
   const SOURCE = "owletto.whatsapp.web.v1";
   const ADAPTER_VERSION = 2;

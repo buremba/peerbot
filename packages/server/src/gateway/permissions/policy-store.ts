@@ -208,16 +208,23 @@ interface SuppressedJudgedDomainOptions {
 /**
  * Whether an allow pattern reaches any host a judged pattern covers.
  *
+ * Two callers, one predicate: {@link findSuppressedJudgedDomains} uses it to
+ * refuse a shadowing agent CONFIG at write time, and the deployment manager's
+ * grant reconcile uses it to refuse the shadowing GRANT at dispatch time (a
+ * connector-contributed domain never passes through agent config). Both default
+ * to grant semantics; only the global-allowlist check passes
+ * `wildcardCoversRoot`.
+ *
  * A judged `.suffix` covers the root and every subdomain — {@link findMatchingRule},
  * which `PolicyStore.resolve` matches with, treats `normalized === suffix` as a
  * hit. Whether the ALLOW side's wildcard covers the root depends on which
  * matcher enforces it (see {@link SuppressedJudgedDomainOptions}). Two
  * wildcards overlap when either suffix sits under the other.
  */
-function allowReachesJudged(
+export function allowReachesJudged(
   judged: string,
   allow: string,
-  wildcardCoversRoot: boolean
+  wildcardCoversRoot = false
 ): boolean {
   const judgedWild = judged.startsWith(".");
   const allowWild = allow.startsWith(".");

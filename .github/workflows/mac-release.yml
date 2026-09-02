@@ -404,7 +404,10 @@ jobs:
           codesign "${OPTS[@]}" \
             --entitlements config/macos/lobu-auth.entitlements \
             "$AUTH_CLI"
-          codesign "${OPTS[@]}" "$DAEMON"
+          codesign "${OPTS[@]}" \
+            --entitlements config/macos/lobu-auth.entitlements \
+            "$DAEMON"
+          scripts/verify-mac-device-daemon.sh "$DAEMON"
 
           # XPC services (each has an inner Mach-O + an outer bundle).
           if [ -d "$SPARKLE/XPCServices/Downloader.xpc" ]; then

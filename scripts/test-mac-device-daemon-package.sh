@@ -55,6 +55,14 @@ grep -q 'owl_pat_' "$WORK/invalid-token.err"
 NO_POLL_JSON="$(run_clean ./lobu-device-daemon --no-poll)"
 [[ "$NO_POLL_JSON" == "$VERSION_JSON" ]]
 
+# Hardened Runtime + JIT entitlement smoke: standalone Bun Mach-Os crash on Apple
+# Silicon under Hardened Runtime ("Ran out of executable memory while allocating 128 bytes")
+# unless signed with com.apple.security.cs.allow-jit.
+codesign --force --options runtime --sign - \
+  --entitlements "$ROOT/config/macos/lobu-auth.entitlements" "$CLEAN/lobu-device-daemon"
+HARDENED_JSON="$(run_clean "$ROOT/scripts/verify-mac-device-daemon.sh" ./lobu-device-daemon)"
+[[ "$HARDENED_JSON" == "$VERSION_JSON" ]]
+
 echo "Mac device-daemon package smoke passed"
 echo "$VERSION_JSON"
 stat -f 'artifact_bytes=%z' "$CLEAN/lobu-device-daemon"

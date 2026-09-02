@@ -76,9 +76,12 @@ SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
 OPTS=(--force --options runtime --timestamp --sign "$SIGN_ID")
 
 # Xcode treats the daemon as a resource, so seal its Mach-O explicitly before
-# re-signing the umbrella app that records the nested signature.
+# re-signing the umbrella app that records the nested signature. Both CLI and
+# daemon are standalone Bun executables needing MAP_JIT executable memory under
+# Hardened Runtime.
 codesign "${OPTS[@]}" --entitlements "$AUTH_ENTITLEMENTS" "$AUTH_CLI"
-codesign "${OPTS[@]}" "$DAEMON"
+codesign "${OPTS[@]}" --entitlements "$AUTH_ENTITLEMENTS" "$DAEMON"
+"$ROOT/scripts/verify-mac-device-daemon.sh" "$DAEMON" >/dev/null
 
 resign_xpc() {
   local name="$1"

@@ -22,6 +22,7 @@ const EXPECTED_BUNDLED_CONNECTORS = [
 	"telegram",
 	"webhook",
 	"whatsapp",
+	"whatsapp.web",
 	"x",
 	"youtube",
 ];
@@ -79,6 +80,7 @@ describe("bundled connector lifecycle matrix", () => {
 			"os.shell": 1,
 			"google.gmail": 5,
 			"market.quotes": 1,
+			"whatsapp.web": 6,
 			x: 1,
 			youtube: 5,
 		});

@@ -282,45 +282,74 @@ export async function markAutomationRunFailedInTransaction(
                 approved_input->>'dispatch_source' AS dispatch_source
     `;
 	if (!failed) return false;
-	if (failed.organization_id) {
+	await settleAfterTerminalFailure(tx, runId, failed, {
+		permanentConfiguration:
+			permanentConfigurationFailure ||
+			isPermanentAutomationAgentError(errorCode, message),
+		notBefore,
+	});
+	return true;
+}
+
+/** The `runs` columns a terminal-failure cascade reads. */
+export interface TerminalizedRun {
+	organization_id: string | null;
+	automation_id: string | number | null;
+	run_type: string;
+	dispatch_source: string | null;
+}
+
+/**
+ * What has to happen once a run's row has reached `failed`.
+ *
+ * Revoke the continuations the parent owned, then -- only for a REAL Automation
+ * run -- record the scheduled failure and move the cron cursor. The run-type
+ * gate is the whole point: an eval replay copies `dispatch_source` verbatim
+ * from the run it replays, so ungated a failing eval (a quota 429, a scoring
+ * rerun) would advance -- or park for a day -- the live Automation's cursor it
+ * is merely re-running.
+ *
+ * Every path that terminalizes a run owes this same cascade, and the paths that
+ * write their own UPDATE (a retry budget running out, say) owe it just as much
+ * as the ones that go through markAutomationRunFailedInTransaction -- so it is
+ * one function rather than a tail each of them remembers to copy.
+ */
+export async function settleAfterTerminalFailure(
+	tx: DbClient,
+	runId: number,
+	run: TerminalizedRun,
+	options: { permanentConfiguration?: boolean; notBefore?: Date | null } = {},
+): Promise<void> {
+	if (run.organization_id) {
 		await cleanupAutomationParentLineageInTransaction(
 			tx,
 			runId,
-			failed.organization_id,
-			failed.automation_id == null ? null : Number(failed.automation_id),
+			run.organization_id,
+			run.automation_id == null ? null : Number(run.automation_id),
 		);
 	}
-	// Only a REAL Automation failure moves the schedule. An eval replay copies
-	// the source run's dispatch_source verbatim, so without this gate a
-	// failing eval (a quota 429, a scoring rerun) would advance — or park for
-	// a day — the live Automation's cron cursor it is merely replaying.
-	if (failed.run_type === AUTOMATION_RUN_TYPE) {
-		const automationId =
-			failed.automation_id == null ? null : Number(failed.automation_id);
-		if (
-			permanentConfigurationFailure ||
-			isPermanentAutomationAgentError(errorCode, message)
-		) {
-			await recordScheduledConfigurationFailure(
-				tx,
-				automationId,
-				failed.dispatch_source,
-			);
-		} else {
-			await recordScheduledExecutionFailure(
-				tx,
-				automationId,
-				failed.dispatch_source,
-			);
-		}
-		await advanceScheduleAfterTerminalFailure(
+	if (run.run_type !== AUTOMATION_RUN_TYPE) return;
+	const automationId =
+		run.automation_id == null ? null : Number(run.automation_id);
+	if (options.permanentConfiguration) {
+		await recordScheduledConfigurationFailure(
 			tx,
 			automationId,
-			failed.dispatch_source,
-			notBefore,
+			run.dispatch_source,
+		);
+	} else {
+		await recordScheduledExecutionFailure(
+			tx,
+			automationId,
+			run.dispatch_source,
 		);
 	}
-	return true;
+	await advanceScheduleAfterTerminalFailure(
+		tx,
+		automationId,
+		run.dispatch_source,
+		options.notBefore,
+	);
 }
 
 /**

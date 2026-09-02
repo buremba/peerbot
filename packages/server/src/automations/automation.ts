@@ -46,19 +46,19 @@ import {
 	computePendingWindow,
 } from "../utils/window-utils";
 import {
-	advanceScheduleAfterTerminalFailure,
 	advanceAutomationSchedule,
 	advanceAutomationScheduleAfterSuccessfulWindow,
 } from "./schedule-cursor";
 import {
-	recordScheduledConfigurationFailure,
 	recordScheduledExecutionFailure,
 } from "./scheduled-failure-policy";
 import { isPermanentAutomationAgentError } from "./failure-classification";
 import {
 	cleanupAutomationParentLineageInTransaction,
 	lockOwningAutomationForRun,
+	markAutomationRunFailedInTransaction,
 	resolveAutomationRunsByMessageIds,
+	settleAfterTerminalFailure,
 } from "./run-completion";
 import {
 	AUTOMATION_RUN_TYPE,
@@ -599,6 +599,14 @@ export async function enqueueAutomationRunForAutomationInTransaction(
 	);
 }
 
+/**
+ * Terminalize a dispatch-lane failure.
+ *
+ * The transaction body is markAutomationRunFailedInTransaction: the same
+ * claim-fenced UPDATE, the same parent-lineage cleanup, the same eval-vs-real
+ * gate before the schedule moves. This lane only needs to open the
+ * transaction, since it reaches here holding no `tx` of its own.
+ */
 async function markAutomationRunFailedIdempotent(
 	sql: DbClient,
 	runId: number,
@@ -608,59 +616,13 @@ async function markAutomationRunFailedIdempotent(
 	claimedBy?: string,
 ): Promise<void> {
 	await sql.begin(async (tx) => {
-		await lockOwningAutomationForRun(tx, runId);
-		const [failed] = await tx<{
-			automation_id: string | number | null;
-			organization_id: string | null;
-			run_type: string;
-			dispatch_source: string | null;
-		}>`
-      UPDATE runs
-      SET status = 'failed',
-          outcome = ${classifyRunOutcome({ status: "failed", errorCode, errorMessage: message })},
-          completed_at = current_timestamp,
-          error_message = ${message}
-      WHERE id = ${runId}
-        AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-        AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
-      RETURNING automation_id, organization_id, run_type,
-                approved_input->>'dispatch_source' AS dispatch_source
-    `;
-		if (!failed) return;
-		if (failed.organization_id) {
-			await cleanupAutomationParentLineageInTransaction(
-				tx,
-				runId,
-				failed.organization_id,
-				failed.automation_id == null ? null : Number(failed.automation_id),
-			);
-		}
-		// Same gate as the twin in run-completion.ts. The dispatch lane claims
-		// both run types, so every failure here — session-create, embedded Lobu
-		// unavailable, preflight, message POST — can be an eval. An eval clones
-		// `dispatch_source` verbatim, so ungated it would advance the live cron
-		// cursor of the Automation it is only replaying, or park it entirely when
-		// the schedule does not parse.
-		if (failed.run_type === AUTOMATION_RUN_TYPE) {
-			if (permanentConfigurationFailure) {
-				await recordScheduledConfigurationFailure(
-					tx,
-					failed.automation_id == null ? null : Number(failed.automation_id),
-					failed.dispatch_source,
-				);
-			} else {
-				await recordScheduledExecutionFailure(
-					tx,
-					failed.automation_id == null ? null : Number(failed.automation_id),
-					failed.dispatch_source,
-				);
-			}
-			await advanceScheduleAfterTerminalFailure(
-				tx,
-				failed.automation_id == null ? null : Number(failed.automation_id),
-				failed.dispatch_source
-			);
-		}
+		await markAutomationRunFailedInTransaction(tx, {
+			runId,
+			message,
+			errorCode,
+			permanentConfigurationFailure,
+			claimedBy,
+		});
 	});
 }
 
@@ -1473,28 +1435,7 @@ async function requeueAutomationRunAfterTransientDispatchFailure(
 				    error_message = ${exhaustedMessage}
 				WHERE id = ${runId} AND claimed_by = ${claimedBy}
 			`;
-			if (state.organization_id) {
-				await cleanupAutomationParentLineageInTransaction(
-					tx,
-					runId,
-					state.organization_id,
-					state.automation_id == null ? null : Number(state.automation_id),
-				);
-			}
-			if (state.run_type === AUTOMATION_RUN_TYPE) {
-				const automationId =
-					state.automation_id == null ? null : Number(state.automation_id);
-				await recordScheduledExecutionFailure(
-					tx,
-					automationId,
-					state.dispatch_source,
-				);
-				await advanceScheduleAfterTerminalFailure(
-					tx,
-					automationId,
-					state.dispatch_source,
-				);
-			}
+			await settleAfterTerminalFailure(tx, runId, state);
 			return "failed";
 		}
 		const delaySeconds = Math.min(30 * 2 ** Math.max(0, nextAttempt - 1), 120);

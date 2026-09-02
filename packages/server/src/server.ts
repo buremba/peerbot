@@ -22,6 +22,7 @@ import "./utils/assert-node-version";
 // Sentry must init before any other imports for auto-instrumentation.
 import "./instrument";
 import { checkConfiguredJudgeModel } from "./gateway/inference/system-judge-target";
+import { checkJudgeShadowingAllowlist } from "./gateway/config/network-allowlist";
 
 import dotenv from "dotenv";
 
@@ -222,6 +223,17 @@ async function main(): Promise<void> {
 			// misconfigured optional control must not become a gateway outage.
 			async () => {
 				await checkConfiguredJudgeModel();
+			},
+			// The other way every judge dies silently: an unrestricted global
+			// allowlist answers before the judge is consulted, and that path is
+			// not audit-logged, so it leaves no per-request trace at all.
+			//
+			// Its OWN hook, deliberately: sharing the hook above would put this
+			// call after an `await`, so a rejection there would skip it — and a
+			// preflight that only runs when everything else already worked is
+			// not a preflight. Synchronous, so it cannot reject in turn.
+			() => {
+				checkJudgeShadowingAllowlist();
 			},
 		],
 		extraTeardown,

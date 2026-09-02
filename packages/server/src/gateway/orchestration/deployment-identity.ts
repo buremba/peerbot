@@ -143,6 +143,42 @@ export function generateDeploymentName(identity: DeploymentIdentity): string {
   return `lobu-worker-${hint}-${hash}`;
 }
 
+/** Queue name prefix a per-deployment worker listens on. */
+const THREAD_MESSAGE_QUEUE_PREFIX = "thread_message_";
+
+/**
+ * The deployment a linked chat_message child run was dispatched to.
+ *
+ * A thread-message queue already carries the deployment in its own name; any
+ * other child has to be re-derived from the identity its action_input recorded.
+ * Returns "" when the row carries neither, which callers read as "no live turn
+ * to act on".
+ */
+export function deploymentNameForLinkedChild(
+  child: {
+    queue_name: string;
+    agent_id: string | null;
+    user_id: string | null;
+    conversation_id: string | null;
+    channel_id: string | null;
+    platform: string | null;
+  },
+  organizationId: string
+): string {
+  if (child.queue_name.startsWith(THREAD_MESSAGE_QUEUE_PREFIX)) {
+    return child.queue_name.slice(THREAD_MESSAGE_QUEUE_PREFIX.length);
+  }
+  if (!child.agent_id || !child.conversation_id) return "";
+  return generateDeploymentName({
+    organizationId,
+    agentId: child.agent_id,
+    userId: child.user_id ?? undefined,
+    platform: child.platform ?? undefined,
+    channelId: child.channel_id ?? undefined,
+    conversationId: child.conversation_id,
+  });
+}
+
 /** Check if an env var name looks like a secret (API key / token / secret / password). */
 export function isSecretEnvVar(
   name: string,

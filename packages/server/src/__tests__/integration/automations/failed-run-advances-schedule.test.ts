@@ -5,7 +5,10 @@ import {
 	dispatchPendingAutomationRuns,
 	materializeDueAutomationRuns,
 } from "../../../automations/automation";
-import { resolveAutomationRunsByMessageIds } from "../../../automations/run-completion";
+import {
+	failAutomationParentRunFromQueue,
+	resolveAutomationRunsByMessageIds,
+} from "../../../automations/run-completion";
 import {
   advanceAutomationSchedule,
   deviceProviderQuotaResetNotBefore,
@@ -1060,5 +1063,68 @@ describe("finalize-miss diagnostics", () => {
     expect(run.status).toBe("failed");
     expect(run.error_message).toMatch(/finished without calling/);
     expect(run.error_message).toMatch(/No active tool approval was found/);
+  });
+});
+
+describe("Automation parent terminalized by its worker queue", () => {
+  // `failAutomationParentRunFromQueue` used to cancel sibling chat_message
+  // children itself, with an `id <> childRunId` guard. That statement is gone:
+  // terminalizing the parent runs the lineage cleanup, which cancels the same
+  // rows. These assertions are what make the deletion safe — the siblings must
+  // still end up cancelled, and the child the queue already failed must keep
+  // its own terminal status rather than being overwritten as cancelled.
+  it("cancels every sibling turn while leaving the failed child alone", async () => {
+    const messageId = `queue-parent-fail-${Date.now()}`;
+    const ctx = await createDueAutomationWithDispatchedRun({
+      slug: `queue-parent-fail-${Date.now()}`,
+      messageId,
+    });
+    const { sql, organizationId, runId: parentRunId } = ctx;
+
+    const insertChild = async (status: string, queueName: string) => {
+      const [row] = await sql<{ id: number }>`
+        INSERT INTO runs (
+          organization_id, run_type, queue_name, action_input,
+          parent_run_id, status, run_at
+        ) VALUES (
+          ${organizationId}, 'chat_message', ${queueName},
+          ${sql.json({ messageId })}::jsonb,
+          ${parentRunId}, ${status}, now()
+        )
+        RETURNING id
+      `;
+      return Number(row.id);
+    };
+
+    // The queue marks the child failed BEFORE terminalizing the parent, so
+    // reproduce that order here — it is the reason cleanup cannot clobber it.
+    const failedChildId = await insertChild(
+      "failed",
+      "thread_message_lobu-worker-test-000000000000",
+    );
+    const claimedSiblingId = await insertChild("claimed", "messages");
+    const pendingSiblingId = await insertChild("pending", "messages");
+
+    const terminalized = await sql.begin((tx) =>
+      failAutomationParentRunFromQueue(
+        tx,
+        parentRunId,
+        failedChildId,
+        "worker exited",
+      ),
+    );
+    expect(terminalized).toBe(true);
+
+    const statusOf = async (id: number): Promise<string> => {
+      const [row] = await sql<{ status: string }>`
+        SELECT status FROM runs WHERE id = ${id}
+      `;
+      return row.status;
+    };
+
+    expect(await statusOf(parentRunId)).toBe("failed");
+    expect(await statusOf(claimedSiblingId)).toBe("cancelled");
+    expect(await statusOf(pendingSiblingId)).toBe("cancelled");
+    expect(await statusOf(failedChildId)).toBe("failed");
   });
 });

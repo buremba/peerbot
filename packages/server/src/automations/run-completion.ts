@@ -1,7 +1,7 @@
 import type { DbClient } from "../db/client";
 import { getDb, pgTextArray } from "../db/client";
 import { listPendingToolsForRun } from "../gateway/auth/mcp/pending-tool-store";
-import { generateDeploymentName } from "../gateway/orchestration/deployment-identity";
+import { deploymentNameForLinkedChild } from "../gateway/orchestration/deployment-identity";
 import { revokeTurnIfPendingInTransaction } from "../gateway/orchestration/turn-liveness";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { supersedeActionEvent } from "../tools/admin/approval-events";
@@ -417,25 +417,14 @@ export async function cleanupAutomationParentLineageInTransaction(
 		);
 	}
 	for (const child of linkedChildren) {
-			const deploymentName = child.queue_name.startsWith("thread_message_")
-				? child.queue_name.slice("thread_message_".length)
-				: child.agent_id && child.conversation_id
-					? generateDeploymentName({
-							organizationId,
-							agentId: child.agent_id,
-							userId: child.user_id ?? undefined,
-							platform: child.platform ?? undefined,
-							channelId: child.channel_id ?? undefined,
-							conversationId: child.conversation_id,
-						})
-					: "";
-			if (deploymentName && child.message_id) {
-				await revokeTurnIfPendingInTransaction(tx, {
-					deploymentName,
-					messageId: child.message_id,
-					organizationId,
-				});
-			}
+		const deploymentName = deploymentNameForLinkedChild(child, organizationId);
+		if (deploymentName && child.message_id) {
+			await revokeTurnIfPendingInTransaction(tx, {
+				deploymentName,
+				messageId: child.message_id,
+				organizationId,
+			});
+		}
 	}
 	await tx`
 		UPDATE public.runs
@@ -477,18 +466,12 @@ export async function failAutomationParentRunFromQueue(
 		message: `Automation worker queue run ${childRunId} failed: ${message}`,
 		expectedMessageId: messageId,
 	});
-	if (!failed) return false;
-	await tx`
-		UPDATE public.runs
-		SET status = 'cancelled',
-		    completed_at = now(),
-		    error_message = ${`Cancelled because Automation parent ${parentRunId} terminalized.`}
-		WHERE parent_run_id = ${parentRunId}
-		  AND id <> ${childRunId}
-		  AND run_type = 'chat_message'
-		  AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-	`;
-	return true;
+	// No sibling cancel here: markAutomationRunFailedInTransaction already ran
+	// cleanupAutomationParentLineageInTransaction, which cancels every active
+	// chat_message child of this parent. The caller sets `childRunId` to
+	// 'failed' before terminalizing the parent, so it is already out of the
+	// active set that cleanup matches.
+	return failed;
 }
 
 /**

@@ -37,7 +37,7 @@ import {
 import { incrementCounter } from "../../metrics/prometheus.js";
 import { failAutomationParentRunFromQueue } from "../../../automations/run-completion.js";
 import { AUTOMATION_RUN_TYPES_PG } from "../../../runs/run-types.js";
-import { generateDeploymentName } from "../../orchestration/deployment-identity.js";
+import { deploymentNameForLinkedChild } from "../../orchestration/deployment-identity.js";
 import {
 	failTurnIfPendingInTransaction,
 	notifyThreadResponse,
@@ -154,18 +154,7 @@ async function terminalizeLinkedAutomationParent(
 		child.queue_name.startsWith("thread_message_") ||
 		child.queue_name === "messages"
 	) {
-		const deploymentName = child.queue_name.startsWith("thread_message_")
-			? child.queue_name.slice("thread_message_".length)
-			: child.agent_id && child.conversation_id
-				? generateDeploymentName({
-						organizationId,
-						agentId: child.agent_id,
-						userId: child.user_id ?? undefined,
-						platform: child.platform ?? undefined,
-						channelId: child.channel_id ?? undefined,
-						conversationId: child.conversation_id,
-					})
-				: "";
+		const deploymentName = deploymentNameForLinkedChild(child, organizationId);
 		if (!deploymentName) {
 			return { parentFailed: false, responseEmitted: false };
 		}

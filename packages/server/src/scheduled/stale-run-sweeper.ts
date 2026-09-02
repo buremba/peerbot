@@ -208,7 +208,7 @@ export async function markStaleRunsAsTimeout(
 		   LIMIT ${maxRows}
 		 )
 		 ORDER BY a.id
-		 FOR UPDATE
+		 FOR UPDATE SKIP LOCKED
 	 ), stale AS MATERIALIZED (
        SELECT id,
               status AS previous_status,

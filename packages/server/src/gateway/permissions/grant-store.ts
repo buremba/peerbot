@@ -195,7 +195,6 @@ export class GrantStore {
     }
   }
 
-
 	/** Exact-row deny lookup; configured wildcards must not mask this override. */
 	async isExactDeniedStrict(
 		agentId: string,

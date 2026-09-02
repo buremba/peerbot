@@ -48,10 +48,7 @@ import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { AUTOMATION_RUN_TYPES_PG } from "./run-types.js";
-import {
-  parentRunGate,
-  parentRunNoLongerActive,
-} from "./parent-run-gate.js";
+import { parentRunGate, parentRunNoLongerActive } from './parent-run-gate.js';
 
 type AutomationDispatchSource = 'scheduled' | 'manual' | 'event';
 export type AutomationActivationTrigger =
@@ -668,7 +665,7 @@ async function createAutomationRunWithClient(
     agentKind?: string | null;
     sourceFingerprint?: string;
     sourcePreflightPending?: boolean;
-  sourceFingerprintRequired?: boolean;
+    sourceFingerprintRequired?: boolean;
   }
 ): Promise<{ runId: number; status: string; created: boolean }> {
   const existing = await findActiveAutomationRun(sql, params.automationId);
@@ -721,7 +718,7 @@ async function createAutomationRunWithClient(
     agent_kind: normalizedAgentKind,
     source_fingerprint: params.sourceFingerprint,
     source_preflight_pending: params.sourcePreflightPending,
-  source_fingerprint_required: params.sourceFingerprintRequired,
+    source_fingerprint_required: params.sourceFingerprintRequired,
   };
   const idempotencyKey = [
     'automation',

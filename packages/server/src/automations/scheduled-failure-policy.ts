@@ -67,15 +67,15 @@ export async function recordScheduledExecutionFailure(
  * five-run circuit-breaker budget only creates duplicate terminal runs.
  */
 export async function recordScheduledConfigurationFailure(
-  sql: DbClient,
-  automationId: number | null | undefined,
-  dispatchSource: string | null | undefined,
+	sql: DbClient,
+	automationId: number | null | undefined,
+	dispatchSource: string | null | undefined,
 ): Promise<void> {
-  if (automationId == null || !isScheduledDispatch(dispatchSource)) {
-    return;
-  }
+	if (automationId == null || !isScheduledDispatch(dispatchSource)) {
+		return;
+	}
 
-  await sql`
+	await sql`
     UPDATE automations
     SET consecutive_scheduled_failures = consecutive_scheduled_failures + 1,
         schedule_auto_paused_at = COALESCE(

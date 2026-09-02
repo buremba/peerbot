@@ -63,18 +63,18 @@ describe("Automation run preflight", () => {
     expect(
       isPermanentAutomationAgentError(AgentErrorCode.WORKER_DIED)
     ).toBe(false);
-	expect(
-	  isPermanentAutomationAgentError(
-		undefined,
-		"Headless Automation requires interactive approval",
-	  ),
-	).toBe(true);
-		expect(
-			isPermanentAutomationAgentError(
-				undefined,
-				"No active tool approval was found, so check the agent configuration.",
-			),
-		).toBe(false);
+    expect(
+      isPermanentAutomationAgentError(
+        undefined,
+        "Headless Automation requires interactive approval",
+      ),
+    ).toBe(true);
+    expect(
+      isPermanentAutomationAgentError(
+        undefined,
+        "No active tool approval was found, so check the agent configuration.",
+      ),
+    ).toBe(false);
   });
 
   test("accepts exact and wildcard standing tool approvals", () => {
@@ -122,9 +122,9 @@ describe("Automation run preflight", () => {
       retryable: false,
       errorCode: AgentErrorCode.PROVIDER_AUTH,
     });
-	expect(unauthorized.ok ? "" : unauthorized.error).toContain(
-	  "shared organization credential or API key"
-	);
+    expect(unauthorized.ok ? "" : unauthorized.error).toContain(
+      "shared organization credential or API key"
+    );
   });
 
   test("rejects a deterministic headless approval wall", async () => {
@@ -132,9 +132,9 @@ describe("Automation run preflight", () => {
       ...base,
       preApprovedTools: [],
       providerCatalog: catalog(),
-	  grantStore: {
-		isExactDeniedStrict: async () => false,
-	  },
+      grantStore: {
+        isExactDeniedStrict: async () => false,
+      },
     });
     expect(result).toMatchObject({ ok: false, retryable: false });
     expect(result.ok ? "" : result.error).toContain("interactive approval");
@@ -149,7 +149,7 @@ describe("Automation run preflight", () => {
       preApprovedTools: [],
       providerCatalog: catalog(),
       grantStore: {
-		isExactDeniedStrict: async () => {
+        isExactDeniedStrict: async () => {
           throw new Error("database unavailable");
         },
       },
@@ -161,32 +161,32 @@ describe("Automation run preflight", () => {
     const result = await preflightAutomationRun({
       ...base,
       providerCatalog: catalog(),
-	  grantStore: {
-		isExactDeniedStrict: async () => false,
-	  },
+      grantStore: {
+        isExactDeniedStrict: async () => false,
+      },
     });
     expect(result).toEqual({ ok: true, model: "openai/gpt-5" });
   });
 
-	test("does not require run_sdk approval for event turn execution", async () => {
-		const result = await preflightAutomationRun({
-			...base,
-			completionRequired: false,
-			preApprovedTools: [],
-			providerCatalog: catalog(),
-		});
-		expect(result).toEqual({ ok: true, model: "openai/gpt-5" });
-	});
+  test("does not require run_sdk approval for event turn execution", async () => {
+    const result = await preflightAutomationRun({
+      ...base,
+      completionRequired: false,
+      preApprovedTools: [],
+      providerCatalog: catalog(),
+    });
+    expect(result).toEqual({ ok: true, model: "openai/gpt-5" });
+  });
 
-	test("an exact durable deny overrides a configured wildcard", async () => {
-	  const result = await preflightAutomationRun({
-		...base,
-		providerCatalog: catalog(),
-		grantStore: {
-		  isExactDeniedStrict: async () => true,
-		},
-	  });
-	  expect(result).toMatchObject({ ok: false, retryable: false });
-	  expect(result.ok ? "" : result.error).toContain("interactive approval");
-	});
+  test("an exact durable deny overrides a configured wildcard", async () => {
+    const result = await preflightAutomationRun({
+      ...base,
+      providerCatalog: catalog(),
+      grantStore: {
+        isExactDeniedStrict: async () => true,
+      },
+    });
+    expect(result).toMatchObject({ ok: false, retryable: false });
+    expect(result.ok ? "" : result.error).toContain("interactive approval");
+  });
 });

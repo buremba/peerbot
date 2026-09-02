@@ -127,23 +127,26 @@ export async function failClaimedWorkerRun(params: {
 }): Promise<boolean> {
   const sql = getDb();
   return sql.begin(async (tx) => {
-  const [state] = await tx<{ run_type: string }>`
-    SELECT run_type
-    FROM runs
-    WHERE id = ${params.runId}
-      AND status = 'running'
-      AND claimed_by = ${params.workerId}
-  `;
-  if (!state) return false;
-  if (state.run_type === 'automation' || state.run_type === 'automation_eval') {
-    return markAutomationRunFailedInTransaction(tx, {
-    runId: params.runId,
-    message: params.errorMessage,
-    claimedBy: params.workerId,
-    permanentConfigurationFailure:
-      params.permanentConfigurationFailure ?? false,
-    });
-  }
+    const [state] = await tx<{ run_type: string }>`
+      SELECT run_type
+      FROM runs
+      WHERE id = ${params.runId}
+        AND status = 'running'
+        AND claimed_by = ${params.workerId}
+    `;
+    if (!state) return false;
+    if (
+      state.run_type === 'automation' ||
+      state.run_type === 'automation_eval'
+    ) {
+      return markAutomationRunFailedInTransaction(tx, {
+        runId: params.runId,
+        message: params.errorMessage,
+        claimedBy: params.workerId,
+        permanentConfigurationFailure:
+          params.permanentConfigurationFailure ?? false,
+      });
+    }
     const rows = await tx<{
       organization_id: string;
       run_type: string;
@@ -843,13 +846,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND ${deviceWorkerId}::uuid IS NOT NULL
               AND r.approved_input ? 'device_worker_id'
               AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
-        -- Source readiness is server-owned. A device must never observe the
-        -- durable parent until fingerprinting/config validation has succeeded.
-        AND COALESCE(r.approved_input->>'source_preflight_pending', 'false') <> 'true'
-        AND COALESCE(
-          (r.approved_input->>'dispatch_retry_not_before')::timestamptz,
-          '-infinity'::timestamptz
-        ) <= current_timestamp
+              -- Source readiness is server-owned. A device must never observe
+              -- the durable parent until fingerprinting/config validation has
+              -- succeeded.
+              AND COALESCE(r.approved_input->>'source_preflight_pending', 'false') <> 'true'
+              AND COALESCE(
+                (r.approved_input->>'dispatch_retry_not_before')::timestamptz,
+                '-infinity'::timestamptz
+              ) <= current_timestamp
               AND (
                 'automations.execute' = ANY(${pgTextArray(authorizedCapabilities)}::text[])
                 OR ${effectivePlatform}::text = 'macos'
@@ -1451,7 +1455,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         runId: row.run_id,
         workerId: worker_id,
         errorMessage: message,
-    permanentConfigurationFailure: true,
+        permanentConfigurationFailure: true,
       });
       logger.error(
         { run_id: row.run_id, err },
@@ -1554,7 +1558,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               runId: row.run_id,
               workerId: worker_id,
               errorMessage: message,
-        permanentConfigurationFailure: true,
+              permanentConfigurationFailure: true,
             });
             logger.error(
               { run_id: row.run_id, automation_id: row.automation_id, agent_id: agentId, err },
@@ -1580,7 +1584,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             runId: row.run_id,
             workerId: worker_id,
             errorMessage: message,
-      permanentConfigurationFailure: true,
+            permanentConfigurationFailure: true,
           });
           return c.json({
             next_poll_seconds: 1,

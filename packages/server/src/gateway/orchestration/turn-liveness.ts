@@ -530,13 +530,9 @@ export async function failTurnIfPending(
   code: AgentErrorCode
 ): Promise<boolean> {
   const sql = getDb();
-  const emitted = await sql.begin(async (tx: DbClient) => {
-  return failTurnIfPendingInTransaction(tx, {
-    deploymentName,
-    messageId,
-    code,
-  });
-  });
+  const emitted = await sql.begin(async (tx: DbClient) =>
+    failTurnIfPendingInTransaction(tx, { deploymentName, messageId, code })
+  );
   if (emitted) await notifyThreadResponse();
   return emitted;
 }

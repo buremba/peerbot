@@ -1012,10 +1012,10 @@ export async function handleCompleteWindow(
     await persisted.deferred
       .queue(ctx, env, {
         automationReviewArtifact: true,
-    notifyExisting: {
-      runId: persisted.runId,
-      eventId: persisted.eventId,
-    },
+        notifyExisting: {
+          runId: persisted.runId,
+          eventId: persisted.eventId,
+        },
       })
       .catch((err) =>
         logger.error(

@@ -1211,12 +1211,12 @@ export function createAgentApi(config: AgentApiConfig): Hono {
         : {}),
       dryRun: effectiveDryRun,
       intent: automationIntent ?? undefined,
-    ...(automationVerification
-    ? {
-      executionMode: automationVerification.executionMode,
-      automationCompletionRequired:
-        automationVerification.completionRequired,
-      }
+      ...(automationVerification
+        ? {
+            executionMode: automationVerification.executionMode,
+            automationCompletionRequired:
+              automationVerification.completionRequired,
+          }
         : {}),
     };
     await sessMgr.setSession(session);
@@ -1750,7 +1750,7 @@ export function createAgentApi(config: AgentApiConfig): Hono {
           proxyBaseUrl: `${pubUrl.replace(/\/$/, "").replace(/\/lobu$/, "")}/api/proxy`,
           providerCatalog: providerCatalogService,
           grantStore,
-      completionRequired: session.automationCompletionRequired !== false,
+          completionRequired: session.automationCompletionRequired !== false,
         });
         if (!preflight.ok) {
           rootSpan?.end();

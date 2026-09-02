@@ -193,45 +193,47 @@ export async function markStaleRunsAsTimeout(
 	const stalePredicate = buildStaleRunWhereSql(spec);
 	const maxRows = spec.maxRows ?? 100;
 	if (!Number.isSafeInteger(maxRows) || maxRows < 1 || maxRows > 100) {
-		throw new Error("StaleRunSweepSpec.maxRows must be an integer from 1 to 100");
+		throw new Error(
+			"StaleRunSweepSpec.maxRows must be an integer from 1 to 100",
+		);
 	}
 	const result = await sql.unsafe(
 		`WITH automation_locks AS MATERIALIZED (
-		 SELECT a.id
-		 FROM automations a
-		 WHERE a.id IN (
-		   SELECT automation_id
-		   FROM runs
-		   WHERE ${stalePredicate}
-		     AND automation_id IS NOT NULL
-		   ORDER BY id ASC
-		   LIMIT ${maxRows}
-		 )
-		 ORDER BY a.id
-		 FOR UPDATE SKIP LOCKED
-	 ), stale AS MATERIALIZED (
+       SELECT a.id
+       FROM automations a
+       WHERE a.id IN (
+         SELECT automation_id
+         FROM runs
+         WHERE ${stalePredicate}
+           AND automation_id IS NOT NULL
+         ORDER BY id ASC
+         LIMIT ${maxRows}
+       )
+       ORDER BY a.id
+       FOR UPDATE SKIP LOCKED
+     ), stale AS MATERIALIZED (
        SELECT id,
               status AS previous_status,
               automation_id,
-			  organization_id,
+              organization_id,
               run_type,
               approved_input->>'dispatch_source' AS dispatch_source,
               CASE
                 WHEN ${hasHeartbeatSql(spec.heartbeatSemantics)} THEN $1
                 ELSE $2
               END AS timeout_error
-	   FROM runs
-	   WHERE ${stalePredicate}
-	     AND (
-	       runs.automation_id IS NULL
-	       OR NOT EXISTS (
-	         SELECT 1 FROM automations owner
-	         WHERE owner.id = runs.automation_id
-	       )
-	       OR runs.automation_id IN (SELECT id FROM automation_locks)
-	     )
-	   ORDER BY id ASC
-	   LIMIT ${maxRows}
+       FROM runs
+       WHERE ${stalePredicate}
+         AND (
+           runs.automation_id IS NULL
+           OR NOT EXISTS (
+             SELECT 1 FROM automations owner
+             WHERE owner.id = runs.automation_id
+           )
+           OR runs.automation_id IN (SELECT id FROM automation_locks)
+         )
+       ORDER BY id ASC
+       LIMIT ${maxRows}
        FOR UPDATE SKIP LOCKED
      )
      UPDATE runs AS r
@@ -242,7 +244,7 @@ export async function markStaleRunsAsTimeout(
      FROM stale
      WHERE r.id = stale.id
        AND r.status = stale.previous_status
-	 RETURNING r.id, r.automation_id, r.organization_id, r.run_type,
+     RETURNING r.id, r.automation_id, r.organization_id, r.run_type,
                stale.previous_status, stale.dispatch_source`,
 		[
 			spec.heartbeatErrorMessage,

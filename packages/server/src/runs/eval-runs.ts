@@ -167,7 +167,7 @@ export async function createEvalRun(
       ${row.automationId},
       'auto',
       'pending',
-	  ${sql.json(replayInput as never)},
+      ${sql.json(replayInput as never)},
       ${idempotencyKey},
       current_timestamp
     )

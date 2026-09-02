@@ -24,6 +24,8 @@ import {
   interpretSignUp,
   isAppleDouble,
   loginLink,
+  orphanSandboxNames,
+  parseWorktreeRoots,
   previewUrlFor,
   resolveOwnerEmail,
   sandboxName,
@@ -660,5 +662,62 @@ describe("credentialsFromConfig", () => {
     expect(credentialsFromConfig({})).toBeNull();
     expect(credentialsFromConfig({ profiles: [] })).toBeNull();
     expect(credentialsFromConfig(null)).toBeNull();
+  });
+});
+
+describe("parseWorktreeRoots", () => {
+  test("takes the path off every worktree line and ignores the rest", () => {
+    const porcelain = [
+      "worktree /Users/x/Code/lobu",
+      "HEAD abc",
+      "branch refs/heads/main",
+      "",
+      "worktree /Users/x/Code/lobu/.claude/worktrees/feature",
+      "HEAD def",
+      "branch refs/heads/feat/feature",
+      "",
+    ].join("\n");
+    expect(parseWorktreeRoots(porcelain)).toEqual([
+      "/Users/x/Code/lobu",
+      "/Users/x/Code/lobu/.claude/worktrees/feature",
+    ]);
+  });
+
+  test("a detached worktree still yields its path", () => {
+    expect(
+      parseWorktreeRoots("worktree /tmp/wt\nHEAD abc\ndetached\n")
+    ).toEqual(["/tmp/wt"]);
+  });
+
+  test("empty input is not an empty-string path", () => {
+    expect(parseWorktreeRoots("")).toEqual([]);
+  });
+});
+
+describe("orphanSandboxNames", () => {
+  const live = "/Users/x/Code/lobu/.claude/worktrees/live";
+  const gone = "/Users/x/Code/lobu/.claude/worktrees/gone";
+
+  test("a sandbox whose worktree still exists is not an orphan", () => {
+    expect(orphanSandboxNames([sandboxName(live)], [live])).toEqual([]);
+  });
+
+  test("a sandbox whose worktree is gone is an orphan", () => {
+    expect(
+      orphanSandboxNames([sandboxName(live), sandboxName(gone)], [live])
+    ).toEqual([sandboxName(gone)]);
+  });
+
+  test("only lobu-dev- names are judged; other lobu- sandboxes have no worktree to miss", () => {
+    expect(orphanSandboxNames(["lobu-opencode-test"], [])).toEqual([]);
+  });
+
+  test("same slug at a different path is a different sandbox, so it is an orphan", () => {
+    // sandboxName hashes the absolute path, not the basename: two worktrees
+    // named `gone` under different parents must not alias each other.
+    const elsewhere = "/Users/x/other/gone";
+    expect(orphanSandboxNames([sandboxName(gone)], [elsewhere])).toEqual([
+      sandboxName(gone),
+    ]);
   });
 });

@@ -158,6 +158,37 @@ gh pr merge "$PR" --squash --admin || exit $?
 
 merge_sha="$(gh pr view "$PR" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null)"
 echo "merged. squash commit: ${merge_sha:-unknown}"
+
+# Merging is the only event that retires a task worktree, and nothing is wired
+# to it: `task-clean` exists but only ever runs when someone types it, so a
+# merged branch leaves a multi-GB worktree and a Daytona sandbox that keeps
+# billing for disk against the org ceiling until the next `make sandbox` fails
+# on quota. Deliberately a hint and not an action — the worktree is often still
+# needed after the merge to verify the rollout, and this may be running from
+# inside the very directory it would remove.
+report_cleanup() {
+  local head worktree slug
+  head="$(gh pr view "$PR" --json headRefName --jq .headRefName 2>/dev/null)" || return 0
+  [ -n "$head" ] || return 0
+  worktree="$(git worktree list --porcelain \
+    | awk -v want="branch refs/heads/$head" \
+      '/^worktree /{path = substr($0, 10)} $0 == want {print path; exit}')"
+  [ -n "$worktree" ] || return 0
+  # task-clean.sh:44 resolves NAME to "$repo/.claude/worktrees/$NAME", so the
+  # command below is only actionable for a worktree that actually lives there.
+  # Landing from the main checkout or an ad-hoc worktree (~/Code/lobu-pr3173-exact)
+  # would otherwise print a command that exits "no worktree at ...".
+  case "$worktree" in
+    */.claude/worktrees/*) ;;
+    *) return 0 ;;
+  esac
+  slug="$(basename "$worktree")"
+  echo
+  echo "Cleanup: this merge does not retire the worktree or its dev sandbox."
+  echo "Once you no longer need it for verification:"
+  echo "  make task-clean NAME=$slug"
+}
+report_cleanup
 echo
 echo "Prod-visible? Gate rollout on the SQUASH commit, not your branch head:"
 echo "  git merge-base --is-ancestor ${merge_sha:-<sha>} \"\$DEPLOYED_SHA\""

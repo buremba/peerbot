@@ -18,8 +18,11 @@
  *   bun scripts/sandbox.ts sync   re-upload the tree without restarting the app
  *   bun scripts/sandbox.ts url    print the preview URL
  *   bun scripts/sandbox.ts stop   stop it (frees quota; disk and DB survive)
- *   bun scripts/sandbox.ts rm     delete it permanently
- *   bun scripts/sandbox.ts ls     every lobu sandbox + quota headroom
+ *   bun scripts/sandbox.ts rm     delete it permanently; `rm <name>` targets
+ *                                 another lobu- sandbox, which is the only way
+ *                                 to reclaim one whose worktree is already gone
+ *   bun scripts/sandbox.ts ls     every lobu sandbox + quota headroom, with the
+ *                                 ones that outlived their worktree flagged
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -116,6 +119,41 @@ export function sandboxName(root: string): string {
       .slice(0, 40) || "workspace";
   const pathHash = createHash("sha256").update(root).digest("hex").slice(0, 8);
   return `lobu-dev-${slug}-${pathHash}`;
+}
+
+/** Absolute worktree paths from `git worktree list --porcelain`. */
+export function parseWorktreeRoots(porcelain: string): string[] {
+  const marker = "worktree ";
+  return porcelain
+    .split("\n")
+    .filter((line) => line.startsWith(marker))
+    .map((line) => line.slice(marker.length).trim())
+    .filter(Boolean);
+}
+
+/**
+ * Sandboxes this tool created whose worktree no longer exists.
+ *
+ * `sandboxName` hashes the ABSOLUTE worktree path, so the set of live
+ * worktrees regenerates exactly the set of names that still have an owner —
+ * no network call and no PR lookup. Anything else under `lobu-dev-` outlived
+ * the directory it was derived from.
+ *
+ * That happens because `task-clean` deletes the sandbox BEFORE the worktree,
+ * so an interruption between the two steps (a killed run, a hand-removed
+ * directory) strands one — and once the path is gone the name cannot be
+ * re-derived, so nothing else will ever reclaim it. A stopped sandbox still
+ * bills for disk against the org ceiling, which is why this is worth surfacing
+ * rather than leaving to be noticed when the next `up` fails on quota.
+ *
+ * Only `lobu-dev-` names are judged: `ls` shows every `lobu-` sandbox, but the
+ * others were never derived from a worktree and so have no owner to be missing.
+ */
+export function orphanSandboxNames(names: string[], roots: string[]): string[] {
+  const owned = new Set(roots.map(sandboxName));
+  return names.filter(
+    (name) => name.startsWith("lobu-dev-") && !owned.has(name)
+  );
 }
 
 /**
@@ -906,28 +944,54 @@ async function main() {
   }
   const root = repoRoot();
   const name = sandboxName(root);
+  // `rm` takes an optional sandbox name so an ORPHAN can be removed at all:
+  // its worktree is gone, so there is no directory to run the bare form from
+  // and the name cannot be re-derived from a path that no longer exists.
+  // Guarded to the `lobu-` prefix `ls` prints, so a typo cannot reach an
+  // unrelated sandbox in the org.
+  const explicitTarget = cmd === "rm" ? process.argv[3] : undefined;
+  if (explicitTarget !== undefined && !explicitTarget.startsWith("lobu-")) {
+    console.error(
+      `refusing to remove '${explicitTarget}': not a lobu- sandbox (see: make sandbox-ls)`
+    );
+    process.exit(1);
+  }
+  const target = explicitTarget ?? name;
   const daytona = await client();
 
   if (cmd === "ls") {
     const all = await listAll(daytona);
     const { used, running } = memoryOfRunning(all);
+    const orphans = orphanSandboxNames(
+      all.map((s) => s.name),
+      parseWorktreeRoots(sh("git", ["worktree", "list", "--porcelain"], root))
+    );
     for (const s of all) {
       const n = s.name;
       if (!n.startsWith("lobu-")) continue;
-      console.log(`${n.padEnd(34)} ${stateOf(s).padEnd(10)} ${s.memory}GB`);
+      const tag = orphans.includes(n) ? "  orphan (no worktree)" : "";
+      console.log(
+        `${n.padEnd(34)} ${stateOf(s).padEnd(10)} ${s.memory}GB${tag}`
+      );
     }
     console.log(
       `\nrunning: ${used}GB / ${TOTAL_MEMORY_CAP_GB}GB cap (${running.length} started)`
     );
+    if (orphans.length > 0) {
+      console.log(
+        `\n${orphans.length} sandbox(es) outlived their worktree and still bill for disk:`
+      );
+      for (const n of orphans) console.log(`  bun scripts/sandbox.ts rm ${n}`);
+    }
     return;
   }
 
-  let sandbox = await findSandbox(daytona, name);
+  let sandbox = await findSandbox(daytona, target);
 
   if (cmd === "rm") {
-    if (!sandbox) return console.log(`no sandbox ${name}`);
+    if (!sandbox) return console.log(`no sandbox ${target}`);
     await sandbox.delete();
-    return console.log(`deleted ${name}`);
+    return console.log(`deleted ${target}`);
   }
   if (cmd === "stop") {
     if (!sandbox) return console.log(`no sandbox ${name}`);

@@ -18,8 +18,11 @@
  *   bun scripts/sandbox.ts sync   re-upload the tree without restarting the app
  *   bun scripts/sandbox.ts url    print the preview URL
  *   bun scripts/sandbox.ts stop   stop it (frees quota; disk and DB survive)
- *   bun scripts/sandbox.ts rm     delete it permanently
- *   bun scripts/sandbox.ts ls     every lobu sandbox + quota headroom
+ *   bun scripts/sandbox.ts rm     delete it permanently; `rm <name>` targets
+ *                                 another lobu- sandbox, which is the only way
+ *                                 to reclaim one whose worktree is already gone
+ *   bun scripts/sandbox.ts ls     every lobu sandbox + quota headroom, with the
+ *                                 ones that outlived their worktree flagged
  */
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";

@@ -174,6 +174,14 @@ report_cleanup() {
     | awk -v want="branch refs/heads/$head" \
       '/^worktree /{path = substr($0, 10)} $0 == want {print path; exit}')"
   [ -n "$worktree" ] || return 0
+  # task-clean.sh:44 resolves NAME to "$repo/.claude/worktrees/$NAME", so the
+  # command below is only actionable for a worktree that actually lives there.
+  # Landing from the main checkout or an ad-hoc worktree (~/Code/lobu-pr3173-exact)
+  # would otherwise print a command that exits "no worktree at ...".
+  case "$worktree" in
+    */.claude/worktrees/*) ;;
+    *) return 0 ;;
+  esac
   slug="$(basename "$worktree")"
   echo
   echo "Cleanup: this merge does not retire the worktree or its dev sandbox."

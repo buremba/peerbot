@@ -15,7 +15,10 @@ import {
 	approvalContext,
 } from "../utils/approval-context";
 import { insertEvent } from "../utils/insert-event";
-import { parentRunGate } from "../runs/parent-run-gate";
+import {
+	parentRunGate,
+	parentRunNoLongerActive,
+} from "../runs/parent-run-gate";
 import {
 	CURRENT_ASK_SCHEMA_VERSION,
 	validateAskInputSchema,
@@ -98,9 +101,7 @@ export async function queueAgentAsk(params: {
 			RETURNING id
 		`;
 		if (inserted.length === 0) {
-			throw new Error(
-				`Automation parent run ${params.ctx.actingRunId} is no longer active.`,
-			);
+			throw parentRunNoLongerActive(params.ctx.actingRunId ?? null);
 		}
 		const runId = Number((inserted[0] as { id: unknown }).id);
 

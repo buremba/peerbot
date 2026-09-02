@@ -48,7 +48,10 @@ import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { AUTOMATION_RUN_TYPES_PG } from "./run-types.js";
-import { parentRunGate } from "./parent-run-gate.js";
+import {
+  parentRunGate,
+  parentRunNoLongerActive,
+} from "./parent-run-gate.js";
 
 type AutomationDispatchSource = 'scheduled' | 'manual' | 'event';
 export type AutomationActivationTrigger =
@@ -1410,9 +1413,7 @@ export async function createConnectorOperationRun(params: {
     const prior = existing[0];
     if (!prior) {
       if (params.parentRunId != null) {
-        throw new Error(
-          `Automation parent run ${params.parentRunId} is no longer active.`,
-        );
+        throw parentRunNoLongerActive(params.parentRunId ?? null);
       }
       throw new Error('Concurrent action idempotency winner was not readable.');
     }

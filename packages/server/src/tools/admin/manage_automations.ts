@@ -86,7 +86,10 @@ import {
 } from './manage_automations/feedback';
 import { handleGetComponentReference } from './manage_automations/reference';
 import { handleList } from './manage_automations/list';
-import { parentRunGate } from "../../runs/parent-run-gate";
+import {
+  parentRunGate,
+  parentRunNoLongerActive,
+} from "../../runs/parent-run-gate";
 
 export {
   ListAutomationsResultSchema,
@@ -747,7 +750,7 @@ async function queueAutomationWriteForApproval(
       RETURNING id
     `;
     if (inserted.length === 0) {
-      throw new Error(`Automation parent run ${ctx.actingRunId} is no longer active.`);
+      throw parentRunNoLongerActive(ctx.actingRunId ?? null);
     }
     const runId = Number((inserted[0] as { id: unknown }).id);
 

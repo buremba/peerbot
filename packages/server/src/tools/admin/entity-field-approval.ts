@@ -75,8 +75,11 @@ import {
 import { resolveRunInitiator, runPermalinkResource } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
-import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses';
-import { parentRunGate } from "../../runs/parent-run-gate";
+import {
+	parentRunGate,
+	parentRunNoLongerActive,
+	selectEligibleParent,
+} from "../../runs/parent-run-gate";
 import { AUTOMATION_RUN_TYPES_PG } from "../../runs/run-types";
 
 interface EntityApprovalQueueOptions {
@@ -988,26 +991,23 @@ export async function proposeEntityChange(
 		// idempotency lock. complete_window already owns this row FOR UPDATE; using
 		// the same order here prevents parent<->advisory lock cycles with ordinary
 		// proposal creation.
+		// A fresh description per use: a fragment is consumed by the query it is
+		// nested into, so the pre-check and the INSERT each build their own.
+		const gate = () => ({
+			parentRunId,
+			organizationId: ctx.organizationId,
+			// A review artifact is filed against the completed run it reviews, so
+			// that one Automation parent stays eligible past terminalization.
+			alsoEligible: tx`OR (
+			  ${options?.automationReviewArtifact === true}
+			  AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+			  AND status = 'completed'
+			  AND automation_id = ${proposal.automation_id ?? null}
+			)`,
+		});
 		if (parentRunId != null) {
-			const parent = await tx`
-				SELECT id
-				FROM runs
-				WHERE id = ${parentRunId}
-				  AND organization_id = ${ctx.organizationId}
-				  AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-				  AND (
-				    status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-				    OR (
-				      ${options?.automationReviewArtifact === true}
-				      AND status = 'completed'
-				      AND automation_id = ${proposal.automation_id ?? null}
-				    )
-				  )
-				FOR SHARE
-			`;
-			if (parent.length === 0) {
-				throw new Error(`Automation parent run ${parentRunId} is no longer active.`);
-			}
+			const parent = await selectEligibleParent(tx, gate());
+			if (parent.length === 0) throw parentRunNoLongerActive(parentRunId);
 		}
 		await tx`SELECT pg_advisory_xact_lock(hashtextextended(${idempotencyKey}, 0))`;
 		const existing = await findExisting(tx);
@@ -1016,18 +1016,7 @@ export async function proposeEntityChange(
 		}
 
 		const inserted = await tx<{ id: number }>`
-			${parentRunGate(tx, {
-				parentRunId: parentRunId,
-				organizationId: ctx.organizationId,
-				// A review artifact is filed against the completed run it reviews,
-				// so that one Automation parent stays eligible past terminalization.
-				alsoEligible: tx`OR (
-				  ${options?.automationReviewArtifact === true}
-				  AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-				  AND status = 'completed'
-				  AND automation_id = ${proposal.automation_id ?? null}
-				)`,
-			})}
+			${parentRunGate(tx, gate())}
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input, parent_run_id,
 				automation_id, created_by_user_id, initiator_kind, initiator_ref,
@@ -1053,9 +1042,7 @@ export async function proposeEntityChange(
 			const winner = await findExisting(tx);
 			if (winner.length === 0) {
 				if (parentRunId != null) {
-					throw new Error(
-						`Automation parent run ${parentRunId} is no longer active.`,
-					);
+					throw parentRunNoLongerActive(parentRunId);
 				}
 				throw new Error("Entity change idempotency conflict has no active run");
 			}

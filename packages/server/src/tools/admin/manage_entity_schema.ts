@@ -88,7 +88,10 @@ import { withValidatedArgs } from '../validate-args';
 import { getOrgUrlContext } from '../view-urls';
 import { resolveApprovalChatOrigin } from './approval-delivery';
 import { defineFlatActionTool, flatAction } from './action-tool';
-import { parentRunGate } from "../../runs/parent-run-gate";
+import {
+  parentRunGate,
+  parentRunNoLongerActive,
+} from "../../runs/parent-run-gate";
 
 export { ManageEntitySchemaResultSchema, ManageEntitySchemaSchema };
 
@@ -775,7 +778,7 @@ async function governEntitySchemaMutation(
       RETURNING id
     `;
     if (inserted.length === 0) {
-      throw new Error(`Automation parent run ${ctx.actingRunId} is no longer active.`);
+      throw parentRunNoLongerActive(ctx.actingRunId ?? null);
     }
     const runId = Number((inserted[0] as { id: unknown }).id);
     const event = await insertEvent(

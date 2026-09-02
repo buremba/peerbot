@@ -38,6 +38,22 @@ interface GatewayCompletionRequest {
   /** Defaults to 0 — these callers all want deterministic, parseable output. */
   temperature?: number;
   timeoutMs: number;
+  /**
+   * Output ceiling. Omitted by default so existing callers keep the provider's
+   * own default; every caller here wants a short strict-JSON reply, so passing
+   * one is a cheap backstop against a model that starts narrating.
+   */
+  maxTokens?: number;
+  /**
+   * Retry budget for transient failures. Defaults to 2, which is what every
+   * fail-OPEN enrichment caller wants: a retry costs latency they can afford
+   * and a miss costs a feature.
+   *
+   * A fail-CLOSED caller passes 0. For those, the circuit breaker is the retry
+   * policy — retrying inside one judge call burns the shared deadline and
+   * delays the fail-closed deny without changing its outcome.
+   */
+  maxRetries?: number;
 }
 
 interface ChatCompletionResponse {
@@ -166,6 +182,21 @@ export async function resolveCompletionTarget(
 }
 
 /**
+ * The caller's own `timeoutMs` budget elapsed and the request was aborted.
+ * Distinct from an upstream failure: nothing is known about the provider's
+ * health, so a caller that alerts on provider errors should not count this.
+ */
+export class GatewayCompletionTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Gateway completion exceeded ${timeoutMs}ms`);
+    this.name = "GatewayCompletionTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
  * An upstream HTTP failure that carries its status so the retry policy can
  * distinguish retryable from terminal responses.
  */
@@ -209,6 +240,9 @@ async function callCompletionOnce(
     body: JSON.stringify({
       model: target.model,
       temperature: request.temperature ?? 0,
+      ...(request.maxTokens !== undefined
+        ? { max_tokens: request.maxTokens }
+        : {}),
       messages: [
         { role: "system", content: request.systemPrompt },
         { role: "user", content: request.userPrompt },
@@ -251,7 +285,7 @@ export async function gatewayCompletion(
         // Two retries add at most <1.2s of backoff (200ms + 400ms, each with
         // a multiplier in [1, 2)). Refuse a retry unless even its maximum
         // upcoming delay fits inside the caller's shared deadline.
-        maxRetries: 2,
+        maxRetries: request.maxRetries ?? 2,
         baseDelay,
         jitter: "full",
         shouldRetry: (error, attempt) => {
@@ -267,6 +301,13 @@ export async function gatewayCompletion(
       }
     );
   } catch (error) {
+    // The AbortController fired, so this is the caller's own deadline, not an
+    // upstream fault. Say so with a type: a fail-closed caller logs "timed out"
+    // rather than the misleading "call failed", and can tell a blown budget
+    // apart from a provider error when deciding what to alert on.
+    if (controller.signal.aborted) {
+      throw new GatewayCompletionTimeoutError(request.timeoutMs);
+    }
     if (error instanceof Error) throw error;
     throw new Error(getErrorMessage(error));
   } finally {

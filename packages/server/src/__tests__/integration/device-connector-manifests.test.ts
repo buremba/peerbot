@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
 import { parsePgTextArray } from '../../db/client';
+import { isChromeNamespaceConnectorKey } from '../../utils/connector-execution-placement';
 import { reconcileDeviceCapabilities } from '../../worker-api/device-reconcile';
 import { TestApiClient } from '../setup/test-mcp-client';
 import {
@@ -105,7 +106,18 @@ function chromeConnectorManifest(overrides: Record<string, unknown> = {}) {
     runtime: { platforms: ['chrome-extension'] },
     auth_schema: { methods: [{ type: 'none' }] },
     feeds_schema: {
-      messages: { key: 'messages', name: 'Messages', operations: ['sync', 'read'] },
+      messages: {
+        key: 'messages',
+        name: 'Messages',
+        operations: ['sync', 'read'],
+        eventKinds: {
+          message: {
+            attributions: [
+              { role: 'authored_by', autoCreate: true, target: { entityType: 'person' } },
+            ],
+          },
+        },
+      },
     },
     ...overrides,
   };
@@ -294,7 +306,7 @@ async function insertPendingManifestRun(params: {
       connector_version, approval_status, status, created_at
     ) VALUES (
       ${params.orgId}, 'sync', ${params.feedId}, ${params.connectionId},
-      CHROME_MANIFEST_KEY, ${params.version}, 'auto', 'pending', NOW()
+      ${CHROME_MANIFEST_KEY}, ${params.version}, 'auto', 'pending', NOW()
     )
     RETURNING id
   `) as unknown as Array<{ id: number }>;
@@ -795,7 +807,7 @@ describe('device connector manifests', () => {
           compiled_code_hash = ${deviceManifestHash(chromeManifest as DeviceConnectorManifest)},
           compile_config_hash = ${COMPILE_CONFIG_HASH},
           source_code = 'export const stale = true',
-          source_path = 'device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0'
+          source_path = ${`device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0`}
       WHERE organization_id = ${orgId}
         AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '2.0.0'
@@ -835,7 +847,7 @@ describe('device connector manifests', () => {
       compiled_code_hash: deviceManifestHash(chromeManifest as DeviceConnectorManifest),
       compile_config_hash: null,
       source_code: null,
-      source_path: 'device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0',
+      source_path: `device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0`,
     });
   });
 
@@ -852,7 +864,7 @@ describe('device connector manifests', () => {
 
     await sql`
       UPDATE connector_versions
-      SET source_path = 'device-manifest://macos/${CHROME_MANIFEST_KEY}@2.0.0'
+      SET source_path = ${`device-manifest://macos/${CHROME_MANIFEST_KEY}@2.0.0`}
       WHERE organization_id = ${orgId}
         AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '2.0.0'
@@ -878,7 +890,7 @@ describe('device connector manifests', () => {
         AND version = '2.0.0'
     `) as unknown as Array<{ source_path: string | null }>;
     expect(artifact.source_path).toBe(
-      'device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0',
+      `device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0`,
     );
   });
 
@@ -1801,7 +1813,7 @@ describe('device connector manifests', () => {
         organization_id, run_type, feed_id, connection_id, connector_key,
         connector_version, approval_status, status, created_at
       ) VALUES (
-        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, CHROME_MANIFEST_KEY,
+        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, ${CHROME_MANIFEST_KEY},
         '2.0.0', 'auto', 'pending', NOW()
       )
       RETURNING id
@@ -1895,7 +1907,7 @@ describe('device connector manifests', () => {
         organization_id, run_type, feed_id, connection_id, connector_key,
         connector_version, approval_status, status, created_at
       ) VALUES (
-        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, CHROME_MANIFEST_KEY,
+        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, ${CHROME_MANIFEST_KEY},
         '1.0.0', 'auto', 'pending', NOW()
       )
       RETURNING id
@@ -2097,7 +2109,7 @@ describe('device connector manifests', () => {
     });
     await sql`
       UPDATE connector_definitions SET name = 'stale metadata'
-      WHERE organization_id = ${orgId} AND key = CHROME_MANIFEST_KEY AND status = 'active'
+      WHERE organization_id = ${orgId} AND key = ${CHROME_MANIFEST_KEY} AND status = 'active'
     `;
 
     const triggerSuffix = generateSecureToken(6).replace(/[^a-zA-Z0-9]/g, '');
@@ -2107,7 +2119,7 @@ describe('device connector manifests', () => {
       CREATE OR REPLACE FUNCTION ${triggerFunction}()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
-        IF NEW.key = CHROME_MANIFEST_KEY THEN
+        IF NEW.key = '${CHROME_MANIFEST_KEY}' THEN
           RAISE EXCEPTION 'forced manifest reconciliation failure';
         END IF;
         RETURN NEW;
@@ -2137,6 +2149,36 @@ describe('device connector manifests', () => {
       );
       await sql.unsafe(`DROP FUNCTION IF EXISTS ${triggerFunction}()`);
     }
+  });
+
+  it('installs declared event-kind attributions from a manifest feeds_schema', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
+    const manifest = chromeConnectorManifest();
+
+    const res = await poll(workerId, [manifest], 'chrome-extension', {
+      [CHROME_MANIFEST_CAPABILITY]: true,
+    });
+    expect(res.status).toBe(200);
+
+    const definitionRow = await readDefinition(orgId, CHROME_MANIFEST_KEY);
+    const feedsSchema = definitionRow?.feeds_schema as
+      | {
+          messages?: {
+            eventKinds?: {
+              message?: { entityLinks?: unknown; attributions?: unknown };
+            };
+          };
+        }
+      | undefined;
+    const messageKind = feedsSchema?.messages?.eventKinds?.message;
+    expect(messageKind?.entityLinks).toBeUndefined();
+    expect(messageKind?.attributions).toEqual([
+      expect.objectContaining({
+        role: 'authored_by',
+        autoCreate: true,
+        target: expect.objectContaining({ entityType: 'person' }),
+      }),
+    ]);
   });
 
   itWithOwlettoManifests('mac')('accepts the actual Owletto Mac manifests and installs their connector definitions', async () => {
@@ -2170,26 +2212,15 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId, 'chrome')).not.toBeNull();
     expect(await readDefinition(orgId, 'chrome.history')).not.toBeNull();
     expect(await readDefinition(orgId, 'chrome.bookmarks')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.downloads')).not.toBeNull();
     expect(await readDefinition(orgId, 'apple.screen_time')).toBeNull();
 
-    const definitionRow = await readDefinition(orgId, CHROME_MANIFEST_KEY);
-    const feedsSchema = definitionRow?.feeds_schema as
-      | {
-          messages?: {
-            eventKinds?: {
-              message?: { entityLinks?: unknown; attributions?: unknown };
-            };
-          };
-        }
-      | undefined;
-    const messageKind = feedsSchema?.messages?.eventKinds?.message;
-    expect(messageKind?.entityLinks).toBeUndefined();
-    expect(messageKind?.attributions).toEqual([
-      expect.objectContaining({
-        role: 'authored_by',
-        autoCreate: true,
-        target: expect.objectContaining({ entityType: 'person' }),
-      }),
-    ]);
+    // The extension ships manifests only for the connectors it implements
+    // itself, all of which live in the reserved namespace. Anything the
+    // extension merely drives the page for is an ordinary connector that ships
+    // its own code, so it has no manifest here.
+    for (const manifest of manifests) {
+      expect(isChromeNamespaceConnectorKey(String(manifest.key))).toBe(true);
+    }
   });
 });

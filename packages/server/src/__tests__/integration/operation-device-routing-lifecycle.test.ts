@@ -487,21 +487,33 @@ describe("connection-to-device operation routing lifecycle", () => {
 			UPDATE connections SET device_worker_id = NULL
 			WHERE id = ${compiledDemoConnection.id}
 		`;
+		// Dropping the pin drops the only reason to run inline. Affinity is a fact
+		// about the pinned device, not about the connector, so once the pin is gone
+		// the connector's own `chrome-extension` runtime is authoritative and the
+		// action queues for a Chrome device instead of resolving inline. Nothing
+		// advertises one here, so an already-aborted caller observes the timeout.
+		const unpinnedCompiledDemoKey = "device-routing:compiled-demo-unpinned";
+		const unpinnedAbort = new AbortController();
+		unpinnedAbort.abort();
 		const unpinnedCompiledDemoResult = await manageOperations(
 			{
 				action: "execute",
 				connection_id: compiledDemoConnection.id,
 				operation_key: ACTION_KEY,
 				input: { value: "compiled-demo-unpinned" },
-				idempotency_key: "device-routing:compiled-demo-unpinned",
+				idempotency_key: unpinnedCompiledDemoKey,
 			},
 			{} as Env,
-			ctx,
+			{ ...ctx, abortSignal: unpinnedAbort.signal },
 		);
-		expect(unpinnedCompiledDemoResult).toMatchObject({
-			status: "completed",
-			output: { inline: true, value: "compiled-demo-unpinned" },
-		});
+		expect(unpinnedCompiledDemoResult).toMatchObject({ status: "timeout" });
+		const [unpinnedCompiledDemoRun] = (await sql`
+			SELECT status, claimed_by
+			FROM runs
+			WHERE connection_id = ${compiledDemoConnection.id}
+			  AND action_idempotency_key = ${unpinnedCompiledDemoKey}
+		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
+		expect(unpinnedCompiledDemoRun).toEqual({ status: "timeout", claimed_by: null });
 
 		// The same key becomes device-native when the selected artifact is
 		// metadata-only. With no physical pin, its runtime still queues the action

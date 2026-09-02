@@ -1,20 +1,130 @@
 name: Release Please
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["Build and Push Images"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      image_run_id:
+        description: "Exact successful main Build and Push Images run"
+        required: true
+        type: string
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  actions: read
+
+env:
+  REQUIRED_IMAGE_JOBS: generate-tag connector-parity-smoke build-worker build-embeddings-service build-app app-image-smoke
 
 jobs:
-  release-please:
+  attest:
+    name: Attest main image and CI runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # `types: [completed]` also fires for failure and cancellation, and
+    # `branches: [main]` admits a manual Build Images dispatch as readily as a
+    # push. Both would start this job and then hard-fail the API checks below,
+    # so screen them out here. The producer's conclusion and event are re-read
+    # from the API regardless: this is noise control, not the gate.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
+    outputs:
+      sha: ${{ steps.producer.outputs.sha }}
+    steps:
+      # Deliberately before any checkout: no repository code runs until the
+      # producing run is known to be a completed-success push to the current
+      # main tip.
+      - name: Attest the producing Build Images run
+        id: producer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          EVENT_IMAGE_RUN_ID: ${{ github.event.workflow_run.id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            [ "$GITHUB_REF" = "refs/heads/main" ] || { echo "::error::workflow dispatch must target main"; exit 1; }
+            current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+            [ "$GITHUB_SHA" = "$current_sha" ] || { echo "::error::workflow dispatch SHA is not live main"; exit 1; }
+          fi
+          image_run_id="${INPUT_IMAGE_RUN_ID:-${EVENT_IMAGE_RUN_ID:-}}"
+          [ -n "$image_run_id" ] || { echo "::error::image_run_id is required"; exit 1; }
+
+          build_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/build-images.yml" --jq '.id')
+          build_run=$(gh api "repos/${REPOSITORY}/actions/runs/${image_run_id}")
+          workflow_id=$(jq -r '.workflow_id' <<<"$build_run")
+          sha=$(jq -r '.head_sha' <<<"$build_run")
+          head_repo=$(jq -r '.head_repository.full_name // empty' <<<"$build_run")
+          event=$(jq -r '.event' <<<"$build_run")
+          branch=$(jq -r '.head_branch // empty' <<<"$build_run")
+          status=$(jq -r '.status' <<<"$build_run")
+          conclusion=$(jq -r '.conclusion // empty' <<<"$build_run")
+          [ "$workflow_id" = "$build_workflow_id" ] || { echo "::error::wrong Build Images workflow"; exit 1; }
+          [ "$head_repo" = "$REPOSITORY" ] || { echo "::error::Build Images run repository mismatch"; exit 1; }
+          [ "$event" = push ] && [ "$branch" = main ] || { echo "::error::Build Images run must be a main push"; exit 1; }
+          [ "$status" = completed ] && [ "$conclusion" = success ] || { echo "::error::Build Images run is not completed-success"; exit 1; }
+
+          current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [ "$current_sha" = "$sha" ] || { echo "::error::main moved while attesting Build Images"; exit 1; }
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "image_run_id=$image_run_id" >> "$GITHUB_OUTPUT"
+
+      # Pinned to the SHA the step above proved is the current main tip, so the
+      # policy helper cannot come from a ref that moved mid-run.
+      - name: Check out the attested commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.producer.outputs.sha }}
+          fetch-depth: 2
+
+      - name: Attest required image jobs and the exact CI run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ATTESTED_SHA: ${{ steps.producer.outputs.sha }}
+          IMAGE_RUN_ID: ${{ steps.producer.outputs.image_run_id }}
+        run: |
+          set -euo pipefail
+          jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}/jobs?filter=all&per_page=100")
+          jq -n --argjson pages "$jobs" --arg required "$REQUIRED_IMAGE_JOBS" \
+            '{pages: $pages, required: ($required | split(" "))}' \
+            | node scripts/release-provenance.mjs attest-jobs >/dev/null
+
+          ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id' | tr -d '\n')
+          ci_run_id=""
+          for _ in $(seq 1 20); do
+            current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+            [ "$current_sha" = "$ATTESTED_SHA" ] || { echo "::error::main moved while waiting for exact CI"; exit 1; }
+            ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${ATTESTED_SHA}&event=push&branch=main&status=completed&per_page=100")
+            selection=$(jq -n --argjson body "$ci_runs" --argjson workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$ATTESTED_SHA" \
+              '{runs: [$body.workflow_runs[] | . + {repo: .repository.full_name}],
+                expected: {workflow_id: $workflow_id, repo: $repo, event: "push", head_branch: "main", head_sha: $sha, status: "completed", conclusion: "success"}}' \
+              | node scripts/release-provenance.mjs select-run) || selection=""
+            if [ -n "$selection" ]; then
+              ci_run_id=$(jq -r '.id' <<<"$selection")
+              break
+            fi
+            sleep 20
+          done
+          [ -n "$ci_run_id" ] || { echo "::error::exact successful CI push/main run was not observed within the bounded wait"; exit 1; }
+          echo "attested CI run for ${ATTESTED_SHA}: ${ci_run_id}"
+
+  release-please-write:
+    name: Create release from attested main
+    needs: attest
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: production
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       # Releases created with GITHUB_TOKEN do not trigger release-event
       # workflows, including build-images and mac-release.
@@ -22,21 +132,105 @@ jobs:
         env:
           RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         run: |
-          if [ -z "$RELEASE_PLEASE_TOKEN" ]; then
-            echo "::error::RELEASE_PLEASE_TOKEN is required so release-event workflows can run."
-            exit 1
-          fi
+          set -euo pipefail
+          [ -n "$RELEASE_PLEASE_TOKEN" ] || { echo "::error::RELEASE_PLEASE_TOKEN is required"; exit 1; }
 
-      - uses: googleapis/release-please-action@v5
+      - name: Checkout attested commit for immutable release helper
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.attest.outputs.sha }}
+          fetch-depth: 2
+
+      - name: Recheck current main immediately before release action
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [ "$current_sha" = "$ATTESTED_SHA" ] || { echo "::error::main advanced after attestation"; exit 1; }
+
+      - name: Run Release Please against main
+        uses: googleapis/release-please-action@v5
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           include-component-in-tag: true
+          target-branch: main
+          skip-github-release: true
 
-  # build-images.yml triggers publish-packages.yml only after the release's
-  # exact app image has been built and boot-smoked. Keeping that dependency at
-  # the artifact chokepoint prevents release creation from racing image CI.
+      # release-please only opens the version-bump PR; the release itself is
+      # created here so it is bound to the exact commit that was attested
+      # above, rather than to whatever the action considered HEAD.
+      # Split so the binding check can be the shared composite action rather
+      # than a third copy of the same tag-peeling shell. Creation is
+      # idempotent and verification runs once at the end, which covers the
+      # already-exists case and the just-created case with one assertion
+      # instead of two call sites that could drift apart.
+      - name: Decide whether this attested commit is a release
+        id: bump
+        env:
+          ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
+        run: |
+          set -euo pipefail
+          read_version() { git show "$1:package.json" | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).version'; }
+          current_version=$(read_version "$ATTESTED_SHA")
+          parent_version=$(read_version "$(git rev-parse "${ATTESTED_SHA}^1")")
+          bump=$(jq -n --arg current "$current_version" --arg parent "$parent_version" \
+            '{current: $current, parent: $parent}' \
+            | node scripts/release-provenance.mjs manifest-bump)
+          if [ "$(jq -r '.bumped' <<<"$bump")" != true ]; then
+            echo "No release-version manifest bump at attested SHA; release PR only."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "version=$current_version" >> "$GITHUB_OUTPUT"
+          jq -n --arg version "$current_version" '{version: $version}' \
+            | node scripts/release-provenance.mjs release-tag | jq -r '"tag=" + .tag' >> "$GITHUB_OUTPUT"
 
-  # mac-release.yml now auto-fires on `release: types: [published]` directly,
-  # so this job is no longer needed — see mac-release.yml's `on:` block.
+      - name: Create the tag and release if they are not already there
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ steps.bump.outputs.tag }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          releases=$(gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100")
+          jq -n --argjson pages "$releases" --arg current "$VERSION" \
+            '{current: $current, versions: [$pages[][] | select(.prerelease | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
+            | node scripts/release-provenance.mjs assert-newer >/dev/null
+
+          if gh api "repos/${REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; the verification below still has to pass."
+            exit 0
+          fi
+
+          # This version's changelog entry, not the head of the whole file:
+          # CHANGELOG.md is ~475KB and newest-first, so a plain truncation puts
+          # several past releases in every release body.
+          changelog=$(git show "$ATTESTED_SHA:CHANGELOG.md" || echo "")
+          notes=$(jq -n --arg changelog "$changelog" --arg version "$VERSION" \
+            '{changelog: $changelog, version: $version}' \
+            | node scripts/release-provenance.mjs release-notes | jq -r '.notes')
+          notes=${notes:0:60000}
+          if ! gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            gh api --method POST "repos/${REPOSITORY}/git/refs" \
+              --input <(jq -n --arg ref "refs/tags/$TAG" --arg sha "$ATTESTED_SHA" '{ref: $ref, sha: $sha}') >/dev/null
+          fi
+          gh api --method POST "repos/${REPOSITORY}/releases" \
+            --input <(jq -n --arg tag "$TAG" --arg sha "$ATTESTED_SHA" --arg body "$notes" \
+              '{tag_name: $tag, target_commitish: $sha, name: $tag, body: $body, draft: false, prerelease: false, make_latest: "true"}') >/dev/null
+
+      - name: Verify the release binds to the attested commit
+        if: steps.bump.outputs.bumped == 'true'
+        uses: ./.github/actions/verify-release
+        with:
+          tag: ${{ steps.bump.outputs.tag }}
+          expected-sha: ${{ needs.attest.outputs.sha }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}

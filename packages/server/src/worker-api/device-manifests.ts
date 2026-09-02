@@ -592,7 +592,6 @@ function connectorKeyAllowedForPlatform(platform: string, key: string): boolean 
     return (
       key.startsWith('apple.') ||
       key === 'local.directory' ||
-      key === 'whatsapp.local' ||
       key === 'os.shell'
     );
   }

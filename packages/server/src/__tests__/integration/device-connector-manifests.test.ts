@@ -2181,6 +2181,29 @@ describe('device connector manifests', () => {
     ]);
   });
 
+  it('refuses a macos manifest for a key outside the Mac allowlist', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('macos');
+    // `local_directory` is an allowed macOS capability, so the capability check
+    // admits this manifest and the KEY allowlist is the only thing that can
+    // reject it. Without that, a retired key could still install itself.
+    const manifest = {
+      key: 'whatsapp.local',
+      version: '1.0.0',
+      name: 'Retired native WhatsApp',
+      description: 'A key the Mac app no longer implements',
+      required_capability: 'local_directory',
+      runtime: { platforms: ['macos'] },
+      auth_schema: { methods: [{ type: 'none' }] },
+      feeds_schema: {
+        messages: { key: 'messages', name: 'Messages', operations: ['sync'] },
+      },
+    };
+
+    const res = await poll(workerId, [manifest], 'macos', { local_directory: true });
+    expect(res.status).toBe(200);
+    expect(await readDefinition(orgId, 'whatsapp.local')).toBeNull();
+  });
+
   itWithOwlettoManifests('mac')('accepts the actual Owletto Mac manifests and installs their connector definitions', async () => {
     const { orgId, workerId } = await seedDeviceOwner('macos');
     const manifests = loadOwlettoManifests('mac');

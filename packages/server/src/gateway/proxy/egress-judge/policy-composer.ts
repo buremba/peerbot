@@ -27,13 +27,6 @@ export function buildSystemPrompt(): string {
 }
 
 /**
- * Assemble the user-facing message: the composed policy followed by a
- * structured summary of the request.
- *
- * We deliberately only include the fields the proxy has — `method` and
- * `path` are absent for HTTPS CONNECT and the judge must handle that.
- */
-/**
  * Longest untrusted field we will show the judge. A hostname or path beyond
  * this is already pathological, and an unbounded one lets a caller pad the
  * prompt until the policy scrolls out of the model's attention.
@@ -65,6 +58,13 @@ function sanitizeForPrompt(value: string): string {
     .replace(/[\r\n]+/g, " ");
 }
 
+/**
+ * Assemble the user-facing message: the composed policy followed by a
+ * structured summary of the request.
+ *
+ * We deliberately only include the fields the proxy has — `method` and
+ * `path` are absent for HTTPS CONNECT and the judge must handle that.
+ */
 export function buildUserPrompt(args: {
   policy: string;
   request: JudgeRequest;

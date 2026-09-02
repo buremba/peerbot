@@ -18,10 +18,10 @@
 // Refuse to boot under an unsupported Node major (isolated-vm gate). The module
 // asserts on load, so this side-effect import MUST be first.
 import "./utils/assert-node-version";
-import { checkConfiguredJudgeModel } from "./gateway/inference/system-judge-target";
 
 // Sentry must init before any other imports for auto-instrumentation.
 import "./instrument";
+import { checkConfiguredJudgeModel } from "./gateway/inference/system-judge-target";
 
 import dotenv from "dotenv";
 

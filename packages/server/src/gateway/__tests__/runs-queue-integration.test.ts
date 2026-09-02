@@ -17,7 +17,10 @@ import {
   expect,
   test,
 } from "bun:test";
-import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
+import {
+  RunsQueue,
+  sweepCompletedRuns,
+} from "../infrastructure/queue/runs-queue.js";
 import { getDb } from "../../db/client.js";
 import {
   ensureDbForGatewayTests,
@@ -401,6 +404,51 @@ describe("RunsQueue — graceful shutdown", () => {
     if (status === "pending") {
       expect(rows[0]?.claimed_by).toBeNull();
     }
+  });
+});
+
+describe("sweepCompletedRuns — expired Automation children", () => {
+  test("terminalizes a linked child whose organization scope is missing", async () => {
+    const sql = getDb();
+    // The expiry DELETE deliberately spares parent-linked chat_message rows so
+    // the sweep can fail them and resolve the parent instead. A child with no
+    // organization_id cannot be resolved that way, so if the sweep merely
+    // skipped it the row would stay `pending` with a past expires_at forever --
+    // and the candidate window is `ORDER BY expires_at ASC LIMIT 100`, so
+    // enough of them would crowd out every child that CAN be resolved.
+    // `runs_legacy_org_required` demands an org for run_type 'automation' but
+    // NOT for 'chat_message' — which is exactly why the org-less child below is
+    // reachable and has to be handled rather than skipped.
+    const orgId = await seedAgentRow("sweep-orphan-agent", {
+      organizationId: "sweep-orphan-org",
+    });
+    const [parent] = await sql<{ id: number }>`
+      INSERT INTO runs (run_type, queue_name, action_input, status, run_at, organization_id)
+      VALUES ('automation', 'automation', '{}'::jsonb, 'running', now(), ${orgId})
+      RETURNING id
+    `;
+    const [orphan] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        run_type, queue_name, action_input, status, run_at,
+        expires_at, parent_run_id, organization_id
+      )
+      VALUES (
+        'chat_message', 'messages', '{}'::jsonb, 'pending', now() - interval '1 hour',
+        now() - interval '1 hour', ${Number(parent.id)}, NULL
+      )
+      RETURNING id
+    `;
+
+    await sweepCompletedRuns();
+
+    const [after] = await sql<{ status: string; error_message: string | null }>`
+      SELECT status, error_message FROM runs WHERE id = ${Number(orphan.id)}
+    `;
+    // Whatever it becomes, it must not still be a pending row the sweep will
+    // reconsider on every tick.
+    expect(after.status).not.toBe("pending");
+    expect(after.status).toBe("failed");
+    expect(after.error_message).toMatch(/organization scope was missing/);
   });
 });
 

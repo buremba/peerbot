@@ -1343,7 +1343,26 @@ export async function sweepCompletedRuns(): Promise<number> {
 		for (const candidate of candidates) {
 			const message = "Automation queue child expired before it could run.";
 			const organizationId = candidate.organization_id?.trim();
-			if (!organizationId) continue;
+			if (!organizationId) {
+				// Without an org the parent cannot be located, so this child can't be
+				// resolved the usual way -- but it still has to leave `pending`. The
+				// DELETE below deliberately spares parent-linked chat_message rows,
+				// so a plain `continue` strands this one at the head of a window
+				// ordered by `expires_at ASC` and capped at 100; enough of them and
+				// the linked-child sweep stops making progress at all.
+				const orphaned = await tx`
+					UPDATE public.runs
+					SET status = 'failed',
+					    completed_at = now(),
+					    error_message = ${`${message} Its organization scope was missing, so the Automation parent could not be resolved.`},
+					    attempts = attempts + 1
+					WHERE id = ${candidate.id}
+					  AND status = 'pending'
+					RETURNING id
+				`;
+				if (orphaned.length > 0) failed++;
+				continue;
+			}
 			await lockLinkedAutomationOwner(
 				tx,
 				candidate.parent_run_id,

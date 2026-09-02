@@ -65,11 +65,14 @@ describe("whatsAppWebAdapterProgram serialisation", () => {
   });
 
   it("still exposes the operations the connector dispatches", () => {
+    // Every op here must be reachable from whatsapp_web.ts — `execute()`
+    // admits only `search_messages` and WRITE_ACTIONS, and `sync` uses
+    // `probe`/`collect`/`download_media`. An op the connector cannot reach is
+    // dead surface, not coverage; `read_messages` was exactly that.
     for (const op of [
       "probe",
       "collect",
       "search_messages",
-      "read_messages",
       "draft_message",
       "send_message",
       "edit_message",

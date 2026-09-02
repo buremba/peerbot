@@ -537,7 +537,6 @@ export function whatsAppWebAdapterProgram() {
       search_messages:
         hasFunction(search, ["searchMessages", "searchMsgs", "search"]) ||
         Boolean(requireFirst(["WAWebCollections"])?.Msg),
-      read_messages: Boolean(requireFirst(["WAWebCollections"])?.Msg),
       draft_message: hasFunction(draft, [
         "setDraft",
         "setChatDraft",
@@ -1060,40 +1059,6 @@ export function whatsAppWebAdapterProgram() {
     };
   }
 
-  async function readMessages(input) {
-    const collections = requireFirst(["WAWebCollections"]);
-    const offset = Math.max(0, Number(input?.offset) || 0);
-    const limit = Math.max(1, Math.min(Number(input?.limit) || 50, 500));
-    const chatFilter = ["all", "individual", "group"].includes(
-      input?.chat_filter
-    )
-      ? input.chat_filter
-      : "all";
-    const messages = [];
-    for (const model of uniqueMessageModels(collections)) {
-      const message = await normalizeMessage(model, "read", collections);
-      if (!message || Number(message.timestamp) <= 0) continue;
-      if (chatFilter === "group" && !message.is_group) continue;
-      if (chatFilter === "individual" && message.is_group) continue;
-      messages.push(message);
-    }
-    messages.sort(
-      (left, right) =>
-        Number(right.timestamp ?? 0) - Number(left.timestamp ?? 0) ||
-        String(left.id ?? "").localeCompare(String(right.id ?? ""))
-    );
-    const results = messages.slice(offset, offset + limit);
-    return {
-      source: "loaded_model",
-      results,
-      total: messages.length,
-      // Device source-read offsets are capped at 10,000. Make that page
-      // explicitly terminal so a later logical cursor cannot be clamped
-      // back to the same window and replay it indefinitely.
-      hasMore: offset + results.length < Math.min(messages.length, 10_000),
-    };
-  }
-
   async function draftMessage(input) {
     const collections = requireFirst(["WAWebCollections"]);
     const chat = await resolveChat(collections, input);
@@ -1574,8 +1539,6 @@ export function whatsAppWebAdapterProgram() {
         return { ok: true, ...(await downloadMedia(request)) };
       if (request.op === "search_messages")
         return { ok: true, ...(await searchMessages(request.input)) };
-      if (request.op === "read_messages")
-        return { ok: true, ...(await readMessages(request.input)) };
       if (request.op === "draft_message")
         return { ok: true, ...(await draftMessage(request.input)) };
       if (request.op === "send_message")

@@ -24,13 +24,15 @@ jobs:
     name: Attest main image and CI runs
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # `types: [completed]` also fires for failure and cancellation. Screening
-    # here keeps a red image build from producing a red Release Please run
-    # beside it; the producer's conclusion is re-read from the API below
-    # regardless, so this is noise control, not the gate.
+    # `types: [completed]` also fires for failure and cancellation, and
+    # `branches: [main]` admits a manual Build Images dispatch as readily as a
+    # push. Both would start this job and then hard-fail the API checks below,
+    # so screen them out here. The producer's conclusion and event are re-read
+    # from the API regardless: this is noise control, not the gate.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     outputs:
       sha: ${{ steps.producer.outputs.sha }}
     steps:

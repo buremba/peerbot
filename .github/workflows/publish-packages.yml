@@ -167,7 +167,11 @@ jobs:
           EXPECTED_VERSION: ${{ needs.attest-publish.outputs.version }}
         run: |
           set -euo pipefail
-          published=$(npm view @lobu/cli versions --json 2>/dev/null || echo '[]')
+          # npm writes its --json error object to STDOUT, so the exit status is
+          # the only trustworthy signal. Failing closed here is deliberate: an
+          # unreadable registry must not read as "nothing newer is published".
+          published=$(npm view @lobu/cli versions --json 2>/dev/null) || published=""
+          [ -n "$published" ] || { echo "::error::could not read published @lobu/cli versions"; exit 1; }
           jq -n --argjson versions "$published" --arg current "$EXPECTED_VERSION" \
             '{current: $current, versions: (if ($versions | type) == "array" then $versions else [$versions] end)}' \
             | node scripts/release-provenance.mjs assert-newer >/dev/null

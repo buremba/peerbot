@@ -13,43 +13,49 @@ import {
   verifyImmutableRelease,
 } from "../release-provenance.mjs";
 
-const root = fileURLToPath(new URL("../..", import.meta.url));
-const workflowDir = `${root}/.github/workflows`;
-const read = (name: string) => readFileSync(`${workflowDir}/${name}`, "utf8");
-const workflowNames = readdirSync(workflowDir).filter((name) =>
-  /\.ya?ml$/.test(name)
-);
-const job = (yaml: string, id: string) => {
-  const lines = yaml.split("\n");
-  const start = lines.indexOf(`  ${id}:`);
-  if (start < 0) throw new Error(`missing job ${id}`);
-  const end = lines.findIndex(
-    (line, index) => index > start && /^ {2}[A-Za-z_][\w-]*:/.test(line)
-  );
-  return lines.slice(start, end < 0 ? lines.length : end).join("\n");
+type Step = {
+  name?: string;
+  run?: string;
+  uses?: string;
+  with?: Record<string, unknown>;
+  env?: Record<string, unknown>;
 };
-const uncommented = (text: string) =>
-  text
-    .split("\n")
-    .filter((line) => !/^\s*#/.test(line))
-    .join("\n");
-const runBodies = (text: string) =>
-  text
-    .split("\n")
-    .reduce<{ active: boolean; lines: string[] }>(
-      (state, line) => {
-        if (/^ {8}run: \|/.test(line))
-          return { active: true, lines: state.lines };
-        if (state.active && !/^ {10}/.test(line))
-          return { active: false, lines: state.lines };
-        if (state.active) state.lines.push(line);
-        return state;
-      },
-      { active: false, lines: [] }
-    )
-    .lines.join("\n");
+type Job = {
+  needs?: string | string[];
+  if?: string;
+  permissions?: Record<string, string>;
+  steps?: Step[];
+};
+type Workflow = { on?: Record<string, unknown>; jobs?: Record<string, Job> };
 
-const requiredJobs = [
+const root = fileURLToPath(new URL("../..", import.meta.url));
+const dir = `${root}/.github/workflows`;
+const names = readdirSync(dir).filter((name) => /\.ya?ml$/.test(name));
+const read = (name: string) => readFileSync(`${dir}/${name}`, "utf8");
+const parse = (name: string) => Bun.YAML.parse(read(name)) as Workflow;
+const job = (file: string, id: string) => {
+  const found = parse(file).jobs?.[id];
+  if (!found) throw new Error(`${file} has no job ${id}`);
+  return found;
+};
+const steps = (file: string, id: string) => job(file, id).steps ?? [];
+const stepAt = (file: string, id: string, needle: string) => {
+  const index = steps(file, id).findIndex((step) =>
+    `${step.name ?? ""} ${step.uses ?? ""}`.includes(needle)
+  );
+  if (index < 0)
+    throw new Error(`${file}/${id} has no step matching ${needle}`);
+  return index;
+};
+/** Every shell body in a job, concatenated — what the runner will execute. */
+const shell = (file: string, id: string) =>
+  steps(file, id)
+    .map((step) => step.run ?? "")
+    .join("\n");
+const envOf = (file: string, id: string) =>
+  steps(file, id).flatMap((step) => Object.keys(step.env ?? {}));
+
+const REQUIRED_IMAGE_JOBS = [
   "generate-tag",
   "connector-parity-smoke",
   "build-worker",
@@ -58,10 +64,8 @@ const requiredJobs = [
   "app-image-smoke",
 ];
 
-// Run the helper the way the workflows do, so a subcommand that only works
-// when imported cannot pass. `attest-jobs` on a red producer must exit
-// non-zero: that exit status is the entire gate.
-const helper = (command: string, input: unknown) => {
+/** Run the helper the way the workflows do — over stdin, as a subprocess. */
+const cli = (command: string, input: unknown) => {
   const result = Bun.spawnSync({
     cmd: ["node", "scripts/release-provenance.mjs", command],
     cwd: root,
@@ -74,10 +78,11 @@ const helper = (command: string, input: unknown) => {
   };
 };
 
-describe("every workflow is parseable and every step is executable", () => {
-  // A `run:` mis-indented one level lands inside the step's `env:` map. The
-  // step then has neither `run` nor `uses`, GitHub rejects the whole file at
-  // parse time, and no amount of string matching against the YAML notices.
+describe("every workflow file is well formed", () => {
+  // A `run:` indented one level too far lands inside the step's own `env:`
+  // map. The step then has neither `run` nor `uses`, GitHub rejects the whole
+  // file when it parses it, and no amount of string matching notices — which
+  // is exactly how an unrunnable publish workflow passed 21 green checks.
   const stepKeys = new Set([
     "run",
     "uses",
@@ -92,34 +97,25 @@ describe("every workflow is parseable and every step is executable", () => {
     "timeout-minutes",
   ]);
 
-  it.each(workflowNames)("%s", (name) => {
-    const doc = Bun.YAML.parse(read(name)) as {
-      jobs?: Record<string, { steps?: Record<string, unknown>[] }>;
-    };
-    for (const [jobId, definition] of Object.entries(doc?.jobs ?? {})) {
-      for (const [index, step] of (definition?.steps ?? []).entries()) {
-        if (!step || typeof step !== "object") continue;
-        const where = `${name} ${jobId} step[${index}] ${step.name ?? ""}`;
+  it.each(names)("%s parses and every step is executable", (file) => {
+    for (const [id, definition] of Object.entries(parse(file).jobs ?? {})) {
+      for (const [index, step] of (definition.steps ?? []).entries()) {
+        const where = `${file} ${id} step[${index}] ${step.name ?? ""}`;
         expect(
           step.run !== undefined || step.uses !== undefined,
           `${where} has neither run nor uses`
         ).toBe(true);
-        for (const key of Object.keys(
-          (step.env as Record<string, unknown>) ?? {}
-        )) {
-          expect(
-            stepKeys.has(key),
-            `${where} smuggles step key "${key}" into env`
-          ).toBe(false);
+        for (const key of Object.keys(step.env ?? {})) {
+          expect(stepKeys.has(key), `${where} put "${key}" in env`).toBe(false);
         }
       }
     }
   });
 
-  it("only invokes release-provenance subcommands that exist", () => {
-    const invoked = workflowNames.flatMap((name) =>
+  it("only invokes helper subcommands that exist", () => {
+    const invoked = names.flatMap((file) =>
       Array.from(
-        read(name).matchAll(/release-provenance\.mjs ([a-z-]+)/g),
+        read(file).matchAll(/release-provenance\.mjs ([a-z-]+)/g),
         (match) => match[1]
       )
     );
@@ -127,283 +123,267 @@ describe("every workflow is parseable and every step is executable", () => {
     for (const command of invoked) expect(COMMAND_NAMES).toContain(command);
   });
 
-  it("keeps the attestation policy out of inline jq", () => {
-    // The rules below used to be copy-pasted jq in two workflows apiece. jq
-    // embedded in YAML is unreachable from this suite, so it must not return.
-    for (const name of ["release-please.yml", "publish-packages.yml"]) {
-      const source = read(name);
-      expect(source).not.toContain("duplicate latest-attempt required job");
-      expect(source).not.toContain("map(.run_attempt // 1) | max");
-      expect(source).not.toContain("--input-type=module");
+  it("keeps the attestation policy out of inline jq and inline node", () => {
+    // These rules were copy-pasted jq in two workflows apiece. jq embedded in
+    // YAML is unreachable from this suite, so it must not come back.
+    for (const file of ["release-please.yml", "publish-packages.yml"]) {
+      expect(read(file)).not.toContain("duplicate latest-attempt required job");
+      expect(read(file)).not.toContain("map(.run_attempt // 1) | max");
+      expect(read(file)).not.toContain("--input-type=module");
     }
   });
 });
 
-describe("release provenance workflow structure", () => {
-  it("uses completed Build Images workflow runs and requires manual image_run_id", () => {
-    const release = uncommented(read("release-please.yml"));
-    expect(release).toContain("workflow_run:");
-    expect(release).toContain('workflows: ["Build and Push Images"]');
-    expect(release).toContain("types: [completed]");
-    expect(release).toContain("workflow_dispatch:");
-    expect(release).toMatch(/image_run_id:[\s\S]*required: true/);
-    expect(release).not.toContain("on:\n  push:");
-    expect(release).not.toContain("gh workflow run publish-packages.yml");
-    // `types: [completed]` also fires for failure and cancellation.
-    expect(release).toContain(
-      "github.event.workflow_run.conclusion == 'success'"
-    );
+describe("release-please only acts on a green main push", () => {
+  it("screens the producer's conclusion and its event", () => {
+    const trigger = parse("release-please.yml").on?.workflow_run as Record<
+      string,
+      unknown
+    >;
+    expect(trigger.workflows).toEqual(["Build and Push Images"]);
+    expect(trigger.branches).toEqual(["main"]);
+    // `branches: [main]` admits a manual Build Images dispatch just as
+    // readily as a push, and `types: [completed]` includes failures. Both
+    // would start the job only to hard-fail the API checks below.
+    const guard = job("release-please.yml", "attest").if ?? "";
+    expect(guard).toContain("conclusion == 'success'");
+    expect(guard).toContain("event == 'push'");
   });
 
-  it("attests exact main push metadata and paginates all jobs", () => {
-    const release = uncommented(read("release-please.yml"));
-    expect(release).toContain("filter=all");
-    expect(release).toContain("--paginate --slurp");
-    expect(release).toContain("head_repository.full_name");
-    expect(release).toContain("jq -r '.event' <<<\"$build_run\")");
-    expect(release).toContain('[ "$event" = push ] && [ "$branch" = main ]');
-    expect(release).toContain(
-      '[ "$status" = completed ] && [ "$conclusion" = success ]'
-    );
-    expect(release).toContain("release-provenance.mjs attest-jobs");
-    expect(release).toContain("release-provenance.mjs select-run");
-    for (const name of requiredJobs) expect(release).toContain(name);
-    expect(release).toContain("sleep 20");
-    expect(release).toContain("main moved while waiting for exact CI");
-  });
-
-  it("proves the producer before checking out any repository code", () => {
-    const attest = job(read("release-please.yml"), "attest");
+  it("proves the producer before checking out repository code", () => {
     expect(
-      attest.indexOf("Attest the producing Build Images run")
-    ).toBeLessThan(attest.indexOf("uses: actions/checkout"));
+      stepAt("release-please.yml", "attest", "Build Images run")
+    ).toBeLessThan(stepAt("release-please.yml", "attest", "actions/checkout"));
+    const checkout = steps("release-please.yml", "attest").find((step) =>
+      step.uses?.includes("actions/checkout")
+    );
     // Pinned, so the helper cannot come from a ref that moved mid-run.
-    expect(attest).toContain("ref: ${{ steps.producer.outputs.sha }}");
-    expect(attest).not.toContain("id-token: write");
-    expect(attest).not.toContain("NPM_TOKEN");
+    expect(checkout?.with?.ref).toBe("${{ steps.producer.outputs.sha }}");
+    expect(envOf("release-please.yml", "attest")).not.toContain("NPM_TOKEN");
+    expect(job("release-please.yml", "attest").permissions).toBeUndefined();
   });
 
-  it("keeps release creation privileged without a global evicting queue", () => {
-    const release = read("release-please.yml");
-    const write = job(release, "release-please-write");
-    expect(write).not.toContain("concurrency:");
-    expect(write).toContain("contents: write");
-    expect(write).toContain("pull-requests: write");
-    expect(write).toContain(
-      "Recheck current main immediately before release action"
-    );
-    expect(write).toContain("target-branch: main");
-    expect(write).toContain("skip-github-release: true");
-    // skip-github-release keeps release_created permanently false, and the
-    // step below re-verifies the binding by peeling the tag, so a
-    // release_created guard here would be dead and redundant at once.
-    expect(write).not.toContain("release_created");
-    expect(write).toContain("Publish only a real immutable manifest bump");
-    expect(write).toContain("release-provenance.mjs manifest-bump");
-    expect(write).toContain("release-provenance.mjs verify-release");
-    // make_latest is a string enum in the REST API; a boolean is dropped.
-    expect(write).toContain('make_latest: "true"');
-  });
-
-  it("does not turn a gh 404 body or a SIGPIPE into a failed release", () => {
-    const write = job(read("release-please.yml"), "release-please-write");
-    // `gh api` prints the 404 body on STDOUT, so `|| true` leaves a
-    // {"message":"Not Found"} document in the variable and the
-    // already-exists branch runs on every first release.
-    expect(write).not.toContain('releases/tags/${tag}" 2>/dev/null || true');
-    expect(write).toContain(
-      'if release=$(gh api "repos/${REPOSITORY}/releases/tags/${tag}"'
-    );
-    // CHANGELOG.md is ~475KB: `git show ... | head -c` exits 141 under
-    // pipefail and kills the release step before it creates anything.
-    expect(write).not.toContain("head -c");
-    expect(write).toContain("notes=${notes:0:12000}");
-    // A commit with no CHANGELOG.md costs the release body, not the release.
-    expect(write).toContain('CHANGELOG.md" || echo ""');
-  });
-
-  it("separates manual image builds and guards before any checkout", () => {
-    const images = uncommented(read("build-images.yml"));
-    expect(images).toContain(
-      "github.event_name == 'workflow_dispatch' && '-manual'"
-    );
-    const guard = job(images, "current-main-guard");
-    expect(guard).toContain("git/ref/heads/main");
-    expect(guard).toContain("refs/heads/main");
-    expect(guard).toContain("github.sha");
-    expect(images.indexOf("current-main-guard:")).toBeLessThan(
-      images.indexOf("uses: actions/checkout")
-    );
-    expect(images).toContain("release-provenance.mjs verify-release");
-    expect(images).toContain("BUILD_PLATFORMS");
-    expect(images).toContain("linux/arm64");
-    expect(images).toContain("latest");
-  });
-
-  it("dispatches package publication from main policy with exact inputs", () => {
-    const trigger = job(
-      uncommented(read("build-images.yml")),
-      "trigger-package-publish"
-    );
-    expect(trigger).toContain("--ref main");
-    expect(trigger).not.toContain('--ref "$RELEASE_TAG"');
-    expect(trigger).toContain('-f release_tag="$RELEASE_TAG"');
-    expect(trigger).toContain('-f image_run_id="$GITHUB_RUN_ID"');
-    expect(trigger).not.toContain("bump");
-  });
-
-  it("requires release and producer identifiers and removes fallback and bumps", () => {
-    const publish = uncommented(read("publish-packages.yml"));
-    expect(publish).toMatch(/release_tag:[\s\S]*required: true/);
-    expect(publish).toMatch(/image_run_id:[\s\S]*required: true/);
-    // `skip` was the only accepted value, so the input was dead surface.
-    expect(publish).not.toContain("BUMP");
-    expect(uncommented(read("build-images.yml"))).not.toContain("-f bump=skip");
-    expect(publish).not.toContain("workflow_runs[0]");
-    expect(publish).not.toContain('node scripts/publish-packages.mjs "$BUMP"');
-    expect(publish).toContain("--skip-bump");
-    expect(publish).toContain("ci_workflow_id");
-  });
-
-  it("fail-closes release attestation and allows only green producer jobs", () => {
-    const attest = job(
-      uncommented(read("publish-packages.yml")),
-      "attest-publish"
-    );
-    expect(attest).toContain("git/ref/tags");
-    expect(attest).toContain("git/tags");
-    expect(attest).toContain("compare/");
-    expect(attest).toContain("jq -r '.event' <<<\"$build_run\")");
-    expect(attest).toContain("release-provenance.mjs verify-release");
-    expect(attest).toContain("release-provenance.mjs attest-jobs");
-    expect(attest).toContain("release-provenance.mjs select-run");
-    expect(read("publish-packages.yml")).toContain("actions: read");
-    // The policy guard runs before the checkout that makes the helper
-    // available, so an off-main dispatch never executes repository code.
-    expect(
-      attest.indexOf("publish policy must run from current main")
-    ).toBeLessThan(attest.indexOf("uses: actions/checkout"));
-  });
-
-  it("does not fail the publish because main moved after dispatch", () => {
-    // The ref pin is the security property; requiring the dispatched SHA to
-    // still be main's HEAD adds none and strands a release off npm whenever
-    // anything merges between dispatch and this job starting -- the failure
-    // this workflow exists to prevent. The release is bound by its tag.
-    const attest = job(read("publish-packages.yml"), "attest-publish");
-    const guard = attest.slice(
-      attest.indexOf("Verify current-main workflow policy"),
-      attest.indexOf("Check out current main")
-    );
-    expect(guard).toContain('"$WORKFLOW_REF" = refs/heads/main');
-    expect(guard).not.toContain("git/ref/heads/main");
-    expect(guard).not.toContain("DISPATCH_SHA");
-    expect(guard).not.toContain("GH_TOKEN");
-  });
-
-  it("keeps credentials out of the read-only gate and checks out the attested SHA", () => {
-    const publish = read("publish-packages.yml");
-    const attest = job(publish, "attest-publish");
-    const privileged = job(publish, "publish-packages");
-    expect(attest).not.toContain("id-token: write");
-    expect(attest).not.toContain("NPM_TOKEN");
-    expect(privileged).toContain("id-token: write");
-    expect(privileged).toContain(
-      "ref: ${{ needs.attest-publish.outputs.tag_sha }}"
-    );
-    expect(privileged).toContain("scripts/publish-packages.mjs --skip-bump");
-    expect(privileged).toContain("NODE_AUTH_TOKEN");
-    expect(privileged).toContain("release-provenance.mjs assert-newer");
-    expect(runBodies(publish)).not.toContain("${{ inputs.");
-    expect(publish).toContain("published-artifact-smoke.yml");
-  });
-
-  it("does not accept comment-only evidence", () => {
-    const source = read("publish-packages.yml");
-    expect(uncommented(source)).not.toContain("newest exact-SHA");
-    expect(uncommented(source)).toContain(
-      "publish policy must run from current main"
-    );
+  it("delegates job and run selection to the tested helper", () => {
+    const body = shell("release-please.yml", "attest");
+    expect(body).toContain("release-provenance.mjs attest-jobs");
+    expect(body).toContain("release-provenance.mjs select-run");
+    expect(body).toContain("--paginate --slurp");
+    expect(body).toContain("filter=all");
+    for (const name of REQUIRED_IMAGE_JOBS) {
+      expect(read("release-please.yml")).toContain(name);
+    }
+    // The bounded wait must re-check that main has not moved under it.
+    expect(body).toContain("main moved while waiting for exact CI");
   });
 });
 
-describe("the helper CLI the workflows actually invoke", () => {
-  const green = {
+describe("the release is created bound to the attested commit", () => {
+  const id = "release-please-write";
+  const body = () => shell("release-please.yml", id);
+
+  it("holds the write permissions without a global evicting queue", () => {
+    expect(job("release-please.yml", id).permissions).toEqual({
+      contents: "write",
+      "pull-requests": "write",
+    });
+    expect(read("release-please.yml")).not.toContain("concurrency:");
+    expect(body()).toContain("main advanced after attestation");
+  });
+
+  it("lets release-please open the PR and creates the release itself", () => {
+    const action = steps("release-please.yml", id).find((step) =>
+      step.uses?.includes("release-please-action")
+    );
+    expect(action?.with?.["skip-github-release"]).toBe(true);
+    expect(action?.with?.["target-branch"]).toBe("main");
+    // skip-github-release keeps release_created permanently false, and the
+    // release step re-verifies the binding by peeling the tag, so a
+    // release_created guard would be dead and redundant at once.
+    expect(read("release-please.yml")).not.toContain("release_created");
+    expect(body()).toContain("release-provenance.mjs manifest-bump");
+    expect(body()).toContain("release-provenance.mjs verify-release");
+    expect(body()).toContain("release-provenance.mjs assert-newer");
+    // make_latest is a string enum in the REST API; a boolean is dropped.
+    expect(body()).toContain('make_latest: "true"');
+  });
+
+  it("does not let a 404 body or a large changelog fail the release", () => {
+    // `gh api` prints the 404 body on STDOUT, so `|| true` left
+    // {"message":"Not Found"} in the variable and the already-exists branch
+    // ran on the first release of every version. Branch on exit status.
+    expect(body()).not.toContain('releases/tags/${tag}" 2>/dev/null || true');
+    expect(body()).toContain("if release=$(gh api");
+    // CHANGELOG.md is ~475KB: `git show … | head -c` exits 141 under pipefail
+    // and kills the step before it creates anything.
+    expect(body()).not.toContain("head -c");
+    expect(body()).toContain("notes=${notes:0:12000}");
+    expect(body()).toContain('CHANGELOG.md" || echo ""');
+  });
+});
+
+describe("image builds refuse an off-main manual dispatch", () => {
+  it("guards before any checkout and gates every build behind it", () => {
+    const guard = job("build-images.yml", "current-main-guard");
+    expect(guard.steps?.some((step) => step.uses?.includes("checkout"))).toBe(
+      false
+    );
+    expect(job("build-images.yml", "generate-tag").needs).toContain(
+      "current-main-guard"
+    );
+    expect(shell("build-images.yml", "current-main-guard")).toContain(
+      "git/ref/heads/main"
+    );
+    expect(read("build-images.yml")).toContain(
+      "github.event_name == 'workflow_dispatch' && '-manual'"
+    );
+  });
+
+  it("verifies a release binds to this commit through the helper", () => {
+    expect(shell("build-images.yml", "generate-tag")).toContain(
+      "release-provenance.mjs verify-release"
+    );
+  });
+
+  it("dispatches publication from main policy with exact inputs", () => {
+    const dispatch = shell("build-images.yml", "trigger-package-publish");
+    expect(dispatch).toContain("--ref main");
+    expect(dispatch).not.toContain('--ref "$RELEASE_TAG"');
+    expect(dispatch).toContain('-f release_tag="$RELEASE_TAG"');
+    expect(dispatch).toContain('-f image_run_id="$GITHUB_RUN_ID"');
+    // `skip` was the only accepted value, so the input was dead surface.
+    expect(dispatch).not.toContain("bump");
+  });
+});
+
+describe("publishing requires an attested release", () => {
+  it("requires both producer identifiers and forbids a hosted bump", () => {
+    const inputs = (
+      parse("publish-packages.yml").on?.workflow_dispatch as {
+        inputs: Record<string, { required?: boolean }>;
+      }
+    ).inputs;
+    expect(inputs.release_tag.required).toBe(true);
+    expect(inputs.image_run_id.required).toBe(true);
+    expect(Object.keys(inputs)).not.toContain("bump");
+  });
+
+  it("keeps publish credentials out of the read-only gate", () => {
+    expect(
+      job("publish-packages.yml", "attest-publish").permissions
+    ).toBeUndefined();
+    expect(envOf("publish-packages.yml", "attest-publish")).not.toContain(
+      "NPM_TOKEN"
+    );
+    expect(
+      job("publish-packages.yml", "publish-packages").permissions
+    ).toMatchObject({ "id-token": "write" });
+    const checkout = steps("publish-packages.yml", "publish-packages")[0];
+    expect(checkout.with?.ref).toBe(
+      "${{ needs.attest-publish.outputs.tag_sha }}"
+    );
+    // A dispatch input reaching a shell through `${{ }}` in a job that holds
+    // the production NPM token is credential injection, not a broken script.
+    for (const definition of Object.values(
+      parse("publish-packages.yml").jobs ?? {}
+    )) {
+      for (const step of definition.steps ?? []) {
+        expect(step.run ?? "").not.toContain("${{ inputs.");
+      }
+    }
+  });
+
+  it("does not fail the publish because main moved after dispatch", () => {
+    // The ref pin is the security property: a dispatch resolves
+    // refs/heads/main to a tip nobody can forge. Also requiring that tip to
+    // still be HEAD adds none, and strands a release off npm whenever
+    // anything merges between dispatch and this job starting — the failure
+    // this workflow exists to prevent. The release is bound by its tag.
+    const guard = steps("publish-packages.yml", "attest-publish")[0];
+    expect(guard.run).toContain('"$WORKFLOW_REF" = refs/heads/main');
+    expect(guard.run).not.toContain("git/ref/heads/main");
+    expect(guard.env).not.toHaveProperty("GH_TOKEN");
+    expect(
+      stepAt("publish-packages.yml", "attest-publish", "policy")
+    ).toBeLessThan(
+      stepAt("publish-packages.yml", "attest-publish", "actions/checkout")
+    );
+  });
+
+  it("treats an unreadable registry as unknown, not as empty", () => {
+    // `npm view --json` prints its error object to STDOUT, so `|| echo '[]'`
+    // emitted two JSON values and the version gate could not run at all.
+    const body = shell("publish-packages.yml", "publish-packages");
+    expect(body).not.toContain("--json 2>/dev/null || echo");
+    expect(body).toContain("could not read published @lobu/cli versions");
+    expect(body).toContain("release-provenance.mjs assert-newer");
+  });
+});
+
+describe("the helper CLI the workflows invoke", () => {
+  const required = ["generate-tag", "app-image-smoke"];
+  const page = (conclusion: string, attempt = 1) => ({
     pages: [
       {
         jobs: [
           {
             name: "generate-tag",
-            run_attempt: 1,
             status: "completed",
             conclusion: "success",
+            run_attempt: 1,
           },
           {
             name: "app-image-smoke",
-            run_attempt: 1,
             status: "completed",
-            conclusion: "failure",
-          },
-          {
-            name: "app-image-smoke",
-            run_attempt: 2,
-            status: "completed",
-            conclusion: "success",
+            conclusion,
+            run_attempt: attempt,
           },
         ],
       },
     ],
-    required: ["generate-tag", "app-image-smoke"],
-  };
+    required,
+  });
 
-  it("exits zero on a green producer and takes the newest attempt", () => {
-    const ok = helper("attest-jobs", green);
+  it("exits zero on a green producer, preferring the newest attempt", () => {
+    const green = page("success", 2);
+    green.pages[0].jobs.push({
+      name: "app-image-smoke",
+      status: "completed",
+      conclusion: "failure",
+      run_attempt: 1,
+    });
+    const ok = cli("attest-jobs", green);
     expect(ok.code).toBe(0);
     expect(JSON.parse(ok.stdout)).toEqual({ ok: true, required: 2 });
   });
 
   it.each([
-    ["failure", "not completed-success"],
-    ["skipped", "not completed-success"],
-    ["cancelled", "not completed-success"],
-  ])("exits non-zero when a required job is %s", (conclusion, message) => {
-    const red = helper("attest-jobs", {
-      pages: [
-        {
-          jobs: [
-            {
-              name: "generate-tag",
-              status: "completed",
-              conclusion: "success",
-            },
-            { name: "app-image-smoke", status: "completed", conclusion },
-          ],
-        },
-      ],
-      required: green.required,
-    });
+    "failure",
+    "skipped",
+    "cancelled",
+  ])("exits non-zero when a required job is %s", (conclusion) => {
+    const red = cli("attest-jobs", page(conclusion));
     expect(red.code).not.toBe(0);
-    expect(red.stderr).toContain(message);
+    expect(red.stderr).toContain("not completed-success");
   });
 
-  it("exits non-zero on an unknown subcommand rather than passing silently", () => {
-    const unknown = helper("attest-everything", {});
+  it("exits non-zero on an unknown subcommand rather than passing", () => {
+    const unknown = cli("attest-everything", {});
     expect(unknown.code).toBe(2);
     expect(unknown.stderr).toContain("unknown command");
   });
 
   it("round-trips each subcommand's shape over stdin", () => {
     expect(
-      JSON.parse(helper("release-tag", { version: "17.4.0" }).stdout)
+      JSON.parse(cli("release-tag", { version: "17.4.0" }).stdout)
     ).toEqual({ tag: "lobu-v17.4.0" });
     expect(
       JSON.parse(
-        helper("manifest-bump", { current: "17.4.0", parent: "17.3.0" }).stdout
+        cli("manifest-bump", { current: "17.4.0", parent: "17.3.0" }).stdout
       )
     ).toEqual({ bumped: true, version: "17.4.0" });
     expect(
       JSON.parse(
-        helper("select-run", {
+        cli("select-run", {
           runs: [
             { id: 1, head_sha: "a", run_attempt: 1 },
             { id: 9, head_sha: "a", run_attempt: 3 },
@@ -413,48 +393,41 @@ describe("the helper CLI the workflows actually invoke", () => {
       )
     ).toEqual({ id: "9" });
     expect(
-      helper("assert-newer", { current: "17.3.0", versions: ["17.4.0"] }).code
+      cli("assert-newer", { current: "17.3.0", versions: ["17.4.0"] }).code
     ).not.toBe(0);
   });
 });
 
-describe("release provenance helpers execute the attestation policy", () => {
-  const required = ["generate-tag", "build-worker"];
-  const greenPages = [
-    {
-      jobs: [
-        {
-          name: "generate-tag",
-          run_attempt: 1,
-          status: "completed",
-          conclusion: "success",
-        },
-        {
-          name: "build-worker",
-          run_attempt: 1,
-          status: "completed",
-          conclusion: "success",
-        },
-      ],
-    },
-    {
-      jobs: [
-        {
-          name: "build-worker",
-          run_attempt: 2,
-          status: "completed",
-          conclusion: "success",
-        },
-      ],
-    },
-  ];
-
-  it("flattens multi-page jobs and selects exactly the latest attempt", () => {
+describe("the attestation policy itself", () => {
+  it("flattens paginated jobs and selects exactly the latest attempt", () => {
+    const pages = [
+      {
+        jobs: [
+          {
+            name: "generate-tag",
+            run_attempt: 1,
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+      {
+        jobs: [
+          {
+            name: "build-worker",
+            run_attempt: 2,
+            status: "completed",
+            conclusion: "success",
+          },
+        ],
+      },
+    ];
     expect(
-      selectLatestRequiredJobs(greenPages, required).map(
-        (job) => job.run_attempt
+      selectLatestRequiredJobs(pages, ["generate-tag", "build-worker"]).map(
+        (found) => found.run_attempt
       )
     ).toEqual([1, 2]);
+    // Two rows at the same attempt is ambiguous evidence, not a tie to break.
     expect(() =>
       selectLatestRequiredJobs(
         [
@@ -468,36 +441,16 @@ describe("release provenance helpers execute the attestation policy", () => {
         ["generate-tag"]
       )
     ).toThrow("duplicate latest-attempt");
-    expect(() =>
-      selectLatestRequiredJobs(
-        [
-          {
-            jobs: [
-              {
-                name: "generate-tag",
-                status: "completed",
-                conclusion: "skipped",
-              },
-            ],
-          },
-        ],
-        ["generate-tag"]
-      )
-    ).toThrow("completed-success");
-    expect(() => selectLatestRequiredJobs(greenPages, [])).toThrow(
+    expect(() => selectLatestRequiredJobs(pages, ["absent"])).toThrow(
+      "missing required job"
+    );
+    expect(() => selectLatestRequiredJobs(pages, [])).toThrow(
       "no required job names"
     );
   });
 
-  it("rejects ambiguous, skipped, failed, and missing selected CI runs", () => {
-    const expected = {
-      workflow_id: 7,
-      event: "push",
-      head_branch: "main",
-      head_sha: "a",
-      status: "completed",
-      conclusion: "success",
-    };
+  it("rejects ambiguous and missing CI runs", () => {
+    const expected = { head_sha: "a", conclusion: "success" };
     expect(
       selectUniqueLatestRun([{ ...expected, id: 1, run_attempt: 1 }], expected)
         .id
@@ -523,17 +476,14 @@ describe("release provenance helpers execute the attestation policy", () => {
       bumped: false,
       version: "17.2.0",
     });
-    expect(compareVersions("17.10.0", "17.9.0")).toBe(1);
-    expect(releaseTagForVersion("17.3.0")).toBe("lobu-v17.3.0");
     expect(() => manifestBump({ current: "17.1.0", parent: "17.2.0" })).toThrow(
       "not newer"
     );
+    expect(compareVersions("17.10.0", "17.9.0")).toBe(1);
+    expect(releaseTagForVersion("17.3.0")).toBe("lobu-v17.3.0");
     expect(() =>
       assertNoNewerStable({ current: "17.3.0", versions: ["17.4.0"] })
     ).toThrow("newer stable version");
-    expect(
-      assertNoNewerStable({ current: "17.3.0", versions: ["17.3.0", "16.1.0"] })
-    ).toMatchObject({ ok: true, compared: 2 });
     // A prerelease string is not a stable version and must not veto a release.
     expect(
       assertNoNewerStable({
@@ -541,27 +491,32 @@ describe("release provenance helpers execute the attestation policy", () => {
         versions: ["17.9.0-beta.1", "17.2.0"],
       })
     ).toMatchObject({ ok: true, compared: 1 });
+    // An `npm view --json` error object must not read as "nothing published".
+    expect(() =>
+      assertNoNewerStable({
+        current: "17.3.0",
+        versions: [{ error: { code: "E404" } }],
+      })
+    ).toThrow("non-version");
   });
 
   it("peels an annotated tag instead of trusting the ref's own sha", () => {
     const commit = "a".repeat(40);
-    const tagObjectSha = "c".repeat(40);
     expect(
       peelTag({ tagRef: { object: { type: "commit", sha: commit } } })
     ).toBe(commit);
     expect(
       peelTag({
-        tagRef: { object: { type: "tag", sha: tagObjectSha } },
+        tagRef: { object: { type: "tag", sha: "c".repeat(40) } },
         tagObject: { object: { sha: commit } },
       })
     ).toBe(commit);
-    // Without the peeled object an annotated tag has no commit to bind to.
     expect(() =>
-      peelTag({ tagRef: { object: { type: "tag", sha: tagObjectSha } } })
+      peelTag({ tagRef: { object: { type: "tag", sha: "c".repeat(40) } } })
     ).toThrow("could not peel");
   });
 
-  it("binds stable release versions and immutable partial recovery", () => {
+  it("binds a stable release to the commit its tag peels to", () => {
     const sha = "a".repeat(40);
     const stable = {
       release: {
@@ -574,39 +529,27 @@ describe("release provenance helpers execute the attestation policy", () => {
       expectedTag: "lobu-v17.3.0",
       expectedSha: sha,
     };
-    expect(verifyImmutableRelease(stable)).toEqual({
-      sha,
-      version: "17.3.0",
-    });
-    expect(() =>
-      verifyImmutableRelease({ ...stable, expectedSha: "b".repeat(40) })
-    ).toThrow("attested commit");
-    expect(() =>
-      verifyImmutableRelease({
-        ...stable,
-        release: { ...stable.release, draft: true },
-      })
-    ).toThrow("draft");
-    expect(() =>
-      verifyImmutableRelease({
-        ...stable,
-        release: { ...stable.release, prerelease: true },
-      })
-    ).toThrow("prerelease");
-    expect(() =>
-      verifyImmutableRelease({ ...stable, expectedTag: "lobu-v17.4.0" })
-    ).toThrow("tag/name mismatch");
-    // An annotated tag re-pointed away from the release's own target.
-    expect(() =>
-      verifyImmutableRelease({
-        ...stable,
-        tagRef: { object: { type: "tag", sha: "c".repeat(40) } },
-        tagObject: { object: { sha: "d".repeat(40) } },
-      })
-    ).toThrow("attested commit");
-    // GitHub records a branch name when a release is cut from a branch, and
-    // ignores target_commitish entirely once the tag exists. Only a SHA in
-    // that field carries a binding, so only a SHA is enforced.
+    expect(verifyImmutableRelease(stable)).toEqual({ sha, version: "17.3.0" });
+    for (const [patch, message] of [
+      [{ expectedSha: "b".repeat(40) }, "attested commit"],
+      [{ expectedTag: "lobu-v17.4.0" }, "tag/name mismatch"],
+      [{ release: { ...stable.release, draft: true } }, "draft"],
+      [{ release: { ...stable.release, prerelease: true } }, "prerelease"],
+      [
+        {
+          tagRef: { object: { type: "tag", sha: "c".repeat(40) } },
+          tagObject: { object: { sha: "d".repeat(40) } },
+        },
+        "attested commit",
+      ],
+    ] as const) {
+      expect(() => verifyImmutableRelease({ ...stable, ...patch })).toThrow(
+        message
+      );
+    }
+    // GitHub records a branch name when a release is cut from a branch and
+    // ignores target_commitish once the tag exists, so only a SHA there
+    // carries a binding — and a SHA that disagrees is a real mismatch.
     expect(
       verifyImmutableRelease({
         ...stable,

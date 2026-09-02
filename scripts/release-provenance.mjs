@@ -64,9 +64,18 @@ export function manifestBump({ current, parent }) {
  */
 export function assertNoNewerStable({ current, versions }) {
   parseStableVersion(current);
-  const stable = (Array.isArray(versions) ? versions : [versions]).filter(
-    (value) => typeof value === "string" && STABLE_SEMVER.test(value)
-  );
+  const listed = Array.isArray(versions) ? versions : [versions];
+  // Fail closed on a shape we do not understand. `npm view --json` prints its
+  // error object to stdout, so a failed probe can reach here looking like data;
+  // silently filtering it out would turn "the registry is unreadable" into
+  // "nothing newer is published", which is exactly backwards for a gate.
+  const unexpected = listed.filter((value) => typeof value !== "string");
+  if (unexpected.length > 0) {
+    throw new Error(
+      `version list holds ${unexpected.length} non-version entr${unexpected.length === 1 ? "y" : "ies"}`
+    );
+  }
+  const stable = listed.filter((value) => STABLE_SEMVER.test(value));
   const newer = stable.filter((value) => compareVersions(value, current) > 0);
   if (newer.length > 0) {
     throw new Error(

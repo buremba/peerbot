@@ -30,7 +30,10 @@ import * as Sentry from "@sentry/node";
 import { intervals } from "../../../config/intervals.js";
 import { type DbClient, getDb, getDbListener } from "../../../db/client.js";
 import { incrementCounter } from "../../metrics/prometheus.js";
-import { failAutomationParentRunFromQueue } from "../../../automations/run-completion.js";
+import {
+  failAutomationParentRunFromQueue,
+  lockOwningAutomationForRun,
+} from "../../../automations/run-completion.js";
 import { AUTOMATION_RUN_TYPES_PG } from "../../../runs/run-types.js";
 import {
   deploymentNameForLinkedChild,
@@ -96,24 +99,6 @@ interface LinkedAutomationChild extends LinkedChildIdentity {
   parent_run_id: number;
 }
 
-async function lockLinkedAutomationOwner(
-  tx: DbClient,
-  parentRunId: number,
-  organizationId: string,
-): Promise<void> {
-  await tx`
-    SELECT a.id
-    FROM automations a
-    JOIN public.runs parent
-      ON parent.automation_id = a.id
-     AND parent.organization_id = a.organization_id
-    WHERE parent.id = ${parentRunId}
-      AND parent.organization_id = ${organizationId}
-      AND parent.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-    FOR UPDATE OF a
-  `;
-}
-
 async function terminalizeLinkedAutomationParent(
   tx: DbClient,
   child: LinkedAutomationChild,
@@ -125,7 +110,9 @@ async function terminalizeLinkedAutomationParent(
   if (!organizationId || !messageId) {
     return { parentFailed: false, responseEmitted: false };
   }
-  await lockLinkedAutomationOwner(tx, child.parent_run_id, organizationId);
+  await lockOwningAutomationForRun(tx, child.parent_run_id, {
+    organizationId,
+  });
   const [parent] = await tx<{
     status: string;
     dispatched_message_id: string | null;
@@ -1033,11 +1020,9 @@ export class RunsQueue implements IMessageQueue {
         linkedParentId > 0 &&
         linkedOrganizationId
       ) {
-        await lockLinkedAutomationOwner(
-          tx,
-          linkedParentId,
-          linkedOrganizationId,
-        );
+        await lockOwningAutomationForRun(tx, linkedParentId, {
+          organizationId: linkedOrganizationId,
+        });
         await tx`SELECT id FROM public.runs WHERE id = ${linkedParentId} FOR UPDATE`;
       }
       const failed = await tx<
@@ -1323,11 +1308,9 @@ export async function sweepCompletedRuns(): Promise<number> {
         if (orphaned.length > 0) failed++;
         continue;
       }
-      await lockLinkedAutomationOwner(
-        tx,
-        candidate.parent_run_id,
+      await lockOwningAutomationForRun(tx, candidate.parent_run_id, {
         organizationId,
-      );
+      });
       await tx`
         SELECT id FROM public.runs
         WHERE id = ${candidate.parent_run_id}

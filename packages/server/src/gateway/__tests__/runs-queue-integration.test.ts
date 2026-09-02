@@ -27,11 +27,13 @@ import {
   linkedChildIdentityColumns,
   THREAD_MESSAGE_QUEUE_PREFIX,
 } from "../orchestration/deployment-identity.js";
+import { lockOwningAutomationForRun } from "../../automations/run-completion.js";
 import { getDb } from "../../db/client.js";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
   seedAgentRow,
+  seedOrgMembership,
 } from "./helpers/db-setup.js";
 
 let queue: RunsQueue | null = null;
@@ -514,6 +516,121 @@ describe("linked-child identity projection", () => {
     expect(row.agent_id).toBeNull();
     expect(row.conversation_id).toBeNull();
     expect(deploymentNameForLinkedChild(row, orgId)).toBe("dep-abc");
+  });
+});
+
+describe("the Automation-owner lock", () => {
+  /** An Automation and a parent run of it, in `orgId`. */
+  async function seedAutomationParent(orgId: string, agentId: string) {
+    const sql = getDb();
+    // `automations.created_by` is a NOT NULL FK to "user".
+    const creatorId = `${agentId}-creator`;
+    await seedOrgMembership(orgId, creatorId, "owner");
+    await sql`
+      INSERT INTO automations
+        (organization_id, agent_id, created_by, automation_group_id,
+         name, status, min_cooldown_seconds, created_at, updated_at)
+      VALUES
+        (${orgId}, ${agentId}, ${creatorId}, 0, 'lock probe', 'active', 0,
+         now(), now())
+    `;
+    const [automation] = await sql<{ id: number }>`
+      SELECT id FROM automations
+      WHERE organization_id = ${orgId} ORDER BY id DESC LIMIT 1
+    `;
+    const [parent] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        run_type, queue_name, action_input, status, run_at, organization_id,
+        automation_id
+      )
+      VALUES (
+        'automation', 'automation', '{}'::jsonb, 'running', now(), ${orgId},
+        ${Number(automation.id)}
+      )
+      RETURNING id
+    `;
+    return { automationId: Number(automation.id), parentRunId: Number(parent.id) };
+  }
+
+  /** Is the automations row lockable right now from another connection? */
+  async function lockableElsewhere(automationId: number): Promise<boolean> {
+    const sql = getDb();
+    try {
+      await sql.begin(async (probe) => {
+        await probe`SET LOCAL lock_timeout = '250ms'`;
+        await probe`
+          SELECT id FROM automations WHERE id = ${automationId} FOR UPDATE
+        `;
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  test("holds the owning Automation for the caller", async () => {
+    const orgId = await seedAgentRow("lock-agent", {
+      organizationId: "lock-org",
+    });
+    const { automationId, parentRunId } = await seedAutomationParent(
+      orgId,
+      "lock-agent"
+    );
+    const sql = getDb();
+
+    await sql.begin(async (tx) => {
+      await lockOwningAutomationForRun(tx, parentRunId, {
+        organizationId: orgId,
+      });
+      // Whoever holds this is next in the lock order for that Automation --
+      // the whole reason every terminalization path takes it first.
+      expect(await lockableElsewhere(automationId)).toBe(false);
+    });
+
+    expect(await lockableElsewhere(automationId)).toBe(true);
+  });
+
+  test("takes nothing when the org does not own the run", async () => {
+    // CROSS-TENANT: the linked-child sweeps pass an org read off a child row.
+    // If the scope were ignored, a child carrying another tenant's parent id
+    // would lock that tenant's Automation and serialize their completions
+    // behind this sweep.
+    const orgId = await seedAgentRow("lock-tenant-agent", {
+      organizationId: "lock-tenant-org",
+    });
+    const otherOrgId = await seedAgentRow("lock-other-agent", {
+      organizationId: "lock-other-org",
+    });
+    const { automationId, parentRunId } = await seedAutomationParent(
+      orgId,
+      "lock-tenant-agent"
+    );
+    const sql = getDb();
+
+    await sql.begin(async (tx) => {
+      await lockOwningAutomationForRun(tx, parentRunId, {
+        organizationId: otherOrgId,
+      });
+      expect(await lockableElsewhere(automationId)).toBe(true);
+    });
+  });
+
+  test("without a scope it still locks, for callers holding only a run id", async () => {
+    // The completion paths reach the lock with a run id alone; reading the
+    // org first would invert the order the lock exists to establish.
+    const orgId = await seedAgentRow("lock-unscoped-agent", {
+      organizationId: "lock-unscoped-org",
+    });
+    const { automationId, parentRunId } = await seedAutomationParent(
+      orgId,
+      "lock-unscoped-agent"
+    );
+    const sql = getDb();
+
+    await sql.begin(async (tx) => {
+      await lockOwningAutomationForRun(tx, parentRunId);
+      expect(await lockableElsewhere(automationId)).toBe(false);
+    });
   });
 });
 

@@ -334,9 +334,24 @@ export async function markAutomationRunFailedInTransaction(
 	return true;
 }
 
+/**
+ * Take the `automations` row owning this run FOR UPDATE.
+ *
+ * The lock ORDER is the invariant: every path that terminalizes a run takes
+ * the owning Automation before the run row. Two spellings of this lock are two
+ * chances to take them in the other order and deadlock, so there is one.
+ */
 export async function lockOwningAutomationForRun(
 	tx: DbClient,
 	runId: number,
+	/**
+	 * Present when the caller can assert what this run is: an Automation parent
+	 * in a known org. The linked-child sweeps read both off the child row and
+	 * must not be able to lock another tenant's Automation. The completion paths
+	 * arrive with a run id alone -- reading its org first would invert the very
+	 * lock order this call establishes -- so they omit it.
+	 */
+	parent?: { organizationId: string },
 ): Promise<void> {
 	await tx`
 		SELECT a.id
@@ -345,6 +360,12 @@ export async function lockOwningAutomationForRun(
 		  ON r.automation_id = a.id
 		 AND r.organization_id = a.organization_id
 		WHERE r.id = ${runId}
+		${
+			parent
+				? tx`AND r.organization_id = ${parent.organizationId}
+				     AND r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])`
+				: tx``
+		}
 		FOR UPDATE OF a
 	`;
 }

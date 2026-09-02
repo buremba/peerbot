@@ -1,50 +1,46 @@
-import { pgTextArray } from '../db/client';
-
 interface SqlTag<TFragment> {
   (strings: TemplateStringsArray, ...values: any[]): TFragment;
 }
 
 /**
- * Legacy connector identities that execute natively on a Chrome-extension
- * worker. Keep this list exact: these keys sit outside the reserved `chrome`
- * namespace, so adding one changes a Chrome pin from delegated browser
- * affinity into an execution pin.
+ * `chrome` and `chrome.*` are the reserved namespace for connectors the Chrome
+ * extension implements natively. Everything about placement follows from this
+ * one predicate.
+ *
+ * The namespace is a two-way contract, and both halves are guarded:
+ *   - a `chrome.*` key ships NO code — the gateway withholds the bundle,
+ *     because the extension already has the implementation;
+ *   - anything else ships its own code and the extension never sees the key
+ *     (lobu-ai/owletto apps/chrome/connector-ownership.test.js).
+ *
+ * `whatsapp.local` used to be the one exception: an ordinary key that the
+ * extension nonetheless implemented natively, which needed a legacy-key list
+ * here plus an artifact-provenance check to tell that native build apart from a
+ * compiled override. It has been retired — WhatsApp is now an ordinary
+ * connector that ships its own code and drives the page through the generic
+ * browser ops — so the exception, the list, and the provenance check are gone.
  */
-export const LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS: Readonly<
-  Record<string, { requiredCapability: string }>
-> = {
-  'whatsapp.local': { requiredCapability: 'browser.whatsapp' },
-};
-
-export const LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS = Object.keys(
-  LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS
-);
-
-const LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEY_SET: ReadonlySet<string> = new Set(
-  LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS
-);
-
-export function isLegacyNativeChromeExtensionConnectorKey(connectorKey: string): boolean {
-  return LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEY_SET.has(connectorKey);
-}
-
-export function legacyNativeChromeExtensionRequiredCapability(
-  connectorKey: string
-): string | null {
-  return LEGACY_NATIVE_CHROME_EXTENSION_CONNECTORS[connectorKey]?.requiredCapability ?? null;
-}
-
 export function isChromeNamespaceConnectorKey(connectorKey: string): boolean {
   return connectorKey === 'chrome' || connectorKey.startsWith('chrome.');
 }
 
-/** Every `chrome.*` artifact identity the extension serves natively. */
+/**
+ * A Chrome pin on any other connector delegates browser access to the
+ * extension; it does not host the parent run.
+ */
+export function isDelegatedBrowserAffinityConnector(
+  platform: string | null | undefined,
+  connectorKey: string
+): boolean {
+  return platform === 'chrome-extension' && !isChromeNamespaceConnectorKey(connectorKey);
+}
+
 const DEVICE_MANIFEST_SOURCE_PREFIX = 'device-manifest://chrome-extension/';
 
 /**
  * The reserved `chrome.*` namespace declares "the Owletto extension implements
- * this natively", and {@link isNativeChromeExtensionConnector} short-circuits
- * on it. A key installed there with supplied code is therefore unreachable in
+ * this natively", so {@link isChromeNamespaceConnectorKey} alone decides native
+ * execution. A key installed there with supplied code is therefore unreachable in
  * both directions: the gateway withholds `compiled_code` from a native
  * connector, and the extension has no handler for a key it does not implement,
  * so every run dies with
@@ -60,8 +56,8 @@ const DEVICE_MANIFEST_SOURCE_PREFIX = 'device-manifest://chrome-extension/';
  * `source_url` install's path as `url.pathname.replace(/^\//, '')`, so a URL
  * whose pathname is `/device-manifest://chrome-extension/chrome.x` yields a
  * sourcePath that satisfies any prefix test — while the same install compiles
- * the caller's own source. Matching {@link isNativeChromeExtensionConnector}'s
- * exact `<prefix><key>@<version>` form closes that, and the code check makes
+ * the caller's own source. Requiring the exact `<prefix><key>@<version>` form
+ * closes that, and the code check makes
  * the guard state the real invariant rather than a proxy for it: a device
  * manifest carries an identity, never a payload.
  */
@@ -88,72 +84,15 @@ export function assertChromeNamespaceInstallIsDeviceManifest(facts: {
   );
 }
 
-export function isLegacyNonManifestConnector(facts: {
-  connectorKey: string;
-  manifestBacked: boolean;
-}): boolean {
-  return (
-    isLegacyNativeChromeExtensionConnectorKey(facts.connectorKey) && !facts.manifestBacked
-  );
-}
-
-export interface ConnectorExecutionSourceFacts {
-  connectorKey: string;
-  connectorVersion: string;
-  manifestBacked: boolean;
-  artifactSourcePath: string | null | undefined;
-}
-
-/**
- * Whether the selected run artifact executes natively in Chrome.
- * The reserved Chrome namespace is intrinsically native. A legacy key is
- * native only while that exact artifact is the narrowly validated Chrome
- * manifest; compiled overrides and legacy platform definitions stay delegated.
- */
-export function isNativeChromeExtensionConnector(facts: ConnectorExecutionSourceFacts): boolean {
-  if (isChromeNamespaceConnectorKey(facts.connectorKey)) return true;
-  if (!isLegacyNativeChromeExtensionConnectorKey(facts.connectorKey)) return false;
-  return (
-    facts.manifestBacked &&
-    facts.artifactSourcePath ===
-      `${DEVICE_MANIFEST_SOURCE_PREFIX}${facts.connectorKey}@${facts.connectorVersion}`
-  );
-}
-
-/** A Chrome pin on any other implementation delegates browser access; it does not host the parent run. */
-export function isDelegatedBrowserAffinityConnector(
-  platform: string | null | undefined,
-  facts: ConnectorExecutionSourceFacts
-): boolean {
-  return platform === 'chrome-extension' && !isNativeChromeExtensionConnector(facts);
-}
-
-/** SQL equivalent of {@link isNativeChromeExtensionConnector}. */
+/** SQL equivalent of {@link isChromeNamespaceConnectorKey}. */
 export function nativeChromeExtensionConnectorSql<TFragment>(
   sql: SqlTag<TFragment>,
-  refs: {
-    connectorKey: TFragment;
-    connectorVersion: TFragment;
-    manifestBacked: TFragment;
-    artifactSourcePath: TFragment;
-  }
+  refs: { connectorKey: TFragment }
 ): TFragment {
   return sql`
     (
       ${refs.connectorKey} = 'chrome'
       OR ${refs.connectorKey} LIKE 'chrome.%'
-      OR (
-        ${refs.connectorKey} = ANY(
-          ${pgTextArray([...LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS])}::text[]
-        )
-        AND COALESCE(${refs.manifestBacked}, false)
-        AND ${refs.artifactSourcePath} =
-          -- Deliberately a literal, not the DEVICE_MANIFEST_SOURCE_PREFIX constant:
-          -- interpolating here would bind a PARAMETER rather than emit SQL text, and
-          -- concatenating an untyped parameter can fail Postgres type inference. Keep
-          -- it in step with the constant by hand; both sit in this file.
-          'device-manifest://chrome-extension/' || ${refs.connectorKey} || '@' || ${refs.connectorVersion}
-      )
     )
   `;
 }
@@ -161,34 +100,11 @@ export function nativeChromeExtensionConnectorSql<TFragment>(
 /** SQL equivalent of {@link isDelegatedBrowserAffinityConnector}. */
 export function delegatedBrowserAffinitySql<TFragment>(
   sql: SqlTag<TFragment>,
-  refs: {
-    platform: TFragment;
-    connectorKey: TFragment;
-    connectorVersion: TFragment;
-    manifestBacked: TFragment;
-    artifactSourcePath: TFragment;
-  }
+  refs: { platform: TFragment; connectorKey: TFragment }
 ): TFragment {
   return sql`
     ${refs.platform} = 'chrome-extension'
     AND NOT (${nativeChromeExtensionConnectorSql(sql, refs)})
-  `;
-}
-
-export function legacyNonManifestConnectorSql<TFragment>(
-  sql: SqlTag<TFragment>,
-  refs: {
-    connectorKey: TFragment;
-    manifestBacked: TFragment;
-    artifactCompiledCode: TFragment;
-  }
-): TFragment {
-  return sql`
-    ${refs.connectorKey} = ANY(
-      ${pgTextArray([...LEGACY_NATIVE_CHROME_EXTENSION_CONNECTOR_KEYS])}::text[]
-    )
-    AND NOT COALESCE(${refs.manifestBacked}, false)
-    AND NULLIF(BTRIM(${refs.artifactCompiledCode}), '') IS NOT NULL
   `;
 }
 

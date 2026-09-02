@@ -119,7 +119,7 @@ describe('formatToolResult', () => {
               feed_id: 42,
               feed_key: 'messages',
               connection_slug: 'whatsapp-personal',
-              connector_key: 'whatsapp.local',
+              connector_key: 'whatsapp.web',
               display_name: 'WhatsApp messages',
               status: 'not_queried',
               workspace_slug: 'federation-alpha',

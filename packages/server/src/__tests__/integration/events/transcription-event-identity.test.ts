@@ -127,11 +127,11 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
     const org = await createTestOrganization();
     const firstConnection = await createTestConnection({
       organization_id: org.id,
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
     });
     const secondConnection = await createTestConnection({
       organization_id: org.id,
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
     });
 
     const first = await insertEvent({
@@ -141,7 +141,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
       title: 'First account voice note',
       content: '[voice note from first account]',
       semanticType: 'message',
-      connectorKey: 'whatsapp.local',
+      connectorKey: 'whatsapp.web',
       connectionId: Number(firstConnection.id),
     });
     await insertEvent({
@@ -151,7 +151,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
       title: 'Second account voice note',
       content: '[voice note from second account]',
       semanticType: 'message',
-      connectorKey: 'whatsapp.local',
+      connectorKey: 'whatsapp.web',
       connectionId: Number(secondConnection.id),
     });
 
@@ -181,7 +181,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
     const org = await createTestOrganization();
     const connection = await createTestConnection({
       organization_id: org.id,
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
     });
     const connectionId = Number(connection.id);
     const projections = {
@@ -197,7 +197,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
         title: 'Tenant voice note',
         content: '[voice note]',
         semanticType: 'message',
-        connectorKey: 'whatsapp.local',
+        connectorKey: 'whatsapp.web',
         connectionId,
         metadata: projections,
       },
@@ -227,7 +227,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
     const org = await createTestOrganization();
     const connection = await createTestConnection({
       organization_id: org.id,
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
     });
     const connectionId = Number(connection.id);
     const feedId = await createFeed(org.id, connectionId, 'messages');
@@ -240,7 +240,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
       content: '[voice note]',
       semanticType: 'message' as const,
       originType: 'message',
-      connectorKey: 'whatsapp.local',
+      connectorKey: 'whatsapp.web',
       connectionId,
       feedKey: 'messages',
       feedId,
@@ -255,7 +255,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
     expect(afterTranscript[0]).toMatchObject({
       origin_id: ORIGIN_ID,
       payload_text: 'transcribed voice note',
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
       connection_id: connectionId,
       feed_key: 'messages',
       feed_id: feedId,
@@ -276,7 +276,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
     expect(heads[0]).toMatchObject({
       origin_id: ORIGIN_ID,
       payload_text: 'transcribed voice note',
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
       connection_id: connectionId,
       feed_key: 'messages',
       feed_id: feedId,
@@ -300,7 +300,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
     const org = await createTestOrganization();
     const connection = await createTestConnection({
       organization_id: org.id,
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
     });
     const connectionId = Number(connection.id);
     const base = await insertEvent(
@@ -311,7 +311,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
         title: 'Concurrent voice note',
         content: '[voice note]',
         semanticType: 'message',
-        connectorKey: 'whatsapp.local',
+        connectorKey: 'whatsapp.web',
         connectionId,
       },
       { onConflictUpdate: true }
@@ -365,7 +365,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
     const org = await createTestOrganization();
     const connection = await createTestConnection({
       organization_id: org.id,
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
     });
     const connectionId = Number(connection.id);
     const baseParams = {
@@ -375,7 +375,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
       title: 'Voice note',
       content: '[old voice note]',
       semanticType: 'message' as const,
-      connectorKey: 'whatsapp.local',
+      connectorKey: 'whatsapp.web',
       connectionId,
     };
     const base = await insertEvent(baseParams, { onConflictUpdate: true });
@@ -432,7 +432,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
     const org = await createTestOrganization();
     const connection = await createTestConnection({
       organization_id: org.id,
-      connector_key: 'whatsapp.local',
+      connector_key: 'whatsapp.web',
     });
     const connectionId = Number(connection.id);
     const base = await insertEvent({
@@ -442,7 +442,7 @@ describe('inline attachment transcription event identity (issue #3067)', () => {
       title: 'Embedded voice note',
       content: '[voice note]',
       semanticType: 'message',
-      connectorKey: 'whatsapp.local',
+      connectorKey: 'whatsapp.web',
       connectionId,
     });
 

@@ -16,7 +16,6 @@ import { getDb } from "../../../../db/client";
 import type { Env } from "../../../../index";
 import {
 	isDelegatedBrowserAffinityConnector,
-	isLegacyNonManifestConnector,
 } from "../../../../utils/connector-execution-placement";
 import { currentMcpActivityAttribution, currentMcpActivityEventMetadata } from "../../../../lobu/stores/mcp-client-conversations";
 import { callTool as callProxyTool } from "../../../../mcp-proxy/client";
@@ -669,23 +668,13 @@ export async function handleExecute(
 	// onto the extension.
 	// Native extension execution and delegated browser affinity share the same
 	// narrow classification as worker polling and scheduled sync admission.
-	const executionSourceFacts = {
-		connectorKey: connection.connector_key,
-		connectorVersion: connection.connector_version,
-		manifestBacked: connection.connector_manifest_backed,
-		artifactSourcePath: connection.connector_artifact_source_path,
-	};
 	const isChromeScrapeAffinity = isDelegatedBrowserAffinityConnector(
 		connection.device_platform,
-		executionSourceFacts,
-	);
-	const isLegacyNonManifestArtifact = isLegacyNonManifestConnector(
-		executionSourceFacts,
+		connection.connector_key,
 	);
 	const executesOnDevice =
 		!isChromeScrapeAffinity &&
-		(connection.device_worker_id != null ||
-			(connection.connector_runtime != null && !isLegacyNonManifestArtifact));
+		(connection.device_worker_id != null || connection.connector_runtime != null);
 	if (activation && (operation.backend !== "local_action" || executesOnDevice)) {
 		throw new ToolUserError(
 			"Page activation requires a server-executed local connector operation.",

@@ -108,8 +108,9 @@ describe('insertEvent attachment re-sync', () => {
   it('does not supersede when the connector renamed the same bytes', async () => {
     const { base, first } = await seed();
 
-    // The real prod shape: whatsapp.local names each voice note with a fresh
-    // UUID, so a re-sync of identical bytes arrives under a different filename.
+    // The real prod shape: the retired whatsapp.local bridge named each voice
+    // note with a fresh UUID, so a re-sync of identical bytes arrives under a
+    // different filename.
     const renamed = await insertEvent(
       {
         ...base,

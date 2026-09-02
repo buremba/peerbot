@@ -403,14 +403,15 @@ describe("connection-to-device operation routing lifecycle", () => {
 		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
 		expectInlineCompleted(chromePrefixRun);
 
-		// The legacy WhatsApp key is native Chrome execution only for a clean,
-		// metadata-only Chrome manifest artifact. Compiled bytes stay delegated even
-		// if stale provenance and the active definition both still describe Chrome.
-		const compiledWhatsappVersion = `compiled-${Date.now()}`;
+		// A key outside the reserved `chrome.*` namespace is never native Chrome
+		// execution: a Chrome pin on it is delegated browser affinity, so the
+		// parent run completes inline on fleet even when stale provenance and the
+		// active definition both still describe Chrome.
+		const compiledDemoVersion = `compiled-${Date.now()}`;
 		await createTestConnectorDefinition({
-			key: "whatsapp.local",
-			name: "WhatsApp compiled override",
-			version: compiledWhatsappVersion,
+			key: "demo.device",
+			name: "Demo device compiled override",
+			version: compiledDemoVersion,
 			organization_id: org.id,
 			auth_schema: { methods: [{ type: "none" }] },
 		});
@@ -429,14 +430,14 @@ describe("connection-to-device operation routing lifecycle", () => {
 			})},
 				required_capability = 'browser.scripting',
 				runtime = ${sql.json({ platforms: ["chrome-extension"] })}
-			WHERE key = 'whatsapp.local' AND organization_id = ${org.id}
+			WHERE key = 'demo.device' AND organization_id = ${org.id}
 		`;
 		await sql`
 			INSERT INTO connector_versions (
 				organization_id, connector_key, version, compiled_code,
 				compiled_code_hash, compile_config_hash, source_path, created_at
 			) VALUES (
-				${org.id}, 'whatsapp.local', ${compiledWhatsappVersion}, ${`
+				${org.id}, 'demo.device', ${compiledDemoVersion}, ${`
 					class ConnectorRuntime {
 						async sync() { return { items: [] }; }
 						async execute(ctx) {
@@ -444,109 +445,109 @@ describe("connection-to-device operation routing lifecycle", () => {
 						}
 					}
 					export { ConnectorRuntime };
-				`}, 'compiled-whatsapp-override-hash', ${COMPILE_CONFIG_HASH},
-				${`device-manifest://chrome-extension/whatsapp.local@${compiledWhatsappVersion}`}, NOW()
+				`}, 'compiled-demo-override-hash', ${COMPILE_CONFIG_HASH},
+				${`device-manifest://chrome-extension/demo.device@${compiledDemoVersion}`}, NOW()
 			)
 		`;
-		const compiledWhatsappConnection = await createTestConnection({
+		const compiledDemoConnection = await createTestConnection({
 			organization_id: org.id,
-			connector_key: "whatsapp.local",
+			connector_key: "demo.device",
 			created_by: user.id,
 			visibility: "private",
 			createDefaultFeed: false,
 		});
 		await sql`
 			UPDATE connections SET device_worker_id = ${chrome.id}::uuid
-			WHERE id = ${compiledWhatsappConnection.id}
+			WHERE id = ${compiledDemoConnection.id}
 		`;
-		const compiledWhatsappResult = await manageOperations(
+		const compiledDemoResult = await manageOperations(
 			{
 				action: "execute",
-				connection_id: compiledWhatsappConnection.id,
+				connection_id: compiledDemoConnection.id,
 				operation_key: ACTION_KEY,
-				input: { value: "compiled-whatsapp-affinity" },
-				idempotency_key: "device-routing:compiled-whatsapp-affinity",
+				input: { value: "compiled-demo-affinity" },
+				idempotency_key: "device-routing:compiled-demo-affinity",
 			},
 			{} as Env,
 			ctx,
 		);
-		expect(compiledWhatsappResult).toMatchObject({
+		expect(compiledDemoResult).toMatchObject({
 			status: "completed",
-			output: { inline: true, value: "compiled-whatsapp-affinity" },
+			output: { inline: true, value: "compiled-demo-affinity" },
 		});
-		const [compiledWhatsappRun] = (await sql`
+		const [compiledDemoRun] = (await sql`
 			SELECT status, claimed_by
 			FROM runs
-			WHERE connection_id = ${compiledWhatsappConnection.id}
-			  AND action_idempotency_key = 'device-routing:compiled-whatsapp-affinity'
+			WHERE connection_id = ${compiledDemoConnection.id}
+			  AND action_idempotency_key = 'device-routing:compiled-demo-affinity'
 		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
-		expectInlineCompleted(compiledWhatsappRun);
+		expectInlineCompleted(compiledDemoRun);
 
 		await sql`
 			UPDATE connections SET device_worker_id = NULL
-			WHERE id = ${compiledWhatsappConnection.id}
+			WHERE id = ${compiledDemoConnection.id}
 		`;
-		const unpinnedCompiledWhatsappResult = await manageOperations(
+		const unpinnedCompiledDemoResult = await manageOperations(
 			{
 				action: "execute",
-				connection_id: compiledWhatsappConnection.id,
+				connection_id: compiledDemoConnection.id,
 				operation_key: ACTION_KEY,
-				input: { value: "compiled-whatsapp-unpinned" },
-				idempotency_key: "device-routing:compiled-whatsapp-unpinned",
+				input: { value: "compiled-demo-unpinned" },
+				idempotency_key: "device-routing:compiled-demo-unpinned",
 			},
 			{} as Env,
 			ctx,
 		);
-		expect(unpinnedCompiledWhatsappResult).toMatchObject({
+		expect(unpinnedCompiledDemoResult).toMatchObject({
 			status: "completed",
-			output: { inline: true, value: "compiled-whatsapp-unpinned" },
+			output: { inline: true, value: "compiled-demo-unpinned" },
 		});
 
-		// The same legacy key remains device-native when the selected artifact is
+		// The same key becomes device-native when the selected artifact is
 		// metadata-only. With no physical pin, its runtime still queues the action
 		// for any device advertising the exact manifest rather than attempting to
 		// resolve nonexistent connector code inline.
 		await sql`
 			UPDATE connector_versions
 			SET compiled_code = NULL,
-				compiled_code_hash = 'mac-whatsapp-manifest-hash',
+				compiled_code_hash = 'mac-demo-manifest-hash',
 				compile_config_hash = NULL,
 				source_code = NULL,
-				source_path = ${`device-manifest://macos/whatsapp.local@${compiledWhatsappVersion}`}
+				source_path = ${`device-manifest://macos/demo.device@${compiledDemoVersion}`}
 			WHERE organization_id = ${org.id}
-			  AND connector_key = 'whatsapp.local'
-			  AND version = ${compiledWhatsappVersion}
+			  AND connector_key = 'demo.device'
+			  AND version = ${compiledDemoVersion}
 		`;
 		await sql`
 			UPDATE connector_definitions
-			SET required_capability = 'whatsapp_local',
+			SET required_capability = 'local_directory',
 				runtime = ${sql.json({ platforms: ["macos"] })}
-			WHERE key = 'whatsapp.local' AND organization_id = ${org.id}
+			WHERE key = 'demo.device' AND organization_id = ${org.id}
 		`;
-		const manifestWhatsappKey = "device-routing:manifest-whatsapp-unpinned";
+		const manifestDemoKey = "device-routing:manifest-demo-unpinned";
 		const aborted = new AbortController();
 		aborted.abort();
-		const manifestWhatsappResult = await manageOperations(
+		const manifestDemoResult = await manageOperations(
 			{
 				action: "execute",
-				connection_id: compiledWhatsappConnection.id,
+				connection_id: compiledDemoConnection.id,
 				operation_key: ACTION_KEY,
-				input: { value: "manifest-whatsapp-unpinned" },
-				idempotency_key: manifestWhatsappKey,
+				input: { value: "manifest-demo-unpinned" },
+				idempotency_key: manifestDemoKey,
 			},
 			{} as Env,
 			{ ...ctx, abortSignal: aborted.signal },
 		);
-		expect(manifestWhatsappResult).toMatchObject({
+		expect(manifestDemoResult).toMatchObject({
 			status: "timeout",
 		});
-		const [manifestWhatsappRun] = (await sql`
+		const [manifestDemoRun] = (await sql`
 			SELECT status, claimed_by
 			FROM runs
-			WHERE connection_id = ${compiledWhatsappConnection.id}
-			  AND action_idempotency_key = ${manifestWhatsappKey}
+			WHERE connection_id = ${compiledDemoConnection.id}
+			  AND action_idempotency_key = ${manifestDemoKey}
 		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
-		expect(manifestWhatsappRun).toEqual({ status: "timeout", claimed_by: null });
+		expect(manifestDemoRun).toEqual({ status: "timeout", claimed_by: null });
 
 		// Intrinsic connector runtime remains authoritative even without a pin.
 		await sql`

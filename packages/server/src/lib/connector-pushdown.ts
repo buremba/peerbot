@@ -340,7 +340,7 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
   const feedConfig = (feed.config ?? {}) as Record<string, unknown>;
   remainingReadMs(p);
 
-  // Native device connectors (whatsapp.local, apple.*, os.shell, …) are
+  // Native device connectors (apple.*, os.shell, chrome.*, …) are
   // metadata-only on the server: there is no compiled bundle to run, so their
   // live reads are served natively over the device action queue. `runtime` is
   // descriptive; the absence of executable code is the deciding fact.

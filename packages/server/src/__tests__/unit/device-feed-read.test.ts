@@ -38,13 +38,13 @@ describe('device feed read — reserved action key', () => {
   it('rejects a manifest whose actions_schema claims the reserved prefix', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'macos',
-      capabilities: ['whatsapp_local'],
+      capabilities: ['local_directory'],
       manifests: [
         {
-          key: 'whatsapp.local',
+          key: 'local.directory',
           version: '9.9.9',
           name: 'Impostor',
-          required_capability: 'whatsapp_local',
+          required_capability: 'local_directory',
           runtime: { platforms: ['macos'] },
           actions_schema: { [DEVICE_FEED_READ_ACTION_KEY]: { key: DEVICE_FEED_READ_ACTION_KEY } },
         },
@@ -57,15 +57,15 @@ describe('device feed read — reserved action key', () => {
   it('still accepts a manifest declaring ordinary actions', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'macos',
-      capabilities: ['whatsapp_local'],
+      capabilities: ['local_directory'],
       manifests: [
         {
-          key: 'whatsapp.local',
+          key: 'local.directory',
           version: '9.9.9',
           name: 'Fine',
-          required_capability: 'whatsapp_local',
+          required_capability: 'local_directory',
           runtime: { platforms: ['macos'] },
-          actions_schema: { send_message: { key: 'send_message' } },
+          actions_schema: { read_file: { key: 'read_file' } },
         },
       ],
     });
@@ -78,13 +78,13 @@ describe('device manifest feed operations', () => {
   it('rejects a newly advertised feed that omits operations', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'macos',
-      capabilities: ['whatsapp_local'],
+      capabilities: ['local_directory'],
       manifests: [
         {
-          key: 'whatsapp.local',
+          key: 'local.directory',
           version: '9.9.9',
           name: 'Missing operations',
-          required_capability: 'whatsapp_local',
+          required_capability: 'local_directory',
           runtime: { platforms: ['macos'] },
           feeds_schema: { messages: { key: 'messages', name: 'Messages' } },
         },
@@ -96,19 +96,24 @@ describe('device manifest feed operations', () => {
   });
 });
 
-describe('WhatsApp Browser manifest capability', () => {
+describe('Chrome manifests stay inside the reserved namespace', () => {
+  // `whatsapp.local` used to be admitted here: an ordinary key that the
+  // extension nonetheless implemented natively, ~6,000 lines of it. That
+  // exception is retired. A connector needing its own code is now an ordinary
+  // connector that ships that code and drives the page through the generic
+  // browser ops, so the extension never advertises its key at all.
   const chromeManifest = {
-    key: 'whatsapp.local',
+    key: 'chrome.history',
     version: '2.0.0',
-    name: 'WhatsApp Personal',
-    required_capability: 'browser.whatsapp',
+    name: 'Browser History',
+    required_capability: 'browser.history',
     runtime: { platforms: ['chrome-extension'] },
     feeds_schema: {
-      messages: { key: 'messages', name: 'Messages', operations: ['sync', 'read'] },
+      visits: { key: 'visits', name: 'Visits', operations: ['sync', 'read'] },
     },
   };
 
-  it('keeps manifest inventory while the dedicated capability is not granted', () => {
+  it('keeps manifest inventory while the declared capability is not granted', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'chrome-extension',
       capabilities: ['browser.scripting'],
@@ -117,7 +122,18 @@ describe('WhatsApp Browser manifest capability', () => {
 
     expect(result.accepted).toBe(true);
     expect(result.manifests).toHaveLength(1);
-    expect(result.manifests[0]?.manifest.key).toBe('whatsapp.local');
+    expect(result.manifests[0]?.manifest.key).toBe('chrome.history');
+  });
+
+  it('rejects a key outside the reserved chrome namespace', () => {
+    const result = validateDeviceConnectorManifests({
+      platform: 'chrome-extension',
+      capabilities: ['browser.scripting'],
+      manifests: [{ ...chromeManifest, key: 'whatsapp.local' }],
+    });
+
+    expect(result.accepted).toBe(false);
+    expect(result.manifests).toHaveLength(0);
   });
 
   it('rejects a Chrome manifest with a capability outside the platform allowlist', () => {
@@ -131,18 +147,7 @@ describe('WhatsApp Browser manifest capability', () => {
     expect(result.manifests).toHaveLength(0);
   });
 
-  it('rejects a Chrome whatsapp.local manifest with an unrelated allowed capability', () => {
-    const result = validateDeviceConnectorManifests({
-      platform: 'chrome-extension',
-      capabilities: ['browser.tabs'],
-      manifests: [{ ...chromeManifest, required_capability: 'browser.tabs' }],
-    });
-
-    expect(result.accepted).toBe(false);
-    expect(result.manifests).toHaveLength(0);
-  });
-
-  it('rejects a Chrome whatsapp.local manifest that does not include the Chrome runtime', () => {
+  it('rejects a Chrome manifest that does not include the Chrome runtime', () => {
     const result = validateDeviceConnectorManifests({
       platform: 'chrome-extension',
       capabilities: ['browser.scripting'],
@@ -194,19 +199,19 @@ describe('device feed read — outcome mapping', () => {
     feedKey: 'messages',
     feedConfig: {},
     connectionId: 3,
-    connectorKey: 'whatsapp.local',
+    connectorKey: 'local.directory',
     connectorVersion: '2.0.0',
     manifestHash: null,
     deviceOwnerUserId: 'user-1',
     deviceWorkerId: null,
     feedStatus: 'active',
-    requiredCapability: 'whatsapp_local',
+    requiredCapability: 'local_directory',
   };
 
   it('returns the device rows on success', () => {
     expect(
-      deliver(params, { status: 'completed', output: { rows: [{ id: 'wa-1' }] } }).rows
-    ).toEqual([{ id: 'wa-1' }]);
+      deliver(params, { status: 'completed', output: { rows: [{ id: 'row-1' }] } }).rows
+    ).toEqual([{ id: 'row-1' }]);
   });
 
   it('names the feed and the device in a failure', () => {
@@ -278,12 +283,12 @@ describe('device feed read — device reply normalization', () => {
   it('passes through rows, columns and total', () => {
     expect(
       normalizeDeviceFeedReadOutput({
-        rows: [{ id: 'wa-1', text: 'hi' }],
+        rows: [{ id: 'row-1', text: 'hi' }],
         columns: [{ name: 'id', type: 'text' }],
         total: 42,
       })
     ).toEqual({
-      rows: [{ id: 'wa-1', text: 'hi' }],
+      rows: [{ id: 'row-1', text: 'hi' }],
       columns: [{ name: 'id', type: 'text' }],
       total: 42,
     });

@@ -31,6 +31,30 @@ import {
 const logger = createLogger("system-judge-target");
 
 /**
+ * Registry instance cached per resolved path. A per-call instance re-read and
+ * re-parsed config/providers.json from disk on every judge call, because the
+ * service's own cache dies with the instance, and the judge sits on the egress
+ * path — that is a disk read per proxied request.
+ *
+ * Keyed on the path rather than a bare singleton: the path is derived from the
+ * environment, so a plain singleton would keep serving the first path it ever
+ * saw and silently ignore a later one. That turns an unreadable registry into a
+ * stale-but-valid answer, which is the opposite of failing closed.
+ */
+let cached:
+  | { path: string | undefined; service: ProviderRegistryService }
+  | undefined;
+function getRegistry(): ProviderRegistryService {
+  const path = resolveProviderRegistryPath();
+  let entry = cached;
+  if (!entry || entry.path !== path) {
+    entry = { path, service: new ProviderRegistryService(path) };
+    cached = entry;
+  }
+  return entry.service;
+}
+
+/**
  * Why a judge target could not be resolved. Both values are MISCONFIGURATION,
  * never a transient fault — the caller must fail closed without tripping the
  * circuit breaker, whose cooldown exists for upstreams that might recover.
@@ -67,8 +91,7 @@ export async function resolveSystemJudgeTarget(
 
   let configs: Record<string, ProviderConfigEntry> = {};
   try {
-    const registry = new ProviderRegistryService(resolveProviderRegistryPath());
-    configs = await registry.getProviderConfigs();
+    configs = await getRegistry().getProviderConfigs();
   } catch (err) {
     // Unreadable registry means NO provider is verifiably operator-keyed.
     // Fail closed rather than falling through to some other credential source.
@@ -108,9 +131,7 @@ export async function resolveSystemJudgeTarget(
     };
   }
 
-  const baseUrl =
-    config.upstreamBaseUrl ??
-    (parts.slug === "openai" ? "https://api.openai.com/v1" : undefined);
+  const baseUrl = config.upstreamBaseUrl;
   if (!baseUrl) {
     return {
       ok: false,

@@ -229,12 +229,14 @@ describe("judge runner — configuration errors vs faults", () => {
 describe("resolveSystemJudgeTarget", () => {
   const REGISTRY_ENV = "LOBU_PROVIDER_REGISTRY_PATH";
 
+  const REGISTRY_PATH = new URL(
+    "../../../../../config/providers.json",
+    import.meta.url
+  ).pathname;
+
   function withRegistry(): () => void {
     const prev = process.env[REGISTRY_ENV];
-    process.env[REGISTRY_ENV] = new URL(
-      "../../../../../config/providers.json",
-      import.meta.url
-    ).pathname;
+    process.env[REGISTRY_ENV] = REGISTRY_PATH;
     return () => {
       if (prev === undefined) delete process.env[REGISTRY_ENV];
       else process.env[REGISTRY_ENV] = prev;
@@ -253,6 +255,54 @@ describe("resolveSystemJudgeTarget", () => {
     const result = await resolveSystemJudgeTarget("definitely-not-a-provider/m");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("no-system-provider");
+  });
+
+  // The two branches that carry the migration risk. Everything else in this
+  // describe asserts a refusal, so without these a resolver that refused
+  // EVERY ref would pass the whole block while the judge is dead.
+  test("resolves a provider the deployment holds an OpenAI-compatible system key for", async () => {
+    const prevRegistry = process.env[REGISTRY_ENV];
+    const prevKey = process.env.OPENAI_API_KEY;
+    process.env[REGISTRY_ENV] = REGISTRY_PATH;
+    process.env.OPENAI_API_KEY = "sk-deployment-owned";
+    restore = () => {
+      if (prevRegistry === undefined) delete process.env[REGISTRY_ENV];
+      else process.env[REGISTRY_ENV] = prevRegistry;
+      if (prevKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevKey;
+    };
+
+    const result = await resolveSystemJudgeTarget("openai/gpt-4o-mini");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.target.baseUrl).toBe("https://api.openai.com/v1");
+      expect(result.target.model).toBe("gpt-4o-mini");
+      expect(result.target.apiKey).toBe("sk-deployment-owned");
+    }
+  });
+
+  test("refuses an anthropic-protocol provider even when its system key IS set", async () => {
+    // The regression this guards: gatewayCompletion speaks only
+    // OpenAI-compatible /chat/completions. A deployment that still holds
+    // ANTHROPIC_API_KEY must not have `claude/...` accepted and then posted to
+    // an endpoint that cannot parse it.
+    const prevRegistry = process.env[REGISTRY_ENV];
+    const prevKey = process.env.ANTHROPIC_API_KEY;
+    process.env[REGISTRY_ENV] = REGISTRY_PATH;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-still-configured";
+    restore = () => {
+      if (prevRegistry === undefined) delete process.env[REGISTRY_ENV];
+      else process.env[REGISTRY_ENV] = prevRegistry;
+      if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = prevKey;
+    };
+
+    const result = await resolveSystemJudgeTarget("claude/claude-haiku-4-5-20251001");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("no-system-provider");
+      expect(result.detail).toContain("anthropic");
+    }
   });
 
   test("an unreadable registry denies rather than falling back to another credential source", async () => {

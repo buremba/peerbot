@@ -32,8 +32,9 @@ That's it. Sign up via the admin UI, add provider API keys from the settings pag
 | `ENCRYPTION_KEY` | **Yes** | 32-byte base64. Encrypts secrets stored in Postgres (provider keys, OAuth tokens). Loses every encrypted secret if you change it after first boot. |
 | `BETTER_AUTH_SECRET` | **Yes** | 32-byte base64. Signs admin session cookies. Auto-generated ephemerally in local dev; required in production. |
 | `PUBLIC_GATEWAY_URL` | Recommended | Public gateway base URL (origin or origin + `/lobu`). Affects OAuth callbacks, webhooks, public-page links, and cookie domain. Defaults to `http://localhost:8787/lobu`. |
-| `ANTHROPIC_API_KEY` | No | Only needed if (a) you run Anthropic-backed agents, or (b) you configure the optional LLM egress judge. Add it from the admin UI after boot instead. |
+| `ANTHROPIC_API_KEY` | No | Only needed if you run Anthropic-backed agents. Add it from the admin UI after boot instead. It does **not** serve the LLM egress judge — see the row below. |
 | `OPENAI_API_KEY` / `GROQ_API_KEY` / etc. | No | Same as Anthropic — set only the providers you want available, or add them via the admin UI at runtime. |
+| `EGRESS_JUDGE_MODEL` | Optional | Model for the optional LLM egress judge. Must be a qualified `<provider>/<model>` ref (e.g. `openai/gpt-4o-mini`) naming a provider this deployment holds a **system key** for in its environment, and that speaks the OpenAI-compatible protocol. Anthropic-protocol providers (`claude/...`) are not eligible. A per-rule `judgeModel` follows the same rule. The judge fails closed — an unresolvable ref denies the request. |
 | `WORKER_ALLOWED_DOMAINS` | Optional | Default empty = workers have no internet. Comma-separated allowlist, or `*` for unrestricted (not recommended in prod). See `.env.example` for the full pattern. |
 
 ## Apple Silicon (M1/M2/M3) note

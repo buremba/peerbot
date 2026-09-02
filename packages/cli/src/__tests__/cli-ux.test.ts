@@ -249,7 +249,7 @@ describe("agent scaffold", () => {
 
 describe("buildBrowserAuthData", () => {
   // Regression guard: the connector-side cascade in
-  // @lobu/connector-sdk (acquire.ts, browser-network.ts,
+  // @lobu/connector-sdk (acquire.ts, browser/network.ts,
   // browser-scraper-utils.ts) short-circuits on `userDataDir` and tries
   // Playwright launchPersistentContext, which can't reopen the profile
   // dir the dedicated Chrome we just launched is holding. The auth_data

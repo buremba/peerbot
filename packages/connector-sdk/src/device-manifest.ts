@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 export type DeviceManifestSchema = Record<string, unknown>;
 
 /** Execution owner declared by a device-manifest wire artifact. */
@@ -94,11 +92,6 @@ export function canonicalDeviceManifestJson(manifest: DeviceConnectorManifest): 
     if (payload[key] == null) delete payload[key];
   }
   return JSON.stringify(sortDeviceManifestJson(payload));
-}
-
-/** SHA-256 of the canonical manifest payload; the wire manifest stays hashless. */
-export function deviceManifestHash(manifest: DeviceConnectorManifest): string {
-  return createHash('sha256').update(canonicalDeviceManifestJson(manifest)).digest('hex');
 }
 
 /** Serialize a validated authoring definition to the server's snake_case wire shape. */

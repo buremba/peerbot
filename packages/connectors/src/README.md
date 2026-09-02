@@ -473,15 +473,19 @@ Platform-specific logic:
 
 ## Browser-Based Connectors
 
-For headless public scraping, use `@lobu/connector-sdk` (`launchBrowser`, `runReviewScrape`,
-`validateUrlDomain`, `validatePublicUrl`). Bundled connectors import timing/checkpoint helpers
+For headless public scraping, use `@lobu/connector-sdk/browser` (`launchBrowser`,
+`runReviewScrape`) together with the root's `validateUrlDomain` / `validatePublicUrl`. The
+browser helpers live behind that subpath because they need a Node process (Playwright, CDP);
+the package root stays loadable inside a V8 isolate, and importing the subpath is what routes a
+connector to the process lane. Bundled connectors import timing/checkpoint helpers
 from `./scraper-utils.ts` (re-exports from the SDK).
 
 Review-site scrapers (Trustpilot, G2, etc.) live in `examples/brand-intelligence/` — they are
 not bundled because scraping may violate third-party terms of service.
 
 ```typescript
-import { runReviewScrape, type SyncContext } from '@lobu/connector-sdk';
+import type { SyncContext } from '@lobu/connector-sdk';
+import { runReviewScrape } from '@lobu/connector-sdk/browser';
 
 const syncReviews = (ctx: SyncContext) => runReviewScrape(ctx, {
     connectorKey: 'my-connector-sync',

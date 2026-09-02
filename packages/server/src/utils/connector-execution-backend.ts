@@ -1,4 +1,5 @@
-import { deviceManifestHash, type DeviceConnectorManifest } from '@lobu/connector-sdk';
+import type { DeviceConnectorManifest } from '@lobu/connector-sdk';
+import { deviceManifestHash } from '@lobu/connector-sdk/device-manifest-hash';
 import { EXECUTION_BACKENDS, type ExecutionBackend } from '@lobu/core/contracts/worker/protocol';
 
 export type SelectedConnectorExecutionBackend = ExecutionBackend;

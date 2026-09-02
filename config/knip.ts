@@ -53,6 +53,12 @@ const config: KnipConfig = {
         // so its exports (e.g. the `$id`-registered MatchStrategy schema) have
         // no in-repo importer and must be treated as public API, not dead.
         "src/identity-types.ts",
+        // Public subpaths `@lobu/connector-sdk/browser`, `/sources` and
+        // `/device-manifest-hash` (package.json exports): the Node-only halves
+        // of the SDK, kept off the isolate-safe root entry.
+        "src/browser/index.ts",
+        "src/sources/index.ts",
+        "src/device-manifest-hash.ts",
       ],
       ignoreDependencies: [
         // Browser connector backend (CDP) — used under src/browser/, reached

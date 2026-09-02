@@ -149,8 +149,6 @@ export function connectorSdkMock() {
     // verbatim into the cli's dist/ (see the file header). Must stay in step
     // with ACL_RESOURCE_TYPE_SLUG in packages/connector-sdk/src/acl-source.ts.
     ACL_RESOURCE_TYPE_SLUG: '$resource',
-    acquireBrowser: notUsed('acquireBrowser'),
-    captureErrorArtifacts: notUsed('captureErrorArtifacts'),
     HttpStatusError,
     extensionNetworkSync: async (opts: {
       dispatcher: {

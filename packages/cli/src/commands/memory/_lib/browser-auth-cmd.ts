@@ -66,7 +66,7 @@ async function waitForCdpEndpoint(
  * CDP launch. Extracted so the unit test can pin its shape without
  * spawning Chrome — see cli-ux.test.ts. The crucial invariant is that
  * `user_data_dir` is NOT present: the connector-side cascade
- * (acquire.ts / browser-network.ts / browser-scraper-utils.ts) prefers
+ * (acquire.ts / browser/network.ts / browser-scraper-utils.ts) prefers
  * userDataDir over cdp_url and tries Playwright launchPersistentContext,
  * which can't open a profile dir held by the dedicated Chrome we just
  * launched. cdp_url alone keeps sync attaching live.

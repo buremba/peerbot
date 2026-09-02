@@ -185,7 +185,7 @@ browser-auth or live `cdp`). Full schemas are in the SDK reference.
 - Workers run isolated with a restricted env (`PATH`, `HOME`, `TMPDIR`, `TZ`,
   `NODE_ENV`, `NODE_PATH`, `PLAYWRIGHT_BROWSERS_PATH` only) and no filesystem
   persistence — state lives in `checkpoint`.
-- Browser scraping: use the SDK's `launchBrowser` / `runReviewScrape`
+- Browser scraping: use `launchBrowser` / `runReviewScrape` from `@lobu/connector-sdk/browser`
   (patchright) for public scraping; use the extension bridge for user-session
   scraping of logged-in sites.
 

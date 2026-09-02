@@ -30,7 +30,34 @@
  * on the stricter copy closes that gap for every consumer at once.
  */
 
-import net from 'node:net';
+/**
+ * IP-literal family test with `node:net`'s exact semantics, expressed as the
+ * same regular expressions Node uses (`lib/internal/net.js`). Pure JS on
+ * purpose: this module is part of the package root, which must stay loadable
+ * inside a V8 isolate where no `node:` module exists. Returns 4, 6 or 0.
+ */
+const V4_SEG = '(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])';
+const V4_STR = `(?:${V4_SEG}\\.){3}${V4_SEG}`;
+const IPV4_RE = new RegExp(`^${V4_STR}$`);
+const V6_SEG = '(?:[0-9a-fA-F]{1,4})';
+const IPV6_RE = new RegExp(
+  '^(?:' +
+    `(?:${V6_SEG}:){7}(?:${V6_SEG}|:)|` +
+    `(?:${V6_SEG}:){6}(?:${V4_STR}|:${V6_SEG}|:)|` +
+    `(?:${V6_SEG}:){5}(?::${V4_STR}|(?::${V6_SEG}){1,2}|:)|` +
+    `(?:${V6_SEG}:){4}(?:(?::${V6_SEG}){0,1}:${V4_STR}|(?::${V6_SEG}){1,3}|:)|` +
+    `(?:${V6_SEG}:){3}(?:(?::${V6_SEG}){0,2}:${V4_STR}|(?::${V6_SEG}){1,4}|:)|` +
+    `(?:${V6_SEG}:){2}(?:(?::${V6_SEG}){0,3}:${V4_STR}|(?::${V6_SEG}){1,5}|:)|` +
+    `(?:${V6_SEG}:){1}(?:(?::${V6_SEG}){0,4}:${V4_STR}|(?::${V6_SEG}){1,6}|:)|` +
+    `(?::(?:(?::${V6_SEG}){0,5}:${V4_STR}|(?::${V6_SEG}){1,7}|:))` +
+    ')(?:%[0-9a-zA-Z-.:]{1,})?$',
+);
+
+export function ipFamily(address: string): 0 | 4 | 6 {
+  if (IPV4_RE.test(address)) return 4;
+  if (IPV6_RE.test(address)) return 6;
+  return 0;
+}
 
 /**
  * One entry of an IANA special-purpose address registry: a prefix and whether
@@ -155,7 +182,7 @@ export function matchesIpv4Prefix(
   return (addressValue & mask) === (baseValue & mask);
 }
 
-/** Expand a valid (net.isIP===6) IPv6 string into 8 unsigned 16-bit hextets. */
+/** Expand a valid (ipFamily===6) IPv6 string into 8 unsigned 16-bit hextets. */
 function expandIpv6ToHextets(addr: string): number[] {
   const lower = addr.toLowerCase();
   let hexPart = lower;
@@ -227,7 +254,7 @@ export type NormalizedHost =
  *   - IPv4-mapped IPv6, dotted (`::ffff:127.0.0.1`) and hex (`::ffff:7f00:1`)
  *   - NAT64 well-known prefix `64:ff9b::/96` (last 32 bits are an IPv4)
  *   - zone IDs (`fe80::1%eth0` → strip `%eth0`)
- *   - compressed / uppercase forms (handled by `net.isIP`)
+ *   - compressed / uppercase forms (handled by `ipFamily`)
  * Anything that looks like an IP but doesn't parse returns `invalid` so the
  * caller fails closed rather than falling through to a DNS lookup.
  */
@@ -238,7 +265,7 @@ export function normalizeIpLiteral(host: string): NormalizedHost {
     return zoneSplit === -1 ? { kind: 'not-ip' } : { kind: 'invalid' };
   }
 
-  const family = net.isIP(bare);
+  const family = ipFamily(bare);
   if (family === 4) return { kind: 'ipv4', value: bare };
   if (family === 0) {
     return bare.includes(':') ? { kind: 'invalid' } : { kind: 'not-ip' };
@@ -248,7 +275,7 @@ export function normalizeIpLiteral(host: string): NormalizedHost {
   if (lower.startsWith('::ffff:')) {
     const mapped = lower.slice('::ffff:'.length);
     if (mapped.includes('.')) {
-      return net.isIP(mapped) === 4
+      return ipFamily(mapped) === 4
         ? { kind: 'ipv4', value: mapped }
         : { kind: 'invalid' };
     }
@@ -301,9 +328,9 @@ export function normalizeIpLiteral(host: string): NormalizedHost {
 }
 
 /**
- * Strip surrounding brackets from an IPv6 literal so `net.isIP()` can
+ * Strip surrounding brackets from an IPv6 literal so `ipFamily()` can
  * recognise it. WHATWG URL parsing returns `parsedUrl.hostname` with
- * brackets for IPv6 (e.g. `[::1]`), and `net.isIP("[::1]")` returns 0,
+ * brackets for IPv6 (e.g. `[::1]`), and `ipFamily("[::1]")` returns 0,
  * which would cause the IP-blocklist check to be skipped and the value
  * to fall through to a DNS lookup — bypassing the loopback/private-IP
  * guards. Normalising to the bare address closes that hole.
@@ -363,7 +390,7 @@ export function isReservedIpv4(address: string): boolean {
  * Unparseable input fails closed, for the reason on {@link isReservedIpv4}.
  */
 export function isReservedIpv6(address: string): boolean {
-  if (net.isIPv6(address) === false) return true;
+  if (ipFamily(address) !== 6) return true;
   return !isGloballyReachable(
     address,
     IPV6_REACHABILITY_RULES,

@@ -1,7 +1,7 @@
 /**
  * Extension Network Sync
  *
- * Mirror of `browserNetworkSync` (browser-network.ts) that runs against the
+ * Mirror of `browserNetworkSync` (browser/network.ts) that runs against the
  * Owletto Chrome extension instead of a Playwright-launched browser. Same
  * shape — `interceptPatterns`, `parseResponse`, scroll loop — but the
  * driver is a series of `chrome.*` connector actions enqueued through the

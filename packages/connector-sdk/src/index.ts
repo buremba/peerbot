@@ -23,7 +23,6 @@ export { defineConnector } from './define-connector.js';
 export {
   canonicalDeviceManifestJson,
   defineDeviceConnector,
-  deviceManifestHash,
   serializeDeviceConnector,
   sortDeviceManifestJson,
 } from './device-manifest.js';
@@ -212,24 +211,10 @@ export {
 } from './automation-time.js';
 
 // =============================================================================
-// Browser SDK
+// Browser automation lives behind `@lobu/connector-sdk/browser` (Playwright,
+// CDP, error artifacts). The root must stay loadable inside a V8 isolate.
 // =============================================================================
 
-export type { AcquireBrowserOptions, AcquiredBrowser } from './browser/acquire.js';
-export { acquireBrowser, BrowserAuthCascadeError } from './browser/acquire.js';
-export type { CdpVersionInfo, ResolveCdpOptions } from './browser/cdp.js';
-export {
-  fetchCdpVersionInfo,
-  resolveCdpUrl,
-} from './browser/cdp.js';
-export { CdpPage } from './browser/cdp-page.js';
-export type { BrowserLaunchOptions, EnhancedBrowser } from './browser/launcher.js';
-export {
-  captureErrorArtifacts,
-  launchBrowser,
-} from './browser/launcher.js';
-export type { ReviewExtractResult, RunReviewScrapeOptions } from './browser/review-scrape.js';
-export { handleCookieConsent, runReviewScrape } from './browser/review-scrape.js';
 export { applyLookbackCutoff } from './checkpoint/lookback.js';
 export {
   buildTimestampCheckpoint,
@@ -238,8 +223,6 @@ export {
 } from './checkpoint/timestamp-watermark.js';
 export { validatePublicUrl, validateUrlDomain } from './url-guards.js';
 export { sleep } from './sleep.js';
-export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
-export { browserNetworkSync } from './browser-network.js';
 export type {
   ExtensionDomScrapeResult,
   ExtensionScrapeConfig,
@@ -282,9 +265,7 @@ export type { Env } from './types.js';
 // FileSystemSource — reusable primitive for filesystem-shape ingestion sources
 // =============================================================================
 
+// Types only: the implementations (git, tarball, local directory) need
+// `node:fs`, `node:https` and isomorphic-git, so `fileSystemSourceFromUri` and
+// the source classes live behind `@lobu/connector-sdk/sources`.
 export type { FileDelta, FileSystemSource, Snapshot } from './file-source.js';
-export { fileSystemSourceFromUri } from './file-source.js';
-export { GitFileSource, parseGitUri } from './sources/git-file-source.js';
-export type { TarballFileSourceOptions } from './sources/tarball-file-source.js';
-export { TarballFileSource } from './sources/tarball-file-source.js';
-export { LocalFileSource } from './sources/local-file-source.js';

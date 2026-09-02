@@ -1,14 +1,97 @@
 /**
  * HTTP retry helper for connector SDK.
  *
- * Thin wrapper around `@lobu/core`'s generic `retryWithBackoff` that provides
- * HTTP-aware retry semantics: exponential backoff with full jitter (5 retries,
- * 1s → 16s), retry on transient network/rate-limit/server errors, abort on
- * permanent client errors (401/403/404/etc.).
+ * HTTP-aware retry semantics on top of a generic exponential backoff: full
+ * jitter (5 retries, 1s → 16s), retry on transient network/rate-limit/server
+ * errors, abort on permanent client errors (401/403/404/etc.).
+ *
+ * The backoff is implemented here rather than imported from `@lobu/core`:
+ * core's root entry drags winston, Sentry and OpenTelemetry into every
+ * connector bundle, and the package root must stay loadable inside a V8
+ * isolate. It mirrors `@lobu/core`'s `retryWithBackoff` semantics exactly.
  */
 
-import { retryWithBackoff } from '@lobu/core';
 import { sdkLogger } from './logger.js';
+
+interface BackoffOptions {
+  maxRetries?: number;
+  baseDelay?: number;
+  /** Maximum delay between retries (caps the computed delay before jitter). */
+  maxDelay?: number;
+  strategy?: 'exponential' | 'linear';
+  /** `false`: none; `true`: additive 0–1000ms; `'full'`: multiply by [1, 2). */
+  jitter?: boolean | 'full';
+  shouldRetry?: (error: Error, attempt: number) => boolean;
+  onRetry?: (attempt: number, error: Error) => void;
+}
+
+async function retryWithBackoff<T>(fn: () => Promise<T>, options: BackoffOptions = {}): Promise<T> {
+  const {
+    maxRetries = 3,
+    baseDelay = 1000,
+    maxDelay,
+    strategy = 'exponential',
+    jitter = false,
+    shouldRetry,
+    onRetry,
+  } = options;
+
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error as Error;
+
+      // A buggy predicate that throws must not mask the real error or skip
+      // remaining retries — log and fall back to the default (retry).
+      if (shouldRetry) {
+        let allowRetry = true;
+        try {
+          allowRetry = shouldRetry(lastError, attempt + 1);
+        } catch (predicateError) {
+          sdkLogger.warn('shouldRetry predicate threw; defaulting to retry', {
+            error: predicateError instanceof Error ? predicateError.message : String(predicateError),
+          });
+        }
+        if (!allowRetry) throw lastError;
+      }
+
+      if (attempt < maxRetries) {
+        let delay = strategy === 'exponential' ? baseDelay * 2 ** attempt : baseDelay * (attempt + 1);
+        if (maxDelay !== undefined) delay = Math.min(delay, maxDelay);
+
+        let finalDelay: number;
+        if (jitter === 'full') {
+          finalDelay = delay * (1 + Math.random());
+        } else if (jitter === true) {
+          finalDelay = delay + Math.random() * 1000;
+        } else {
+          finalDelay = delay;
+        }
+
+        if (onRetry) {
+          try {
+            onRetry(attempt + 1, lastError);
+          } catch (callbackError) {
+            sdkLogger.warn('onRetry callback threw', {
+              error: callbackError instanceof Error ? callbackError.message : String(callbackError),
+            });
+          }
+        } else {
+          sdkLogger.warn(`Retry attempt ${attempt + 1}/${maxRetries} after ${Math.round(finalDelay)}ms`, {
+            error: lastError.message,
+          });
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, finalDelay));
+      }
+    }
+  }
+
+  throw lastError;
+}
 
 const TRANSIENT_KEYWORDS = [
   // network

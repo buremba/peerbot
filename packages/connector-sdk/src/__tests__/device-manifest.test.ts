@@ -3,9 +3,9 @@ import { defineConnector } from '../define-connector.js';
 import {
   canonicalDeviceManifestJson,
   defineDeviceConnector,
-  deviceManifestHash,
   serializeDeviceConnector,
 } from '../device-manifest.js';
+import { deviceManifestHash } from '../device-manifest-hash.js';
 
 const validSpec = () => ({
   key: 'apple.test',

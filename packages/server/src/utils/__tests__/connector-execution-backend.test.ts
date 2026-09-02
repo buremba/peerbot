@@ -1,4 +1,5 @@
-import { deviceManifestHash, type DeviceConnectorManifest } from '@lobu/connector-sdk';
+import type { DeviceConnectorManifest } from '@lobu/connector-sdk';
+import { deviceManifestHash } from '@lobu/connector-sdk/device-manifest-hash';
 import { HEADLESS_OS_SHELL_MANIFEST } from '@lobu/connector-worker/daemon/device-manifests';
 import { describe, expect, test } from 'vitest';
 import {

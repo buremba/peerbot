@@ -1,9 +1,9 @@
 import { authorizeCapabilities, isKnownPlatform } from '@lobu/core';
 import {
-  deviceManifestHash,
   sortDeviceManifestJson,
   type DeviceConnectorManifest,
 } from '@lobu/connector-sdk';
+import { deviceManifestHash } from '@lobu/connector-sdk/device-manifest-hash';
 import type { DbClient } from '../db/client';
 import type { ConnectorMetadata } from '../utils/connector-compiler';
 import {

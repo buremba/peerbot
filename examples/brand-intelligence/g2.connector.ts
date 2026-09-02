@@ -11,9 +11,9 @@ import {
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
-  runReviewScrape,
   sleep,
 } from "@lobu/connector-sdk";
+import { runReviewScrape } from "@lobu/connector-sdk/browser";
 
 interface G2Review {
   rating: number;

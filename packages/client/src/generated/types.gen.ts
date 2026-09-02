@@ -3405,6 +3405,8 @@ export type ManageFeedsResponses = {
       }
     | {
         action: "trigger_feed";
+        triggered: false;
+        reason: string;
         message: string;
       };
 };

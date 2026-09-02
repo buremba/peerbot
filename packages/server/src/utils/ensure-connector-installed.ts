@@ -79,16 +79,44 @@ export async function resolveConnectorCode(
   // refuses every stored-byte fallback below, so an admission gap can still
   // never put organization-supplied code on a runtime.
   if (isCloudMode()) {
+    // Image first, whatever the stored row's scope. An org-scoped row for a key
+    // the image ships is the common shadow shape (readers select ORDER BY
+    // organization_id NULLS LAST), and refusing it here turned an admitted run
+    // into a failed claimed run. Compiling the image file honours the same
+    // invariant the refusal did — organization-supplied bytes never execute —
+    // while keeping the connector online.
+    const imagePath = findBundledConnectorFile(connectorKey);
+    if (imagePath) {
+      // The substitution is otherwise invisible: the org's stored bytes are
+      // discarded and the image file runs instead, with nothing in the run to
+      // say so. This is the only place that knows it happened, so an org that
+      // deliberately overrode a catalog key would see a connector that "works"
+      // while executing code it did not install. The volume of this line is
+      // also the measure of the shadow-row cleanup — it goes quiet when the
+      // org-scoped rows for image-shipped keys are retired.
+      //
+      // `StoredConnectorVersion` carries no `source_code`, so a source-only
+      // org row is superseded without a line here; every prod shadow row for
+      // an image-shipped key carries `compiled_code`.
+      if (stored?.organization_id != null && stored.compiled_code != null) {
+        logger.warn(
+          {
+            connector_key: connectorKey,
+            organization_id: stored.organization_id,
+            version: stored.version,
+            row_id: stored.id,
+          },
+          'Cloud superseded an organization-scoped connector artifact with the image file'
+        );
+      }
+      return compileConnectorFromFile(imagePath);
+    }
     if (stored?.organization_id != null) {
       throw new Error(
         `Refusing organization-supplied code for '${connectorKey}' in Lobu Cloud.`
       );
     }
-    const imagePath = findBundledConnectorFile(connectorKey);
-    if (!imagePath) {
-      throw new Error(`No bundled source for '${connectorKey}' in Lobu Cloud.`);
-    }
-    return compileConnectorFromFile(imagePath);
+    throw new Error(`No bundled source for '${connectorKey}' in Lobu Cloud.`);
   }
   if (stored?.compiled_code) {
     if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;

@@ -148,24 +148,70 @@ describe('Cloud artifact admission', () => {
 		expect(error.message.startsWith(CUSTOM_CONNECTOR_CLOUD_DISABLED)).toBe(true);
 	});
 
-	test('Cloud denies organization-supplied bytes even for a shipped key', () => {
+	/**
+	 * INVERTED from "deny org bytes even for a shipped key".
+	 *
+	 * That assertion was the defect: readers select `ORDER BY organization_id
+	 * NULLS LAST`, so an org-scoped copy of an image-shipped key wins the
+	 * selection, classifies `organization`, and returned before the image check
+	 * ever ran. `apply` wrote org copies for years before the shared-row
+	 * convention, so this is the ordinary state of a long-lived workspace, not
+	 * an exotic one — it took ~160 active feeds across several orgs dark.
+	 *
+	 * Admitting costs nothing because the org bytes still never execute:
+	 * `resolveConnectorCode` compiles the image file in Cloud. It is the same
+	 * reasoning already applied to version drift and to a shared row holding
+	 * non-image bytes, two tests below — this key's provenance was the only
+	 * shape the argument had not been extended to.
+	 */
+	test('Cloud admits an org-scoped row for a key the image ships', () => {
 		process.env.LOBU_CLOUD_MODE = 'true';
-		denial(() =>
-			assertCloudConnectorArtifactTrusted({
-				connectorKey: 'github',
-				facts: facts({ organizationId: 'org_1', hasSourceCode: true }),
-			}),
-		);
+		assertCloudConnectorArtifactTrusted({
+			connectorKey: 'github',
+			facts: facts({ organizationId: 'org_1', hasSourceCode: true }),
+		});
 	});
 
-	test('Cloud denies an org row shadowing the shared row', () => {
+	/**
+	 * The exact production shape, pinned because every other fixture holds one
+	 * row in isolation: an image-shipped key whose shared row is shadowed by an
+	 * org-scoped row carrying bytes. `rowCount` is what the reader's own scope
+	 * query saw — both rows — and the selected row is the org one.
+	 */
+	test('Cloud admits an image-shipped key whose shared row an org row shadows', () => {
 		process.env.LOBU_CLOUD_MODE = 'true';
-		denial(() =>
+		for (const connectorKey of ['github', 'hackernews', 'google.gmail']) {
 			assertCloudConnectorArtifactTrusted({
-				connectorKey: 'github',
-				facts: facts({ rowCount: 2 }),
+				connectorKey,
+				facts: facts({
+					organizationId: 'org_1',
+					rowCount: 2,
+					hasCompiledCode: true,
+					sourcePath: null,
+				}),
+			});
+		}
+	});
+
+	/**
+	 * The policy half, and the reason the fix is a key check rather than a
+	 * blanket allow. A genuinely org-authored connector has no image file, so
+	 * it stays denied on exactly the same code path.
+	 */
+	test('Cloud still denies an org-scoped row for a key the image does not ship', () => {
+		process.env.LOBU_CLOUD_MODE = 'true';
+		const error = denial(() =>
+			assertCloudConnectorArtifactTrusted({
+				connectorKey: 'not_a_bundled_connector',
+				facts: facts({
+					organizationId: 'org_1',
+					rowCount: 2,
+					hasCompiledCode: true,
+					sourcePath: null,
+				}),
 			}),
 		);
+		expect(error.message).toContain('organization-supplied');
 	});
 
 	/**
@@ -216,9 +262,11 @@ describe('Cloud artifact admission', () => {
 describe('Cloud denial names the remedy, not only the reason', () => {
 	test('an organization-supplied artifact is pointed at the supported lanes', () => {
 		process.env.LOBU_CLOUD_MODE = 'true';
+		// A key the image does not ship: the genuinely organization-authored
+		// case, and now the only one that reaches this denial.
 		const error = denial(() =>
 			assertCloudConnectorArtifactTrusted({
-				connectorKey: 'github',
+				connectorKey: 'not_a_bundled_connector',
 				facts: facts({ organizationId: 'org_1', hasCompiledCode: true }),
 			}),
 		);
@@ -229,21 +277,6 @@ describe('Cloud denial names the remedy, not only the reason', () => {
 		// Cloud refuses every source-code install, so an OpenAPI connector —
 		// which is source metadata — must not be offered as a destination.
 		expect(error.message).not.toMatch(/OpenAPI/);
-	});
-
-	test('a shadowed shared row says the copy has to be removed for the tenant', () => {
-		process.env.LOBU_CLOUD_MODE = 'true';
-		const error = denial(() =>
-			assertCloudConnectorArtifactTrusted({
-				connectorKey: 'github',
-				facts: facts({ rowCount: 2 }),
-			}),
-		);
-		expect(error.message).toContain('(ambiguous-artifact-scope)');
-		expect(error.message).toMatch(/organization-scoped copy/);
-		// No Cloud-permitted action deletes a connector_versions row, so the
-		// remedy must not pretend the tenant can self-serve it.
-		expect(error.message).toMatch(/contact support/);
 	});
 
 	test('a missing image file is told apart from a tenant problem', () => {

@@ -275,8 +275,15 @@ export const ManageFeedsResultSchema = Type.Union([
     // the flag and persisting anyway is the one failure mode that matters here.
     dry_run: Type.Optional(Type.Boolean()),
   }),
+  // Nothing was queued. `triggered` discriminates this from the success
+  // variant above: the skip used to carry only `message`, so a caller that
+  // queued no run was shape-indistinguishable from one that did, and no run
+  // row exists to fail or alert on either. `reason` is the machine-readable
+  // cause behind the sentence (`SyncRunSkipReason`).
   Type.Object({
     action: Type.Literal("trigger_feed"),
+    triggered: Type.Literal(false),
+    reason: Type.String(),
     message: Type.String(),
   }),
 ]);

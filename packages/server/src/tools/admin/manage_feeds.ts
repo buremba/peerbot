@@ -1339,9 +1339,16 @@ async function handleTriggerFeed(
     if (created.reason === 'sync_unsupported') {
       return { error: 'Feed does not support sync' };
     }
+    // `triggered: false` mirrors the success shape below, because the message
+    // alone was indistinguishable from success: the skip result carried no
+    // error and no flag, so a caller that queued nothing read as one that had.
+    // No run row is written for a skip either, so there is no failed run to
+    // alert on — a Cloud denial sat unnoticed behind this shape.
     return {
       action: 'trigger_feed',
-      message: describeSyncRunSkip(created.reason),
+      triggered: false,
+      reason: created.reason,
+      message: describeSyncRunSkip(created.reason, created.detail),
     };
   }
   const runId = created.runId;

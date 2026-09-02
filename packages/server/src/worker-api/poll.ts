@@ -1711,10 +1711,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // compiled_code on the version row. Fleet workers normally compile bundled
   // sources locally, but an explicit override must still ship inline so prod
   // picks up connector code before the next image deploy. In Cloud the image
-  // is the trust root, so stored bytes on a shared row are ignored whenever
-  // the image carries the source — the worker compiles from its own image.
+  // is the trust root, so stored bytes are ignored whenever the image carries
+  // the source — the worker compiles from its own image.
+  //
+  // Deliberately NOT restricted to shared rows. Scoping the suppression to
+  // `artifact_organization_id === null` left the shadow shape — an org-scoped
+  // copy of an image-shipped key — routing into `resolveConnectorCode` with a
+  // row it then refused, failing an already-claimed run. Suppressing on the
+  // image alone is also the stricter half of the pair: org bytes now never
+  // reach a worker for a key the image ships.
   const hasStoredCompiledCode = Boolean(row.compiled_code) &&
-    !(isCloudMode() && row.artifact_organization_id === null && gatewayHasLocalSource);
+    !(isCloudMode() && gatewayHasLocalSource);
   const workerWillResolveLocally =
     !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
   // Only a device-owned run (native bridge or daemon builtin) is implemented by

@@ -347,11 +347,31 @@ export type SyncRunSkipReason =
 
 export type CreateSyncRunResult =
   | { ok: true; runId: number }
-  | { ok: false; reason: SyncRunSkipReason };
+  | {
+      ok: false;
+      reason: SyncRunSkipReason;
+      /**
+       * The denial sentence, when the cause produced one. `cloud_restricted`
+       * collapses two very different causes, and the artifact gate's own
+       * message already names the reason AND the remedy — discarding it left
+       * the operator with "cannot run on Lobu Cloud yet" and nowhere to go.
+       */
+      detail?: string;
+    };
 
-/** Operator-facing sentence per cause. Kept beside the reasons so a new reason
- *  cannot be added without deciding what a human should be told. */
-export function describeSyncRunSkip(reason: SyncRunSkipReason): string {
+/**
+ * Operator-facing sentence per cause. Kept beside the reasons so a new reason
+ * cannot be added without deciding what a human should be told.
+ *
+ * `detail` wins when the cause carried its own sentence: the Cloud artifact
+ * gate names the specific provenance and the supported path out of it, which
+ * is strictly more than the reason code can say.
+ */
+export function describeSyncRunSkip(
+  reason: SyncRunSkipReason,
+  detail?: string
+): string {
+  if (detail) return detail;
   switch (reason) {
     case 'already_active':
       return 'Sync already pending or running for this feed';
@@ -519,7 +539,7 @@ async function createSyncRunWithClient(
       { feedId, connector_key: feed.connector_key, error: errorMessage(error) },
       '[queue] Skipping sync run for custom executable connector under LOBU_CLOUD_MODE'
     );
-    return { ok: false, reason: 'cloud_restricted' };
+    return { ok: false, reason: 'cloud_restricted', detail: errorMessage(error) };
   }
 
   // Manual feeds (schedule null) keep next_run_at null after enqueue so they

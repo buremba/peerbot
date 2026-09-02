@@ -941,11 +941,10 @@ async function resolveMergedEntityRedirect(
  *
  * Derived rows aren't stored in `entities`; the type's `backing_sql` produces
  * them with stable `id`/`slug` columns. We run that SQL through
- * {@link queryDerivedEntityView} (same executor as list + type counts), then
- * match the requested slug in memory. We page through the view (not just the
- * first page) so a row past the first page still resolves; matching in memory —
- * rather than interpolating the slug into the view SQL — keeps the SQL
- * injection-free for both the internal and connection-backed paths.
+ * {@link queryDerivedEntityView} (same executor as list + type counts). An
+ * internal view gets the slug pushed down as a bound SQL parameter; a
+ * connection-backed view is paged and matched in memory. Neither path ever
+ * interpolates the slug into the view SQL.
  */
 async function resolveDerivedLeaf(
   sql: DbClient,
@@ -969,9 +968,30 @@ async function resolveDerivedLeaf(
   // `get_type`), so the detail view can right-align/badge aggregate columns.
   const measures = inferMeasureColumns(backingSql);
 
-  // Page through the view until the slug is found or the rows run out. A bounded
-  // page count caps the work on a pathologically large view (which would also be
-  // slow to list); in practice derived types have tens of rows, so page 1 hits.
+  // Internal views push the slug match into SQL as a bound parameter, so the
+  // lookup costs ONE execution of the backing SQL no matter how many rows the
+  // view produces. That matters most on a MISS, which has no early exit: paging
+  // for it re-ran the backing SQL once per page, and derived views are usually
+  // aggregates over `events`, so a 404 on a large view aggregated history once
+  // per page on a request path. The returned row is still confirmed with
+  // `derivedRowSlug` below, so any SQL/JS disagreement 404s rather than
+  // resolving the wrong row.
+  if (!backingSource) {
+    const exact = await queryDerivedEntityView(
+      backingSql,
+      undefined,
+      { limit: 1, offset: 0 },
+      ctx,
+      { preservePageRows: true, exactSlug: segment.slug }
+    );
+    if (exact.error) return null;
+    const row = exact.rows.find((r) => derivedRowSlug(r) === segment.slug);
+    if (!row) return null;
+    return buildDerivedLeaf(row, measures, segment);
+  }
+
+  // External (connection-backed) views keep the bounded scan: pushdown hands raw
+  // SQL to the connector and we can't assume its dialect supports the predicate.
   const PAGE = 500;
   const MAX_PAGES = 40;
   let match: Record<string, unknown> | undefined;
@@ -995,7 +1015,16 @@ async function resolveDerivedLeaf(
   }
   if (!match) return null;
 
-  const name = derivedRowName(match, segment.slug);
+  return buildDerivedLeaf(match, measures, segment);
+}
+
+/** Shape one derived row into the read-only entity both lookup paths return. */
+function buildDerivedLeaf(
+  row: Record<string, unknown>,
+  measures: string[],
+  segment: { entity_type: string; slug: string }
+): ResolvedEntityDetails {
+  const name = derivedRowName(row, segment.slug);
 
   return {
     // Derived rows have no stored numeric id; routing/identity use the slug, and
@@ -1005,7 +1034,7 @@ async function resolveDerivedLeaf(
     slug: segment.slug,
     name,
     parent_id: null,
-    metadata: match,
+    metadata: row,
     // Derived ("view") rows aren't stored entities — no per-field ownership.
     field_controls: {},
     json_template: null,

@@ -324,7 +324,19 @@ export async function querySqlImpl(
   args: QuerySqlArgs,
   _env: unknown,
   ctx: ToolContext,
-  options?: { maxSerializedResultBytes?: number }
+  options?: {
+    maxSerializedResultBytes?: number;
+    /**
+     * Internal-only exact-match filter (NOT on the agent-facing schema). Keeps
+     * the first non-null of `columns` on each row, trimmed, and compares it to
+     * `value` as a bound parameter. Read via `to_jsonb(...)->>` so a column the
+     * query doesn't project yields NULL and falls through instead of raising
+     * `undefined column` — that mirrors the caller's `a ?? b` semantics without
+     * needing to know the projection. Internal path only: pushdown hands raw
+     * SQL to the connector, whose dialect we can't assume.
+     */
+    exactMatch?: { columns: string[]; value: string };
+  }
 ): Promise<QuerySqlResult> {
   const startTime = Date.now();
   const title = args.title?.trim() || undefined;
@@ -413,6 +425,11 @@ export async function querySqlImpl(
         'search_term is not supported with an external connection — use search_memory.'
       );
     }
+    if (options?.exactMatch) {
+      return fail(
+        'exactMatch is not supported with an external connection — the connector owns its dialect.'
+      );
+    }
     const bounds = coercePageBounds(args);
     if ('error' in bounds) return fail(bounds.error);
     const { limit, offset } = bounds;
@@ -475,8 +492,8 @@ export async function querySqlImpl(
     return fail(getErrorMessage(err));
   }
 
-  // Build search WHERE clause
-  let searchWhere = '';
+  // Build search + exact-match WHERE clause
+  const whereClauses: string[] = [];
   if (args.search_term) {
     if (!args.search_columns?.length) {
       return fail('search_columns is required when search_term is set.');
@@ -489,8 +506,29 @@ export async function querySqlImpl(
     const searchParamRef = `$${params.length + 1}`;
     params.push(`%${args.search_term.toLowerCase()}%`);
     const orClauses = args.search_columns.map((col) => `lower("${col}") LIKE ${searchParamRef}`);
-    searchWhere = `WHERE (${orClauses.join(' OR ')})`;
+    whereClauses.push(`(${orClauses.join(' OR ')})`);
   }
+  if (options?.exactMatch) {
+    const { columns, value } = options.exactMatch;
+    if (!columns.length) {
+      return fail('exactMatch.columns must not be empty.');
+    }
+    for (const col of columns) {
+      if (!COLUMN_NAME_RE.test(col)) {
+        return fail(`Invalid exact-match column name: ${col}`);
+      }
+    }
+    const matchParamRef = `$${params.length + 1}`;
+    params.push(value);
+    const coalesced = columns.map((col) => `to_jsonb(_t)->>'${col}'`).join(', ');
+    // Trim the same character set JS `String.prototype.trim` strips, so a
+    // tab/newline-padded value still matches: bare `btrim` strips spaces only,
+    // which would 404 a row the in-memory match resolved. (JS also strips
+    // Unicode spaces such as U+00A0; a value padded with those falls through to
+    // the caller's `derivedRowSlug` confirm and 404s rather than mis-resolving.)
+    whereClauses.push(`btrim(COALESCE(${coalesced}), E' \\t\\n\\r\\f\\v') = ${matchParamRef}`);
+  }
+  const searchWhere = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
 
   const sortOrder = args.sort_order === 'desc' ? 'DESC' : 'ASC';
   const bounds = coercePageBounds(args);
@@ -529,6 +567,12 @@ export async function querySqlImpl(
       const aliasCollision =
         ((data as any)?.columns ?? []).filter((col: { name: string }) => col.name === TOTAL_COL)
           .length > 1;
+      // An empty exact-match page needs no count: the caller reads `rows`, never
+      // `total_count`, and the whole point of pushing the match into SQL is that
+      // a MISS executes the backing SQL exactly once.
+      if (rows.length === 0 && options?.exactMatch && !aliasCollision) {
+        return { rows, columns: (data as any)?.columns, totalCount: 0, columnsHaveWindowCol: true };
+      }
       if (rows.length === 0 || aliasCollision) {
         const cnt = await tx.unsafe(countSql, params);
         const totalCount = Number(cnt[0]?.c ?? 0);

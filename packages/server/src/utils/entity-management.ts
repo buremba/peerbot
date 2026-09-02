@@ -93,7 +93,7 @@ export async function queryDerivedEntityView(
 	backingSource: string | undefined,
 	page: { limit: number; offset: number; search?: string },
 	ctx: ToolContext,
-	options?: { preservePageRows?: boolean },
+	options?: { preservePageRows?: boolean; exactSlug?: string },
 ): Promise<Awaited<ReturnType<typeof querySqlImpl>>> {
 	// Search pushes down only on the internal path (the connection path rejects
 	// search_term); external derived views simply ignore the search box.
@@ -111,9 +111,17 @@ export async function queryDerivedEntityView(
 		},
 		undefined,
 		ctx,
-		options?.preservePageRows
-			? { maxSerializedResultBytes: Number.POSITIVE_INFINITY }
-			: undefined,
+		{
+			...(options?.preservePageRows
+				? { maxSerializedResultBytes: Number.POSITIVE_INFINITY }
+				: {}),
+			// Exact slug lookup pushes into SQL only on the internal path; the
+			// connection path rejects it (see querySqlImpl) and its caller falls
+			// back to paging, so an external view keeps working unchanged.
+			...(options?.exactSlug !== undefined && !backingSource
+				? { exactMatch: { columns: [...DERIVED_SLUG_COLUMNS], value: options.exactSlug } }
+				: {}),
+		},
 	);
 }
 
@@ -2248,12 +2256,26 @@ export async function listEntities(
 }
 
 /**
+ * Columns that carry a derived row's routing key, in precedence order. Shared
+ * by {@link derivedRowSlug} and the SQL exact-match predicate that pushes the
+ * same lookup into the view, so the two can never disagree about which column
+ * names the row.
+ */
+const DERIVED_SLUG_COLUMNS = ['slug', 'id'] as const;
+
+/**
  * Routing key for a derived row: the slug the backing SQL projects, falling
  * back to its `id` column. Both the list and the detail resolver derive the key
  * the same way so a listed row's link always resolves. Empty ⇒ unroutable.
  */
 export function derivedRowSlug(row: Record<string, unknown>): string {
-  const raw = row.slug ?? row.id;
+  let raw: unknown;
+  for (const column of DERIVED_SLUG_COLUMNS) {
+    if (row[column] != null) {
+      raw = row[column];
+      break;
+    }
+  }
   return raw != null ? String(raw).trim() : '';
 }
 

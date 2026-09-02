@@ -15,6 +15,7 @@ import { executeTool } from "../../../tools/execute";
 import type { AuthContext } from "../../../tools/registry";
 import type { Env } from "../../../index";
 import { createEntity } from "../../../utils/entity-management";
+import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
 	addUserToOrganization,
@@ -91,6 +92,13 @@ function manageEntityType(
 describe("entity type write rules through manage_entity_schema", () => {
 	beforeEach(async () => {
 		await cleanupTestDatabase();
+		// This suite drives `executeTool` directly rather than the HTTP app, so
+		// nothing here boots the server — and the schema-governance path reads the
+		// workspace provider. `vitest.config.ts` sets `isolate: false`, so the
+		// provider is process-wide: the suite passed only when some other file
+		// happened to boot the app first. Initialize it explicitly, as the other
+		// tool-level suites do.
+		await initWorkspaceProvider();
 	});
 
 	it("compiles and stores both columns on create", async () => {

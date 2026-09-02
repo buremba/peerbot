@@ -44,12 +44,13 @@ export interface IsolateExecutorOptions {
   /** Cap on total console output forwarded per run (default 1 MiB). */
   logBytes: number;
   /**
-   * Hosts the connector may fetch: exact host or any subdomain. `null` leaves
-   * egress unrestricted, matching the process lane today; the
-   * gateway supplies the connector's declared domains once the wire carries
-   * them.
+   * Hosts the connector may fetch: exact host or any subdomain. Empty (the
+   * default) closes egress: every fetch is denied before a request leaves the
+   * host. There is no unrestricted mode. The gateway supplies the connector's
+   * declared domains once the wire carries them; until then an isolate-lane
+   * run has no network.
    */
-  allowedDomains: readonly string[] | null;
+  allowedDomains: readonly string[];
   /** Where redacted console lines go (default: the worker's stdout/stderr). */
   logSink: (level: IsolateLogLevel, line: string) => void;
 }
@@ -62,7 +63,7 @@ const DEFAULT_OPTIONS: IsolateExecutorOptions = {
   messageBytes: 16 * MIB,
   fetchBodyBytes: 16 * MIB,
   logBytes: MIB,
-  allowedDomains: null,
+  allowedDomains: [],
   logSink: (level, line) => {
     const stream = level === 'warn' || level === 'error' ? process.stderr : process.stdout;
     stream.write(`[isolate] ${line}\n`);
@@ -335,6 +336,9 @@ function hostAllowed(hostname: string, allowedDomains: readonly string[]): boole
 /** Request headers that must not follow a redirect to another origin. */
 const CROSS_ORIGIN_SENSITIVE_HEADERS = new Set(['authorization', 'cookie', 'proxy-authorization']);
 
+/** Same text the guest `fetch` uses, so both rejections read alike. */
+const UNSUPPORTED_SCHEME_MESSAGE = 'fetch failed: only http: and https: URLs are supported on the isolate lane';
+
 export class IsolateExecutor implements SyncExecutor {
   private readonly options: IsolateExecutorOptions;
 
@@ -358,13 +362,11 @@ export class IsolateExecutor implements SyncExecutor {
     if (!Number.isFinite(merged.logBytes) || merged.logBytes < 1024) {
       throw new RangeError(`logBytes must be at least 1024, got ${String(merged.logBytes)}`);
     }
-    if (merged.allowedDomains !== null) {
-      const domains = merged.allowedDomains.map(normalizeDomain).filter((d) => d.length > 0);
-      if (domains.length === 0) {
-        throw new RangeError('allowedDomains must list at least one host, or be null to leave egress unrestricted');
-      }
-      merged.allowedDomains = domains;
+    const domains = merged.allowedDomains.map(normalizeDomain);
+    if (domains.some((d) => d.length === 0)) {
+      throw new RangeError('allowedDomains entries must be hosts; pass an empty list to close egress');
     }
+    merged.allowedDomains = domains;
     this.options = merged;
   }
 
@@ -651,6 +653,12 @@ export class IsolateExecutor implements SyncExecutor {
 
   private async hostFetch(request: GuestFetchRequest, body: unknown, signal: AbortSignal): Promise<HostFetchReply> {
     let url = new URL(request.url);
+    // The guest `fetch` rejects other schemes, but `__lobuHost.async('fetch')`
+    // is reachable from guest code directly, and a `data:` URL has no host for
+    // the allowlist to judge: Node's fetch would resolve it locally.
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new TypeError(UNSUPPORTED_SCHEME_MESSAGE);
+    }
     let method = request.method;
     let headers = new Headers(request.headers);
     let requestBody: Uint8Array | null =
@@ -659,8 +667,10 @@ export class IsolateExecutor implements SyncExecutor {
     let redirected = false;
 
     for (let hop = 0; ; hop++) {
-      if (this.options.allowedDomains && !hostAllowed(url.hostname, this.options.allowedDomains)) {
-        const denied = new Error(`fetch to ${url.hostname} is not in the connector's allowed domains`);
+      if (!hostAllowed(url.hostname, this.options.allowedDomains)) {
+        const closed =
+          this.options.allowedDomains.length === 0 ? ' (egress is closed: no domains were supplied for this run)' : '';
+        const denied = new Error(`fetch to ${url.hostname} is not in the connector's allowed domains${closed}`);
         denied.name = 'EgressDenied';
         throw denied;
       }

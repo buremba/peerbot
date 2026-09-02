@@ -18,6 +18,8 @@ describe('IsolateExecutor options', () => {
   it('accepts the defaults and partial overrides', () => {
     expect(() => new IsolateExecutor()).not.toThrow();
     expect(() => new IsolateExecutor({ timeoutMs: 0, memoryMb: 8, allowedDomains: ['Example.COM'] })).not.toThrow();
+    // An empty allowlist is the default and means egress is closed, not misconfigured.
+    expect(() => new IsolateExecutor({ allowedDomains: [] })).not.toThrow();
     expect(() => new IsolateExecutor({ timeoutMs: undefined })).not.toThrow();
   });
 
@@ -28,8 +30,8 @@ describe('IsolateExecutor options', () => {
     expect(() => new IsolateExecutor({ messageBytes: 512 })).toThrow(RangeError);
     expect(() => new IsolateExecutor({ fetchBodyBytes: 1 })).toThrow(RangeError);
     expect(() => new IsolateExecutor({ logBytes: 1 })).toThrow(RangeError);
-    expect(() => new IsolateExecutor({ allowedDomains: [] })).toThrow(RangeError);
     expect(() => new IsolateExecutor({ allowedDomains: ['  '] })).toThrow(RangeError);
+    expect(() => new IsolateExecutor({ allowedDomains: ['example.com', ''] })).toThrow(RangeError);
   });
 
   it('rejects a bundle that still requires a Node builtin before touching isolated-vm', async () => {

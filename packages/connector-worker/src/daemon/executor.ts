@@ -106,6 +106,9 @@ async function resolveJobExecution(
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) return codeResult;
   try {
+    // No allowlist rides on the poll payload yet, so an isolate-lane run has
+    // no egress: the executor denies every fetch until the gateway supplies
+    // the connector's declared domains.
     const executor = await select.selectExecutor({
       lane: job.lane,
       timeoutMs,

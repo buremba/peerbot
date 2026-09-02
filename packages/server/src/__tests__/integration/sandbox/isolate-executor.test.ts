@@ -123,6 +123,8 @@ let fixtureProcessCode: string;
 let server: Server;
 let baseUrl: string;
 let port: number;
+/** Requests the fixture server has answered: a denied fetch must not move it. */
+let hits = 0;
 
 async function runIsolate(
 	code: string,
@@ -189,6 +191,7 @@ beforeAll(async () => {
 	fixtureProcessCode = await createConnectorCompiler().compileConnectorFromFile(FIXTURE_PATH);
 
 	server = createServer((req, res) => {
+		hits += 1;
 		const url = new URL(req.url ?? "/", "http://127.0.0.1");
 		const chunks: Buffer[] = [];
 		req.on("data", (c: Buffer) => chunks.push(c));
@@ -287,7 +290,10 @@ describe("isolate lane: hackernews against the live API", () => {
 			min_score: 0,
 		};
 		const job: ExecutorJob = { ...syncJob(config), feedKey: "stories" };
-		const [isolate, proc] = await Promise.all([runIsolate(isolateCode, job), runProcess(processCode, job)]);
+		const [isolate, proc] = await Promise.all([
+			runIsolate(isolateCode, job, { allowedDomains: ["hn.algolia.com", "news.ycombinator.com"] }),
+			runProcess(processCode, job),
+		]);
 
 		expect(isolate.result.mode).toBe("sync");
 		expect(isolate.events.length).toBeGreaterThan(0);
@@ -427,10 +433,6 @@ describe("isolate lane: fixture connector", () => {
 		expect(echo.headers["x-fixture"]).toBe("yes");
 		expect(echo.headers["content-type"]).toBe("application/json");
 		expect(JSON.parse(echo.body)).toEqual({ hello: 1 });
-
-		// null = unrestricted, matching the process lane today.
-		const open = await runIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }));
-		expect(checkpointOf(open.result).status).toBe(200);
 	});
 
 	it("denies a fetch to an undeclared domain, on the first request and on a redirect hop", async () => {
@@ -454,8 +456,46 @@ describe("isolate lane: fixture connector", () => {
 		expect(sub.message).toContain("127.0.0.1 is not in the connector's allowed domains");
 	});
 
+	it("closes egress when no allowed domains are supplied: the default and an empty list both deny before a request leaves", async () => {
+		const before = hits;
+		const byDefault = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }));
+		expect(byDefault.message).toContain("127.0.0.1 is not in the connector's allowed domains");
+		expect(byDefault.message).toContain("egress is closed");
+		expect(byDefault.exitReason).toBe("error_message");
+
+		const explicit = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
+			allowedDomains: [],
+		});
+		expect(explicit.message).toContain("egress is closed");
+		expect(hits).toBe(before);
+	});
+
+	it("rejects a non-http(s) scheme before Node's fetch sees it, from the guest fetch and from the raw host bridge", async () => {
+		const before = hits;
+		const message = "only http: and https: URLs are supported on the isolate lane";
+		const guest = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `ftp://127.0.0.1:${port}/ok` }), {
+			allowedDomains: ["127.0.0.1"],
+		});
+		expect(guest.message).toContain(message);
+
+		// 127.0.0.1 is allowlisted, so only the scheme check can deny this one.
+		const ftp = await runIsolate(fixtureIsolateCode, syncJob({ scenario: "raw_fetch", url: `ftp://127.0.0.1:${port}/ok` }), {
+			allowedDomains: ["127.0.0.1"],
+		});
+		expect(checkpointOf(ftp.result)).toMatchObject({ outcome: "rejected", message: expect.stringContaining(message) });
+
+		// A data: URL has no host for the allowlist to judge; without the scheme
+		// check Node's fetch would resolve it locally.
+		const data = await runIsolate(fixtureIsolateCode, syncJob({ scenario: "raw_fetch", url: "data:text/plain,hello" }), {
+			allowedDomains: ["127.0.0.1"],
+		});
+		expect(checkpointOf(data.result)).toMatchObject({ outcome: "rejected", message: expect.stringContaining(message) });
+		expect(hits).toBe(before);
+	});
+
 	it("caps the response body", async () => {
 		const failure = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/big` }), {
+			allowedDomains: ["127.0.0.1"],
 			fetchBodyBytes: 1024,
 		});
 		expect(failure.message).toMatch(/body/i);
@@ -463,6 +503,7 @@ describe("isolate lane: fixture connector", () => {
 		expect(failure.exitReason).toBe("error_message");
 
 		const fits = await runIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/big` }), {
+			allowedDomains: ["127.0.0.1"],
 			fetchBodyBytes: 8192,
 		});
 		expect(checkpointOf(fits.result).bytes).toBe(4096);
@@ -1130,7 +1171,7 @@ describe("isolate lane: prelude differential against Node", () => {
 	it("URL: percent-encodes ^ in paths per the living spec on every supported Node line", async () => {
 		// The URL Standard added U+005E (^) to the path percent-encode set, not to the query or
 		// fragment sets. ada 4 (Node 26) follows it; ada 2.9 (Node 22, the worker image) still
-		// serializes a bare ^. The guest is pinned to the spec so a connector sees one behavior
+		// serializes a bare ^. The guest is pinned to the spec so a connector sees one result
 		// whichever Node the host runs, which is why this input is kept out of `urlCases()`.
 		const [plain, mixed] = await probeGuest<Array<{ href: string; pathname: string; search: string; hash: string }>>(
 			URL_PROBE,

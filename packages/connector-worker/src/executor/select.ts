@@ -22,8 +22,8 @@ export interface ExecutorSelection {
   maxOldSpaceSize?: number;
   /** Isolate lane: V8 heap limit in MB. Unset keeps the default (512). */
   memoryMb?: number;
-  /** Isolate lane: hosts the connector may fetch. Unset leaves egress unrestricted. */
-  allowedDomains?: readonly string[] | null;
+  /** Isolate lane: hosts the connector may fetch. Unset or empty closes egress. */
+  allowedDomains?: readonly string[];
   /** Isolate lane: console sink override (tests). */
   logSink?: IsolateExecutorOptions['logSink'];
 }

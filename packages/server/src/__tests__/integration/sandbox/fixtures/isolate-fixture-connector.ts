@@ -112,6 +112,19 @@ export default class IsolateFixtureConnector extends ConnectorRuntime<Record<str
 					},
 				};
 			}
+			case "raw_fetch": {
+				// Bypasses the guest fetch validator on purpose: the host must judge
+				// the scheme and the allowlist on its own.
+				const host = (globalThis as unknown as { __lobuHost: { async(name: string, ...args: unknown[]): Promise<unknown> } })
+					.__lobuHost;
+				try {
+					await host.async("fetch", { id: 4242, url: String(ctx.config.url), method: "GET", headers: [], redirect: "follow" });
+					return { events: [], checkpoint: { outcome: "resolved" } };
+				} catch (error) {
+					const e = error as { name?: string; message?: string };
+					return { events: [], checkpoint: { outcome: "rejected", name: String(e.name), message: String(e.message) } };
+				}
+			}
 			case "loop": {
 				for (;;) {
 					/* burn */

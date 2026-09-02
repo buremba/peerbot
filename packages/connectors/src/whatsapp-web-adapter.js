@@ -30,7 +30,7 @@
 
 export function whatsAppWebAdapterProgram() {
   const GLOBAL_KEY = "__owlettoWhatsAppAdapterV1";
-  const ADAPTER_VERSION = 2;
+  const ADAPTER_VERSION = 3;
   const SYSTEM_TYPES = new Set([
     "gp2",
     "notification_template",
@@ -521,7 +521,10 @@ export function whatsAppWebAdapterProgram() {
     const edit = requireFirst(EDIT_MODULES);
     const reaction = requireFirst(REACTION_MODULES);
     const revoke = requireFirst(REVOKE_MODULES);
-    const media = requireFirst(["WAWebDownloadManager"]);
+    // Same nesting as the download path: the module root only exports
+    // `{ enforceKaleidoscopeScore, downloadManager }`.
+    const mediaModule = requireFirst(["WAWebDownloadManager"]);
+    const media = mediaModule?.downloadManager ?? mediaModule;
     const hasFunction = (module, names) =>
       names.some((name) => typeof module?.[name] === "function");
     return {
@@ -540,7 +543,14 @@ export function whatsAppWebAdapterProgram() {
         "setChatDraft",
         "saveDraft",
       ]),
-      send_message: hasFunction(send, ["sendTextMsgToChat", "sendMessage"]),
+      // `addAndSendTextMsg` is the two-step API's delivery half; a build that
+      // offers only that pair can still send, so probing for the one-shot
+      // names alone would report the capability unavailable while it works.
+      send_message: hasFunction(send, [
+        "sendTextMsgToChat",
+        "sendMessage",
+        "addAndSendTextMsg",
+      ]),
       edit_message: hasFunction(edit, ["sendMessageEdit", "editMessage"]),
       react_message: hasFunction(reaction, [
         "sendReactionToMsg",
@@ -1144,6 +1154,28 @@ export function whatsAppWebAdapterProgram() {
     const text = String(input?.text ?? "");
     if (!text.trim()) throw new Error("text is required");
     const module = requireFirst(SEND_MODULES);
+    // Build the message first when the web build lets us, because the id has
+    // to come from the message rather than from the send acknowledgment.
+    // `sendTextMsgToChat` resolves to `{ messageSendResult, t, count }` — it
+    // carries no id in any form, so deriving one from the ack reported every
+    // successful send as a failure, and a caller that retries on failure sent
+    // the message twice. `createTextMsgData` mints the id without sending;
+    // `addAndSendTextMsg` then delivers under exactly that id.
+    if (
+      typeof module?.createTextMsgData === "function" &&
+      typeof module?.addAndSendTextMsg === "function"
+    ) {
+      const data = await module.createTextMsgData(chat, text);
+      const plannedId = rawId(data?.id);
+      if (!plannedId)
+        throw new Error("WhatsApp did not assign an id to the outgoing message");
+      await module.addAndSendTextMsg(chat, data);
+      return {
+        sent: true,
+        chat_jid: widString(modelData(chat).id ?? chat?.id),
+        message_id: plannedId,
+      };
+    }
     const fn =
       module?.sendTextMsgToChat ?? module?.sendMessage ?? chat?.sendMessage;
     if (typeof fn !== "function")
@@ -1295,7 +1327,11 @@ export function whatsAppWebAdapterProgram() {
       row.mediaBlob ??
       null;
     if (!result) {
-      const manager = requireFirst(["WAWebDownloadManager"]);
+      // The module exports `{ enforceKaleidoscopeScore, downloadManager }` —
+      // the method sits on the nested object, so probing the module root only
+      // ever found `undefined` and this fallback never ran.
+      const managerModule = requireFirst(["WAWebDownloadManager"]);
+      const manager = managerModule?.downloadManager ?? managerModule;
       if (typeof manager?.downloadAndMaybeDecrypt === "function") {
         result = await manager.downloadAndMaybeDecrypt({
           directPath: row.directPath,

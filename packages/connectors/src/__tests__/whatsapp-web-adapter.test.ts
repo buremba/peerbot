@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "bun:test";
+import { WHATSAPP_ADAPTER_VERSION } from "../whatsapp-web-helpers.js";
 import { whatsAppWebAdapterProgram } from "../whatsapp-web-adapter.js";
 
 /**
@@ -144,5 +145,105 @@ describe("whatsAppWebAdapterProgram serialisation", () => {
     const allowed = /^export function whatsAppWebAdapterProgram\(\) \{$/;
     const offenders = topLevel.filter((line) => !allowed.test(line));
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * The send path, against the module shapes the LIVE WhatsApp Web build
+ * actually exposes (captured 2026-09-02 on a paired Chrome).
+ *
+ * `sendTextMsgToChat` resolves to `{ messageSendResult, t, count }`. It has
+ * no `id` in any form, so deriving the message id from that acknowledgment
+ * reported every successful send as a failure — the message went out, the op
+ * returned an error, and a caller that retries on error sent it twice.
+ */
+describe("whatsAppWebAdapterProgram send_message", () => {
+  const wid = (serialized: string) => ({
+    _serialized: serialized,
+    toString: () => serialized,
+  });
+  /**
+   * A WhatsApp message id, in the shape the page really produces: the raw id
+   * lives on `.id`, and `_serialized` is the fully qualified form. `rawId`
+   * reads the raw half, so a fixture carrying only `_serialized` would fail
+   * for a reason the production object never hits.
+   */
+  const msgId = (raw: string) => ({
+    fromMe: true,
+    remote: wid("447000000000@c.us"),
+    id: raw,
+    _serialized: `true_447000000000@c.us_${raw}`,
+  });
+
+  function installAdapter(sendModule: Record<string, unknown>) {
+    const chat = { id: wid("447000000000@c.us") };
+    const modules: Record<string, unknown> = {
+      WAWebCollections: { Chat: { _models: [chat] }, Msg: { _models: [] } },
+      WAWebUserPrefsMeUser: {
+        getMaybeMePnUser: () => wid("447000000000@c.us"),
+      },
+      WAWebSendTextMsgChatAction: sendModule,
+    };
+    const globals: Record<string, any> = {};
+    const page = {
+      globalThis: globals,
+      document: { querySelector: () => null, querySelectorAll: () => [] },
+      window: { require: (name: string) => modules[name] ?? null },
+      location: { origin: "https://web.whatsapp.com" },
+      setTimeout: (fn: () => void) => {
+        fn();
+        return 0;
+      },
+      clearTimeout: () => {},
+    };
+    const run = new Function(
+      ...Object.keys(page),
+      `"use strict";(${whatsAppWebAdapterProgram.toString()})();`,
+    );
+    run(...Object.values(page));
+    return globals.__owlettoWhatsAppAdapterV1;
+  }
+
+  it("returns the id WhatsApp assigned, not one read off the ack", async () => {
+    const sent: string[] = [];
+    const adapter = installAdapter({
+      createTextMsgData: (_chat: unknown, text: string) => ({
+        id: msgId("3EB0PLANNEDID"),
+        body: text,
+      }),
+      addAndSendTextMsg: (_chat: unknown, data: { id: { id: string } }) => {
+        sent.push(data.id.id);
+        return { messageSendResult: "OK", t: 1, count: 1 };
+      },
+      // Present, and shaped exactly as the live build shapes it.
+      sendTextMsgToChat: () => ({ messageSendResult: "OK", t: 1, count: 1 }),
+    });
+
+    const result = await adapter.invoke({
+      op: "send_message",
+      adapter_version: WHATSAPP_ADAPTER_VERSION,
+      input: { self_chat: true, text: "hello" },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.message_id).toBe("3EB0PLANNEDID");
+    // The message must actually have been dispatched under that same id.
+    expect(sent).toEqual(["3EB0PLANNEDID"]);
+  });
+
+  it("still sends on a build that only offers the one-shot call", async () => {
+    const adapter = installAdapter({
+      sendTextMsgToChat: (_chat: unknown, text: string) => ({
+        id: msgId("3EB0LEGACYID"),
+        body: text,
+      }),
+    });
+    const result = await adapter.invoke({
+      op: "send_message",
+      adapter_version: WHATSAPP_ADAPTER_VERSION,
+      input: { self_chat: true, text: "hello" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.message_id).toBe("3EB0LEGACYID");
   });
 });

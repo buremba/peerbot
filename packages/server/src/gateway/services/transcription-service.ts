@@ -61,6 +61,13 @@ interface TranscriptionConfig {
 interface TranscriptionSuccess {
   text: string;
   provider: TranscriptionProvider;
+  /**
+   * `inference_providers.slug` of the row that served this transcription, so
+   * the caller can clear a health error THIS path set. Without it an
+   * STT-only slug marked `error` here could never be cleared: the only other
+   * writer is the LLM proxy, which such a slug never sees.
+   */
+  providerSlug: string;
 }
 
 /**
@@ -215,7 +222,11 @@ export class TranscriptionService {
           profileProviderId: config.profileProviderId,
           textLength: text.length,
         });
-        return { text, provider: config.provider };
+        return {
+          text,
+          provider: config.provider,
+          providerSlug: config.profileProviderId,
+        };
       } catch (error) {
         const errorMessage =
           getErrorMessage(error);

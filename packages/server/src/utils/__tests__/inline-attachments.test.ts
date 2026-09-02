@@ -6,12 +6,14 @@ import {
   ArtifactStore,
   runArtifactBinding,
 } from '../../gateway/files/artifact-store';
+import * as dbClient from '../../db/client';
 import * as lobuGateway from '../../lobu/gateway';
 import * as providerSecrets from '../../lobu/stores/provider-secrets';
 import {
   deleteMaterializedArtifacts,
   materializeActionOutputAttachments,
   transcribeOne,
+  triggerAudioTranscriptions,
 } from '../inline-attachments';
 
 describe('materializeActionOutputAttachments', () => {
@@ -285,5 +287,76 @@ describe('transcribeOne provider health', () => {
 
     expect(outcome).toBe('failed');
     expect(mark).not.toHaveBeenCalled();
+  });
+});
+
+describe('triggerAudioTranscriptions batch abandon', () => {
+  let artifactsDir: string;
+  let artifactStore: ArtifactStore;
+  const previousEncryptionKey = process.env.ENCRYPTION_KEY;
+
+  beforeEach(() => {
+    artifactsDir = mkdtempSync(join(tmpdir(), 'lobu-stt-batch-'));
+    process.env.ENCRYPTION_KEY = Buffer.from(
+      '12345678901234567890123456789012'
+    ).toString('base64');
+    artifactStore = new ArtifactStore(artifactsDir);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (previousEncryptionKey === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = previousEncryptionKey;
+    rmSync(artifactsDir, { recursive: true, force: true });
+  });
+
+  it('stops after a walled provider instead of burning a call per remaining job', async () => {
+    // The whole point of the outcome: 20 queued voice notes against an
+    // out-of-credit account made 20 doomed upstream calls. One is enough.
+    vi.spyOn(providerSecrets, 'markInferenceProviderUnhealthy').mockResolvedValue(
+      undefined
+    );
+    // `pickTranscriptionAgent` reads the org's agents; this suite has no DB.
+    const sql = (async () => [{ id: 'agent-1' }]) as unknown as ReturnType<
+      typeof dbClient.getDb
+    >;
+    vi.spyOn(dbClient, 'getDb').mockReturnValue(sql);
+    const transcribe = vi.fn(async () => ({
+      error: 'Transcription failed with all configured providers: OpenAI: 429',
+      availableProviders: ['openai'],
+      attempts: [{ providerSlug: 'openai', status: 429, message: 'no credits' }],
+    }));
+    vi.spyOn(lobuGateway, 'getLobuCoreServices').mockReturnValue({
+      getArtifactStore: () => artifactStore,
+      getTranscriptionService: () => ({
+        transcribe,
+        getConfig: async () => ({ profileProviderId: 'openai' }),
+      }),
+    });
+
+    const jobs = [];
+    for (const originId of ['WA-1', 'WA-2', 'WA-3']) {
+      const published = await artifactStore.publish({
+        buffer: Buffer.from('ogg'),
+        filename: 'v.ogg',
+        contentType: 'audio/ogg',
+        publicGatewayUrl: 'https://gw.example',
+      });
+      jobs.push({
+        artifactId: published.artifactId,
+        originId,
+        mimeType: 'audio/ogg',
+        baseEventId: 1,
+        connectionId: 361,
+        title: null,
+      });
+    }
+
+    triggerAudioTranscriptions('org-1', jobs);
+    // Fire-and-forget: let the detached orchestrator settle.
+    await vi.waitFor(() => expect(transcribe).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(transcribe).toHaveBeenCalledTimes(1);
   });
 });

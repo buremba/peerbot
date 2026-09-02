@@ -205,6 +205,9 @@ describe("TranscriptionService provider fallback", () => {
       expect(result).toEqual({
         text: "hello from whatsapp",
         provider: "openai",
+        // The slug that served it — this is what lets a successful
+        // transcription clear a health error the STT path itself set.
+        providerSlug: "openai",
       });
       expect(orgCredentialSource).toHaveBeenCalledWith(
         "agent-buremba",

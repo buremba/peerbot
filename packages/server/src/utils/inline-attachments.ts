@@ -39,7 +39,10 @@ import { getEnvFromProcess } from "./env";
 import logger from "./logger";
 import { classifyProviderHealthStatus } from "../gateway/proxy/provider-health-status";
 import type { TranscriptionAttemptFailure } from "../gateway/services/transcription-service";
-import { markInferenceProviderUnhealthy } from "../lobu/stores/provider-secrets";
+import {
+  clearInferenceProviderError,
+  markInferenceProviderUnhealthy,
+} from "../lobu/stores/provider-secrets";
 
 /**
  * Hard cap on a single decoded attachment we'll publish. Server-side guard so
@@ -528,6 +531,24 @@ export async function transcribeOne(
     );
     wrote = true;
   });
+  if (wrote) {
+    // A transcription that succeeded is proof the credential works, so clear
+    // an error THIS path may have set. The LLM proxy is the only other
+    // writer, and an STT-only slug never reaches it — without this, the row
+    // would stay `error` forever once credits were restored.
+    //
+    // Best-effort for the same reason the proxy's is: `status` is a display
+    // signal, and failing to clear a label must not fail a transcript that is
+    // already written.
+    try {
+      await clearInferenceProviderError(organizationId, result.providerSlug);
+    } catch (err) {
+      logger.warn(
+        { provider_slug: result.providerSlug, err: String(err) },
+        "[inline-attachments] failed to clear STT provider health"
+      );
+    }
+  }
   return wrote ? "transcribed" : "failed";
 }
 

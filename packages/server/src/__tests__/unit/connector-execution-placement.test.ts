@@ -193,7 +193,11 @@ describe('Chrome-extension connector execution placement', () => {
     it('leaves keys outside the namespace alone', () => {
       for (const connectorKey of ['whatsapp.web', 'chromecast.demo', 'x', 'linkedin']) {
         expect(() =>
-          assertChromeNamespaceInstallIsDeviceManifest({ connectorKey, sourcePath: null })
+          assertChromeNamespaceInstallIsDeviceManifest({
+            connectorKey,
+            connectorVersion: '1.0.0',
+            sourcePath: null,
+          })
         ).not.toThrow();
       }
     });

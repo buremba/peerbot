@@ -9,11 +9,11 @@
  * operator's environment instead, exactly like fresh-agent system-key
  * resolution does.
  *
- * A tenant may still NAME a model — a per-rule `egressConfig.judgeModel` or a
- * custom guardrail's `model`. That ref only resolves when it points at a
- * provider this deployment already holds a system key for, so the choice is
- * bounded by the operator's own installed providers. A ref naming anything else
- * resolves to null, and the judge fails closed.
+ * A tenant may still NAME a model: an egress guardrail's own `model` field,
+ * which reaches the judge as `ResolvedJudgeRule.judgeModel`. That ref only
+ * resolves when it points at a provider this deployment already holds a system
+ * key for, so the choice is bounded by the operator's own installed providers.
+ * A ref naming anything else resolves to null, and the judge fails closed.
  */
 
 import { createLogger, getErrorMessage } from "@lobu/core";

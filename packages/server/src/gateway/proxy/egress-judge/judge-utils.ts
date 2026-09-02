@@ -11,10 +11,10 @@
  * `EGRESS_JUDGE_MODEL` env var (same pattern as `EGRESS_JUDGE_TIMEOUT_MS`).
  * The judge needs a fast, cheap tier and must not silently rot to a retired
  * snapshot, so there is intentionally **no hardcoded fallback model**: when
- * the env var is unset, callers must supply a model explicitly (a per-rule
- * `egressConfig.judgeModel`, or — for custom guardrails — the guardrail's own
- * `model`, which the UI/API require when this is undefined). With no model
- * resolvable, the judge fails closed rather than guessing one.
+ * the env var is unset, callers must supply a model explicitly — the egress
+ * guardrail's own `model` field, which the UI/API require when this is
+ * undefined. With no model resolvable, the judge fails closed rather than
+ * guessing one.
  */
 export const DEFAULT_JUDGE_MODEL: string | undefined =
   process.env.EGRESS_JUDGE_MODEL?.trim() || undefined;

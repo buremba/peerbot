@@ -1622,7 +1622,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
           exit_signal = ${body.exit_signal ?? null},
           exit_reason = 'cancelled'
       WHERE id = ${runId}
-        ${runLeaseFence(sql, body.worker_id)}
+        ${runLeaseFence(tx, body.worker_id)}
       RETURNING id
     `) as unknown as Array<{ id: number }>;
 			if (cancelledRows.length === 0) return false;

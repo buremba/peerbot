@@ -135,7 +135,7 @@ export async function bumpDeviceFinalizeNudge(
         output_tail = ${outputTail},
         error_message = ${`Device CLI attempt ${nextNudgeCount}: completeWindow not called — resume allowed`}
     WHERE id = ${runId}
-      ${runLeaseFence(sql, workerId)}
+      ${runLeaseFence(tx, workerId)}
       AND COALESCE((approved_input->>'finalize_nudge_count')::int, 0)
           = ${nextNudgeCount - 1}
     RETURNING id

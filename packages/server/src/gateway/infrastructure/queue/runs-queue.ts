@@ -472,8 +472,10 @@ export class RunsQueue implements IMessageQueue {
 	  typeof data === "object" && data !== null
 		? (data as { parentRunId?: unknown })
 		: null;
-	const parentWasRequested =
-	  payloadObject !== null && Object.hasOwn(payloadObject, "parentRunId");
+	// `!= null` on purpose: a caller spreading `parentRunId: undefined` (or the
+	// `?? null` idiom used everywhere else for "no parent") means no parent, not
+	// a malformed one. Only a present, non-null, unusable value fails closed.
+	const parentWasRequested = payloadObject?.parentRunId != null;
 	const requestedParentRunId = Number(payloadObject?.parentRunId);
     const hasRequestedParent =
       Number.isSafeInteger(requestedParentRunId) && requestedParentRunId > 0;

@@ -42,7 +42,7 @@ export class EgressJudge extends JudgeRunner<JudgeDecision> {
     return this.run({
       cacheKey,
       policyHash: rule.policyHash,
-      // Per-agent model override via `egressConfig.judgeModel`.
+      // Per-rule model, from the egress guardrail's own `model` field.
       model: rule.judgeModel,
       logFields: { hostname: request.hostname },
       buildPrompts: () => ({

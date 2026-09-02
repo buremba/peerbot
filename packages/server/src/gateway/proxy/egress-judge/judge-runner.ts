@@ -5,6 +5,7 @@ import {
 import { AnthropicJudgeClient } from "./anthropic-client.js";
 import { VerdictCache } from "./cache.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
+import { JudgeConfigurationError } from "./gateway-judge-client.js";
 import type { JudgeClient, JudgeVerdict } from "./types.js";
 import {
   DEFAULT_JUDGE_MODEL,
@@ -218,6 +219,30 @@ export abstract class JudgeRunner<TResult> {
       this.cache.set(cacheKey, verdict);
       return input.decorate(verdict, { source: "judge", latencyMs });
     } catch (err) {
+      // A misconfigured deployment is not a transient fault. Tripping the
+      // breaker here would put every OTHER policy's judge into a 30s cooldown
+      // and relabel the denials as an upstream outage, hiding the one thing an
+      // operator needs to see. Same treatment as "no judge model configured"
+      // above: fail closed, leave the breaker alone.
+      if (err instanceof JudgeConfigurationError) {
+        this.logger.error(
+          `${logPrefix} not configured ${separator} failing closed`,
+          {
+            policyHash: input.policyHash,
+            ...input.logFields,
+            model,
+            error: getErrorMessage(err),
+          }
+        );
+        return input.decorate(
+          {
+            verdict: "deny",
+            reason: `Judge not configured (${getErrorMessage(err)}); ${deniedSuffix}`,
+          },
+          { source: "judge-error", latencyMs: Date.now() - started }
+        );
+      }
+
       this.breaker.onFailure(input.policyHash);
       const timedOut = err instanceof JudgeTimeoutError;
       this.logger.error(

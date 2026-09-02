@@ -25,7 +25,7 @@ import { getModelProviderModules } from "../modules/module-system.js";
 const logger = createLogger("gateway-completion");
 
 /** A resolved, callable upstream. */
-interface GatewayCompletionTarget {
+export interface GatewayCompletionTarget {
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -72,7 +72,7 @@ interface ChatCompletionResponse {
  * on openrouter, not provider `anthropic`, and a bare `gpt-4o-mini` is a
  * perfectly valid guardrail override rather than a caller error.
  */
-function splitModelRef(
+export function splitModelRef(
   ref: string
 ): { slug: string; model: string } | null {
   const i = ref.indexOf("/");

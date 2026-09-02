@@ -21,22 +21,23 @@
 import { randomUUID } from "node:crypto";
 import {
   AgentErrorCode,
-	createLogger,
+  createLogger,
   ErrorCode,
-	getErrorMessage,
+  getErrorMessage,
   OrchestratorError,
 } from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import { intervals } from "../../../config/intervals.js";
-import {
-  getDb,
-  getDbListener,
-  type DbClient,
-} from "../../../db/client.js";
+import { type DbClient, getDb, getDbListener } from "../../../db/client.js";
 import { incrementCounter } from "../../metrics/prometheus.js";
 import { failAutomationParentRunFromQueue } from "../../../automations/run-completion.js";
 import { AUTOMATION_RUN_TYPES_PG } from "../../../runs/run-types.js";
-import { deploymentNameForLinkedChild } from "../../orchestration/deployment-identity.js";
+import {
+  deploymentNameForLinkedChild,
+  type LinkedChildIdentity,
+  linkedChildIdentityColumns,
+  THREAD_MESSAGE_QUEUE_PREFIX,
+} from "../../orchestration/deployment-identity.js";
 import {
   failTurnIfPendingInTransaction,
   notifyThreadResponse,
@@ -69,6 +70,7 @@ const MAX_BACKOFF_SECONDS = 300;
 const STALE_SWEEP_INTERVAL_MS = 30_000;
 /** Upper bound on graceful-shutdown drain before claims are released. */
 const SHUTDOWN_DRAIN_MS = 30_000;
+
 function queueBreadcrumb(
   category: string,
   message: string,
@@ -86,17 +88,12 @@ function queueBreadcrumb(
   }
 }
 
-interface LinkedAutomationChild {
+/** A linked chat_message child, as the sweeps that terminalize it read it. */
+interface LinkedAutomationChild extends LinkedChildIdentity {
   id: number;
   queue_name: string;
   organization_id: string | null;
   parent_run_id: number;
-  message_id: string | null;
-  agent_id: string | null;
-  user_id: string | null;
-  conversation_id: string | null;
-  channel_id: string | null;
-  platform: string | null;
 }
 
 async function lockLinkedAutomationOwner(
@@ -150,7 +147,7 @@ async function terminalizeLinkedAutomationParent(
 
   let responseEmitted = false;
   if (
-    child.queue_name.startsWith("thread_message_") ||
+    child.queue_name.startsWith(THREAD_MESSAGE_QUEUE_PREFIX) ||
     child.queue_name === "messages"
   ) {
     const deploymentName = deploymentNameForLinkedChild(child, organizationId);
@@ -163,7 +160,7 @@ async function terminalizeLinkedAutomationParent(
       organizationId,
       code,
     });
-    if (!responseEmitted && child.queue_name.startsWith("thread_message_")) {
+    if (!responseEmitted && child.queue_name.startsWith(THREAD_MESSAGE_QUEUE_PREFIX)) {
       return { parentFailed: false, responseEmitted: false };
     }
     if (!responseEmitted) {
@@ -269,10 +266,11 @@ export class RunsQueue implements IMessageQueue {
    * collide across Kubernetes pods — two replicas can each have pid 42, and
    * filtering ownership by pid would let one pod's heartbeat / completion
    * silently mutate another pod's claim. Generated once at construction and
-   * stamped into `claimed_by` on every claim; every subsequent ownership
-   * mutation (heartbeat / mark-completed / mark-failed / schedule-retry /
-   * shutdown release) MUST include `AND claimed_by = ${this.claimedBy}` to
-   * prevent cross-pod ownership corruption.
+   * carried as the leading segment of every `claimed_by` this process writes
+   * (see {@link claimOwner}); every subsequent ownership mutation (heartbeat /
+   * mark-completed / mark-failed / schedule-retry / raced release) MUST fence
+   * on that exact owner, and the shutdown release on this prefix, to prevent
+   * cross-pod ownership corruption.
    */
   private readonly claimedBy: string;
 
@@ -369,9 +367,7 @@ export class RunsQueue implements IMessageQueue {
     try {
       const released = await this.releaseAllClaims();
       if (released > 0) {
-        logger.info(
-          `Released ${released} claimed run(s) on shutdown`,
-        );
+        logger.info(`Released ${released} claimed run(s) on shutdown`);
       }
     } catch (err) {
       logger.warn(
@@ -464,15 +460,15 @@ export class RunsQueue implements IMessageQueue {
         0
         ? (data as { organizationId: string }).organizationId
         : null;
-  const payloadObject =
-    typeof data === "object" && data !== null
-    ? (data as { parentRunId?: unknown })
-    : null;
-  // `!= null` on purpose: a caller spreading `parentRunId: undefined` (or the
-  // `?? null` idiom used everywhere else for "no parent") means no parent, not
-  // a malformed one. Only a present, non-null, unusable value fails closed.
-  const parentWasRequested = payloadObject?.parentRunId != null;
-  const requestedParentRunId = Number(payloadObject?.parentRunId);
+    const payloadObject =
+      typeof data === "object" && data !== null
+        ? (data as { parentRunId?: unknown })
+        : null;
+    // `!= null` on purpose: a caller spreading `parentRunId: undefined` (or the
+    // `?? null` idiom used everywhere else for "no parent") means no parent, not
+    // a malformed one. Only a present, non-null, unusable value fails closed.
+    const parentWasRequested = payloadObject?.parentRunId != null;
+    const requestedParentRunId = Number(payloadObject?.parentRunId);
     const hasRequestedParent =
       Number.isSafeInteger(requestedParentRunId) && requestedParentRunId > 0;
 
@@ -486,42 +482,45 @@ export class RunsQueue implements IMessageQueue {
     // itself a JS number-of-ms — we just compose the SQL.
     const id = await sql.begin(async (tx: DbClient) => {
       let parentRunId: number | null = null;
-    if (parentWasRequested && (!hasRequestedParent || !organizationIdFromPayload)) {
-    throw new OrchestratorError(
-      ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-      "Verified Automation parent link is malformed or missing organization scope",
-      { requestedParentRunId, organizationIdFromPayload },
-      false,
-    );
-    }
-    if (hasRequestedParent && organizationIdFromPayload) {
-    if (
-      queueName !== "messages" &&
-      !queueName.startsWith("thread_message_")
-    ) {
-      throw new OrchestratorError(
-        ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        "Verified Automation parent links are only valid on message queues",
-        { queueName, requestedParentRunId },
-        false,
-      );
-    }
-    const requestedMessageId =
-      typeof (data as { messageId?: unknown }).messageId === "string"
-        ? (data as { messageId: string }).messageId.trim()
-        : "";
+      if (
+        parentWasRequested &&
+        (!hasRequestedParent || !organizationIdFromPayload)
+      ) {
+        throw new OrchestratorError(
+          ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+          "Verified Automation parent link is malformed or missing organization scope",
+          { requestedParentRunId, organizationIdFromPayload },
+          false,
+        );
+      }
+      if (hasRequestedParent && organizationIdFromPayload) {
+        if (
+          queueName !== "messages" &&
+          !queueName.startsWith(THREAD_MESSAGE_QUEUE_PREFIX)
+        ) {
+          throw new OrchestratorError(
+            ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+            "Verified Automation parent links are only valid on message queues",
+            { queueName, requestedParentRunId },
+            false,
+          );
+        }
+        const requestedMessageId =
+          typeof (data as { messageId?: unknown }).messageId === "string"
+            ? (data as { messageId: string }).messageId.trim()
+            : "";
         const parent = await tx<{
-      id: number | string;
-      status: string;
-      dispatched_message_id: string | null;
-    }>`
+          id: number | string;
+          status: string;
+          dispatched_message_id: string | null;
+        }>`
           SELECT id, status, dispatched_message_id
           FROM public.runs
           WHERE id = ${requestedParentRunId}
-      AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+            AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
             AND organization_id = ${organizationIdFromPayload}
           LIMIT 1
-      FOR UPDATE
+          FOR UPDATE
         `;
         parentRunId = parent[0] ? Number(parent[0].id) : null;
         if (parentRunId == null) {
@@ -530,44 +529,46 @@ export class RunsQueue implements IMessageQueue {
             // active/owned. Retrying this enqueue cannot make that relation
             // valid and must not create an unlinked zombie child.
             ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-      "Verified Automation parent run does not exist in this organization",
+            "Verified Automation parent run does not exist in this organization",
             { requestedParentRunId, organizationIdFromPayload },
             false
           );
         }
-    if (
-      !requestedMessageId ||
-      parent[0]?.dispatched_message_id !== requestedMessageId
-    ) {
-      throw new OrchestratorError(
-        ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        "Verified Automation child message does not match its parent dispatch",
-        { requestedParentRunId, requestedMessageId },
-        false,
-      );
-    }
-    // Terminal-sticky idempotency: retries after an ambiguous HTTP response
-    // reuse the first durable child even after it has completed/failed. The
-    // parent row lock serializes concurrent POSTs for this exact dispatch.
-    const existingChild = await tx<{ id: number | string }>`
-      SELECT id
-      FROM public.runs
-      WHERE parent_run_id = ${parentRunId}
-        AND run_type = 'chat_message'
-        AND queue_name = ${queueName}
-        AND action_input->>'messageId' = ${requestedMessageId}
-      ORDER BY id ASC
-      LIMIT 1
-    `;
-    if (existingChild[0]) return String(existingChild[0].id);
-    if (!['pending', 'claimed', 'running'].includes(parent[0]?.status ?? '')) {
-      throw new OrchestratorError(
-        ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        "Verified Automation parent run is no longer active",
-        { requestedParentRunId, organizationIdFromPayload },
-        false,
-      );
-    }
+        if (
+          !requestedMessageId ||
+          parent[0]?.dispatched_message_id !== requestedMessageId
+        ) {
+          throw new OrchestratorError(
+            ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+            "Verified Automation child message does not match its parent dispatch",
+            { requestedParentRunId, requestedMessageId },
+            false,
+          );
+        }
+        // Terminal-sticky idempotency: retries after an ambiguous HTTP response
+        // reuse the first durable child even after it has completed/failed. The
+        // parent row lock serializes concurrent POSTs for this exact dispatch.
+        const existingChild = await tx<{ id: number | string }>`
+          SELECT id
+          FROM public.runs
+          WHERE parent_run_id = ${parentRunId}
+            AND run_type = 'chat_message'
+            AND queue_name = ${queueName}
+            AND action_input->>'messageId' = ${requestedMessageId}
+          ORDER BY id ASC
+          LIMIT 1
+        `;
+        if (existingChild[0]) return String(existingChild[0].id);
+        if (
+          !["pending", "claimed", "running"].includes(parent[0]?.status ?? "")
+        ) {
+          throw new OrchestratorError(
+            ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
+            "Verified Automation parent run is no longer active",
+            { requestedParentRunId, organizationIdFromPayload },
+            false,
+          );
+        }
       }
       // ON CONFLICT must match the index predicate exactly. The
       // `runs_idempotency_key_uniq` index is partial:
@@ -868,23 +869,24 @@ export class RunsQueue implements IMessageQueue {
           )
           AND run_at <= now()
           AND (expires_at IS NULL OR expires_at > now())
-      AND (
-        -- Task parents are causal provenance, not a liveness lease. In
-        -- particular, complete_window commits an Automation's terminal state
-        -- and its durable reaction task together; requiring that completed
-        -- parent to remain active would strand every reaction forever.
-        run_type = 'task'
-        OR parent_run_id IS NULL
-        OR EXISTS (
-          SELECT 1
-          FROM public.runs parent
-          WHERE parent.id = public.runs.parent_run_id
-            AND parent.organization_id = public.runs.organization_id
-            AND parent.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-            AND parent.status IN ('pending', 'claimed', 'running')
-            AND parent.dispatched_message_id = public.runs.action_input->>'messageId'
-        )
-      )
+          AND (
+            -- Task parents are causal provenance, not a liveness lease. In
+            -- particular, complete_window commits an Automation's terminal
+            -- state and its durable reaction task together; requiring that
+            -- completed parent to remain active would strand every reaction
+            -- forever.
+            run_type = 'task'
+            OR parent_run_id IS NULL
+            OR EXISTS (
+              SELECT 1
+              FROM public.runs parent
+              WHERE parent.id = public.runs.parent_run_id
+                AND parent.organization_id = public.runs.organization_id
+                AND parent.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
+                AND parent.status IN ('pending', 'claimed', 'running')
+                AND parent.dispatched_message_id = public.runs.action_input->>'messageId'
+            )
+          )
         ORDER BY priority DESC, run_at ASC, id ASC
         FOR UPDATE SKIP LOCKED
         LIMIT 1
@@ -974,10 +976,10 @@ export class RunsQueue implements IMessageQueue {
   }
 
   /** Refresh `claimed_at` so the stale-claim sweeper does not reclaim a row
-   *  whose handler is still running. Filters on `claimed_by = ${this.claimedBy}`
-   *  so a sibling pod that has since reclaimed this row (after a heartbeat
-   *  gap → sweep → re-claim cycle) doesn't have its claim silently extended
-   *  by ours. */
+   *  whose handler is still running. Filters on the exact `claimOwner` that
+   *  took the row, so a sibling pod that has since reclaimed it (after a
+   *  heartbeat gap → sweep → re-claim cycle) doesn't have its claim silently
+   *  extended by ours. */
   private async heartbeatClaim(runId: number, claimOwner: string): Promise<void> {
     try {
       const sql = getDb();
@@ -1012,29 +1014,35 @@ export class RunsQueue implements IMessageQueue {
     err: unknown,
   ): Promise<void> {
     const sql = getDb();
-  const message = getErrorMessage(err);
-  const outcome = await sql.begin(async (tx) => {
-    const [linkage] = await tx<{
-    parent_run_id: number | string | null;
-    organization_id: string | null;
-    }>`
-    SELECT parent_run_id, organization_id
-    FROM public.runs
-    WHERE id = ${runId}
-      AND status = 'claimed'
-      AND claimed_by = ${claimOwner}
-    `;
-    const linkedParentId = Number(linkage?.parent_run_id);
-    const linkedOrganizationId = linkage?.organization_id?.trim();
-    if (
-    Number.isSafeInteger(linkedParentId) &&
-    linkedParentId > 0 &&
-    linkedOrganizationId
-    ) {
-    await lockLinkedAutomationOwner(tx, linkedParentId, linkedOrganizationId);
-    await tx`SELECT id FROM public.runs WHERE id = ${linkedParentId} FOR UPDATE`;
-    }
-      const failed = await tx`
+    const message = getErrorMessage(err);
+    const outcome = await sql.begin(async (tx) => {
+      const [linkage] = await tx<{
+        parent_run_id: number | string | null;
+        organization_id: string | null;
+      }>`
+        SELECT parent_run_id, organization_id
+        FROM public.runs
+        WHERE id = ${runId}
+          AND status = 'claimed'
+          AND claimed_by = ${claimOwner}
+      `;
+      const linkedParentId = Number(linkage?.parent_run_id);
+      const linkedOrganizationId = linkage?.organization_id?.trim();
+      if (
+        Number.isSafeInteger(linkedParentId) &&
+        linkedParentId > 0 &&
+        linkedOrganizationId
+      ) {
+        await lockLinkedAutomationOwner(
+          tx,
+          linkedParentId,
+          linkedOrganizationId,
+        );
+        await tx`SELECT id FROM public.runs WHERE id = ${linkedParentId} FOR UPDATE`;
+      }
+      const failed = await tx<
+        LinkedAutomationChild & { run_type: string | null }
+      >`
         UPDATE public.runs
         SET status = 'failed',
             completed_at = now(),
@@ -1043,60 +1051,28 @@ export class RunsQueue implements IMessageQueue {
         WHERE id = ${runId}
           AND status = 'claimed'
           AND claimed_by = ${claimOwner}
-    RETURNING id, run_type, queue_name, organization_id, parent_run_id,
-              action_input->>'messageId' AS message_id,
-              action_input->>'agentId' AS agent_id,
-              action_input->>'userId' AS user_id,
-              action_input->>'conversationId' AS conversation_id,
-              action_input->>'channelId' AS channel_id,
-              action_input->>'platform' AS platform
+        RETURNING id, run_type, queue_name, organization_id, parent_run_id,
+                  ${linkedChildIdentityColumns(tx)}
       `;
-    const row = failed[0] as {
-    id?: unknown;
-    queue_name?: unknown;
-    organization_id?: unknown;
-    parent_run_id?: unknown;
-    message_id?: unknown;
-    agent_id?: unknown;
-    user_id?: unknown;
-    conversation_id?: unknown;
-    channel_id?: unknown;
-    platform?: unknown;
-    } | undefined;
+      const row = failed[0];
+      // A child with no parent is ordinary queue debris; only a linked one
+      // cascades. `parent_run_id` is nullable, so guard the number before
+      // handing the row to a path that treats it as a real parent id.
       const parentRunId = Number(row?.parent_run_id);
-    let responseEmitted = false;
-      if (Number.isSafeInteger(parentRunId) && parentRunId > 0) {
-    const terminalized = await terminalizeLinkedAutomationParent(
-      tx,
-      {
-      id: Number(row?.id),
-      queue_name: String(row?.queue_name ?? ""),
-      organization_id:
-        typeof row?.organization_id === "string"
-        ? row.organization_id
-        : null,
-      parent_run_id: parentRunId,
-      message_id:
-        typeof row?.message_id === "string" ? row.message_id : null,
-      agent_id: typeof row?.agent_id === "string" ? row.agent_id : null,
-      user_id: typeof row?.user_id === "string" ? row.user_id : null,
-      conversation_id:
-        typeof row?.conversation_id === "string"
-        ? row.conversation_id
-        : null,
-      channel_id:
-        typeof row?.channel_id === "string" ? row.channel_id : null,
-      platform: typeof row?.platform === "string" ? row.platform : null,
-      },
-      message,
-      AgentErrorCode.WORKER_DIED,
-    );
-    responseEmitted = terminalized.responseEmitted;
+      let responseEmitted = false;
+      if (row && Number.isSafeInteger(parentRunId) && parentRunId > 0) {
+        const terminalized = await terminalizeLinkedAutomationParent(
+          tx,
+          { ...row, parent_run_id: parentRunId },
+          message,
+          AgentErrorCode.WORKER_DIED,
+        );
+        responseEmitted = terminalized.responseEmitted;
       }
-    return { failed, responseEmitted };
+      return { failed, responseEmitted };
     });
-  if (outcome.responseEmitted) await notifyThreadResponse();
-  const row = outcome.failed[0] as
+    if (outcome.responseEmitted) await notifyThreadResponse();
+    const row = outcome.failed[0] as
       | { run_type?: string; queue_name?: string }
       | undefined;
     // Only emit when we actually transitioned the row (a sibling pod may have
@@ -1310,25 +1286,9 @@ export async function sweepCompletedRuns(): Promise<number> {
   // therefore a terminal dispatch failure, not disposable queue debris: retain
   // the child as a dead letter and resolve the parent in the same transaction.
   const expiredLinked = await sql.begin(async (tx) => {
-    const candidates = await tx<{
-      id: number;
-      queue_name: string;
-      organization_id: string | null;
-      parent_run_id: number;
-      message_id: string | null;
-      agent_id: string | null;
-      user_id: string | null;
-      conversation_id: string | null;
-      channel_id: string | null;
-      platform: string | null;
-    }>`
+    const candidates = await tx<LinkedAutomationChild>`
       SELECT id, queue_name, organization_id, parent_run_id,
-             action_input->>'messageId' AS message_id,
-             action_input->>'agentId' AS agent_id,
-             action_input->>'userId' AS user_id,
-             action_input->>'conversationId' AS conversation_id,
-             action_input->>'channelId' AS channel_id,
-             action_input->>'platform' AS platform
+             ${linkedChildIdentityColumns(tx)}
       FROM public.runs
       WHERE expires_at IS NOT NULL
         AND expires_at <= now()
@@ -1404,7 +1364,7 @@ export async function sweepCompletedRuns(): Promise<number> {
       WHERE expires_at IS NOT NULL
         AND expires_at <= now()
         AND status = 'pending'
-    AND (parent_run_id IS NULL OR run_type <> 'chat_message')
+        AND (parent_run_id IS NULL OR run_type <> 'chat_message')
         AND run_type IN ('chat_message', 'schedule', 'agent_run', 'internal', 'task')
       RETURNING id
     )

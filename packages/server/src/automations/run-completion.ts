@@ -1,7 +1,11 @@
 import type { DbClient } from "../db/client";
 import { getDb, pgTextArray } from "../db/client";
 import { listPendingToolsForRun } from "../gateway/auth/mcp/pending-tool-store";
-import { deploymentNameForLinkedChild } from "../gateway/orchestration/deployment-identity";
+import {
+	deploymentNameForLinkedChild,
+	type LinkedChildIdentity,
+	linkedChildIdentityColumns,
+} from "../gateway/orchestration/deployment-identity";
 import { revokeTurnIfPendingInTransaction } from "../gateway/orchestration/turn-liveness";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { supersedeActionEvent } from "../tools/admin/approval-events";
@@ -185,8 +189,8 @@ export async function markAutomationRunCompleted(
         )
     WHERE id = ${runId}
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-	  AND (${expectedMessageId ?? null}::text IS NULL OR dispatched_message_id = ${expectedMessageId ?? null})
-	  AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
+      AND (${expectedMessageId ?? null}::text IS NULL OR dispatched_message_id = ${expectedMessageId ?? null})
+      AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
   `;
 }
 
@@ -284,10 +288,10 @@ export async function markAutomationRunFailedInTransaction(
           ${expectedMessageId ?? null}::text IS NULL
           OR dispatched_message_id = ${expectedMessageId ?? null}
         )
-		AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
-	  RETURNING automation_id, organization_id, run_type,
-	            approved_input->>'dispatch_source' AS dispatch_source
-	`;
+        AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
+      RETURNING automation_id, organization_id, run_type,
+                approved_input->>'dispatch_source' AS dispatch_source
+    `;
 	if (!failed) return false;
 	if (failed.organization_id) {
 		await cleanupAutomationParentLineageInTransaction(
@@ -367,23 +371,10 @@ export async function cleanupAutomationParentLineageInTransaction(
 			      '_run_' || ${runId}::text
 		`;
 	}
-	const linkedChildren = await tx<{
-		id: number | string;
-		queue_name: string;
-		message_id: string | null;
-		agent_id: string | null;
-		user_id: string | null;
-		conversation_id: string | null;
-		channel_id: string | null;
-		platform: string | null;
-	}>`
-		SELECT id, queue_name,
-		       action_input->>'messageId' AS message_id,
-		       action_input->>'agentId' AS agent_id,
-		       action_input->>'userId' AS user_id,
-		       action_input->>'conversationId' AS conversation_id,
-		       action_input->>'channelId' AS channel_id,
-		       action_input->>'platform' AS platform
+	const linkedChildren = await tx<
+		LinkedChildIdentity & { id: number | string; queue_name: string }
+	>`
+		SELECT id, queue_name, ${linkedChildIdentityColumns(tx)}
 		FROM public.runs
 		WHERE parent_run_id = ${runId}
 		  AND run_type = 'chat_message'
@@ -499,17 +490,17 @@ async function requeueAutomationRunForFinalizeNudge(
         dispatched_message_id = NULL,
         error_message = NULL,
         approved_input = jsonb_set(
-		  COALESCE(approved_input, '{}'::jsonb) - 'dispatch_message_id',
+          COALESCE(approved_input, '{}'::jsonb) - 'dispatch_message_id',
           '{finalize_nudge_count}',
           to_jsonb(${nextNudgeCount}::int)
         )
     WHERE id = ${runId}
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-	  AND (${expectedMessageId ?? null}::text IS NULL OR dispatched_message_id = ${expectedMessageId ?? null})
-	  AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
-	  AND COALESCE((approved_input->>'finalize_nudge_count')::int, 0) = ${nextNudgeCount - 1}
-	RETURNING id
-	  `;
+      AND (${expectedMessageId ?? null}::text IS NULL OR dispatched_message_id = ${expectedMessageId ?? null})
+      AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
+      AND COALESCE((approved_input->>'finalize_nudge_count')::int, 0) = ${nextNudgeCount - 1}
+    RETURNING id
+  `;
 	return rows.length > 0;
 	});
 }
@@ -524,8 +515,8 @@ export async function resolveAutomationRunsByMessageIds(
 
 	const sql = db ?? getDb();
 	const rows = await sql`
-		SELECT r.id, r.run_type, r.approved_input, r.dispatched_message_id,
-		       r.claimed_by, w.execution_config
+    SELECT r.id, r.run_type, r.approved_input, r.dispatched_message_id,
+           r.claimed_by, w.execution_config
     FROM runs r
     LEFT JOIN automations w ON w.id = r.automation_id
     WHERE r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
@@ -684,6 +675,11 @@ export async function describePendingApproval(
 		WHERE parent_run_id = ${runId}
 		  AND run_type = ANY(${pgTextArray([...APPROVAL_RUN_TYPES])}::text[])
 		  AND NOT (
+		    -- ENTITY_CHANGE_ACTION_KEYS, spelled out rather than imported:
+		    -- tools/admin/entity-field-approval pulls in the entity-write graph,
+		    -- and this module is loaded by the runs queue. The exclusion has to
+		    -- stay in step with the matching allowance in
+		    -- manage_operations/handlers/approvals.blockHeadlessAutomationApproval.
 		    run_type = 'internal'
 		    AND action_key = ANY('{entity_field_change,entity_change}'::text[])
 		    AND COALESCE(run_metadata->>'automation_review_artifact', 'false') = 'true'

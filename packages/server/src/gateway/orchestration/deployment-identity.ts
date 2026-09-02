@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { generateWorkerToken, generateWorkerTokenPair } from "@lobu/core";
+import type { DbClient, DbQuery } from "../../db/client.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 
@@ -144,7 +145,45 @@ export function generateDeploymentName(identity: DeploymentIdentity): string {
 }
 
 /** Queue name prefix a per-deployment worker listens on. */
-const THREAD_MESSAGE_QUEUE_PREFIX = "thread_message_";
+export const THREAD_MESSAGE_QUEUE_PREFIX = "thread_message_";
+
+/**
+ * Who a linked chat_message child was enqueued for, as its `action_input`
+ * recorded it.
+ *
+ * Three sweeps read this shape off `runs` -- the dead-letter path, the
+ * expired-child path, and the parent-terminalization cascade -- and each one
+ * feeds it straight back into {@link deploymentNameForLinkedChild}. A column
+ * this type omits is a deployment name that silently comes out wrong, so the
+ * type, the projection that fills it, and the name derived from it are
+ * declared together here instead of spelled out per call site.
+ */
+export interface LinkedChildIdentity {
+  message_id: string | null;
+  agent_id: string | null;
+  user_id: string | null;
+  conversation_id: string | null;
+  channel_id: string | null;
+  platform: string | null;
+}
+
+/**
+ * The `action_input` projection that populates a {@link LinkedChildIdentity}.
+ *
+ * Takes the executing client because a fragment is bound by the statement it
+ * is nested into: build it with `tx` inside a transaction and `sql` outside,
+ * or the parameters land on the wrong connection.
+ */
+export function linkedChildIdentityColumns(sql: DbClient): DbQuery {
+  return sql`
+    action_input->>'messageId' AS message_id,
+    action_input->>'agentId' AS agent_id,
+    action_input->>'userId' AS user_id,
+    action_input->>'conversationId' AS conversation_id,
+    action_input->>'channelId' AS channel_id,
+    action_input->>'platform' AS platform
+  `;
+}
 
 /**
  * The deployment a linked chat_message child run was dispatched to.
@@ -155,14 +194,7 @@ const THREAD_MESSAGE_QUEUE_PREFIX = "thread_message_";
  * to act on".
  */
 export function deploymentNameForLinkedChild(
-  child: {
-    queue_name: string;
-    agent_id: string | null;
-    user_id: string | null;
-    conversation_id: string | null;
-    channel_id: string | null;
-    platform: string | null;
-  },
+  child: LinkedChildIdentity & { queue_name: string },
   organizationId: string
 ): string {
   if (child.queue_name.startsWith(THREAD_MESSAGE_QUEUE_PREFIX)) {

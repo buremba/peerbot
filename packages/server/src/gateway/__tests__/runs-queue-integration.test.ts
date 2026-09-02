@@ -21,6 +21,12 @@ import {
   RunsQueue,
   sweepCompletedRuns,
 } from "../infrastructure/queue/runs-queue.js";
+import {
+  deploymentNameForLinkedChild,
+  generateDeploymentName,
+  linkedChildIdentityColumns,
+  THREAD_MESSAGE_QUEUE_PREFIX,
+} from "../orchestration/deployment-identity.js";
 import { getDb } from "../../db/client.js";
 import {
   ensureDbForGatewayTests,
@@ -404,6 +410,110 @@ describe("RunsQueue — graceful shutdown", () => {
     if (status === "pending") {
       expect(rows[0]?.claimed_by).toBeNull();
     }
+  });
+});
+
+describe("linked-child identity projection", () => {
+  // Three sweeps read a linked chat_message child off `runs` and hand the
+  // result straight to deploymentNameForLinkedChild, which is what decides
+  // whose turn gets failed. A projection that aliases the wrong action_input
+  // key does not error -- it silently names a different deployment, so the
+  // owed terminal event lands on someone else's turn or nowhere. This pins the
+  // mapping end to end against real Postgres, once, for the one projection all
+  // three now share.
+  test("maps every action_input key to the column its name promises", async () => {
+    const sql = getDb();
+    const orgId = await seedAgentRow("identity-agent", {
+      organizationId: "identity-org",
+    });
+    const identity = {
+      messageId: "msg-1",
+      agentId: "identity-agent",
+      userId: "U123",
+      conversationId: "C999",
+      channelId: "CHAN7",
+      platform: "slack",
+    };
+    const [child] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        run_type, queue_name, action_input, status, run_at, organization_id
+      )
+      VALUES (
+        'chat_message', 'messages', ${sql.json(identity)}, 'pending', now(),
+        ${orgId}
+      )
+      RETURNING id
+    `;
+
+    const [row] = await sql<{
+      queue_name: string;
+      message_id: string | null;
+      agent_id: string | null;
+      user_id: string | null;
+      conversation_id: string | null;
+      channel_id: string | null;
+      platform: string | null;
+    }>`
+      SELECT queue_name, ${linkedChildIdentityColumns(sql)}
+      FROM public.runs WHERE id = ${Number(child.id)}
+    `;
+
+    expect(row.message_id).toBe("msg-1");
+    expect(row.agent_id).toBe("identity-agent");
+    expect(row.user_id).toBe("U123");
+    expect(row.conversation_id).toBe("C999");
+    expect(row.channel_id).toBe("CHAN7");
+    expect(row.platform).toBe("slack");
+
+    // The round trip the sweeps actually perform: what came out of the row
+    // must name the same deployment the enqueue side derived.
+    expect(deploymentNameForLinkedChild(row, orgId)).toBe(
+      generateDeploymentName({
+        organizationId: orgId,
+        agentId: identity.agentId,
+        userId: identity.userId,
+        platform: identity.platform,
+        channelId: identity.channelId,
+        conversationId: identity.conversationId,
+      })
+    );
+  });
+
+  test("a thread-message queue names its deployment without the identity", async () => {
+    const sql = getDb();
+    const orgId = await seedAgentRow("identity-thread-agent", {
+      organizationId: "identity-thread-org",
+    });
+    // A per-deployment queue already carries the name, so this row is the case
+    // where every projected identity column is NULL and the name still has to
+    // come out right -- the shape the org-less sweep test exercises blind.
+    const [child] = await sql<{ id: number }>`
+      INSERT INTO runs (
+        run_type, queue_name, action_input, status, run_at, organization_id
+      )
+      VALUES (
+        'chat_message', ${`${THREAD_MESSAGE_QUEUE_PREFIX}dep-abc`},
+        '{}'::jsonb, 'pending', now(), ${orgId}
+      )
+      RETURNING id
+    `;
+
+    const [row] = await sql<{
+      queue_name: string;
+      message_id: string | null;
+      agent_id: string | null;
+      user_id: string | null;
+      conversation_id: string | null;
+      channel_id: string | null;
+      platform: string | null;
+    }>`
+      SELECT queue_name, ${linkedChildIdentityColumns(sql)}
+      FROM public.runs WHERE id = ${Number(child.id)}
+    `;
+
+    expect(row.agent_id).toBeNull();
+    expect(row.conversation_id).toBeNull();
+    expect(deploymentNameForLinkedChild(row, orgId)).toBe("dep-abc");
   });
 });
 

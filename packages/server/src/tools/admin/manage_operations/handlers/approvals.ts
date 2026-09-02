@@ -1881,6 +1881,16 @@ export async function handleReject(
 	if (humanGate) return humanGate;
 	await requireApprovalAuthority("reject", args.run_id, ctx);
 
+	// No blockHeadlessAutomationApproval here, deliberately. That gate exists to
+	// stop a human RESUMING unattended execution: approving applies the held
+	// mutation and hands control back to the Automation. Rejecting does the
+	// opposite -- it cancels the held action and lets the run finish -- so the
+	// gate has nothing to protect. Gating it would also be actively harmful now
+	// that complete_window 409s on a pending child approval: a stuck headless
+	// approval would have no way to be cleared and would strand its parent.
+	// approve_batch / reject_batch both delegate per run id to these two, so the
+	// asymmetry lives here once rather than at four entry points.
+
 	const sql = getDb();
 	const reason = args.reason ?? "Rejected by user";
 	const reviewer = await resolveReviewer(ctx);

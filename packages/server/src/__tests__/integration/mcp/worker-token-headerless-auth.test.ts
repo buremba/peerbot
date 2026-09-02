@@ -18,6 +18,8 @@ import {
 } from '../../../gateway/services/run-worker-access';
 import { getDb } from '../../../db/client';
 import { getNextNumericId } from '../../../tools/admin/helpers/db-helpers';
+import { type AuthContext, executeTool } from '../../../tools/execute';
+import { ToolUserError } from '../../../utils/errors';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -310,5 +312,89 @@ describe('worker-token MCP auth without the direct-auth header', () => {
     expect(response.status).toBe(401);
     const body = (await response.json()) as { error?: string };
     expect(body.error).toBe('invalid_token');
+  });
+  /**
+   * A signed parent-run claim is only a claim. stampTrustedAutomationIdentity
+   * joins it back to runs + automations before honouring it, and a claim that
+   * fails that join is a REFUSAL, not a server fault -- it used to throw a bare
+   * Error, which reached the REST proxy stripped of any status.
+   */
+  describe('a forged parent-run claim on a worker token', () => {
+    function workerAuthCtx(overrides: Partial<AuthContext> = {}): AuthContext {
+      return {
+        organizationId: org.id,
+        tokenOrganizationId: org.id,
+        userId: null,
+        memberRole: 'owner',
+        agentId: AGENT_ID,
+        requestedAgentId: null,
+        isAuthenticated: true,
+        clientId: null,
+        scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+        tokenType: 'oauth',
+        requestUrl: `https://test.local/mcp/${org.slug}`,
+        baseUrl: 'https://test.local',
+        scopedToOrg: true,
+        allowCrossOrg: false,
+        grantedOrganizationIds: null,
+        directSearchFederation: false,
+        ...overrides,
+      };
+    }
+
+    async function refusalFor(ctx: AuthContext): Promise<ToolUserError> {
+      try {
+        await executeTool('list_organizations', {}, {} as never, ctx);
+      } catch (err) {
+        expect(err).toBeInstanceOf(ToolUserError);
+        return err as ToolUserError;
+      }
+      throw new Error('expected the parent-run scope check to refuse');
+    }
+
+    it('refuses a run id that does not exist, as a 403 and not a 500', async () => {
+      const err = await refusalFor(
+        workerAuthCtx({ automationRunId: automationRunId + 90_000 }),
+      );
+      expect(err.httpStatus).toBe(403);
+      // PERMISSION is permanent, so the auto-retry wrapper cannot replay a
+      // forged claim until it happens to land on a real run id.
+      expect(err.code).toBe('PERMISSION');
+      expect(err.retryable).toBe(false);
+      expect(err.message).toMatch(/no longer matches an authorized run/);
+    });
+
+    it("refuses another org's run even though the claim itself is real", async () => {
+      const err = await refusalFor(
+        workerAuthCtx({
+          organizationId: otherOrg.id,
+          tokenOrganizationId: otherOrg.id,
+          automationRunId,
+        }),
+      );
+      expect(err.httpStatus).toBe(403);
+      expect(err.code).toBe('PERMISSION');
+    });
+
+    it('refuses a claim carried by a token with no agent scope', async () => {
+      const err = await refusalFor(
+        workerAuthCtx({ agentId: null, automationRunId }),
+      );
+      expect(err.httpStatus).toBe(403);
+      expect(err.message).toMatch(/missing organization or agent scope/);
+    });
+
+    it('honours the real claim, so the refusal is scope-specific and not blanket', async () => {
+      const ctx = workerAuthCtx({ automationRunId });
+      // The stamp runs ahead of the tool's own requirements, so this call still
+      // fails downstream on user context. That is the point: it got PAST the
+      // scope check and left the trusted identity behind, which is what the
+      // three refusals above have to be measured against.
+      await expect(
+        executeTool('list_organizations', {}, {} as never, ctx),
+      ).rejects.toThrow(/User context required/);
+      expect(ctx.actingAutomationId).toBe(automationId);
+      expect(ctx.actingRunId).toBe(automationRunId);
+    });
   });
 });

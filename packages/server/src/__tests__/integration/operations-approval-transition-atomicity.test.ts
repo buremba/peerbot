@@ -517,6 +517,56 @@ describe("approval-run transition atomicity", () => {
 		expect(child.approval_status).toBe("pending");
 	});
 
+	/**
+	 * The mirror of the test above, and the reason handleReject carries no
+	 * headless gate. Approving RESUMES unattended execution; rejecting cancels
+	 * it. Gating both would leave a stuck headless approval unclearable, and
+	 * since complete_window now 409s on a pending child approval that would
+	 * strand the parent too.
+	 */
+	it("still lets a human REJECT an action approval linked to a headless Automation", async () => {
+		const sql = getTestDb();
+		const [parent] = await sql`
+			INSERT INTO runs (
+				organization_id, run_type, status, approval_status, created_at
+			) VALUES (
+				${orgId}, 'automation', 'running', 'auto', NOW()
+			)
+			RETURNING id
+		`;
+		const queued = (await manageOperations(
+			{
+				action: "execute",
+				connection_id: connectionId,
+				operation_key: "create_item",
+				input: { body: { value: "must-not-run" } },
+			},
+			{} as Env,
+			humanCtx,
+		)) as { run_id: number; status: string };
+		expect(queued.status).toBe("pending_approval");
+		await sql`
+			UPDATE runs SET parent_run_id = ${Number(parent.id)}
+			WHERE id = ${queued.run_id}
+		`;
+		const callsBefore = postItemsCalls;
+
+		const result = (await manageOperations(
+			{ action: "reject", run_id: queued.run_id, reason: "not wanted" },
+			{} as Env,
+			humanCtx,
+		)) as { error?: string };
+
+		expect(result.error).toBeUndefined();
+		// Rejecting must never reach the connector -- it cancels the held call.
+		expect(postItemsCalls).toBe(callsBefore);
+		const [child] = await sql`
+			SELECT status, approval_status FROM runs WHERE id = ${queued.run_id}
+		`;
+		expect(child.status).toBe("cancelled");
+		expect(child.approval_status).toBe("rejected");
+	});
+
 	it("builder completion card failure does NOT convert a successful apply into a business failure", async () => {
 		const sql = getTestDb();
 		const runId = await seedAgentAskRun(orgId, userId);

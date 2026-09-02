@@ -20,7 +20,7 @@ import type { Env } from '../index';
 import { recordMcpConversationActivity } from '../lobu/stores/mcp-client-conversations';
 import { getDb } from '../db/client';
 import { AUTOMATION_RUN_TYPES_PG } from '../runs/run-types';
-import { ACTIVE_RUN_STATUSES } from '../utils/run-statuses';
+import { isActiveRunStatus } from '../utils/run-statuses';
 import { trackMCPToolCall } from '../sentry';
 import { parseApplyId } from '../utils/apply-context';
 import { assertDeploymentsNotPaused } from '../utils/deployment-pause';
@@ -200,7 +200,11 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
 async function stampTrustedAutomationIdentity(authCtx: AuthContext): Promise<void> {
   if (authCtx.automationRunId == null) return;
   if (!authCtx.organizationId || !authCtx.agentId) {
-    throw new Error('Automation worker token is missing organization or agent scope.');
+    throw new ToolUserError(
+      'Automation worker token is missing organization or agent scope.',
+      403,
+      'PERMISSION'
+    );
   }
   const rows = await getDb()<{
     automation_id: number;
@@ -220,8 +224,17 @@ async function stampTrustedAutomationIdentity(authCtx: AuthContext): Promise<voi
   const automationId = Number(rows[0]?.automation_id);
   if (!Number.isInteger(automationId) || automationId <= 0) {
     // No such run in this org for this token's agent. The claim is forged or
-    // points outside the token's scope, so it must not be honoured.
-    throw new Error('Automation worker token no longer matches an authorized run.');
+    // points outside the token's scope, so it must not be honoured. It is a
+    // refusal, and it has to say so: a bare Error carried no status, so
+    // restErrorResponse flattened it to a generic 400 -- reporting a forged
+    // authorization claim as if the caller had merely sent bad arguments.
+    // ToolUserError carries the status, and PERMISSION is permanent so the
+    // auto-retry wrapper cannot replay a forged claim.
+    throw new ToolUserError(
+      'Automation worker token no longer matches an authorized run.',
+      403,
+      'PERMISSION'
+    );
   }
   // Liveness is NOT an authorization question, so it is checked separately
   // from scope. An agent can still be issuing tool calls after complete_window
@@ -229,7 +242,7 @@ async function stampTrustedAutomationIdentity(authCtx: AuthContext): Promise<voi
   // tokens carried a parent claim, and failing them now would be a regression.
   // There is simply no live parent to attribute them to, so leave attribution
   // unset and let the call proceed.
-  if (!ACTIVE_RUN_STATUSES.includes(rows[0].status as never)) return;
+  if (!isActiveRunStatus(rows[0].status)) return;
   authCtx.actingAutomationId = automationId;
   authCtx.actingRunId = authCtx.automationRunId;
 }

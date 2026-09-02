@@ -928,7 +928,10 @@ async function finalizeStalePendingAutomationRuns(
 	      LIMIT 100
 	    )
 	    ORDER BY w.id
-	    FOR UPDATE
+	    -- SKIP LOCKED, as in stale-run-sweeper's identical CTE: another replica
+	    -- holding this automations row means it is already sweeping that
+	    -- Automation, so defer its runs to the next tick instead of blocking.
+	    FOR UPDATE SKIP LOCKED
 	  )
       SELECT r.id, r.automation_id, r.organization_id, w.schedule, w.timezone,
              r.approved_input->>'dispatch_source' AS dispatch_source,

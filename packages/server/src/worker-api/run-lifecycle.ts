@@ -115,6 +115,42 @@ const DRY_RUN_CONTENT_CHARS = 500;
  * exit metadata) and is spliced into the SET list. `returning` is the
  * handler's RETURNING column list. Both are nested `sql` fragments.
  */
+/**
+ * Take the Automation row before the run row.
+ *
+ * Every terminalization path in this file shares one global lock order --
+ * Automation first, run second -- so they cannot deadlock against
+ * complete_window, which takes the same pair in the same order. A caller that
+ * already holds this row reacquires it reentrantly. Kept as one helper so the
+ * order is stated once rather than restated at each transaction that opens.
+ */
+async function lockAutomation(
+	tx: DbClient,
+	automationId: number,
+): Promise<void> {
+	await tx`SELECT id FROM automations WHERE id = ${automationId} FOR UPDATE`;
+}
+
+/**
+ * Take this worker's own still-running claim on the run, reporting whether it
+ * is still there. A false means another worker (or a sweeper) already moved
+ * the run on, and the caller must not terminalize it.
+ */
+async function lockRunningClaim(
+	tx: DbClient,
+	runId: number,
+	workerId: string,
+): Promise<boolean> {
+	const locked = await tx`
+		SELECT id FROM runs
+		WHERE id = ${runId}
+		  AND status = 'running'
+		  AND claimed_by = ${workerId}
+		FOR UPDATE
+	`;
+	return locked.length > 0;
+}
+
 async function finalizeRun(
 	sql: DbClient,
 	params: {
@@ -1476,11 +1512,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	): Promise<boolean> => {
 			// Match completeWindow's global lock order: Automation first, run second.
 			// Callers that already own both locks simply reacquire them reentrantly.
-			await tx`
-				SELECT id FROM automations
-				WHERE id = ${automationId}
-				FOR UPDATE
-			`;
+			await lockAutomation(tx, automationId);
 			const failedRows = (await tx`
         UPDATE runs
         SET status = 'failed',
@@ -1541,19 +1573,9 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 		| { status: "missed" }
 	> =>
 		sql.begin(async (tx) => {
-			await tx`
-				SELECT id FROM automations
-				WHERE id = ${automationId}
-				FOR UPDATE
-			`;
-			const locked = await tx`
-				SELECT id FROM runs
-				WHERE id = ${runId}
-				  AND status = 'running'
-				  AND claimed_by = ${body.worker_id}
-				FOR UPDATE
-			`;
-			if (locked.length === 0) return { status: "missed" as const };
+			await lockAutomation(tx, automationId);
+			const claimHeld = await lockRunningClaim(tx, runId, body.worker_id);
+			if (!claimHeld) return { status: "missed" as const };
 			const approvalFailure = await describePendingApproval(tx, runId, 0);
 			if (!approvalFailure) return { status: "clear" as const };
 			await failRunInTransaction(tx, approvalFailure);
@@ -1607,11 +1629,7 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 	// run through the missing-completeWindow resume budget or failure taxonomy.
 	if (body.exit_reason === "cancelled") {
 		const cancelled = await sql.begin(async (tx) => {
-			await tx`
-				SELECT id FROM automations
-				WHERE id = ${automationId}
-				FOR UPDATE
-			`;
+			await lockAutomation(tx, automationId);
 			const cancelledRows = (await tx`
       UPDATE runs
       SET status = 'cancelled',
@@ -1731,19 +1749,9 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 				? (approved.agent_kind as string).trim()
 				: null;
 		const eventOutcome = await sql.begin(async (tx) => {
-			await tx`
-				SELECT id FROM automations
-				WHERE id = ${automationId}
-				FOR UPDATE
-			`;
-			const locked = await tx`
-				SELECT id FROM runs
-				WHERE id = ${runId}
-				  AND status = 'running'
-				  AND claimed_by = ${body.worker_id}
-				FOR UPDATE
-			`;
-			if (locked.length === 0) return { status: "missed" as const };
+			await lockAutomation(tx, automationId);
+			const claimHeld = await lockRunningClaim(tx, runId, body.worker_id);
+			if (!claimHeld) return { status: "missed" as const };
 			const approvalFailure = await describePendingApproval(tx, runId, 0);
 			if (approvalFailure) {
 				await failRunInTransaction(tx, approvalFailure);
@@ -1976,19 +1984,9 @@ export async function completeAutomationRun(c: Context<{ Bindings: Env }>) {
 		"or MCP query_sdk/run_sdk. Check lobu CLI login/org, gateway reachability, " +
 		"and that the device token has mcp:write if using MCP.";
 	const terminal = await sql.begin(async (tx) => {
-		await tx`
-			SELECT id FROM automations
-			WHERE id = ${automationId}
-			FOR UPDATE
-		`;
-		const locked = await tx`
-			SELECT id FROM runs
-			WHERE id = ${runId}
-			  AND status = 'running'
-			  AND claimed_by = ${body.worker_id}
-			FOR UPDATE
-		`;
-		if (locked.length === 0) {
+		await lockAutomation(tx, automationId);
+		const claimHeld = await lockRunningClaim(tx, runId, body.worker_id);
+		if (!claimHeld) {
 			return { transitioned: false, reason, approvalBlocked: false };
 		}
 		const approvalFailure = await describePendingApproval(tx, runId, 0);

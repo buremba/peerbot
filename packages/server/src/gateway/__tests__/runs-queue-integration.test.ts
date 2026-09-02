@@ -404,6 +404,61 @@ describe("RunsQueue — graceful shutdown", () => {
   });
 });
 
+describe("RunsQueue — shutdown release scope", () => {
+  test("releases only this process's claims, not another worker's", async () => {
+    if (!queue) throw new Error("queue not started");
+    const sql = getDb();
+
+    // Two claims this gateway did NOT issue: another gateway instance (same
+    // owner shape, different instance UUID) and a device worker. Shutdown
+    // identifies its own rows by owner prefix, so a prefix that over-matched
+    // would reset live work belonging to someone else.
+    const foreign = await sql<{ id: number; claimed_by: string }>`
+      INSERT INTO runs (run_type, queue_name, action_input, status, claimed_at, claimed_by, run_at)
+      VALUES
+        ('chat_message', 'test-foreign', '{}'::jsonb, 'claimed',
+         now(), 'gateway-00000000-0000-4000-8000-00000000ffff:test-foreign:0', now()),
+        ('chat_message', 'test-foreign', '{}'::jsonb, 'claimed',
+         now(), 'device-other-pid', now())
+      RETURNING id, claimed_by
+    `;
+
+    await queue.send("test-release-scope", { tag: "hold" });
+    let started = false;
+    let release: (() => void) | null = null;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await queue.work("test-release-scope", async () => {
+      started = true;
+      await blocked;
+    });
+    const waitStart = Date.now();
+    while (!started && Date.now() - waitStart < 3000) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(started).toBe(true);
+
+    const stopPromise = queue.stop();
+    setTimeout(() => release?.(), 50);
+    await stopPromise;
+    queue = null;
+
+    for (const row of foreign) {
+      const [after] = await sql<{ status: string; claimed_by: string | null }>`
+        SELECT status, claimed_by FROM runs WHERE id = ${Number(row.id)}
+      `;
+      expect(after.status).toBe("claimed");
+      expect(after.claimed_by).toBe(row.claimed_by);
+    }
+
+    const [own] = await sql<{ status: string }>`
+      SELECT status FROM runs WHERE queue_name = 'test-release-scope'
+    `;
+    expect(own.status === "pending" || own.status === "completed").toBe(true);
+  });
+});
+
 describe("RunsQueue — startup recovery scan", () => {
   test("recovers gateway claims without stealing device chat lifecycle", async () => {
     if (!queue) throw new Error("queue not started");

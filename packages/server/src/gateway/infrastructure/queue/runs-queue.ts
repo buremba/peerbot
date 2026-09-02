@@ -31,7 +31,6 @@ import { intervals } from "../../../config/intervals.js";
 import {
 	getDb,
 	getDbListener,
-	pgTextArray,
 	type DbClient,
 } from "../../../db/client.js";
 import { incrementCounter } from "../../metrics/prometheus.js";
@@ -276,8 +275,6 @@ export class RunsQueue implements IMessageQueue {
    * prevent cross-pod ownership corruption.
    */
   private readonly claimedBy: string;
-  /** Exact claim owners issued by this queue, including prior generations. */
-  private readonly claimOwners = new Set<string>();
 
   constructor() {
     if (!process.env.DATABASE_URL) {
@@ -400,7 +397,6 @@ export class RunsQueue implements IMessageQueue {
         // ignore
       }
     }
-    this.claimOwners.clear();
 
     logger.debug("Runs queue stopped");
   }
@@ -835,9 +831,7 @@ export class RunsQueue implements IMessageQueue {
   // ── Internals ───────────────────────────────────────────────────────────
 
   private claimOwner(worker: QueueWorker): string {
-    const owner = `${this.claimedBy}:${worker.queueName}:${worker.generation}`;
-    this.claimOwners.add(owner);
-    return owner;
+    return `${this.claimedBy}:${worker.queueName}:${worker.generation}`;
   }
 
   /** Claim one row scoped to the worker's `queue_name`. */
@@ -1166,20 +1160,23 @@ export class RunsQueue implements IMessageQueue {
   }
 
   /**
-   * Release all exact owners issued by this process, never another worker's.
-   * One statement over the whole owner set: a long-lived gateway accumulates an
-   * owner per worker generation, and shutdown is not the place to run a query
-   * per restart the process happened to survive.
+   * Release every claim this process issued, never another worker's.
+   *
+   * Each owner is `<claimedBy>:<queue>:<generation>` and `claimedBy` carries a
+   * per-instance UUID, so the prefix identifies exactly this process's rows --
+   * across every queue and every worker generation it went through. Matching on
+   * the prefix is why nothing has to remember the owners: a long-lived gateway
+   * re-registers workers indefinitely, and a remembered set would grow for the
+   * life of the process to serve one statement at shutdown.
    */
   private async releaseAllClaims(): Promise<number> {
-    if (this.claimOwners.size === 0) return 0;
     const result = await getDb()`
       UPDATE public.runs
       SET status = 'pending',
           claimed_at = NULL,
           claimed_by = NULL
       WHERE status = 'claimed'
-        AND claimed_by = ANY(${pgTextArray([...this.claimOwners])}::text[])
+        AND starts_with(claimed_by, ${`${this.claimedBy}:`})
     `;
     return result.count;
   }

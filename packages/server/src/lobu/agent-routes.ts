@@ -23,6 +23,7 @@ import {
 	type OAuthProviderConfig,
 } from "../gateway/auth/oauth/providers";
 import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
+import { resolveSystemJudgeTarget } from "../gateway/inference/system-judge-target";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import { orgBucketAgentId } from "../gateway/auth/settings/user-auth-profile-store";
 import { validateModelRefsAgainstOrg } from "./model-config";
@@ -2013,7 +2014,6 @@ routes.patch("/:agentId/config", async (c) => {
 	// require-tool entries never call a model.
 	const judgeDefault = process.env.EGRESS_JUDGE_MODEL?.trim();
 	if (
-		!judgeDefault &&
 		Array.isArray((updates as { guardrailsInline?: unknown }).guardrailsInline)
 	) {
 		const inline = (
@@ -2025,18 +2025,64 @@ routes.patch("/:agentId/config", async (c) => {
 				}>;
 			}
 		).guardrailsInline;
-		const missing = inline.find((g) => {
-			if (g?.kind === "require-tool") return false;
-			return typeof g?.model !== "string" || g.model.trim() === "";
-		});
-		if (missing) {
-			return c.json(
-				{
-					error: "guardrail_model_required",
-					error_description: `Custom guardrail "${missing.name ?? "(unnamed)"}" needs a model: the gateway has no default judge model (EGRESS_JUDGE_MODEL is unset).`,
-				},
-				400
-			);
+		if (!judgeDefault) {
+			const missing = inline.find((g) => {
+				if (g?.kind === "require-tool") return false;
+				return typeof g?.model !== "string" || g.model.trim() === "";
+			});
+			if (missing) {
+				return c.json(
+					{
+						error: "guardrail_model_required",
+						error_description: `Custom guardrail "${missing.name ?? "(unnamed)"}" needs a model: the gateway has no default judge model (EGRESS_JUDGE_MODEL is unset).`,
+					},
+					400
+				);
+			}
+		}
+
+		// A judge model that cannot resolve is worse than a missing one: the
+		// guardrail SAVES, then denies every request it covers at runtime with
+		// only a log line to say why. Resolve it here, through the exact
+		// function the judge uses, so write-time acceptance and runtime
+		// resolution cannot drift. Applies whether or not a default exists —
+		// an explicitly named bad model is bad either way.
+		//
+		// Only NEW or CHANGED models are checked. Rejecting an already-stored
+		// value would lock the agent out of its own config: every PATCH carries
+		// the full `guardrailsInline` array, so an agent holding a
+		// now-unrunnable model could not be edited at all — not even to remove
+		// the offending guardrail. Grandfathering the stored value keeps the
+		// repair path open while still refusing to accept a new bad one.
+		const storedModels = new Map<string, string>();
+		const storedInline = (
+			(await configStore.getSettings(agentId)) as {
+				guardrailsInline?: Array<{ name?: string; model?: string }>;
+			} | null
+		)?.guardrailsInline;
+		if (Array.isArray(storedInline)) {
+			for (const g of storedInline) {
+				if (g?.name && typeof g.model === "string") {
+					storedModels.set(g.name, g.model.trim());
+				}
+			}
+		}
+
+		for (const g of inline) {
+			if (g?.kind === "require-tool") continue;
+			const model = g?.model?.trim();
+			if (!model) continue;
+			if (g?.name && storedModels.get(g.name) === model) continue;
+			const resolved = await resolveSystemJudgeTarget(model);
+			if (!resolved.ok) {
+				return c.json(
+					{
+						error: "guardrail_model_unresolvable",
+						error_description: `Custom guardrail "${g?.name ?? "(unnamed)"}" names judge model "${model}", which this deployment cannot run: ${resolved.detail}. Use a "<provider>/<model>" ref whose provider has a system key and speaks the OpenAI-compatible protocol.`,
+					},
+					400
+				);
+			}
 		}
 	}
 

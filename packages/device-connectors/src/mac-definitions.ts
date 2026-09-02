@@ -439,7 +439,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     version: "0.2.0",
     name: "Meeting Audio",
     description:
-      "Record meetings on this Mac via Lobu for Mac and transcribe them. Captures the meeting audio, plus your own voice when microphone access is granted, as two separate recordings so each side gets its own transcript. Connecting arms it; recording starts from the menu bar or when Lobu notices an app using your microphone. Audio is captured on the device; only short segments are shipped, and only while recording is on.",
+      'Record meetings on this Mac via Lobu for Mac and transcribe them. Captures the meeting audio, plus your own voice when microphone access is granted, as two separate recordings so each side gets its own transcript. Connecting arms it; you start a recording from the menu bar, or Lobu offers to start one when it notices an app using your microphone — automatically only for apps you have marked "always". Audio is captured on the device; only short segments are shipped, and only while recording is on.',
     faviconDomain: "apple.com",
     requiredCapability: "system_audio",
     runtime: {

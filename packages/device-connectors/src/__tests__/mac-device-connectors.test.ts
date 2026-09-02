@@ -22,7 +22,7 @@ const expectedOriginHashes: Record<string, string> = {
   "apple.screen_time":
     "882dc20d30bfa79387b6fc88dfa0a97719823bf29ea9dacb6e53fd881198e084",
   "apple.system_audio":
-    "5e75caaea536caa05a71f983180786369faa1a3e211537a965aaa1e2420607e6",
+    "f6c7024f9a9c82b124ece768b8a30b255de0a6d3d0e57fbf20c6044daf035766",
   "local.directory":
     "6846173d4a56d58677375f654cb10f04844b275280ec1cfb18d4d24b0fca89ee",
   "os.shell":

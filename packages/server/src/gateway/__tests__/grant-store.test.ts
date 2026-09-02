@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { GrantStore } from "../permissions/grant-store.js";
 import {
@@ -248,6 +249,149 @@ describe("GrantStore (PG-backed)", () => {
         const patterns = grants.map((g) => g.pattern).sort();
         expect(patterns).toEqual([".github.com", "api.openai.com"]);
       });
+    });
+  });
+});
+
+/**
+ * A judged domain must never receive an ALLOW grant, whoever writes it.
+ *
+ * An allow grant outranks the egress judge in `checkDomainAccess`, so granting
+ * a judged domain makes that judge permanently inert. #3299 refuses the
+ * combination in agent config and #3300 refuses it in the dispatch reconcile,
+ * but the reconcile only governs the rows it can see: the deploy-time
+ * npm-registry grants in `deployment-manager.ts` are exempt from its
+ * revocation, and it skips every row with a non-null `expires_at`. Every domain
+ * writer funnels through `GrantStore.grant()`, so the guard lives here — one
+ * check that covers all present writers and any future one.
+ *
+ * The judged set is read from `agents.guardrails_inline`, NOT from
+ * `PolicyStore`: that store is a per-replica in-memory Map populated only at
+ * dispatch, so a check against it would pass vacuously on any replica that has
+ * not dispatched for the agent.
+ */
+describe("GrantStore.grant — a judged domain gets no allow grant", () => {
+  let store: GrantStore;
+
+  const setJudge = async (domains: string[], enabled = true) => {
+    const sql = getDb();
+    await sql`
+      UPDATE agents SET guardrails_inline = ${sql.json([
+        {
+          name: "watchdog",
+          stage: "egress",
+          enabled,
+          policy: "Allow read-only GETs.",
+          domains,
+        },
+      ])}
+      WHERE organization_id = ${ORG_ID} AND id = 'agent-1'
+    `;
+  };
+
+  beforeAll(async () => {
+    await ensureDbForGatewayTests();
+  }, 30_000);
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    await seedAgentRow("agent-1");
+    store = new GrantStore();
+  }, 30_000);
+
+  test("skips the allow grant for a judged domain", async () => {
+    await withOrg(async () => {
+      await setJudge(["api.example.com"]);
+      await store.grant("agent-1", "api.example.com", null);
+      expect(await store.hasGrant("agent-1", "api.example.com", ORG_ID)).toBe(
+        false
+      );
+    });
+  });
+
+  test("covers the npm-registry writer (non-expiring, revoke-exempt)", async () => {
+    await withOrg(async () => {
+      await setJudge(["registry.npmjs.org"]);
+      await store.grant("agent-1", "registry.npmjs.org", null);
+      expect(
+        await store.hasGrant("agent-1", "registry.npmjs.org", ORG_ID)
+      ).toBe(false);
+    });
+  });
+
+  test("refuses an EXPIRING allow too (a row the reconcile never sees)", async () => {
+    await withOrg(async () => {
+      await setJudge(["api.example.com"]);
+      // The dispatch reconcile skips rows with a non-null expires_at, so an
+      // expiring judged allow could only ever be caught at this chokepoint.
+      await store.grant(
+        "agent-1",
+        "api.example.com",
+        Date.now() + 3_600_000
+      );
+      expect(await store.hasGrant("agent-1", "api.example.com", ORG_ID)).toBe(
+        false
+      );
+    });
+  });
+
+  test("matches a judged WILDCARD against a specific granted host", async () => {
+    await withOrg(async () => {
+      await setJudge(["*.example.com"]);
+      await store.grant("agent-1", "api.example.com", null);
+      expect(await store.hasGrant("agent-1", "api.example.com", ORG_ID)).toBe(
+        false
+      );
+    });
+  });
+
+  // ── negative controls ──────────────────────────────────────────────────
+  test("still grants an UNJUDGED domain", async () => {
+    await withOrg(async () => {
+      await setJudge(["api.example.com"]);
+      await store.grant("agent-1", "plain.example.net", null);
+      expect(
+        await store.hasGrant("agent-1", "plain.example.net", ORG_ID)
+      ).toBe(true);
+    });
+  });
+
+  test("a DENY grant on a judged domain still writes (deny outranks the judge)", async () => {
+    await withOrg(async () => {
+      await setJudge(["api.example.com"]);
+      await store.grant("agent-1", "api.example.com", null, true);
+      expect(await store.isDenied("agent-1", "api.example.com", ORG_ID)).toBe(
+        true
+      );
+    });
+  });
+
+  test("an MCP TOOL grant is unaffected by a domain judge", async () => {
+    await withOrg(async () => {
+      await setJudge(["api.example.com"]);
+      await store.grant("agent-1", "/mcp/gmail/tools/send_email", null);
+      expect(
+        await store.hasGrant("agent-1", "/mcp/gmail/tools/send_email", ORG_ID)
+      ).toBe(true);
+    });
+  });
+
+  test("a DISABLED judge does not suppress the grant", async () => {
+    await withOrg(async () => {
+      await setJudge(["api.example.com"], false);
+      await store.grant("agent-1", "api.example.com", null);
+      expect(await store.hasGrant("agent-1", "api.example.com", ORG_ID)).toBe(
+        true
+      );
+    });
+  });
+
+  test("an agent with NO guardrails grants normally", async () => {
+    await withOrg(async () => {
+      await store.grant("agent-1", "api.example.com", null);
+      expect(await store.hasGrant("agent-1", "api.example.com", ORG_ID)).toBe(
+        true
+      );
     });
   });
 });

@@ -208,11 +208,12 @@ interface SuppressedJudgedDomainOptions {
 /**
  * Whether an allow pattern reaches any host a judged pattern covers.
  *
- * Two callers, one predicate: {@link findSuppressedJudgedDomains} uses it to
- * refuse a shadowing agent CONFIG at write time, and the deployment manager's
+ * Three callers, one predicate: {@link findSuppressedJudgedDomains} uses it to
+ * refuse a shadowing agent CONFIG at write time, the deployment manager's
  * grant reconcile uses it to refuse the shadowing GRANT at dispatch time (a
- * connector-contributed domain never passes through agent config). Both default
- * to grant semantics; only the global-allowlist check passes
+ * connector-contributed domain never passes through agent config), and
+ * `GrantStore.grant` uses it to refuse the row itself, whichever writer asks.
+ * All default to grant semantics; only the global-allowlist check passes
  * `wildcardCoversRoot`.
  *
  * A judged `.suffix` covers the root and every subdomain — {@link findMatchingRule},

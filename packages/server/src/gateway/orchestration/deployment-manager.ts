@@ -18,6 +18,7 @@ import type { ProviderCredentialContext } from "../embedded.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import {
+  allowReachesJudged,
   egressGuardrailsToPolicyBundle,
   type PolicyStore,
 } from "../permissions/policy-store.js";
@@ -720,7 +721,7 @@ export class DeploymentManager {
   private syncEgressPolicy(
     messageData: MessagePayload,
     deploymentName?: string
-  ): void {
+  ): string[] {
     const agentId = messageData.agentId;
     const organizationId = messageData.organizationId;
     // PolicyStore is keyed by `(orgId, agentId)` to prevent cross-tenant
@@ -733,7 +734,7 @@ export class DeploymentManager {
           "Skipping egress policy sync — message has no organizationId"
         );
       }
-      return;
+      return [];
     }
 
     const egressGuardrails = (messageData.guardrailsInline ?? []).filter(
@@ -754,9 +755,10 @@ export class DeploymentManager {
           judges: Object.keys(bundle.judges).length,
         });
       }
-    } else {
-      this.policyStore.clear(organizationId, agentId);
+      return bundle.judgedDomains.map((r) => r.domain);
     }
+    this.policyStore.clear(organizationId, agentId);
+    return [];
   }
 
   /**
@@ -784,7 +786,7 @@ export class DeploymentManager {
     const agentId = messageData.agentId;
     if (!agentId) return;
 
-    this.syncEgressPolicy(messageData);
+    const judgedDomains = this.syncEgressPolicy(messageData);
 
     if (!this.grantStore) return;
 
@@ -795,16 +797,31 @@ export class DeploymentManager {
     // ("*.example.com" vs ".example.com") collapse to the single grant row
     // they share. Denies are added last so a domain listed on both sides
     // collapses to deny (matching the proxy's deny precedence).
+    //
+    // A domain the egress judge governs is SKIPPED on the allow side — config
+    // domains and Nix cache domains alike. An allow grant outranks the judge
+    // in `checkDomainAccess`, so granting a judged domain makes its judge
+    // permanently inert — and the dispatch payload can hold such a domain
+    // without anyone having typed it into agent config, because
+    // `foldConnectorTooling` unions connector `agentTooling` domains into
+    // `allowedDomains` AFTER the write-time guard has run. Skipping also
+    // HEALS an agent already in that state: the stale row is absent from
+    // `expectedDomains`, so the reconcile below revokes it. Denies are
+    // unaffected — a deny grant outranks the judge by design.
     const expectedDomains = new Map<string, boolean>();
+    const expectAllowUnlessJudged = (pattern: string) => {
+      if (judgedDomains.some((j) => allowReachesJudged(j, pattern))) return;
+      expectedDomains.set(pattern, false);
+    };
     for (const domain of messageData.networkConfig?.allowedDomains ?? []) {
-      expectedDomains.set(normalizeDomainPattern(domain), false);
+      expectAllowUnlessJudged(normalizeDomainPattern(domain));
     }
     if (
       messageData.nixConfig?.packages?.length ||
       messageData.nixConfig?.flakeUrl
     ) {
       for (const domain of NIX_CACHE_DOMAINS) {
-        expectedDomains.set(domain, false);
+        expectAllowUnlessJudged(domain);
       }
     }
     for (const domain of messageData.networkConfig?.deniedDomains ?? []) {

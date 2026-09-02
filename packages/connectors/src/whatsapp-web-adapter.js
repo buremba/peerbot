@@ -30,7 +30,7 @@
 
 export function whatsAppWebAdapterProgram() {
   const GLOBAL_KEY = "__owlettoWhatsAppAdapterV1";
-  const ADAPTER_VERSION = 4;
+  const ADAPTER_VERSION = 8;
   const SYSTEM_TYPES = new Set([
     "gp2",
     "notification_template",
@@ -1196,6 +1196,35 @@ export function whatsAppWebAdapterProgram() {
     };
   }
 
+  /**
+   * Whether WhatsApp currently permits an action on a message.
+   *
+   * The model used to carry `canEdit` / `canRevoke` booleans. This build
+   * carries neither — the predicates moved into `WAWebMsgActionCapability`
+   * as functions taking the model. Reading the absent booleans made edit and
+   * revoke refuse EVERY message, including ones the UI offers the action for,
+   * with a message that blamed WhatsApp rather than the probe.
+   *
+   * Legacy flags are still consulted first so a build that has them keeps
+   * working, and a predicate that throws is not treated as an affirmation.
+   */
+  function messageActionAllowed(message, predicateNames, legacyFlags) {
+    const row = modelData(message);
+    for (const flag of legacyFlags) {
+      if (row[flag] === true) return true;
+    }
+    const capability = requireFirst(["WAWebMsgActionCapability"]);
+    for (const name of predicateNames) {
+      if (typeof capability?.[name] !== "function") continue;
+      try {
+        if (capability[name](message) === true) return true;
+      } catch {
+        /* WhatsApp's private module graph throws freely; a miss is not fatal. */
+      }
+    }
+    return false;
+  }
+
   function resolveMessage(collections, id) {
     const raw = String(id ?? "").trim();
     if (!raw) throw new Error("message_id is required");
@@ -1213,25 +1242,34 @@ export function whatsAppWebAdapterProgram() {
     const before = modelData(message);
     if (!(before.id?.fromMe ?? before.fromMe))
       throw new Error("WhatsApp only permits editing outgoing messages");
-    if (before.canEdit !== true && before.isEditable !== true)
+    if (
+      !messageActionAllowed(
+        message,
+        // The same pair `sendMessageEdit` itself checks, plus the flow
+        // predicate, so a caption edit is not refused before it is tried.
+        ["canEditText", "canEditCaption", "canEnterEditingFlow"],
+        ["canEdit", "isEditable"]
+      )
+    )
       throw new Error(
         "WhatsApp did not affirm that this message is currently editable"
       );
     const text = String(input?.text ?? "");
     if (!text.trim()) throw new Error("text is required");
     const module = requireFirst(EDIT_MODULES);
-    const chat = collectionByWid(
-      collections.Chat,
-      widString(modelData(message).id?.remote)
-    );
     const fn = module?.sendMessageEdit ?? module?.editMessage ?? message?.edit;
     if (typeof fn !== "function")
       throw new Error(
         "WhatsApp edit capability is unavailable in this web build"
       );
+    // `sendMessageEdit(msg, text, options)` — the MESSAGE comes first, not
+    // the chat. Passing the chat made WhatsApp's own internal
+    // `canEditText(chat)` check fail and reject with "Cannot edit message",
+    // an error that reads like the message was ineligible when in fact it
+    // was being handed the wrong object.
     await (fn === message?.edit
       ? fn.call(message, text)
-      : fn.call(module, chat, message, text));
+      : fn.call(module, message, text, {}));
     await waitForPostState(() => {
       const row = modelData(message);
       return (
@@ -1261,16 +1299,39 @@ export function whatsAppWebAdapterProgram() {
     await (fn === message?.react
       ? fn.call(message, emoji)
       : fn.call(module, message, emoji));
+    // Confirmation has to tolerate a build that exposes no per-message
+    // reaction list. This one does not: `row.reactions` is undefined and the
+    // ReactionsCollection stays empty, so the list check never became true
+    // and a reaction that WAS delivered reported failure — verified live,
+    // the parent's `hasReaction` had flipped to true while this threw.
+    // Prefer the precise list when a build offers one; fall back to the
+    // boolean the model always carries.
     await waitForPostState(() => {
-      const reactions = normalizeReactions(modelData(message));
-      return input?.remove
-        ? !reactions.some((reaction) => reaction.from_me)
-        : reactions.some(
-            (reaction) => reaction.from_me && reaction.emoji === emoji
-          );
+      const row = modelData(message);
+      const reactions = normalizeReactions(row);
+      if (reactions.length > 0) {
+        return input?.remove
+          ? !reactions.some((reaction) => reaction.from_me)
+          : reactions.some(
+              (reaction) => reaction.from_me && reaction.emoji === emoji
+            );
+      }
+      // Adding is observable through `hasReaction`. REMOVING is not: the
+      // flag does not clear on this build (verified live — it stayed true
+      // after a successful removal), so there is nothing left to observe.
+      // Waiting on it would fail every successful removal, which is the very
+      // bug this function is meant to avoid.
+      return input?.remove ? true : row.hasReaction === true;
     }, "reaction state");
+    // Say plainly whether the page confirmed the end state, rather than
+    // implying a check that did not happen. A build exposing a reaction list
+    // confirms both directions; this one can only confirm an add.
+    const confirmed = input?.remove
+      ? normalizeReactions(modelData(message)).length > 0
+      : true;
     return {
       reacted: true,
+      confirmed,
       removed: Boolean(input?.remove),
       emoji: emoji || null,
       message_id: rawId(modelData(message).id ?? message?.id),
@@ -1283,7 +1344,16 @@ export function whatsAppWebAdapterProgram() {
     const before = modelData(message);
     if (!(before.id?.fromMe ?? before.fromMe))
       throw new Error("WhatsApp only permits revoking outgoing messages");
-    if (before.canRevoke !== true && before.isRevokable !== true)
+    // Deliberately NOT `canDeleteMsg`: that is delete-for-me, a different
+    // operation. Accepting it would let revoke report success having only
+    // removed the message from this device.
+    if (
+      !messageActionAllowed(
+        message,
+        ["canSenderRevokeMsg", "canAdminRevokeMsg"],
+        ["canRevoke", "isRevokable"]
+      )
+    )
       throw new Error(
         "WhatsApp did not affirm that this message is currently revokable"
       );

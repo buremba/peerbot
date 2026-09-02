@@ -384,3 +384,176 @@ describe("whatsAppWebAdapterProgram download_media", () => {
     expect(seen.options).toBeUndefined();
   });
 });
+
+/**
+ * Edit / revoke / react, against the LIVE build's shapes (2026-09-02).
+ *
+ * A theme runs through all three, and through send and download above: the
+ * adapter asked the page for something the page no longer has — a boolean
+ * that became a function, a field that moved to another collection, an
+ * argument in the wrong position — and then reported the resulting miss as
+ * WhatsApp refusing. Every one of them turned a working operation into a
+ * reported failure.
+ */
+describe("whatsAppWebAdapterProgram message actions", () => {
+  function install(opts: {
+    capability?: Record<string, unknown>;
+    row?: Record<string, unknown>;
+    onEdit?: (...args: unknown[]) => unknown;
+    onReact?: (...args: unknown[]) => unknown;
+  }) {
+    const message: any = {
+      attributes: {
+        id: { fromMe: true, id: "3EB0ACT", _serialized: "true_x@c.us_3EB0ACT" },
+        body: "before",
+        type: "chat",
+        ...(opts.row ?? {}),
+      },
+    };
+    const modules: Record<string, unknown> = {
+      WAWebCollections: { Msg: { _models: [message] }, Chat: { _models: [] } },
+      WAWebMsgActionCapability: opts.capability ?? {},
+      WAWebSendMessageEditAction: {
+        sendMessageEdit: (...args: unknown[]) => {
+          message.attributes.body = args[1];
+          message.attributes.isEdited = true;
+          return opts.onEdit?.(...args);
+        },
+      },
+      WAWebSendReactionMsgAction: {
+        sendReactionToMsg: (...args: unknown[]) => {
+          message.attributes.hasReaction = String(args[1] ?? "") !== "";
+          return opts.onReact?.(...args);
+        },
+      },
+      // Mirrors the live build: `WAWebChatSendMessages` resolves first and is
+      // the one carrying `sendRevokeMsgs`.
+      WAWebChatSendMessages: {
+        sendRevokeMsgs: () => {
+          message.attributes.isRevoked = true;
+        },
+      },
+    };
+    const globals: Record<string, any> = {};
+    const page = {
+      globalThis: globals,
+      document: { querySelector: () => null, querySelectorAll: () => [] },
+      window: { require: (n: string) => modules[n] ?? null },
+      location: { origin: "https://web.whatsapp.com" },
+      setTimeout: (fn: () => void) => {
+        fn();
+        return 0;
+      },
+      clearTimeout: () => {},
+    };
+    const run = new Function(
+      ...Object.keys(page),
+      `"use strict";(${whatsAppWebAdapterProgram.toString()})();`,
+    );
+    run(...Object.values(page));
+    return { adapter: globals.__owlettoWhatsAppAdapterV1, message };
+  }
+
+  const V = WHATSAPP_ADAPTER_VERSION;
+
+  it("edits when the capability is a PREDICATE, not a boolean field", async () => {
+    // The model carries no `canEdit`/`isEditable` on this build — the
+    // predicates moved into WAWebMsgActionCapability as functions. Reading
+    // the absent booleans refused every message.
+    const { adapter } = install({
+      capability: { canEditText: () => true },
+    });
+    const result = await adapter.invoke({
+      op: "edit_message",
+      adapter_version: V,
+      input: { message_id: "3EB0ACT", text: "after" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.edited).toBe(true);
+  });
+
+  it("passes the MESSAGE first to sendMessageEdit, not the chat", async () => {
+    // `sendMessageEdit(msg, text, options)`. Handing it the chat made its own
+    // internal canEditText(chat) fail and reject with "Cannot edit message",
+    // which reads like the message was ineligible.
+    const seen: unknown[] = [];
+    const { adapter, message } = install({
+      capability: { canEditText: () => true },
+      onEdit: (...args: unknown[]) => {
+        seen.push(...args);
+      },
+    });
+    await adapter.invoke({
+      op: "edit_message",
+      adapter_version: V,
+      input: { message_id: "3EB0ACT", text: "after" },
+    });
+    expect(seen[0]).toBe(message);
+    expect(seen[1]).toBe("after");
+  });
+
+  it("still honours a legacy boolean build", async () => {
+    const { adapter } = install({ row: { canEdit: true } });
+    const result = await adapter.invoke({
+      op: "edit_message",
+      adapter_version: V,
+      input: { message_id: "3EB0ACT", text: "after" },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it("refuses an edit no predicate affirms", async () => {
+    const { adapter } = install({ capability: { canEditText: () => false } });
+    const result = await adapter.invoke({
+      op: "edit_message",
+      adapter_version: V,
+      input: { message_id: "3EB0ACT", text: "after" },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.reason).toContain("editable");
+  });
+
+  it("never treats delete-for-me as permission to revoke", async () => {
+    // `canDeleteMsg` is true for messages that cannot be revoked. Accepting
+    // it would let revoke claim success having only removed the message
+    // locally.
+    const { adapter } = install({
+      capability: { canDeleteMsg: () => true, canSenderRevokeMsg: () => false },
+    });
+    const result = await adapter.invoke({
+      op: "revoke_message",
+      adapter_version: V,
+      input: { message_id: "3EB0ACT" },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error.reason).toContain("revokable");
+  });
+
+  it("confirms a reaction through hasReaction when no list exists", async () => {
+    // `row.reactions` is undefined on this build and the ReactionsCollection
+    // stays empty, so waiting on a reaction LIST never became true and a
+    // delivered reaction reported failure.
+    const { adapter } = install({ capability: {} });
+    const result = await adapter.invoke({
+      op: "react_message",
+      adapter_version: V,
+      input: { message_id: "3EB0ACT", emoji: "🎉" },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.confirmed).toBe(true);
+  });
+
+  it("reports an unconfirmable removal honestly rather than failing it", async () => {
+    // `hasReaction` does not clear on removal, so there is nothing to observe.
+    // Succeed — but say the end state was not confirmed.
+    const { adapter } = install({ capability: {}, row: { hasReaction: true } });
+    const result = await adapter.invoke({
+      op: "react_message",
+      adapter_version: V,
+      input: { message_id: "3EB0ACT", remove: true },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.removed).toBe(true);
+    expect(result.confirmed).toBe(false);
+  });
+});

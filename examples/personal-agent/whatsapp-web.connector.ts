@@ -352,7 +352,6 @@ async function downloadEligibleMedia(
   dispatcher: ChromeActionDispatcher,
   tabId: number,
   messages: WhatsAppMessage[],
-  legacyCutoverUnixSeconds: number | null | undefined,
   priorMedia: Record<string, MediaRecord>
 ): Promise<{
   results: Map<string, MediaRecord>;
@@ -388,11 +387,6 @@ async function downloadEligibleMedia(
   };
 
   for (const message of messages) {
-    if (
-      legacyCutoverUnixSeconds != null &&
-      message.timestamp <= legacyCutoverUnixSeconds
-    )
-      continue;
     if (!isMediaEligible(message)) continue;
     const revision = messageRevision(message);
     const previous = priorMedia[message.id];
@@ -917,16 +911,11 @@ export default class WhatsAppWebConnector extends ConnectorRuntime<
       dispatcher,
       tabId,
       messages,
-      checkpoint.cutover_unix_seconds,
       checkpoint.media ?? {}
     );
 
     const events: EventEnvelope[] = messages.map((message) =>
-      toEventEnvelope(message, media.get(message.id), {
-        legacyOverlap:
-          checkpoint.cutover_unix_seconds != null &&
-          message.timestamp <= checkpoint.cutover_unix_seconds,
-      })
+      toEventEnvelope(message, media.get(message.id))
     );
 
     const nextCheckpoint = mergeBrowserCheckpoint(

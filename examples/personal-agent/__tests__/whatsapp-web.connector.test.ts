@@ -19,11 +19,9 @@ import { beforeEach, describe, expect, it, mock } from "bun:test";
 import WhatsAppWebConnector from "../whatsapp-web.connector.ts";
 import { whatsAppWebAdapterProgram } from "../whatsapp-web-adapter.js";
 import {
-  APPLE_EPOCH_OFFSET_SECONDS,
   buildCollectionPlan,
   canonicalizeJid,
   initializeBrowserCheckpoint,
-  legacyAppleSecondsToUnix,
   mergeBrowserCheckpoint,
   mergeCollectedMessages,
   rawMessageId,
@@ -171,18 +169,6 @@ describe("canonical WhatsApp identity and cutover", () => {
     expect(canonicalizeJid("999@lid")).toBe("999@lid");
   });
 
-  it("converts the verified legacy Apple checkpoint exactly", () => {
-    expect(APPLE_EPOCH_OFFSET_SECONDS).toBe(978_307_200);
-    expect(legacyAppleSecondsToUnix(809_050_984)).toBe(1_787_358_184);
-    const checkpoint = initializeBrowserCheckpoint({
-      last_pk: 66_904,
-      last_message_date: 809_050_984,
-    });
-    expect(checkpoint.cutover_unix_seconds).toBe(1_787_358_184);
-    expect(checkpoint.legacy_last_pk).toBe(66_904);
-    expect(checkpoint.backfill.complete).toBe(true);
-  });
-
   it("sends the history budget as a relative span the page can resolve", () => {
     const { request } = buildCollectionPlan({});
     // Absolute instants cannot cross the connector/page boundary: they run on
@@ -194,34 +180,37 @@ describe("canonical WhatsApp identity and cutover", () => {
     expect(source).not.toContain("request.deadline");
   });
 
-  it("bounds legacy reconciliation and does not replay older history", () => {
+  it("collects strictly after the cutover so ingested rows never replay", () => {
     const { request } = buildCollectionPlan({
-      checkpoint: { last_pk: 66_904, last_message_date: 809_050_984 },
+      checkpoint: {
+        schema: "owletto.whatsapp.browser.v1",
+        cutover_unix_seconds: 1_787_358_184,
+      },
     });
-    expect(request.minimum_timestamp).toBe(1_787_358_184);
+    // An inclusive floor would re-read the cutover second on every run. That
+    // overlap is what used to justify a second event shape and a media skip.
+    expect(request.minimum_timestamp).toBe(1_787_358_185);
     expect(request.backfill_disabled).toBe(true);
     const merged = mergeCollectedMessages(
       [
-        message("old", { timestamp: (request.minimum_timestamp ?? 0) - 1 }),
-        message("overlap", { timestamp: request.minimum_timestamp }),
+        message("old", { timestamp: 1_787_358_183 }),
+        message("at-cutover", { timestamp: 1_787_358_184 }),
         message("new", { timestamp: 1_787_358_200 }),
       ],
       [],
       request.minimum_timestamp
     );
-    expect(merged.map((row) => row.id)).toEqual(["overlap", "new"]);
+    expect(merged.map((row) => row.id)).toEqual(["new"]);
   });
 });
 
 // ── event shape ────────────────────────────────────────────────────────
 
 describe("event shape", () => {
-  it("preserves legacy-compatible title, text, and canonical id", () => {
+  it("preserves the title, text, and canonical id the extension emitted", () => {
     const normalized = mergeCollectedMessages([message("3EB0")], [])[0];
     if (!normalized) throw new Error("fixture did not normalize");
-    const event = toEventEnvelope(normalized, undefined, {
-      legacyOverlap: true,
-    });
+    const event = toEventEnvelope(normalized, undefined);
     expect(event.origin_id).toBe("3EB0");
     expect(event.title).toBe("Alice");
     expect(event.payload_text).toBe("hello");
@@ -237,23 +226,26 @@ describe("event shape", () => {
       sender_jid: "15551234567@s.whatsapp.net",
       sender_phone: "15551234567",
       push_name: "Alice",
+      is_direct_inbound: true,
     });
     expect(event.occurred_at.toISOString()).toBe("2026-08-22T00:23:20.000Z");
     expect(event.semantic_type).toBe("message");
     expect(event.attachments).toBeUndefined();
   });
 
-  it("adds direct-inbound attribution only to new non-overlap messages", () => {
+  it("adds direct-inbound attribution only to inbound 1:1 messages", () => {
     const inbound = mergeCollectedMessages([message("new-direct")], [])[0];
     if (!inbound) throw new Error("fixture did not normalize");
+    // This flag gates person auto-creation, so it must not appear on a message
+    // the user sent or on a group message.
     expect(
       toEventEnvelope(inbound, undefined).metadata?.is_direct_inbound
     ).toBe(true);
     expect(
-      toEventEnvelope(inbound, undefined, { legacyOverlap: true }).metadata
+      toEventEnvelope({ ...inbound, from_me: true }, undefined).metadata
     ).not.toHaveProperty("is_direct_inbound");
     expect(
-      toEventEnvelope({ ...inbound, from_me: true }, undefined).metadata
+      toEventEnvelope({ ...inbound, is_group: true }, undefined).metadata
     ).not.toHaveProperty("is_direct_inbound");
   });
 
@@ -502,10 +494,12 @@ describe("media", () => {
     expect(second.mediaCalls()).toHaveLength(0);
   });
 
-  it("never hydrates or stamps media status on a legacy-overlap row", async () => {
-    const legacyCheckpoint = initializeBrowserCheckpoint({
-      last_pk: 1,
-      last_message_date: 809_050_984,
+  it("never collects an already-ingested row, so its media is never fetched", async () => {
+    // The cutover floor is the chokepoint: a row at or before it never reaches
+    // collection, so nothing downstream needs an overlap special case.
+    const migrated = initializeBrowserCheckpoint({
+      schema: "owletto.whatsapp.browser.v1",
+      cutover_unix_seconds: 1_787_358_184,
     });
     const overlap = message("overlap-media", {
       timestamp: 1_787_358_184,
@@ -519,11 +513,9 @@ describe("media", () => {
       collect: collectResponse([overlap]),
       download_media: { ok: true, status: "downloaded" },
     });
-    const result = await messagesFeed().sync(
-      syncCtx(legacyCheckpoint, dispatcher)
-    );
+    const result = await messagesFeed().sync(syncCtx(migrated, dispatcher));
     expect(mediaCalls()).toHaveLength(0);
-    expect(result.events[0]?.metadata).not.toHaveProperty("media_status");
+    expect(result.events).toHaveLength(0);
   });
 });
 

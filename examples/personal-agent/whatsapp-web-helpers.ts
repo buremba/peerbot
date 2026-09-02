@@ -18,13 +18,6 @@ import type { EventEnvelope } from "@lobu/connector-sdk";
 export const WHATSAPP_ADAPTER_VERSION = 2;
 export const WHATSAPP_ORIGIN = "https://web.whatsapp.com";
 const WHATSAPP_SOURCE = "whatsapp_web";
-export const APPLE_EPOCH_OFFSET_SECONDS = 978_307_200;
-/**
- * The legacy checkpoint is second-granularity. Re-read only that exact second
- * so messages sharing the checkpoint edge are recovered without replaying any
- * earlier legacy row.
- */
-const LEGACY_OVERLAP_SECONDS = 0;
 const RECENT_OVERLAP_SECONDS = 15 * 60;
 const MAX_MESSAGES_PER_RUN = 1_000;
 const MAX_CHATS_PER_RUN = 6;
@@ -84,7 +77,6 @@ export interface BrowserCheckpoint {
   schema: "owletto.whatsapp.browser.v1";
   adapter_version: number;
   cutover_unix_seconds?: number | null;
-  legacy_last_pk?: number;
   head: { timestamp?: number; id?: string | null };
   backfill: {
     complete: boolean;
@@ -207,12 +199,6 @@ function jidPhone(jid: unknown): string | null {
   return /^\d+$/.test(digits) ? digits : null;
 }
 
-export function legacyAppleSecondsToUnix(value: unknown): number | null {
-  const seconds = Number(value);
-  if (!Number.isFinite(seconds)) return null;
-  return seconds + APPLE_EPOCH_OFFSET_SECONDS;
-}
-
 function finiteSeconds(value: unknown): number | null {
   const seconds = Number(value);
   return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
@@ -246,25 +232,6 @@ export function initializeBrowserCheckpoint(
               inventory: [],
               chats: {},
             },
-    };
-  }
-
-  const legacyCutover = legacyAppleSecondsToUnix(raw.last_message_date);
-  if (legacyCutover != null) {
-    return {
-      schema: "owletto.whatsapp.browser.v1",
-      adapter_version: WHATSAPP_ADAPTER_VERSION,
-      cutover_unix_seconds: legacyCutover,
-      legacy_last_pk: Number.isFinite(Number(raw.last_pk))
-        ? Number(raw.last_pk)
-        : 0,
-      head: { timestamp: legacyCutover, id: null },
-      backfill: {
-        complete: true,
-        cursor_chat_jid: null,
-        inventory: [],
-        chats: {},
-      },
     };
   }
 
@@ -312,8 +279,11 @@ export function buildCollectionPlan(run: {
         headTimestamp == null
           ? null
           : Math.max(0, headTimestamp - RECENT_OVERLAP_SECONDS),
-      minimum_timestamp:
-        cutover == null ? null : Math.max(0, cutover - LEGACY_OVERLAP_SECONDS),
+      // The cutover is the last second already ingested by the connection's
+      // previous source, so collect strictly after it. An inclusive floor would
+      // re-read that second on every run, which is what used to justify a
+      // second event shape and a media-download skip for the overlap.
+      minimum_timestamp: cutover == null ? null : cutover + 1,
       backfill_disabled: cutover != null,
       backfill: checkpoint.backfill,
       budget_ms: COLLECT_BUDGET_MS,
@@ -507,8 +477,7 @@ export function toEventEnvelope(
   mediaResult:
     | MediaRecord
     | { status: MediaStatus; retryable?: boolean }
-    | undefined,
-  { legacyOverlap = false }: { legacyOverlap?: boolean } = {}
+    | undefined
 ): EventEnvelope {
   const metadata: Record<string, unknown> = {
     source: WHATSAPP_SOURCE,
@@ -538,7 +507,7 @@ export function toEventEnvelope(
   if (message.is_system_event) metadata.is_system_event = true;
   if (message.edited) metadata.edited = true;
   if (message.revoked) metadata.revoked = true;
-  if (!legacyOverlap && !message.from_me && !message.is_group) {
+  if (!message.from_me && !message.is_group) {
     metadata.is_direct_inbound = true;
   }
   if (mediaResult?.status) metadata.media_status = mediaResult.status;

@@ -436,10 +436,10 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   },
   {
     key: "apple.system_audio",
-    version: "0.1.0",
+    version: "0.2.0",
     name: "Meeting Audio",
     description:
-      "Record system audio (meetings) on this Mac via Lobu for Mac and transcribe it. Audio is captured on the device; only short segments are shipped, and only while recording is on.",
+      "Record meetings on this Mac via Lobu for Mac and transcribe them. Captures the meeting audio, plus your own voice when microphone access is granted, as two separate recordings so each side gets its own transcript. Connecting arms it; recording starts from the menu bar or when Lobu notices an app using your microphone. Audio is captured on the device; only short segments are shipped, and only while recording is on.",
     faviconDomain: "apple.com",
     requiredCapability: "system_audio",
     runtime: {
@@ -467,7 +467,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
         eventKinds: {
           recording: {
             description:
-              "A single captured audio segment (transcribed after ingest).",
+              "A single captured audio segment (transcribed after ingest). One recording produces one event per audio source, so a segment with the microphone active yields two: the meeting audio and your own voice, sharing a timestamp.",
             metadataSchema: {
               type: "object",
               required: ["source", "origin_id"],
@@ -476,8 +476,25 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
                   type: "string",
                   const: "system_audio",
                 },
+                audio_source: {
+                  // Deliberately NOT in `required`. The newest manifest any
+                  // online device can execute wins for the whole org, so one
+                  // updated Mac would make this schema authoritative for a
+                  // second Mac still shipping segments without the field —
+                  // and a metadata validation failure DROPS the item
+                  // (`run-lifecycle.ts`) after the device has already
+                  // check-pointed the file as shipped. That is a lost
+                  // recording, so the field is validated when present and
+                  // absent-tolerant otherwise.
+                  description:
+                    "Which side of the conversation this segment holds. The two are separate events rather than one event with two attachments because transcription supersedes the base event, so a second audio attachment's transcript would be discarded as stale. Absent on segments from a Mac predating microphone capture.",
+                  type: "string",
+                  enum: ["system", "microphone"],
+                },
                 origin_id: {
                   type: "string",
+                  description:
+                    "Namespaced by audio source ('system-audio:' or 'mic-audio:') so one interval's two events stay distinct.",
                 },
                 filename: {
                   type: "string",

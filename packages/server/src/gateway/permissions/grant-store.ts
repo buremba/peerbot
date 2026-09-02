@@ -6,6 +6,10 @@ import {
   type GrantKind,
 } from "@lobu/core";
 import { getDb, pgTextArray } from "../../db/client.js";
+import {
+  allowReachesJudged,
+  egressGuardrailsToPolicyBundle,
+} from "./policy-store.js";
 import { orgScope, requireOrgId } from "../../lobu/stores/org-context.js";
 
 const logger = createLogger("grant-store");
@@ -22,6 +26,38 @@ function getDomainGrantCandidates(pattern: string): string[] {
   }
 
   return [...candidates];
+}
+
+/**
+ * The agent's judged egress domains, read from its DURABLE config.
+ *
+ * Deliberately NOT `PolicyStore`: that is a per-replica in-memory Map populated
+ * only when this replica has dispatched for the agent, so a check against it
+ * would pass vacuously everywhere else — the classic invisible-to-other-replicas
+ * trap. `agents.guardrails_inline` is the one source every replica agrees on.
+ *
+ * Routed through `egressGuardrailsToPolicyBundle`, the same builder the runtime
+ * uses, so the enabled / stage / non-empty-policy filtering and the pattern
+ * normalization match everywhere.
+ *
+ * Errors PROPAGATE. If we cannot tell whether a domain is judged, granting it
+ * risks silently disabling a policy control, while refusing surfaces loudly and
+ * the dispatch reconcile simply retries on the next message.
+ */
+async function readJudgedDomains(
+  agentId: string,
+  organizationId: string
+): Promise<string[]> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT guardrails_inline
+    FROM agents
+    WHERE organization_id = ${organizationId} AND id = ${agentId}
+  `) as Array<{ guardrails_inline: unknown }>;
+  const inline = rows[0]?.guardrails_inline;
+  if (!Array.isArray(inline)) return [];
+  const bundle = egressGuardrailsToPolicyBundle(inline);
+  return bundle ? bundle.judgedDomains.map((r) => r.domain) : [];
 }
 
 /**
@@ -97,6 +133,33 @@ export class GrantStore {
     const kind = inferGrantKind(pattern);
     const expiresAtTs = expiresAt === null ? null : new Date(expiresAt);
     const orgId = requireOrgId(organizationId, "GrantStore.grant");
+
+    // CHOKEPOINT: never write an ALLOW grant for a domain the egress judge
+    // governs. An allow grant outranks the judge in `checkDomainAccess`, so
+    // such a row makes the judge permanently inert — the request succeeds at
+    // `source: "grant"` and the operator's policy never runs.
+    //
+    // Every domain writer funnels through here, which is why the check lives
+    // at this level rather than in each caller. The dispatch reconcile already
+    // skips judged domains (and revokes stale non-expiring rows), but it
+    // cannot heal the deploy-time npm-registry grants — those hosts are exempt
+    // from its revocation — and it never looks at an expiring row at all. A
+    // per-caller fix would have to be repeated for each writer and would
+    // reopen on the next one added.
+    //
+    // Denies are exempt: a deny grant outranks the judge by design. Non-domain
+    // kinds (MCP tool patterns, which is what interactive tool approvals
+    // write) cannot shadow a domain judge at all.
+    if (kind === "domain" && !denied) {
+      const judged = await readJudgedDomains(agentId, orgId);
+      if (judged.some((j) => allowReachesJudged(j, pattern))) {
+        logger.info(
+          "Skipped allow grant — the egress judge governs this domain",
+          { agentId, pattern }
+        );
+        return;
+      }
+    }
 
     const sql = getDb();
     await sql`

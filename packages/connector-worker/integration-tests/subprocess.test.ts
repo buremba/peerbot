@@ -55,44 +55,36 @@ describe('an orphaned chrome dispatch reply', () => {
    *
    * The parent must treat that as a no-op. It used to call `child.send` inside
    * a synchronous try/catch, which does NOT catch this: Bun reports a closed
-   * IPC channel asynchronously, so the rejection escaped the task queue and
-   * exited the worker daemon — killing every other connector's run on that
-   * worker. In prod (feed 309, 2026-09-02) it did exactly that, and on the next
-   * attempt failed a sync run that had already written its 60 events.
+   * IPC channel asynchronously as an uncaught exception, so it bypassed the
+   * task queue's catch and exited the worker daemon — killing every other
+   * connector's run on that worker. In prod it did exactly that, and on the
+   * next attempt failed a sync run that had already written its events.
+   *
+   * Without the fix this test dies with `ERR_IPC_CHANNEL_CLOSED` before
+   * `execute` settles; with it the run resolves normally.
    */
   test('does not fail the run or kill the parent when the child has exited', async () => {
     const executor = new SubprocessExecutor({ timeoutMs: 30_000, maxOldSpaceSize: 256 });
     let dispatched = false;
-    let result: unknown = null;
-    let err: SubprocessError | null = null;
-    try {
-      result = await executor.execute(
-        compiled(`
-          // Fire and DO NOT await: the run finishes while this is in flight.
-          _ctx.sessionState.chrome_dispatcher.dispatch('evaluate', { expression: '1' });
-          return { events: [], checkpoint: null };
-        `),
-        { ...BASE_JOB, sessionState: {} },
-        {
-          onChromeDispatch: async () => {
-            dispatched = true;
-            // Answer after the child is gone, the way a real device does.
-            await new Promise((resolve) => setTimeout(resolve, 750));
-            return { value: 1 };
-          },
-        }
-      );
-    } catch (e) {
-      err = e as SubprocessError;
-    }
+    const result = await executor.execute(
+      compiled(`
+        // Fire and DO NOT await: the run finishes while this is in flight.
+        _ctx.sessionState.chrome_dispatcher.dispatch('evaluate', { expression: '1' });
+        return { events: [], checkpoint: null };
+      `),
+      { ...BASE_JOB, sessionState: {} },
+      {
+        onChromeDispatch: async () => {
+          dispatched = true;
+          // Answer after the child is gone, the way a real device does.
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          return { value: 1 };
+        },
+      }
+    );
 
     expect(dispatched).toBe(true);
-    // The specific regression: the reply must not surface as the run's failure.
-    if (err) {
-      expect(err.message).not.toContain('cannot be used after the process has exited');
-      expect(err.message).not.toContain('EPIPE');
-    }
-    expect(result ?? err).not.toBeNull();
+    expect(result).toMatchObject({ mode: 'sync' });
   });
 });
 

@@ -345,11 +345,12 @@ export class SubprocessExecutor implements SyncExecutor {
       // an in-flight chrome dispatch (a local timeout it cannot cancel) and
       // then exit, so the device's answer arrives with nobody to receive it.
       // That is expected, not an error — but `child.send` does NOT report a
-      // closed channel by throwing. Bun surfaces it asynchronously, so a
-      // synchronous try/catch around the call never runs, the rejection
-      // escapes `queueTask`, and the daemon exits — killing every other run on
-      // this worker. Send through the callback form, which does receive the
-      // error, and treat a dead channel as a no-op.
+      // closed channel by throwing. Bun surfaces it asynchronously as an
+      // uncaught exception: a synchronous try/catch around the call never
+      // runs, no promise carries it into `queueTask`'s catch, and the daemon
+      // exits — killing every other run on this worker. Send through the
+      // callback form, which does receive the error, and treat a dead channel
+      // as a no-op.
       const replyToChild = (payload: Record<string, unknown>): void => {
         if (child.exitCode !== null || child.signalCode !== null) return;
         if (child.connected === false) return;

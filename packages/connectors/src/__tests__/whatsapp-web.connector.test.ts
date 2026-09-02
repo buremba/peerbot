@@ -485,7 +485,7 @@ describe("media", () => {
    * not stop it — it only stops US waiting. The request stays in flight in the
    * parent worker; the child then finishes and exits, and the device's answer
    * arrives with nobody to receive it. In prod that failed a sync run which had
-   * already written its 60 events, and once killed the worker daemon outright,
+   * already written its events, and once killed the worker daemon outright,
    * taking every other connector's runs with it. Measured `download_media`
    * evaluates ran 3.9-5.2s against the old 4s cap, so it orphaned a dispatch on
    * nearly every media item.

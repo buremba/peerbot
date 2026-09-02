@@ -5,8 +5,8 @@
  * optionalDependencies: `isolated-vm@6` for Node 22–24 and the aliased
  * `isolated-vm-next` (= `isolated-vm@7`) for Node 26+. Node 25 is an EOL
  * non-LTS line upstream skipped, and Bun cannot dlopen a V8 addon at all.
- * Both return `null` so the caller fails closed (the executor selector falls
- * back to the process lane and says so once). Mirrors
+ * Both return `null` so the caller fails closed: the executor selector fails
+ * an `isolate` run instead of forking a child for it. Mirrors
  * `packages/server/src/sandbox/run-script.ts`; the gateway adopting this
  * module is a follow-up.
  */

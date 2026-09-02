@@ -27,6 +27,10 @@ mock.module('../executor/subprocess.js', () => ({
     // biome-ignore lint/suspicious/noExplicitAny: test stub
     constructor(_opts: any) {}
   },
+  // `executor/select.js` also pulls in the isolate lane, which imports these;
+  // a mock missing a named export fails the whole module graph at load.
+  SubprocessError: class extends Error {},
+  RingBuffer: class {},
 }));
 
 import { executeRun } from '../daemon/executor.js';

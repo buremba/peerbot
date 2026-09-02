@@ -153,9 +153,10 @@ export const ExecutionBackendSchema = Type.Union([
  * `process`: a forked Node child (`SubprocessExecutor`), the lane every run
  * uses today. `isolate`: a V8 isolate inside the worker process
  * (`IsolateExecutor`), for pure-JS bundles that import no Node builtin. The
- * gateway derives the lane from the compiled artifact. The isolate is the
- * security boundary for organization-supplied code, so a worker that cannot
- * host one FAILS an `isolate` run instead of forking a child for it.
+ * gateway is to derive the lane from the compiled artifact; until it does, no
+ * producer sends one. The isolate is the security boundary for
+ * organization-supplied code, so a worker that cannot host one FAILS an
+ * `isolate` run instead of forking a child for it.
  */
 export const ExecutionLaneSchema = Type.Union([
   Type.Literal("process"),

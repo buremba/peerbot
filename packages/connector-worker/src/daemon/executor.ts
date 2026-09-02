@@ -87,25 +87,31 @@ async function loadCompiledRuntime() {
   ]);
 }
 
+type JobExecution =
+  | { ok: true; code: string; executor: import('../executor/interface.js').SyncExecutor }
+  | { ok: false; error: string };
+
 /**
- * Pick the executor for a claimed run by its `lane`, or the reason it cannot
+ * Resolve the code and the executor for a claimed run, or the reason it cannot
  * run here. `lane: 'isolate'` is a requirement (the isolate is the security
  * boundary for organization-supplied code), so a host without `isolated-vm`
  * fails the run instead of forking a child.
  */
-async function selectExecutorForJob(
+async function resolveJobExecution(
   select: typeof import('../executor/select.js'),
   job: PollResponse,
   timeoutMs: number,
   cfg: ExecutorConfig
-): Promise<{ ok: true; executor: import('../executor/interface.js').SyncExecutor } | { ok: false; error: string }> {
+): Promise<JobExecution> {
+  const codeResult = await resolveJobCode(job);
+  if (!codeResult.ok) return codeResult;
   try {
     const executor = await select.selectExecutor({
       lane: job.lane,
       timeoutMs,
       maxOldSpaceSize: cfg.maxOldSpaceSize,
     });
-    return { ok: true, executor };
+    return { ok: true, code: codeResult.code, executor };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -275,13 +281,9 @@ async function executeSyncRun(
     throw new Error('Invalid run: missing run_id or connector_key');
   }
 
-  const codeResult = await resolveJobCode(job);
-  const executorResult = codeResult.ok
-    ? await selectExecutorForJob(select, job, cfg.timeoutMs, cfg)
-    : codeResult;
-  if (!codeResult.ok || !executorResult.ok) {
-    const reason = !codeResult.ok ? codeResult.error : (executorResult as { error: string }).error;
-    const errorMessage = `Run ${run_id} (${connector_key}): ${reason}`;
+  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg);
+  if (!execution.ok) {
+    const errorMessage = `Run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
     await client.complete({
       run_id,
@@ -292,8 +294,8 @@ async function executeSyncRun(
     });
     return { itemsCollected: 0, error: errorMessage };
   }
-  const compiled_code = codeResult.code;
-  const laneExecutor = executorResult.executor;
+  const compiled_code = execution.code;
+  const laneExecutor = execution.executor;
 
   log.info(`[executor] Starting sync run ${run_id} (${connector_key}/${feed_key})`);
 
@@ -522,13 +524,9 @@ async function executeActionRun(
 
   const [select, { executeCompiledConnector }] = await loadCompiledRuntime();
 
-  const codeResult = await resolveJobCode(job);
-  const executorResult = codeResult.ok
-    ? await selectExecutorForJob(select, job, cfg.timeoutMs, cfg)
-    : codeResult;
-  if (!codeResult.ok || !executorResult.ok) {
-    const reason = !codeResult.ok ? codeResult.error : (executorResult as { error: string }).error;
-    const errorMessage = `Action run ${run_id} (${connector_key}): ${reason}`;
+  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg);
+  if (!execution.ok) {
+    const errorMessage = `Action run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
     await completeActionOnce(client, {
       run_id,
@@ -538,8 +536,8 @@ async function executeActionRun(
     });
     return { itemsCollected: 0, error: errorMessage };
   }
-  const compiled_code = codeResult.code;
-  const laneExecutor = executorResult.executor;
+  const compiled_code = execution.code;
+  const laneExecutor = execution.executor;
 
   log.info(`[executor] Starting action run ${run_id} (${connector_key}/${action_key})`);
 
@@ -713,14 +711,12 @@ async function executeAuthRun(
   if (!run_id || !connector_key) {
     throw new Error('Invalid auth run: missing run_id or connector_key');
   }
-  const codeResult = await resolveJobCode(job);
   // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
   // redirects) — a fixed timeout would kill the pairing mid-flow. Terminate
   // via the UI cancel signal instead (timeoutMs: 0 on either lane).
-  const executorResult = codeResult.ok ? await selectExecutorForJob(select, job, 0, cfg) : codeResult;
-  if (!codeResult.ok || !executorResult.ok) {
-    const reason = !codeResult.ok ? codeResult.error : (executorResult as { error: string }).error;
-    const errorMessage = `Auth run ${run_id} (${connector_key}): ${reason}`;
+  const execution = await resolveJobExecution(select, job, 0, cfg);
+  if (!execution.ok) {
+    const errorMessage = `Auth run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
     await client.completeAuth({
       run_id,
@@ -730,8 +726,8 @@ async function executeAuthRun(
     });
     return { itemsCollected: 0, error: errorMessage };
   }
-  const compiled_code = codeResult.code;
-  const laneExecutor = executorResult.executor;
+  const compiled_code = execution.code;
+  const laneExecutor = execution.executor;
 
   log.info(`[executor] Starting auth run ${run_id} (${connector_key})`);
 

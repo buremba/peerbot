@@ -48,6 +48,7 @@ import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { AUTOMATION_RUN_TYPES_PG } from "./run-types.js";
+import { parentRunGate } from "./parent-run-gate.js";
 
 type AutomationDispatchSource = 'scheduled' | 'manual' | 'event';
 export type AutomationActivationTrigger =
@@ -1325,22 +1326,16 @@ export async function createConnectorOperationRun(params: {
     error_message: string | null;
     claimed_by: string | null;
   }>`
-    WITH parent_gate AS MATERIALIZED (
-      SELECT id
-      FROM runs
-      WHERE id = ${params.parentRunId ?? null}
-        AND organization_id = ${params.organizationId}
-        AND (
-          run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-          OR run_type = ANY('{action,sync}'::text[])
-        )
+    ${parentRunGate(sql, {
+      parentRunId: params.parentRunId ?? null,
+      organizationId: params.organizationId,
+      // A connector action can also be spawned by another connector run,
+      // which is an `action`/`sync` parent rather than an Automation one.
+      alsoEligible: sql`OR (
+        run_type = ANY('{action,sync}'::text[])
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-      FOR SHARE
-    ), authorized_parent AS (
-      SELECT 1 WHERE ${params.parentRunId ?? null}::bigint IS NULL
-      UNION ALL
-      SELECT 1 FROM parent_gate
-    )
+      )`,
+    })}
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approval_status, status,

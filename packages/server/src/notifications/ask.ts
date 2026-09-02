@@ -15,8 +15,7 @@ import {
 	approvalContext,
 } from "../utils/approval-context";
 import { insertEvent } from "../utils/insert-event";
-import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
-import { AUTOMATION_RUN_TYPES_PG } from "../runs/run-types";
+import { parentRunGate } from "../runs/parent-run-gate";
 import {
 	CURRENT_ASK_SCHEMA_VERSION,
 	validateAskInputSchema,
@@ -76,19 +75,10 @@ export async function queueAgentAsk(params: {
 	// divergence, same as the connector queue path).
 	return sql.begin(async (tx) => {
 		const inserted = await tx`
-			WITH parent_gate AS MATERIALIZED (
-				SELECT id
-				FROM runs
-				WHERE id = ${params.ctx.actingRunId ?? null}
-				  AND organization_id = ${params.ctx.organizationId}
-				  AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-				  AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-				FOR SHARE
-			), authorized_parent AS (
-				SELECT 1 WHERE ${params.ctx.actingRunId ?? null}::bigint IS NULL
-				UNION ALL
-				SELECT 1 FROM parent_gate
-			)
+			${parentRunGate(tx, {
+				parentRunId: params.ctx.actingRunId ?? null,
+				organizationId: params.ctx.organizationId,
+			})}
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input,
 				automation_id, parent_run_id,

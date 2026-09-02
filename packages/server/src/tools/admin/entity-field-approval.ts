@@ -76,6 +76,7 @@ import { resolveRunInitiator, runPermalinkResource } from "../initiator";
 import type { ToolContext } from "../registry";
 import { getOrgUrlContext } from "../view-urls";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses';
+import { parentRunGate } from "../../runs/parent-run-gate";
 import { AUTOMATION_RUN_TYPES_PG } from "../../runs/run-types";
 
 interface EntityApprovalQueueOptions {
@@ -1015,26 +1016,18 @@ export async function proposeEntityChange(
 		}
 
 		const inserted = await tx<{ id: number }>`
-			WITH parent_gate AS MATERIALIZED (
-				SELECT id
-				FROM runs
-				WHERE id = ${parentRunId}
-				  AND organization_id = ${ctx.organizationId}
+			${parentRunGate(tx, {
+				parentRunId: parentRunId,
+				organizationId: ctx.organizationId,
+				// A review artifact is filed against the completed run it reviews,
+				// so that one Automation parent stays eligible past terminalization.
+				alsoEligible: tx`OR (
+				  ${options?.automationReviewArtifact === true}
 				  AND run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
-				  AND (
-				    status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-				    OR (
-				      ${options?.automationReviewArtifact === true}
-				      AND status = 'completed'
-				      AND automation_id = ${proposal.automation_id ?? null}
-				    )
-				  )
-				FOR SHARE
-			), authorized_parent AS (
-				SELECT 1 WHERE ${parentRunId}::bigint IS NULL
-				UNION ALL
-				SELECT 1 FROM parent_gate
-			)
+				  AND status = 'completed'
+				  AND automation_id = ${proposal.automation_id ?? null}
+				)`,
+			})}
 			INSERT INTO runs (
 				organization_id, run_type, action_key, action_input, parent_run_id,
 				automation_id, created_by_user_id, initiator_kind, initiator_ref,

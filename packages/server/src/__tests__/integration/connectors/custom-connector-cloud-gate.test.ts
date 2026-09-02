@@ -11,7 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveAgentToolingDeclaration } from '../../../gateway/agent-tooling/resolver';
 import type { Env } from '../../../index';
-import { createSyncRun } from '../../../runs/queue-service';
+import { createSyncRun, describeSyncRunSkip } from '../../../runs/queue-service';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { post } from '../../setup/test-helpers';
 import {
@@ -112,6 +112,16 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
 
     expect(created.ok).toBe(false);
     expect(created.ok ? null : created.reason).toBe('cloud_restricted');
+    // The reason code alone reads as an outage. `cloud_restricted` collapses
+    // two unrelated causes, and the sentence it maps to ("cannot run on Lobu
+    // Cloud yet") gave an operator nowhere to go — verified against prod,
+    // where that string is all a denied trigger_feed returns. The gate's own
+    // message names the provenance AND the supported path, so it rides along
+    // and wins in `describeSyncRunSkip`.
+    const detail = created.ok ? null : created.detail;
+    expect(detail).toContain('organization-supplied');
+    expect(detail).toMatch(/MCP/);
+    expect(describeSyncRunSkip('cloud_restricted', detail ?? undefined)).toBe(detail);
     const runs = await sql`SELECT id FROM runs WHERE feed_id = ${feedId}`;
     expect(runs.length).toBe(0);
   });

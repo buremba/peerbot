@@ -89,11 +89,17 @@ describe('worker MCP session agent identity', () => {
     });
     expect(initResponse.status).toBe(200);
     const sessionId = initResponse.headers.get('mcp-session-id');
+    const initBody = await initResponse.json();
     if (!sessionId) {
       throw new Error(
-        `initialize returned no mcp-session-id: ${JSON.stringify(await initResponse.json())}`
+        `initialize returned no mcp-session-id: ${JSON.stringify(initBody)}`
       );
     }
+    expect(initBody.result?.instructions).toContain(
+      "You have persistent memory. Use it proactively — don't wait to be asked."
+    );
+    expect(initBody.result?.instructions).toContain('### Saving (do this automatically)');
+    expect(initBody.result?.instructions).not.toContain('### Writes and approvals');
     await post(`/mcp/${org.slug}`, {
       body: { jsonrpc: '2.0', method: 'notifications/initialized' },
       token: workerToken,

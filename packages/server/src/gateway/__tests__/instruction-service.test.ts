@@ -128,12 +128,12 @@ describe("InstructionService", () => {
     expect(ctxB.agentLayers.identityMd).not.toContain("I am the ORG-A builder.");
   });
 
-  test("does NOT inject org guidance into the agent layers (delivered via lobu-memory MCP, not duplicated)", async () => {
+  test("does NOT inject org guidance into the agent layers (delivered through managed-agent MCP instructions, not duplicated)", async () => {
     // Single source of truth: guidance reaches the worker prompt through the
-    // lobu-memory MCP server's instructions (buildWorkspaceInstructions renders
-    // the "Organization Context" section). Injecting it into the agent layers
-    // here too — under the same org-scope gate — would duplicate it in the
-    // prompt. This test pins that the session-context path stays out of it.
+    // lobu-memory MCP server's managed-agent instructions
+    // (buildWorkspaceInstructions renders the "Organization Context" section).
+    // Injecting it into the agent layers here too would duplicate it in the
+    // prompt. Direct MCP clients receive a separate directory-safe audience.
     await seedAgentRow("agent-guided", { organizationId: "org-a" });
     await seedGuidanceEvent("org-a", "Fiscal year starts in February.");
 

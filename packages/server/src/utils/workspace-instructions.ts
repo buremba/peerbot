@@ -1,9 +1,9 @@
 /**
  * Workspace Instructions Builder
  *
- * Generates MCP instructions with workspace schema (entity types, relationship
- * types) and operating guidance so LLMs act as a proactive memory layer.
- * All entity-level data comes from tool calls at runtime, not from instructions.
+ * Generates managed-agent instructions with workspace schema and operating
+ * guidance, or a static capability description for direct MCP clients. All
+ * entity-level data comes from tool calls at runtime, not from instructions.
  */
 
 import { getDb } from '../db/client';
@@ -55,7 +55,41 @@ function renderSchemaFields(schema: unknown): string {
     .join(', ');
 }
 
-export async function buildWorkspaceInstructions(organizationId: string): Promise<string | null> {
+export type WorkspaceInstructionAudience = 'managed-agent' | 'direct-mcp';
+
+const DIRECT_MCP_INSTRUCTIONS = [
+  '## Lobu — Workspace Memory',
+  '',
+  "Lobu provides access to persistent workspace memory. Use Lobu's tools only when they are relevant to the user's request.",
+  '',
+  '### Read tools',
+  '- `search_memory` searches saved workspace memory.',
+  '- On a multi-workspace grant, `search_memory` accepts a singular `workspace` argument to narrow to one of the granted workspaces; every other tool stays in the current workspace.',
+  '- `search_sdk` discovers documented SDK methods and connector capabilities.',
+  '- `query_sdk` runs capability-scoped, read-only TypeScript.',
+  '- `query_sql` runs member-safe, read-only SQL.',
+  '- Use read tools to discover workspace-specific schema and capabilities instead of assuming they exist.',
+  '',
+  '### Writes and approvals',
+  '- `save_memory` stores a requested fact or note. Use it only when the user asks to remember or save information, or explicitly confirms a proposed save.',
+  '- `run_sdk` can create, update, or delete workspace data and can invoke connector operations. Use it only for a user-requested action; use `query_sdk` for reads and `dry_run=true` to preview supported writes.',
+  '- A policy-gated operation returns `status: "pending_approval"` and a `run_id`. Call `get_approval` with that run id to show the canonical review card. Treat a pending operation as waiting, not failed.',
+  '- Do not infer permission to store conversation details, preferences, personal information, relationships, or files merely because they were mentioned.',
+  '- Do not request, expose, or return authentication secrets.',
+].join('\n');
+
+export async function buildWorkspaceInstructions(
+  organizationId: string,
+  options: { audience?: WorkspaceInstructionAudience } = {}
+): Promise<string | null> {
+  // Preserve the historical managed-agent prompt by default for internal
+  // callers. Direct MCP sessions get an entirely static, directory-safe
+  // capability description. Workspace-authored schema, connector descriptions,
+  // and guidance are discoverable through explicit read tools instead of being
+  // injected into an unrelated host's prompt.
+  const managedAgent = options.audience !== 'direct-mcp';
+  if (!managedAgent) return DIRECT_MCP_INSTRUCTIONS;
+
   const sql = getDb();
 
   try {
@@ -138,8 +172,9 @@ export async function buildWorkspaceInstructions(organizationId: string): Promis
       "When asked about workspace data — including people, leads, companies, connections, feeds, runs, or counts — query it before answering. On a direct bare OAuth connection, `search_memory` searches every currently accessible workspace the user granted and can be narrowed with its singular `workspace` argument; pinned connections and all other tools stay in the current workspace. Use `query_sdk` or `query_sql` for structured lookups and counts. Do not claim you can see only chat/Slack messages or channel members without querying workspace data first.",
     ];
 
-    // Org-wide admin-authored context goes near the top: it is the governed
-    // "why" that frames everything below (schema, tools, saving rules).
+    // Org-wide admin-authored context is agent policy, not MCP capability
+    // documentation. It belongs in managed-agent prompts only; returning it to
+    // a directory client would let tenant content steer an unrelated host.
     if (orgGuidance) {
       sections.push(
         '',

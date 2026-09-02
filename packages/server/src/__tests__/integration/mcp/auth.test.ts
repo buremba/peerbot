@@ -276,6 +276,18 @@ describe('MCP Authentication', () => {
 
       const sessionId = initResponse.headers.get('mcp-session-id');
       expect(sessionId).toBeTruthy();
+      const initBody = await initResponse.json();
+      expect(initBody.result?.instructions).toContain(
+        "Use Lobu's tools only when they are relevant to the user's request"
+      );
+      expect(initBody.result?.instructions).toContain('### Writes and approvals');
+      expect(initBody.result?.instructions).toContain('Use it only when the user asks');
+      expect(initBody.result?.instructions).not.toContain(
+        "Use it proactively — don't wait to be asked"
+      );
+      expect(initBody.result?.instructions).not.toContain(
+        '### Saving (do this automatically)'
+      );
 
       await post(`/mcp/${publicOrg.slug}`, {
         body: {
@@ -1284,6 +1296,36 @@ describe('MCP Authentication', () => {
       expect(response.status).toBe(400);
       const body = await response.json();
       expect(body.error?.message).toContain("Agent 'missing-agent' was not found");
+    });
+
+    it('does not let a client-declared agent binding unlock managed-agent instructions', async () => {
+      const { token } = await createTestAccessToken(user.id, org.id, client.client_id);
+
+      const response = await post('/mcp', {
+        body: {
+          jsonrpc: '2.0',
+          id: '__test_init__',
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+            clientInfo: {
+              name: 'directory-client-test',
+              version: '1.0',
+              agentId: agent.agentId,
+            },
+          },
+        },
+        token,
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.result?.instructions).toContain('### Writes and approvals');
+      expect(body.result?.instructions).not.toContain(
+        "You have persistent memory. Use it proactively — don't wait to be asked."
+      );
+      expect(body.result?.instructions).not.toContain('### Saving (do this automatically)');
     });
   });
 

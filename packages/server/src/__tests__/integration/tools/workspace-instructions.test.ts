@@ -318,6 +318,35 @@ describe('buildWorkspaceInstructions render fixes', () => {
     expect(directiveIdx).toBeGreaterThan(-1);
     expect(directiveIdx).toBeLessThan(toolSurfaceIdx);
   });
+
+  it('keeps direct MCP instructions user-directed and free of automatic personal-data capture', async () => {
+    const directOrg = await createTestOrganization({ name: 'Direct MCP Instructions Org' });
+    const out = await buildWorkspaceInstructions(directOrg.id, { audience: 'direct-mcp' });
+
+    expect(out).toContain(
+      "Use Lobu's tools only when they are relevant to the user's request"
+    );
+    expect(out).toContain('### Writes and approvals');
+    expect(out).toContain('Use it only when the user asks');
+    expect(out).not.toContain("Use it proactively — don't wait to be asked");
+    expect(out).not.toContain('### Saving (do this automatically)');
+    expect(out).not.toContain('Preferences, opinions, or personal details');
+    expect(out).not.toContain('### Schema: Entity Types');
+    expect(out).not.toContain('Direct MCP Instructions Org');
+  });
+
+  it('documents the search_memory workspace narrowing argument to the direct MCP audience', async () => {
+    // The managed-agent text explains the singular `workspace` argument in a
+    // sentence addressed to "a direct bare OAuth connection" — precisely the
+    // audience that now receives DIRECT_MCP_INSTRUCTIONS instead. The static
+    // text is the only capability documentation that audience ever gets, so
+    // the narrowing knob has to be named here or it is discoverable nowhere.
+    const directOrg = await createTestOrganization({ name: 'Narrowing Arg Org' });
+    const out = await buildWorkspaceInstructions(directOrg.id, { audience: 'direct-mcp' });
+
+    expect(out).toContain('`workspace` argument');
+    expect(out).toContain('multi-workspace grant');
+  });
 });
 
 describe('org-wide guidance context', () => {
@@ -382,6 +411,14 @@ describe('org-wide guidance context', () => {
     const schemaIdx = out!.indexOf('### Tool surface');
     expect(ctxIdx).toBeGreaterThan(-1);
     expect(ctxIdx).toBeLessThan(schemaIdx);
+  });
+
+  it('does not expose admin-authored agent guidance to a direct MCP client', async () => {
+    const out = await buildWorkspaceInstructions(org.id, { audience: 'direct-mcp' });
+
+    expect(out).not.toContain('### Organization Context');
+    expect(out).not.toContain('Our fiscal year starts in February.');
+    expect(out).not.toContain('### Schema: Entity Types');
   });
 
   it('backfills `guidance` into a pre-guidance $member registry so authorship still validates (#1913)', async () => {

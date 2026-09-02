@@ -871,8 +871,15 @@ async function resolveMembershipRole(
 }
 
 async function buildSessionInstructions(authCtx: AuthContext): Promise<string | undefined> {
+  // Only verified worker-originated requests carry sourceContext. A client may
+  // request an agent binding in initialize metadata, but that must not grant it
+  // the tenant-authored agent instructions intended for Lobu-managed workers.
+  const audience =
+    authCtx.sourceContext != null || authCtx.actingAutomationId != null
+      ? 'managed-agent'
+      : 'direct-mcp';
   const base = authCtx.organizationId
-    ? ((await buildWorkspaceInstructions(authCtx.organizationId)) ?? '')
+    ? ((await buildWorkspaceInstructions(authCtx.organizationId, { audience })) ?? '')
     : '';
   if (
     authCtx.tokenType !== 'oauth' ||

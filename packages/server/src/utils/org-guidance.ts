@@ -3,12 +3,12 @@
  *
  * `guidance` is a built-in, code-level event kind (not declared in any
  * entity type's `event_kinds` registry): current, non-superseded `guidance`
- * events for an org render as an "Organization Context" section via the single
- * site `buildWorkspaceInstructions`. That block is the lobu-memory MCP server's
- * instructions, which reach BOTH surfaces from one render: the MCP client
- * directly, and the agent-worker prompt (the worker folds MCP server
- * instructions into its context). It is deliberately NOT re-injected in
- * InstructionService — that would duplicate it in the worker prompt.
+ * events for an org render as an "Organization Context" section through
+ * `buildWorkspaceInstructions` for verified managed-agent sessions. The worker
+ * folds those lobu-memory MCP server instructions into its context. Direct MCP
+ * clients receive capability guidance only and never receive tenant-authored
+ * agent policy. Guidance is deliberately NOT re-injected in InstructionService
+ * because that would duplicate it in the worker prompt.
  *
  * Design notes:
  * - Anchoring: injection selects by organization_id + semantic_type only. A

@@ -206,3 +206,63 @@ describe('Cloud artifact admission', () => {
 		);
 	});
 });
+
+/**
+ * The reason code alone read as an outage inside a run: `not eligible
+ * (organization-supplied)` says which policy fired, not what to do about it.
+ * Each reason names its own remedy, and every remedy names only an action
+ * Cloud actually permits.
+ */
+describe('Cloud denial names the remedy, not only the reason', () => {
+	test('an organization-supplied artifact is pointed at the supported lanes', () => {
+		process.env.LOBU_CLOUD_MODE = 'true';
+		const error = denial(() =>
+			assertCloudConnectorArtifactTrusted({
+				connectorKey: 'github',
+				facts: facts({ organizationId: 'org_1', hasCompiledCode: true }),
+			}),
+		);
+		expect(error.message).toContain('(organization-supplied)');
+		expect(error.message).toMatch(/MCP/);
+		expect(error.message).toMatch(/device connector/);
+		expect(error.message).toMatch(/self-hosted/);
+		// Cloud refuses every source-code install, so an OpenAPI connector —
+		// which is source metadata — must not be offered as a destination.
+		expect(error.message).not.toMatch(/OpenAPI/);
+	});
+
+	test('a shadowed shared row says the copy has to be removed for the tenant', () => {
+		process.env.LOBU_CLOUD_MODE = 'true';
+		const error = denial(() =>
+			assertCloudConnectorArtifactTrusted({
+				connectorKey: 'github',
+				facts: facts({ rowCount: 2 }),
+			}),
+		);
+		expect(error.message).toContain('(ambiguous-artifact-scope)');
+		expect(error.message).toMatch(/organization-scoped copy/);
+		// No Cloud-permitted action deletes a connector_versions row, so the
+		// remedy must not pretend the tenant can self-serve it.
+		expect(error.message).toMatch(/contact support/);
+	});
+
+	test('a missing image file is told apart from a tenant problem', () => {
+		process.env.LOBU_CLOUD_MODE = 'true';
+		const error = denial(() =>
+			assertCloudConnectorArtifactTrusted({
+				connectorKey: 'not_a_bundled_connector',
+				facts: BUNDLED_SHARED_ROW,
+			}),
+		);
+		expect(error.message).toContain('(not-in-image)');
+		expect(error.message).toMatch(/current catalog/);
+		expect(error.message).not.toMatch(/MCP/);
+	});
+
+	test('the install refusal carries the organization-supplied remedy', () => {
+		process.env.LOBU_CLOUD_MODE = 'true';
+		const error = denial(() => assertCustomConnectorInstallAllowed());
+		expect(error.message).toContain('(organization-supplied)');
+		expect(error.message).toMatch(/MCP/);
+	});
+});

@@ -133,7 +133,6 @@ const config: KnipConfig = {
       // every one is used by the bundled server/worker at runtime. Listed
       // explicitly so a real unused cli dep would still surface.
       ignoreDependencies: [
-        "@anthropic-ai/sdk",
         "@aws-sdk/client-bedrock",
         "@aws-sdk/client-secrets-manager",
         "@chat-adapter/discord",

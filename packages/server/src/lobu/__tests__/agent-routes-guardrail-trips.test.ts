@@ -12,11 +12,19 @@
  * the genuine `events` table; no network.
  */
 
-import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from 'bun:test';
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
 } from '../../gateway/__tests__/helpers/db-setup.js';
+import { resolveSystemJudgeTarget } from '../../gateway/inference/system-judge-target.js';
 import { authStash, installRouteTestMocks } from './helpers/route-test-mocks';
 
 installRouteTestMocks();
@@ -32,6 +40,14 @@ const OTHER_AGENT = 'other-agent';
 beforeAll(async () => {
   await ensureDbForGatewayTests();
   process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+  // Guardrail judge models are resolved against the provider registry at write
+  // time, so the persistence tests below need a registry and a system key or
+  // their fixture model is rejected before it is ever stored.
+  process.env.LOBU_PROVIDER_REGISTRY_PATH = new URL(
+    '../../../../../config/providers.json',
+    import.meta.url
+  ).pathname;
+  process.env.OPENAI_API_KEY ||= 'sk-test-deployment-owned';
 }, 60_000);
 
 async function seedOrgAndAgent(
@@ -109,7 +125,7 @@ describe('custom guardrails persist through PATCH/GET /config', () => {
         enabled: true,
         stage: 'output',
         policy: 'Deny any response that names a competitor.',
-        model: 'anthropic/claude-haiku-4-5',
+        model: 'openai/gpt-4o-mini',
       },
     ];
 
@@ -148,7 +164,7 @@ describe('custom guardrails persist through PATCH/GET /config', () => {
         stage: 'input',
         policy: 'Deny hostile messages.',
         // A model is required (no EGRESS_JUDGE_MODEL in tests).
-        model: 'anthropic/claude-haiku-4-5',
+        model: 'openai/gpt-4o-mini',
       },
     ];
     await app.request(`/${AGENT}/config`, {
@@ -254,6 +270,137 @@ describe('custom guardrails persist through PATCH/GET /config', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error?: string };
     expect(body.error).toBe('guardrail_model_required');
+  });
+
+  // A judge model that cannot resolve used to SAVE and then deny every request
+  // the guardrail covers at runtime, with only a log line to explain it. These
+  // two pin the write-time gate that replaced that silent failure.
+  describe('judge model resolution at write time', () => {
+    const REGISTRY_ENV = 'LOBU_PROVIDER_REGISTRY_PATH';
+    const REGISTRY_PATH = new URL(
+      '../../../../../config/providers.json',
+      import.meta.url
+    ).pathname;
+    let undo: Array<() => void> = [];
+
+    function setEnv(key: string, value: string | undefined) {
+      const prev = process.env[key];
+      undo.push(() => {
+        if (prev === undefined) delete process.env[key];
+        else process.env[key] = prev;
+      });
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+
+    afterEach(() => {
+      for (const fn of undo.reverse()) fn();
+      undo = [];
+    });
+
+    test('rejects a judge model this deployment can never run', async () => {
+      // `claude` is sdkCompat "anthropic" in the shipped registry, and the
+      // judge transport speaks only OpenAI-compatible /chat/completions. The
+      // key being SET is the point: presence of a credential must not be
+      // mistaken for the model being runnable.
+      setEnv(REGISTRY_ENV, REGISTRY_PATH);
+      setEnv('ANTHROPIC_API_KEY', 'sk-ant-still-configured');
+      const app = await importAgentRoutes();
+      const res = await app.request(`/${AGENT}/config`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          guardrailsInline: [
+            {
+              name: 'anthropic-judge',
+              enabled: true,
+              stage: 'output',
+              policy: 'deny',
+              model: 'claude/claude-haiku-4-5-20251001',
+            },
+          ],
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error?: string };
+      expect(body.error).toBe('guardrail_model_unresolvable');
+    });
+
+    test('an already-stored model that stopped resolving stays editable', async () => {
+      // The lockout this prevents: every PATCH carries the whole
+      // guardrailsInline array, so re-validating stored values would make an
+      // agent holding a now-unrunnable model impossible to edit — including to
+      // remove the offending guardrail. Save a valid model, take its credential
+      // away, then prove the agent can still be saved.
+      setEnv(REGISTRY_ENV, REGISTRY_PATH);
+      setEnv('OPENAI_API_KEY', 'sk-deployment-owned');
+      const app = await importAgentRoutes();
+      const inline = [
+        {
+          name: 'grandfathered',
+          enabled: true,
+          stage: 'output',
+          policy: 'deny',
+          model: 'openai/gpt-4o-mini',
+        },
+      ];
+      const saved = await app.request(`/${AGENT}/config`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ guardrailsInline: inline }),
+      });
+      expect(saved.status).toBe(200);
+
+      // The credential goes away; the stored model can no longer resolve.
+      setEnv('OPENAI_API_KEY', undefined);
+      expect(
+        (await resolveSystemJudgeTarget('openai/gpt-4o-mini')).ok
+      ).toBe(false);
+
+      const again = await app.request(`/${AGENT}/config`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ identityMd: 'edited', guardrailsInline: inline }),
+      });
+      expect(again.status).toBe(200);
+
+      // But a NEWLY named bad model is still refused — grandfathering is scoped
+      // to the exact stored value, not a blanket amnesty.
+      const changed = await app.request(`/${AGENT}/config`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          guardrailsInline: [
+            { ...inline[0], model: 'claude/claude-haiku-4-5-20251001' },
+          ],
+        }),
+      });
+      expect(changed.status).toBe(400);
+    });
+
+    test('accepts a judge model backed by an operator system key', async () => {
+      // POSITIVE CONTROL. A validator that rejected every model would pass the
+      // test above while making the Guardrails tab unusable.
+      setEnv(REGISTRY_ENV, REGISTRY_PATH);
+      setEnv('OPENAI_API_KEY', 'sk-deployment-owned');
+      const app = await importAgentRoutes();
+      const res = await app.request(`/${AGENT}/config`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          guardrailsInline: [
+            {
+              name: 'openai-judge',
+              enabled: true,
+              stage: 'output',
+              policy: 'deny',
+              model: 'openai/gpt-4o-mini',
+            },
+          ],
+        }),
+      });
+      expect(res.status).toBe(200);
+    });
   });
 
   test('guardrail-judge-default reports null when EGRESS_JUDGE_MODEL is unset', async () => {

@@ -21,6 +21,7 @@ import "./utils/assert-node-version";
 
 // Sentry must init before any other imports for auto-instrumentation.
 import "./instrument";
+import { checkConfiguredJudgeModel } from "./gateway/inference/system-judge-target";
 
 import dotenv from "dotenv";
 
@@ -215,6 +216,12 @@ async function main(): Promise<void> {
 					logger.error({ err }, "Connector external dependency check failed");
 					process.exit(1);
 				}
+			},
+			// Surface an unusable EGRESS_JUDGE_MODEL at boot rather than at the
+			// first denied request. Not fatal: the judge is optional, and a
+			// misconfigured optional control must not become a gateway outage.
+			async () => {
+				await checkConfiguredJudgeModel();
 			},
 		],
 		extraTeardown,

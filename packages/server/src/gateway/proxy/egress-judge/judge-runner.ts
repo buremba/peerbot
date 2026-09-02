@@ -2,9 +2,12 @@ import {
 	createLogger,
 	getErrorMessage,
 } from "@lobu/core";
-import { AnthropicJudgeClient } from "./anthropic-client.js";
 import { VerdictCache } from "./cache.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
+import {
+  GatewayJudgeClient,
+  JudgeConfigurationError,
+} from "./gateway-judge-client.js";
 import type { JudgeClient, JudgeVerdict } from "./types.js";
 import {
   DEFAULT_JUDGE_MODEL,
@@ -124,11 +127,11 @@ export abstract class JudgeRunner<TResult> {
 
   /**
    * Defer client construction until the first call so callers with no judge
-   * rules/guardrails never require ANTHROPIC_API_KEY.
+   * rules/guardrails never touch provider resolution.
    */
   private get client(): JudgeClient {
     if (!this._client) {
-      this._client = new AnthropicJudgeClient();
+      this._client = new GatewayJudgeClient();
     }
     return this._client;
   }
@@ -218,6 +221,32 @@ export abstract class JudgeRunner<TResult> {
       this.cache.set(cacheKey, verdict);
       return input.decorate(verdict, { source: "judge", latencyMs });
     } catch (err) {
+      // A misconfigured deployment is not a transient fault. Tripping the
+      // breaker here would put every OTHER policy's judge into a 30s cooldown
+      // and relabel the denials as an upstream outage, hiding the one thing an
+      // operator needs to see. Same treatment as "no judge model configured"
+      // above: fail closed, leave the breaker alone.
+      if (err instanceof JudgeConfigurationError) {
+        this.logger.error(
+          `${logPrefix} not configured ${separator} failing closed`,
+          {
+            policyHash: input.policyHash,
+            ...input.logFields,
+            model,
+            error: getErrorMessage(err),
+          }
+        );
+        // The detail names operator infrastructure — provider slugs, env var
+        // names, whether a deployment credential is set. It belongs in the
+        // logger.error above, which only the operator reads. This reason is
+        // tenant-visible and is persisted verbatim into the guardrail-trip
+        // audit row, so it stays generic.
+        return input.decorate(
+          { verdict: "deny", reason: `Judge not configured; ${deniedSuffix}` },
+          { source: "judge-error", latencyMs: Date.now() - started }
+        );
+      }
+
       this.breaker.onFailure(input.policyHash);
       const timedOut = err instanceof JudgeTimeoutError;
       this.logger.error(

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { gatewayCompletion } from "../../gateway/inference/gateway-completion";
+import {
+  GatewayCompletionTimeoutError,
+  gatewayCompletion,
+} from "../../gateway/inference/gateway-completion";
 
 const TARGET = {
   baseUrl: "https://api.example.test/v1",
@@ -196,5 +199,97 @@ describe("gatewayCompletion", () => {
       })
     ).rejects.toThrow();
     expect(calls).toBe(1);
+  });
+});
+
+/**
+ * Options added for the fail-closed judge transport. The judge needs a bounded
+ * reply, no retries (the circuit breaker is its retry policy), and a timeout it
+ * can tell apart from an upstream fault when deciding what to alert on.
+ */
+describe("gatewayCompletion — fail-closed caller options", () => {
+  test("omits max_tokens by default so existing callers are unchanged", async () => {
+    const { calls } = stubFetch(completionBody("ok"));
+
+    await gatewayCompletion({
+      target: TARGET,
+      systemPrompt: "s",
+      userPrompt: "u",
+      timeoutMs: 5_000,
+    });
+
+    const sent = JSON.parse(String(calls[0]?.init.body));
+    expect("max_tokens" in sent).toBe(false);
+  });
+
+  test("sends max_tokens when the caller sets a ceiling", async () => {
+    const { calls } = stubFetch(completionBody("ok"));
+
+    await gatewayCompletion({
+      target: TARGET,
+      systemPrompt: "s",
+      userPrompt: "u",
+      timeoutMs: 5_000,
+      maxTokens: 256,
+    });
+
+    const sent = JSON.parse(String(calls[0]?.init.body));
+    expect(sent.max_tokens).toBe(256);
+  });
+
+  test("maxRetries: 0 makes exactly one upstream attempt on a retryable 500", async () => {
+    // Without the option this retries twice, so a naive judge migration would
+    // triple the upstream load and delay every fail-closed deny.
+    const { calls } = stubFetch({}, { status: 500 });
+
+    await expect(
+      gatewayCompletion({
+        target: TARGET,
+        systemPrompt: "s",
+        userPrompt: "u",
+        timeoutMs: 5_000,
+        maxRetries: 0,
+      })
+    ).rejects.toThrow();
+
+    expect(calls).toHaveLength(1);
+  });
+
+  test("default retry budget is still 2 attempts after the first", async () => {
+    const { calls } = stubFetch({}, { status: 500 });
+
+    await expect(
+      gatewayCompletion({
+        target: TARGET,
+        systemPrompt: "s",
+        userPrompt: "u",
+        timeoutMs: 30_000,
+      })
+    ).rejects.toThrow();
+
+    expect(calls).toHaveLength(3);
+  });
+
+  test("a blown deadline throws GatewayCompletionTimeoutError, not a generic error", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () =>
+          reject(new DOMException("The operation was aborted", "AbortError"))
+        );
+      })) as unknown as typeof fetch;
+    restore = () => {
+      globalThis.fetch = original;
+    };
+
+    const err = await gatewayCompletion({
+      target: TARGET,
+      systemPrompt: "s",
+      userPrompt: "u",
+      timeoutMs: 10,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(GatewayCompletionTimeoutError);
+    expect((err as GatewayCompletionTimeoutError).timeoutMs).toBe(10);
   });
 });

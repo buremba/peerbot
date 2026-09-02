@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseVerdict } from "../proxy/egress-judge/anthropic-client.js";
+import { parseVerdict } from "../proxy/egress-judge/verdict-parser.js";
 import {
   buildSystemPrompt,
   buildUserPrompt,

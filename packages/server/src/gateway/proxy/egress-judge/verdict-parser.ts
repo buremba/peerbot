@@ -3,8 +3,8 @@
  *
  * A judge reply is `{ verdict, reason }` JSON. Parsing it is a property of the
  * PROMPT contract, not of the transport that carried the reply, so it lives
- * here rather than in any one provider client. The Anthropic SDK client and
- * the gateway-completion client both parse identically.
+ * here rather than in any one provider client, so a change of transport cannot
+ * change how a verdict is read.
  */
 
 import { getErrorMessage } from "@lobu/core";

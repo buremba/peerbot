@@ -236,11 +236,13 @@ export abstract class JudgeRunner<TResult> {
             error: getErrorMessage(err),
           }
         );
+        // The detail names operator infrastructure — provider slugs, env var
+        // names, whether a deployment credential is set. It belongs in the
+        // logger.error above, which only the operator reads. This reason is
+        // tenant-visible and is persisted verbatim into the guardrail-trip
+        // audit row, so it stays generic.
         return input.decorate(
-          {
-            verdict: "deny",
-            reason: `Judge not configured (${getErrorMessage(err)}); ${deniedSuffix}`,
-          },
+          { verdict: "deny", reason: `Judge not configured; ${deniedSuffix}` },
           { source: "judge-error", latencyMs: Date.now() - started }
         );
       }

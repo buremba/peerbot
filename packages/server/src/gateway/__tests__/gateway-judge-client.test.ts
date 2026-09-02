@@ -180,10 +180,12 @@ describe("judge runner — configuration errors vs faults", () => {
 
   test("config errors deny, are attributed as judge-error, and leave the breaker closed", async () => {
     let calls = 0;
+    const SECRET_DETAIL =
+      'provider "openai" has no deployment credential (OPENAI_API_KEY unset)';
     const client: JudgeClient = {
       async judge() {
         calls += 1;
-        throw new JudgeConfigurationError("no deployment credential");
+        throw new JudgeConfigurationError(SECRET_DETAIL);
       },
     };
     // Threshold is 5; drive well past it.
@@ -193,6 +195,11 @@ describe("judge runner — configuration errors vs faults", () => {
       const decision = await judge.decide(requestFor(i), RULE);
       expect(decision.verdict).toBe("deny");
       expect(decision.source).toBe("judge-error");
+      // The reason is tenant-visible and is persisted into the guardrail-trip
+      // audit row. Operator infrastructure detail — provider slugs, env var
+      // names, whether a credential is set — must stay in the operator log.
+      expect(decision.reason).not.toContain("OPENAI_API_KEY");
+      expect(decision.reason).not.toContain(SECRET_DETAIL);
     }
 
     // Every call reached the client: the breaker never opened and started

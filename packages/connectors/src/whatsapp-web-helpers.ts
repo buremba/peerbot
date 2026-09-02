@@ -444,13 +444,36 @@ export function mergeBrowserCheckpoint(
   };
 }
 
+/**
+ * A `body` that is really a base64 image, not text.
+ *
+ * WhatsApp's `Msg.body` carries the message text for a text row and the base64
+ * JPEG **thumbnail** for a row that carries media — the user's own words live
+ * in `caption`. Nothing on the row distinguishes the two: measured on a live
+ * tab (937 loaded messages) `body` held a base64 JPEG on 1/22 images, 1/7
+ * videos and 2/2 `interactive` cards, all with `media_kind` telling us nothing
+ * about it (`null` on the cards). So match what we are rejecting — the base64
+ * prefixes of the three formats WhatsApp thumbnails use — rather than guess
+ * from the message type and risk dropping a text row's real text.
+ */
+function isInlineThumbnail(body: string): boolean {
+  return (
+    body.length > 64 && /^(\/9j\/|iVBORw0KGgo|UklGR)/.test(body)
+  );
+}
+
 export function messagePayloadText(message: WhatsAppMessage): string {
-  const text =
-    typeof message.body === "string" && message.body.length > 0
+  const body =
+    typeof message.body === "string" &&
+    message.body.length > 0 &&
+    !isInlineThumbnail(message.body)
       ? message.body
-      : typeof message.caption === "string" && message.caption.length > 0
-        ? message.caption
-        : "";
+      : "";
+  const text =
+    body ||
+    (typeof message.caption === "string" && message.caption.length > 0
+      ? message.caption
+      : "");
   if (message.revoked) return "[revoked message]";
   if (text) return text;
   if (message.is_system_event) return "[system event]";

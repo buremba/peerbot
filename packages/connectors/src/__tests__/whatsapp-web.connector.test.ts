@@ -243,6 +243,89 @@ describe("event shape", () => {
     expect(event.attachments).toBeUndefined();
   });
 
+  it("never puts a media row's base64 thumbnail in payload_text", () => {
+    // WhatsApp's `Msg.body` is the message text for a `chat` row and the
+    // base64 JPEG THUMBNAIL for a media row — the user's text lives in
+    // `caption`. Measured on a live tab (937 loaded messages): 656/656 `chat`
+    // rows carry text in `body`, while `body` held a base64 JPEG on 1/22
+    // images, 1/7 videos and 2/2 `interactive` cards. Preferring `body` shipped
+    // that base64 into `payload_text` — hence `search_tsv` and the event
+    // embedding — and, worse, overwrote the `[image]` placeholder, so every
+    // metric keyed on `payload_text` reads a working image as missing.
+    const thumbnail = `/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEABsbGxscGx4h${"A".repeat(800)}`;
+    const [image] = mergeCollectedMessages(
+      [
+        message("img", {
+          message_type: "image",
+          media_kind: "image",
+          media_type: "image/jpeg",
+          body: thumbnail,
+          caption: "",
+        }),
+      ],
+      []
+    );
+    if (!image) throw new Error("fixture did not normalize");
+    expect(toEventEnvelope(image, undefined).payload_text).toBe("[image]");
+
+    // A caption is the real text and must still win — including on the
+    // `interactive` cards, whose `media_kind` is null but whose `body` is a
+    // thumbnail all the same.
+    const [captioned] = mergeCollectedMessages(
+      [
+        message("card", {
+          message_type: "interactive",
+          media_kind: null,
+          body: thumbnail,
+          caption: "Book a table",
+        }),
+      ],
+      []
+    );
+    if (!captioned) throw new Error("fixture did not normalize");
+    expect(toEventEnvelope(captioned, undefined).payload_text).toBe(
+      "Book a table"
+    );
+
+    // The 656 text rows must be untouched, and a short body that merely starts
+    // with the prefix is text a person typed, not a thumbnail.
+    const [chat] = mergeCollectedMessages([message("txt")], []);
+    if (!chat) throw new Error("fixture did not normalize");
+    expect(toEventEnvelope(chat, undefined).payload_text).toBe("hello");
+    const [shortBody] = mergeCollectedMessages(
+      [message("short", { body: "/9j/ is a JPEG magic prefix" })],
+      []
+    );
+    if (!shortBody) throw new Error("fixture did not normalize");
+    expect(toEventEnvelope(shortBody, undefined).payload_text).toBe(
+      "/9j/ is a JPEG magic prefix"
+    );
+  });
+
+  it("rejects a PNG or WebP thumbnail body too, not just JPEG", () => {
+    // Only JPEG bodies were observed live, but the guard's contract is "base64
+    // image data is not message text". Assert every prefix it claims to match,
+    // so none of them is untested code.
+    for (const [prefix, kind] of [
+      ["iVBORw0KGgo", "image"],
+      ["UklGR", "sticker"],
+    ] as const) {
+      const [row] = mergeCollectedMessages(
+        [
+          message(`thumb-${prefix}`, {
+            message_type: kind,
+            media_kind: kind,
+            body: `${prefix}${"A".repeat(200)}`,
+            caption: "",
+          }),
+        ],
+        []
+      );
+      if (!row) throw new Error("fixture did not normalize");
+      expect(toEventEnvelope(row, undefined).payload_text).toBe(`[${kind}]`);
+    }
+  });
+
   it("adds direct-inbound attribution only to inbound 1:1 messages", () => {
     const inbound = mergeCollectedMessages([message("new-direct")], [])[0];
     if (!inbound) throw new Error("fixture did not normalize");

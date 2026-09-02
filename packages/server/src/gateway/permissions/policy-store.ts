@@ -175,6 +175,104 @@ export function egressGuardrailsToPolicyBundle(
   };
 }
 
+/**
+ * One judged domain whose judge can never run because an allow grant covers it.
+ *
+ * `checkDomainAccess` (proxy/http-proxy.ts) consults per-agent allow grants
+ * BEFORE the egress judge, so a domain that is both judged and allow-granted
+ * returns `allowed: true, source: "grant"` and its judge policy is dead config.
+ * The request looks permitted for a reason that has nothing to do with the
+ * policy the operator wrote, which is exactly the shape of failure the operator
+ * will not notice: the traffic flows.
+ */
+interface SuppressedJudgedDomain {
+  /** Normalized judged pattern from the guardrail's `domains` selector. */
+  domain: string;
+  /** The guardrail whose judge is suppressed. */
+  judge: string;
+  /** The normalized allow pattern that shadows it. */
+  grant: string;
+}
+
+interface SuppressedJudgedDomainOptions {
+  /**
+   * Whether a `.suffix` allow pattern also covers its root host. The proxy's
+   * global allowlist matcher does (`matchesDomainPattern`); the per-agent
+   * `GrantStore.hasGrant` does not — it expands a hostname into its exact form
+   * plus its wildcard PARENTS, so the root never sees its own wildcard row.
+   * Defaults to grant semantics.
+   */
+  wildcardCoversRoot?: boolean;
+}
+
+/**
+ * Whether an allow pattern reaches any host a judged pattern covers.
+ *
+ * A judged `.suffix` covers the root and every subdomain — {@link findMatchingRule},
+ * which `PolicyStore.resolve` matches with, treats `normalized === suffix` as a
+ * hit. Whether the ALLOW side's wildcard covers the root depends on which
+ * matcher enforces it (see {@link SuppressedJudgedDomainOptions}). Two
+ * wildcards overlap when either suffix sits under the other.
+ */
+function allowReachesJudged(
+  judged: string,
+  allow: string,
+  wildcardCoversRoot: boolean
+): boolean {
+  const judgedWild = judged.startsWith(".");
+  const allowWild = allow.startsWith(".");
+  const j = judgedWild ? judged.slice(1) : judged;
+  const a = allowWild ? allow.slice(1) : allow;
+  const under = (host: string, suffix: string) => host.endsWith(`.${suffix}`);
+  if (!judgedWild && !allowWild) return j === a;
+  if (!judgedWild) return (wildcardCoversRoot && j === a) || under(j, a);
+  if (!allowWild) return a === j || under(a, j);
+  return j === a || under(j, a) || under(a, j);
+}
+
+/**
+ * Find judged domains that an allow list shadows.
+ *
+ * Derives the judged set through {@link egressGuardrailsToPolicyBundle} — the
+ * same builder the runtime uses — so write-time validation and runtime
+ * enforcement cannot disagree about which domains are judged (the enabled /
+ * stage / non-empty-policy filtering and the normalization both come along).
+ *
+ * Reports PARTIAL shadowing too: an exact allow for `example.com` against a
+ * judged `.example.com` leaves the root ungoverned while subdomains stay
+ * judged, and an allow for `api.example.com` under that same judge carves one
+ * host out of it. Each is a narrower hole, but still a hole.
+ */
+export function findSuppressedJudgedDomains(
+  guardrails: AgentInlineGuardrail[],
+  allowedDomains: string[] | undefined,
+  options: SuppressedJudgedDomainOptions = {}
+): SuppressedJudgedDomain[] {
+  const bundle = egressGuardrailsToPolicyBundle(guardrails);
+  if (!bundle) return [];
+
+  const allowPatterns = (allowedDomains ?? [])
+    .filter((d): d is string => typeof d === "string" && d.trim() !== "")
+    .map((d) => normalizeDomainPattern(d));
+  if (allowPatterns.length === 0) return [];
+
+  const wildcardCoversRoot = options.wildcardCoversRoot ?? false;
+  const suppressed: SuppressedJudgedDomain[] = [];
+  for (const rule of bundle.judgedDomains) {
+    const covering = allowPatterns.find((allow) =>
+      allowReachesJudged(rule.domain, allow, wildcardCoversRoot)
+    );
+    if (covering) {
+      suppressed.push({
+        domain: rule.domain,
+        judge: rule.judge ?? "default",
+        grant: covering,
+      });
+    }
+  }
+  return suppressed;
+}
+
 function prepareBundle(
   organizationId: string,
   agentId: string,

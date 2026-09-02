@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentInlineGuardrail } from "@lobu/core";
 import {
   egressGuardrailsToPolicyBundle,
+  findSuppressedJudgedDomains,
   PolicyStore,
 } from "../permissions/policy-store.js";
 
@@ -167,5 +168,156 @@ describe("egressGuardrailsToPolicyBundle", () => {
       guardrail({ name: "default", domains: ["*.Example.COM"] }),
     ]);
     expect(bundle?.judgedDomains[0]?.domain).toBe(".example.com");
+  });
+});
+
+describe("findSuppressedJudgedDomains", () => {
+  const judge = (
+    over: Partial<AgentInlineGuardrail> = {}
+  ): AgentInlineGuardrail =>
+    ({
+      name: "watchdog",
+      stage: "egress",
+      enabled: true,
+      policy: "Allow read-only GETs.",
+      domains: ["example.com"],
+      ...over,
+    }) as AgentInlineGuardrail;
+
+  test("reports an exact judged domain shadowed by an exact grant", () => {
+    const found = findSuppressedJudgedDomains([judge()], ["example.com"]);
+    expect(found).toEqual([
+      { domain: "example.com", judge: "watchdog", grant: "example.com" },
+    ]);
+  });
+
+  test("reports a judged domain shadowed by a WILDCARD grant", () => {
+    // The whole point of reusing the runtime matcher: string equality would
+    // miss this, and the judge would silently never run.
+    const found = findSuppressedJudgedDomains(
+      [judge({ domains: ["api.example.com"] })],
+      ["*.example.com"]
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]?.grant).toBe(".example.com");
+  });
+
+  test("reports PARTIAL shadowing: exact grant against a wildcard judge", () => {
+    // `example.com` itself becomes grant-allowed while subdomains stay judged.
+    // A narrower hole is still a hole.
+    const found = findSuppressedJudgedDomains(
+      [judge({ domains: ["*.example.com"] })],
+      ["example.com"]
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]?.domain).toBe(".example.com");
+  });
+
+  test("reports a grant NARROWER than the judged wildcard — one host carved out", () => {
+    // `api.example.com` is granted, so its judge never runs, while the rest of
+    // `*.example.com` stays judged. Testing only the judged root would miss it.
+    const found = findSuppressedJudgedDomains(
+      [judge({ domains: ["*.example.com"] })],
+      ["api.example.com"]
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0]?.grant).toBe("api.example.com");
+  });
+
+  test("reports two wildcards whose subdomain sets intersect", () => {
+    expect(
+      findSuppressedJudgedDomains(
+        [judge({ domains: ["*.example.com"] })],
+        ["*.api.example.com"]
+      )
+    ).toHaveLength(1);
+    expect(
+      findSuppressedJudgedDomains(
+        [judge({ domains: ["*.api.example.com"] })],
+        ["*.example.com"]
+      )
+    ).toHaveLength(1);
+  });
+
+  test("normalizes both sides, so spelling variants still collide", () => {
+    const found = findSuppressedJudgedDomains(
+      [judge({ domains: [".EXAMPLE.com"] })],
+      ["*.example.com"]
+    );
+    expect(found).toHaveLength(1);
+  });
+
+  // ── negative controls: the guard must not fire on a healthy config ──
+  test("returns [] when the grant names an unrelated domain", () => {
+    expect(findSuppressedJudgedDomains([judge()], ["example.org"])).toEqual([]);
+  });
+
+  test("returns [] when a narrower grant does not cover the judged domain", () => {
+    // Grant is a strict subdomain of the judged host — it cannot shadow it.
+    expect(
+      findSuppressedJudgedDomains([judge()], ["api.example.com"])
+    ).toEqual([]);
+  });
+
+  test("returns [] for an exact judged ROOT beside a wildcard grant of the same suffix", () => {
+    // `GrantStore.hasGrant` expands a host into its wildcard PARENTS only, so a
+    // `*.example.com` grant never covers `example.com` itself — the judge still
+    // runs for the root. Rejecting this would be a false positive.
+    expect(
+      findSuppressedJudgedDomains([judge()], ["*.example.com"])
+    ).toEqual([]);
+  });
+
+  test("wildcardCoversRoot: the GLOBAL allowlist's `.suffix` DOES cover the root", () => {
+    // `matchesDomainPattern` in the proxy treats `.example.com` as matching
+    // `example.com` too, so for WORKER_ALLOWED_DOMAINS the same pair is a hit.
+    expect(
+      findSuppressedJudgedDomains([judge()], ["*.example.com"], {
+        wildcardCoversRoot: true,
+      })
+    ).toHaveLength(1);
+  });
+
+  test("returns [] when there is no allow list at all", () => {
+    expect(findSuppressedJudgedDomains([judge()], [])).toEqual([]);
+    expect(findSuppressedJudgedDomains([judge()], undefined)).toEqual([]);
+  });
+
+  test("ignores a DISABLED guardrail — it has no judge to suppress", () => {
+    expect(
+      findSuppressedJudgedDomains([judge({ enabled: false })], ["example.com"])
+    ).toEqual([]);
+  });
+
+  test("ignores a non-egress guardrail", () => {
+    expect(
+      findSuppressedJudgedDomains(
+        [judge({ stage: "ingress" } as Partial<AgentInlineGuardrail>)],
+        ["example.com"]
+      )
+    ).toEqual([]);
+  });
+
+  test("ignores blank and non-string allow entries", () => {
+    expect(
+      findSuppressedJudgedDomains([judge()], [
+        "",
+        "   ",
+        null as unknown as string,
+      ])
+    ).toEqual([]);
+  });
+
+  test("attributes each hit to the guardrail that owns the domain", () => {
+    const found = findSuppressedJudgedDomains(
+      [
+        judge({ name: "a", domains: ["a.test"] }),
+        judge({ name: "b", domains: ["b.test"] }),
+      ],
+      ["b.test"]
+    );
+    expect(found).toEqual([
+      { domain: "b.test", judge: "b", grant: "b.test" },
+    ]);
   });
 });

@@ -4,7 +4,11 @@
  * All routes are org-scoped via mcpAuth middleware and orgContext.
  */
 
-import { type AuthProfile, isSdkCompat } from "@lobu/core";
+import {
+	type AgentInlineGuardrail,
+	type AuthProfile,
+	isSdkCompat,
+} from "@lobu/core";
 import { SkillsConfigSchema } from "@lobu/core/contracts/agent-settings";
 import {
 	type ManageAutomationsArgs,
@@ -24,6 +28,14 @@ import {
 } from "../gateway/auth/oauth/providers";
 import { buildProviderCatalog } from "../gateway/auth/provider-catalog";
 import { resolveSystemJudgeTarget } from "../gateway/inference/system-judge-target";
+import {
+	egressGuardrailsToPolicyBundle,
+	findSuppressedJudgedDomains,
+} from "../gateway/permissions/policy-store";
+import {
+	isUnrestrictedMode,
+	loadAllowedDomains,
+} from "../gateway/config/network-allowlist";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import { orgBucketAgentId } from "../gateway/auth/settings/user-auth-profile-store";
 import { validateModelRefsAgainstOrg } from "./model-config";
@@ -2008,6 +2020,11 @@ routes.patch("/:agentId/config", async (c) => {
 		);
 	}
 
+	// Read once and reuse: both the judge-model grandfathering below and the
+	// grant-shadowing check after it need the CURRENT settings, because a PATCH
+	// may carry only one of `guardrailsInline` / `networkConfig`.
+	const storedSettings = await configStore.getSettings(agentId);
+
 	// Judge-kind custom guardrails need a model. With no gateway default
 	// (`EGRESS_JUDGE_MODEL` unset), every judge entry must carry its own
 	// `model` — otherwise it would fail closed at runtime with no model to call.
@@ -2055,11 +2072,9 @@ routes.patch("/:agentId/config", async (c) => {
 		// the offending guardrail. Grandfathering the stored value keeps the
 		// repair path open while still refusing to accept a new bad one.
 		const storedModels = new Map<string, string>();
-		const storedInline = (
-			(await configStore.getSettings(agentId)) as {
-				guardrailsInline?: Array<{ name?: string; model?: string }>;
-			} | null
-		)?.guardrailsInline;
+		const storedInline = (storedSettings as {
+			guardrailsInline?: Array<{ name?: string; model?: string }>;
+		} | null)?.guardrailsInline;
 		if (Array.isArray(storedInline)) {
 			for (const g of storedInline) {
 				if (g?.name && typeof g.model === "string") {
@@ -2081,6 +2096,81 @@ routes.patch("/:agentId/config", async (c) => {
 						error_description: `Custom guardrail "${g?.name ?? "(unnamed)"}" names judge model "${model}", which this deployment cannot run: ${resolved.detail}. Use a "<provider>/<model>" ref whose provider has a system key and speaks the OpenAI-compatible protocol.`,
 					},
 					400
+				);
+			}
+		}
+	}
+
+	// An allow grant BEATS the egress judge. `checkDomainAccess` (proxy/
+	// http-proxy.ts) checks per-agent allow grants (step 4) before consulting
+	// the judge (step 5), so a domain that is both judged and allow-granted
+	// returns `source: "grant"` and its judge never runs. That failure is
+	// invisible from the outside — the request succeeds, just for the wrong
+	// reason — so refuse the config instead of saving a control that cannot fire.
+	//
+	// Validate the MERGE, not the patch: a PATCH may carry `guardrailsInline`
+	// alone, `networkConfig` alone, or both, and the hole only exists in the
+	// combination. Only run when the patch actually touches one of them, so an
+	// unrelated edit to an agent that is already in this state still saves (and
+	// so removing either side is always a valid repair).
+	const touchesGuardrails = "guardrailsInline" in (updates as object);
+	const touchesNetwork = "networkConfig" in (updates as object);
+	if (touchesGuardrails || touchesNetwork) {
+		const stored = storedSettings as {
+			guardrailsInline?: AgentInlineGuardrail[];
+			networkConfig?: { allowedDomains?: string[] };
+		} | null;
+		const effectiveGuardrails = touchesGuardrails
+			? ((updates as { guardrailsInline?: AgentInlineGuardrail[] })
+					.guardrailsInline ?? [])
+			: (stored?.guardrailsInline ?? []);
+		const effectiveAllowed = touchesNetwork
+			? ((updates as { networkConfig?: { allowedDomains?: string[] } })
+					.networkConfig?.allowedDomains ?? [])
+			: (stored?.networkConfig?.allowedDomains ?? []);
+
+		const shadowed = findSuppressedJudgedDomains(
+			effectiveGuardrails,
+			effectiveAllowed
+		);
+		if (shadowed[0]) {
+			const { domain, judge, grant } = shadowed[0];
+			return c.json(
+				{
+					error: "guardrail_domain_shadowed_by_grant",
+					error_description: `Guardrail "${judge}" judges "${domain}", but this agent's networkConfig.allowedDomains grants "${grant}", which the proxy matches FIRST — the judge would never run. A judged domain must not be allow-listed: remove "${grant}" from allowedDomains (a judged domain is reachable through its judge, so it needs no grant), or drop "${domain}" from the guardrail.`,
+				},
+				400
+			);
+		}
+
+		// The GLOBAL allowlist shadows judges the same way (`checkDomainAccess`
+		// step 3), but it is `WORKER_ALLOWED_DOMAINS` — operator config the
+		// tenant editing this agent cannot fix. Warn rather than reject, so
+		// the signal reaches whoever can act on it without blocking a save
+		// nobody in this request can make valid. Only consult the allowlist
+		// when there is a judge to shadow: `loadAllowedDomains` logs on every
+		// call in isolation mode.
+		const judgedCount =
+			egressGuardrailsToPolicyBundle(effectiveGuardrails)?.judgedDomains
+				.length ?? 0;
+		if (judgedCount > 0) {
+			const globalAllowed = loadAllowedDomains();
+			const unrestricted = isUnrestrictedMode(globalAllowed);
+			// Unrestricted mode allows every host, so it shadows every judged
+			// domain without any of them appearing in a list to match against.
+			// The global matcher's `.suffix` also covers the root host, unlike a
+			// per-agent grant.
+			if (
+				unrestricted ||
+				findSuppressedJudgedDomains(effectiveGuardrails, globalAllowed, {
+					wildcardCoversRoot: true,
+				}).length > 0
+			) {
+				logger.warn(
+					`[agent-config] agent "${agentId}" has egress judge guardrails whose domains are covered by WORKER_ALLOWED_DOMAINS${
+						unrestricted ? " (unrestricted, '*')" : ""
+					}. The global allowlist is matched before the judge, so those judges will not run.`
 				);
 			}
 		}

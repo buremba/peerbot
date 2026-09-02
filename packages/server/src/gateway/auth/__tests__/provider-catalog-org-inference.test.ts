@@ -668,9 +668,15 @@ describe("ProviderCatalogService.getModelPolicy — not-found / orgless are DENY
 describe("ProviderCatalogService.resolveDispatchModel — provider health", () => {
   afterEach(() => clearRegistry());
 
+  /**
+   * `ageMs` is how long ago the health row was stamped. `listInferenceProviders`
+   * always returns `updatedAt`, and the routing preference expires with it, so
+   * the fixture must carry it or it would not match the producer's shape.
+   */
   function healthRow(
     slug: string,
-    status: "active" | "error"
+    status: "active" | "error",
+    ageMs = 0
   ): InferenceProviderListItem {
     return {
       id: 1,
@@ -681,6 +687,7 @@ describe("ProviderCatalogService.resolveDispatchModel — provider health", () =
       hasCustomUpstream: false,
       status,
       createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: new Date(Date.now() - ageMs).toISOString(),
     } as InferenceProviderListItem;
   }
 
@@ -725,6 +732,51 @@ describe("ProviderCatalogService.resolveDispatchModel — provider health", () =
     const catalog = makeCatalog({
       models: ["qwen/qwen3.8-max", "xai/grok-4"],
       orgRows: [healthRow("qwen", "active"), healthRow("xai", "active")],
+    });
+
+    const r = await catalog.resolveDispatchModel(
+      "agent-1",
+      "org-1",
+      "qwen/qwen3.8-max"
+    );
+
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+
+  test("a STALE error row stops steering, so traffic drifts back and can recover", async () => {
+    // `error` is cleared only by a proxied 2xx for that slug, so if routing
+    // avoided the provider forever nothing would ever clear it and a transient
+    // 429 would exile it permanently. The preference expires instead.
+    registerFakeModule("qwen", "openai", { hasSystemKey: true });
+    registerFakeModule("xai", "openai", { hasSystemKey: true });
+    const catalog = makeCatalog({
+      models: ["qwen/qwen3.8-max", "xai/grok-4"],
+      orgRows: [
+        healthRow("qwen", "error", 60 * 60 * 1000),
+        healthRow("xai", "active"),
+      ],
+    });
+
+    const r = await catalog.resolveDispatchModel(
+      "agent-1",
+      "org-1",
+      "qwen/qwen3.8-max"
+    );
+
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+
+  test("a row with no usable updatedAt degrades to health-blind rather than exiling it", async () => {
+    registerFakeModule("qwen", "openai", { hasSystemKey: true });
+    registerFakeModule("xai", "openai", { hasSystemKey: true });
+    const catalog = makeCatalog({
+      models: ["qwen/qwen3.8-max", "xai/grok-4"],
+      orgRows: [
+        { ...healthRow("qwen", "error"), updatedAt: "not-a-date" },
+        healthRow("xai", "active"),
+      ],
     });
 
     const r = await catalog.resolveDispatchModel(

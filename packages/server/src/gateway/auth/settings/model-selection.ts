@@ -22,11 +22,8 @@ import { isUnresolvedModelRef } from "../model-sentinel.js";
  *     none routable), the model is dropped (undefined) so the run FAILS CLOSED —
  *     it never escalates to an unlisted model.
  *
- * Provider health (when an `isHealthy` predicate is supplied) is a tie-breaker
- * layered on top: among refs that are already routable, a healthy provider is
- * preferred over an unhealthy one, including over an exact-listed request. It
- * never shrinks the candidate set, so an agent whose only provider is unhealthy
- * still runs.
+ * Provider health, when an `isHealthy` predicate is supplied, is a tie-breaker
+ * layered on top (see the parameter doc).
  *
  * Returns the effective model ref, or undefined to run with no model (fail
  * closed / auto-detect for the allow-all case).
@@ -67,9 +64,7 @@ export function enforceModelAllowList(
   const isReplacement = (r: string): boolean =>
     !isUnresolvedModelRef(r) && (isRoutable ? isRoutable(r) : true);
   const replacements = allowedRefs?.filter(isReplacement) ?? [];
-  // Among legal replacements, a healthy provider wins; absent any healthy one we
-  // still take the first legal replacement, so health can never fail a turn that
-  // routability would have allowed.
+  // Among legal replacements, a healthy provider wins.
   const firstHealthyReplacement = isHealthy
     ? replacements.find((r) => isHealthy(r))
     : undefined;
@@ -91,10 +86,7 @@ export function enforceModelAllowList(
     // ref (e.g. requested "xai/grok-4" with xai uncredentialed) would reach the
     // worker and fail at run.
     if (!isRoutable || isRoutable(requestedModel)) {
-      // Routable — but a provider recorded UNHEALTHY yields to a listed healthy
-      // sibling. Only when the list offers no healthy alternate does the
-      // unhealthy pin still run: better a turn that fails at the provider with
-      // its own 429 than one refused on a status column that may be stale.
+      // Routable — but an UNHEALTHY provider yields to a listed healthy sibling.
       if (
         isHealthy &&
         !isHealthy(requestedModel) &&

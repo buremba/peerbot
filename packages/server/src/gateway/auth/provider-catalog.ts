@@ -19,6 +19,37 @@ import { enforceModelAllowList } from "./settings/model-selection.js";
 
 const logger = createLogger("provider-catalog");
 
+/**
+ * How long a recorded `error` row suppresses its provider in dispatch ordering.
+ *
+ * The status is cleared ONLY by a proxied 2xx for that slug
+ * (`recordProviderHealth` → `clearInferenceProviderError`), so if routing simply
+ * stops sending traffic to an unhealthy provider, nothing ever clears it and a
+ * transient 429 would exile the provider permanently. Expiring the preference
+ * lets traffic drift back: the next turn either succeeds (clearing the row) or
+ * fails again (re-stamping `updated_at`, restarting the window). Recovery is
+ * automatic instead of waiting for a settings-page probe.
+ *
+ * Deliberately a fixed window rather than the provider's own `Retry-After`:
+ * that value survives only as prose inside `error_message`, and parsing it back
+ * out would re-encode a formatted string — the exact fragility
+ * `classifyProviderHealthStatus` avoids by keying on status codes alone.
+ */
+const PROVIDER_HEALTH_PREFERENCE_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * True when an `error` row is recent enough to still steer routing. An absent or
+ * unparseable timestamp returns false — losing the preference degrades to the
+ * pre-existing health-blind ordering, whereas trusting it could exile a provider
+ * forever.
+ */
+function isHealthSignalFresh(updatedAt: string | undefined, now: number): boolean {
+  if (!updatedAt) return false;
+  const t = Date.parse(updatedAt);
+  if (Number.isNaN(t)) return false;
+  return now - t < PROVIDER_HEALTH_PREFERENCE_TTL_MS;
+}
+
 /** Auth mechanism a provider supports. */
 export type ProviderAuthType = "oauth" | "device-code" | "api-key";
 
@@ -350,11 +381,9 @@ export class ProviderCatalogService {
     /** Ordered exact allow-list, or null when the agent allows all providers. */
     allowedRefs: string[] | null;
     /**
-     * Org provider slugs currently recorded `error` (quota/credential), taken
-     * from the SAME `inference_providers` read this method already performs to
-     * synthesize org modules. Surfaced so `resolveDispatchModel` can prefer a
-     * healthy sibling without a second query — and so a failing read cannot
-     * introduce a NEW way for dispatch to break: it already fails here.
+     * Org provider slugs recorded `error` within
+     * `PROVIDER_HEALTH_PREFERENCE_TTL_MS`, from the `inference_providers` read
+     * this method already performs — so no extra query and no new failure mode.
      */
     unhealthyProviderSlugs: Set<string>;
   }> {
@@ -496,8 +525,14 @@ export class ProviderCatalogService {
         if (synthesized) modules.push(synthesized);
       }
     }
+    const healthNow = Date.now();
     const unhealthyProviderSlugs = new Set(
-      orgRows.filter((r) => r.status === "error").map((r) => r.slug)
+      orgRows
+        .filter(
+          (r) =>
+            r.status === "error" && isHealthSignalFresh(r.updatedAt, healthNow)
+        )
+        .map((r) => r.slug)
     );
     return { modules, allowedRefs, unhealthyProviderSlugs };
   }
@@ -569,12 +604,6 @@ export class ProviderCatalogService {
         routableCache.set(ref, routable);
       }
     }
-    // Provider HEALTH, as a tie-break among routable refs. A quota-exhausted
-    // provider keeps its key, so `isRoutable` cannot distinguish it from a
-    // working one and the dead head of an ordered `models` list wins every
-    // turn. The slugs come from the `inference_providers` read getModelPolicy
-    // already did, so this adds no query and no new failure mode.
-    //
     // A Lobu model ref is "<provider-slug>/<model>", and OpenRouter-style refs
     // keep their own slug first ("openrouter/openai/gpt-4o"), so the leading
     // segment is the provider — the same prefix `findProviderForModel` falls

@@ -134,6 +134,68 @@ describe("enforceModelAllowList (universal dispatch gate — decision A/B)", () 
     expect(r.replaced).toBe(false);
   });
 
+  test("H1: an EXACT-LISTED ROUTABLE but UNHEALTHY request yields to a listed HEALTHY ref", () => {
+    // The live prod shape (community/crm): models=["qwen/…","xai/grok-4"] with
+    // qwen quota-exhausted (429) and xai active. Both are keyed, so both are
+    // ROUTABLE — routability alone cannot tell them apart, and the run picks
+    // the dead head of the list.
+    const r = enforceModelAllowList(
+      "qwen/qwen3.8-max-preview",
+      ["qwen/qwen3.8-max-preview", "xai/grok-4"],
+      () => true,
+      (ref) => ref === "xai/grok-4",
+    );
+    expect(r.model).toBe("xai/grok-4");
+    expect(r.replaced).toBe(true);
+  });
+
+  test("H2: an UNHEALTHY request with NO healthy listed alternate still passes (never strands)", () => {
+    // Health only ever REORDERS routable candidates. A stale or false-positive
+    // unhealthy row must not be able to fail a turn that would otherwise run —
+    // that is what keeps the health column safe to write best-effort.
+    const r = enforceModelAllowList(
+      "qwen/qwen3.8-max",
+      ["qwen/qwen3.8-max"],
+      () => true,
+      () => false,
+    );
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+
+  test("H3: an out-of-list replacement prefers a HEALTHY ref over an earlier unhealthy one", () => {
+    const r = enforceModelAllowList(
+      "claude/forbidden",
+      ["qwen/qwen3.8-max", "xai/grok-4"],
+      () => true,
+      (ref) => ref === "xai/grok-4",
+    );
+    expect(r.model).toBe("xai/grok-4");
+    expect(r.replaced).toBe(true);
+  });
+
+  test("H4: without a health predicate, routing is unchanged (health-blind)", () => {
+    const r = enforceModelAllowList(
+      "qwen/qwen3.8-max",
+      ["qwen/qwen3.8-max", "xai/grok-4"],
+      () => true,
+    );
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+
+  test("H5: ROUTABILITY still gates — a healthy but UNROUTABLE ref never wins", () => {
+    // qwen healthy-but-uncredentialed, xai routable-but-unhealthy. Only routable
+    // refs are candidates at all, so the unhealthy-but-routable ref must win.
+    const r = enforceModelAllowList(
+      "claude/forbidden",
+      ["qwen/qwen3.8-max", "xai/grok-4"],
+      (ref) => ref === "xai/grok-4",
+      (ref) => ref === "qwen/qwen3.8-max",
+    );
+    expect(r.model).toBe("xai/grok-4");
+  });
+
   test("R5 #2: DENY-ALL (allowedRefs=[]) drops any requested model (fail closed)", () => {
     const r = enforceModelAllowList("openai/gpt-5", []);
     expect(r.model).toBeUndefined();

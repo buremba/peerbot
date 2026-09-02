@@ -653,3 +653,160 @@ describe("ProviderCatalogService.getModelPolicy — not-found / orgless are DENY
     expect(allowedRefs).toBeNull(); // allow-all preserved — NOT collapsed to deny
   });
 });
+
+/**
+ * A quota-exhausted provider keeps its API key, so the routability predicate
+ * (`hasSystemKey() || hasCredentials()`) cannot tell it apart from a working
+ * one. Observed live in prod: an agent listing
+ * ["qwen/… (429)", "xai/grok-4 (active)"] routed every turn to the dead head
+ * even though the ordered `models` list already named the healthy alternate.
+ *
+ * `resolveDispatchModel` therefore prefers a healthy sibling — but only as a
+ * PREFERENCE, since `inference_providers.status` is written best-effort from an
+ * upstream response and may be stale.
+ */
+describe("ProviderCatalogService.resolveDispatchModel — provider health", () => {
+  afterEach(() => clearRegistry());
+
+  /**
+   * `ageMs` is how long ago the health row was stamped. `listInferenceProviders`
+   * always returns `updatedAt`, and the routing preference expires with it, so
+   * the fixture must carry it or it would not match the producer's shape.
+   */
+  function healthRow(
+    slug: string,
+    status: "active" | "error",
+    ageMs = 0
+  ): InferenceProviderListItem {
+    return {
+      id: 1,
+      slug,
+      kind: slug,
+      displayName: slug,
+      capabilities: { text: { model: "m" } },
+      hasCustomUpstream: false,
+      status,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: new Date(Date.now() - ageMs).toISOString(),
+    } as InferenceProviderListItem;
+  }
+
+  test("an exhausted provider yields to the healthy ref the agent already lists", async () => {
+    registerFakeModule("qwen", "openai", { hasSystemKey: true });
+    registerFakeModule("xai", "openai", { hasSystemKey: true });
+    const catalog = makeCatalog({
+      models: ["qwen/qwen3.8-max", "xai/grok-4"],
+      orgRows: [healthRow("qwen", "error"), healthRow("xai", "active")],
+    });
+
+    const r = await catalog.resolveDispatchModel(
+      "agent-1",
+      "org-1",
+      "qwen/qwen3.8-max"
+    );
+
+    expect(r.model).toBe("xai/grok-4");
+    expect(r.replaced).toBe(true);
+  });
+
+  test("an exhausted provider with no healthy alternate still dispatches (never strands)", async () => {
+    registerFakeModule("qwen", "openai", { hasSystemKey: true });
+    const catalog = makeCatalog({
+      models: ["qwen/qwen3.8-max"],
+      orgRows: [healthRow("qwen", "error")],
+    });
+
+    const r = await catalog.resolveDispatchModel(
+      "agent-1",
+      "org-1",
+      "qwen/qwen3.8-max"
+    );
+
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+
+  test("all-active rows leave the requested ref untouched", async () => {
+    registerFakeModule("qwen", "openai", { hasSystemKey: true });
+    registerFakeModule("xai", "openai", { hasSystemKey: true });
+    const catalog = makeCatalog({
+      models: ["qwen/qwen3.8-max", "xai/grok-4"],
+      orgRows: [healthRow("qwen", "active"), healthRow("xai", "active")],
+    });
+
+    const r = await catalog.resolveDispatchModel(
+      "agent-1",
+      "org-1",
+      "qwen/qwen3.8-max"
+    );
+
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+
+  test("a STALE error row stops steering, so traffic drifts back and can recover", async () => {
+    // `error` is cleared only by a proxied 2xx for that slug, so if routing
+    // avoided the provider forever nothing would ever clear it and a transient
+    // 429 would exile it permanently. The preference expires instead.
+    registerFakeModule("qwen", "openai", { hasSystemKey: true });
+    registerFakeModule("xai", "openai", { hasSystemKey: true });
+    const catalog = makeCatalog({
+      models: ["qwen/qwen3.8-max", "xai/grok-4"],
+      orgRows: [
+        healthRow("qwen", "error", 60 * 60 * 1000),
+        healthRow("xai", "active"),
+      ],
+    });
+
+    const r = await catalog.resolveDispatchModel(
+      "agent-1",
+      "org-1",
+      "qwen/qwen3.8-max"
+    );
+
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+
+  test("a row with no usable updatedAt degrades to health-blind rather than exiling it", async () => {
+    registerFakeModule("qwen", "openai", { hasSystemKey: true });
+    registerFakeModule("xai", "openai", { hasSystemKey: true });
+    const catalog = makeCatalog({
+      models: ["qwen/qwen3.8-max", "xai/grok-4"],
+      orgRows: [
+        { ...healthRow("qwen", "error"), updatedAt: "not-a-date" },
+        healthRow("xai", "active"),
+      ],
+    });
+
+    const r = await catalog.resolveDispatchModel(
+      "agent-1",
+      "org-1",
+      "qwen/qwen3.8-max"
+    );
+
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+
+  test("with no org-provider reader at all, dispatch stays health-blind", async () => {
+    // Health is read from the rows getModelPolicy already loads, so there is no
+    // separate health query that could fail on its own. An orgless caller (no
+    // reader injected) simply gets the pre-existing routability-only ordering.
+    registerFakeModule("qwen", "openai", { hasSystemKey: true });
+    registerFakeModule("xai", "openai", { hasSystemKey: true });
+    const catalog = makeCatalog({
+      models: ["qwen/qwen3.8-max", "xai/grok-4"],
+      withOrgReader: false,
+    });
+
+    const r = await catalog.resolveDispatchModel(
+      "agent-1",
+      "org-1",
+      "qwen/qwen3.8-max"
+    );
+
+    expect(r.model).toBe("qwen/qwen3.8-max");
+    expect(r.replaced).toBe(false);
+  });
+});

@@ -19,6 +19,37 @@ import { enforceModelAllowList } from "./settings/model-selection.js";
 
 const logger = createLogger("provider-catalog");
 
+/**
+ * How long a recorded `error` row suppresses its provider in dispatch ordering.
+ *
+ * The status is cleared ONLY by a proxied 2xx for that slug
+ * (`recordProviderHealth` → `clearInferenceProviderError`), so if routing simply
+ * stops sending traffic to an unhealthy provider, nothing ever clears it and a
+ * transient 429 would exile the provider permanently. Expiring the preference
+ * lets traffic drift back: the next turn either succeeds (clearing the row) or
+ * fails again (re-stamping `updated_at`, restarting the window). Recovery is
+ * automatic instead of waiting for a settings-page probe.
+ *
+ * Deliberately a fixed window rather than the provider's own `Retry-After`:
+ * that value survives only as prose inside `error_message`, and parsing it back
+ * out would re-encode a formatted string — the exact fragility
+ * `classifyProviderHealthStatus` avoids by keying on status codes alone.
+ */
+const PROVIDER_HEALTH_PREFERENCE_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * True when an `error` row is recent enough to still steer routing. An absent or
+ * unparseable timestamp returns false — losing the preference degrades to the
+ * pre-existing health-blind ordering, whereas trusting it could exile a provider
+ * forever.
+ */
+function isHealthSignalFresh(updatedAt: string | undefined, now: number): boolean {
+  if (!updatedAt) return false;
+  const t = Date.parse(updatedAt);
+  if (Number.isNaN(t)) return false;
+  return now - t < PROVIDER_HEALTH_PREFERENCE_TTL_MS;
+}
+
 /** Auth mechanism a provider supports. */
 export type ProviderAuthType = "oauth" | "device-code" | "api-key";
 
@@ -349,6 +380,12 @@ export class ProviderCatalogService {
     modules: ModelProviderModule[];
     /** Ordered exact allow-list, or null when the agent allows all providers. */
     allowedRefs: string[] | null;
+    /**
+     * Org provider slugs recorded `error` within
+     * `PROVIDER_HEALTH_PREFERENCE_TTL_MS`, from the `inference_providers` read
+     * this method already performs — so no extra query and no new failure mode.
+     */
+    unhealthyProviderSlugs: Set<string>;
   }> {
     const policy = await resolveAgentModels(
       this.agentSettingsStore,
@@ -361,7 +398,7 @@ export class ProviderCatalogService {
     // modules, so any requested model fails closed. This is the fail-open bug
     // fix — a missing agent must never expose every org/system-key provider.
     if (policy.kind === "not-found") {
-      return { modules: [], allowedRefs: [] };
+      return { modules: [], allowedRefs: [], unhealthyProviderSlugs: new Set() };
     }
 
     const models = policy.kind === "restricted" ? policy.models : [];
@@ -488,7 +525,16 @@ export class ProviderCatalogService {
         if (synthesized) modules.push(synthesized);
       }
     }
-    return { modules, allowedRefs };
+    const healthNow = Date.now();
+    const unhealthyProviderSlugs = new Set(
+      orgRows
+        .filter(
+          (r) =>
+            r.status === "error" && isHealthSignalFresh(r.updatedAt, healthNow)
+        )
+        .map((r) => r.slug)
+    );
+    return { modules, allowedRefs, unhealthyProviderSlugs };
   }
 
   /**
@@ -512,6 +558,12 @@ export class ProviderCatalogService {
    * non-sentinel AND ROUTABLE (its provider module is present and keyed) — not
    * merely the first non-sentinel. Returns `{ model, modules, allowedRefs }`;
    * `model` is undefined when nothing routable qualifies (fail closed).
+   *
+   * Among routable refs, a provider recorded `error` (quota/credential, from
+   * `recordProviderHealth`) LOSES to a healthy sibling in the same list —
+   * including when it is the exact request. This is the only place health
+   * influences routing, and it is a preference: it never shrinks the candidate
+   * set, so an agent whose sole provider is unhealthy still dispatches to it.
    */
   async resolveDispatchModel(
     agentId: string,
@@ -524,10 +576,8 @@ export class ProviderCatalogService {
     modules: ModelProviderModule[];
     allowedRefs: string[] | null;
   }> {
-    const { modules, allowedRefs } = await this.getModelPolicy(
-      agentId,
-      organizationId
-    );
+    const { modules, allowedRefs, unhealthyProviderSlugs } =
+      await this.getModelPolicy(agentId, organizationId);
     // A ref is routable when its (non-sentinel) provider module is present in
     // the policy's modules AND has a system key or stored credentials.
     const routableCache = new Map<string, boolean>();
@@ -554,7 +604,23 @@ export class ProviderCatalogService {
         routableCache.set(ref, routable);
       }
     }
-    const gate = enforceModelAllowList(requestedModel, allowedRefs, isRoutable);
+    // A Lobu model ref is "<provider-slug>/<model>", and OpenRouter-style refs
+    // keep their own slug first ("openrouter/openai/gpt-4o"), so the leading
+    // segment is the provider — the same prefix `findProviderForModel` falls
+    // back to.
+    const isHealthy = (ref: string): boolean => {
+      const slash = ref.indexOf("/");
+      if (slash <= 0) return true;
+      return !unhealthyProviderSlugs.has(ref.slice(0, slash));
+    };
+    const gate = enforceModelAllowList(
+      requestedModel,
+      allowedRefs,
+      isRoutable,
+      // Omitted when nothing is unhealthy so the predicate cannot perturb the
+      // ordering in the common all-healthy case.
+      unhealthyProviderSlugs.size > 0 ? isHealthy : undefined
+    );
     return { ...gate, modules, allowedRefs };
   }
 

@@ -12,10 +12,12 @@ import { AgentErrorCode } from "@lobu/core";
  * The mapping is intentionally narrow. Only statuses that indicate the
  * CREDENTIAL or the ACCOUNT is at fault mark a provider unhealthy — a 400 (bad
  * request) or 404 (unknown model) is the caller's fault and says nothing about
- * provider health. The row is a display signal (see
+ * provider health. The row drives the settings UI and, via
+ * `resolveDispatchModel`, a routing PREFERENCE for a healthy sibling (see
  * `markInferenceProviderUnhealthy`): a false positive would label a healthy
- * provider broken in the settings UI. `undefined` means "this status carries
- * no health signal", which is distinct from healthy.
+ * provider broken and could move a turn onto another model the agent already
+ * lists, but can never strand it. `undefined` means "this status carries no
+ * health signal", which is distinct from healthy.
  *
  * Lives in its own module so it can be unit-tested without dragging in the
  * proxy's database and secret-store dependencies.

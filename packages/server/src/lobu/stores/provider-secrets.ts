@@ -685,12 +685,16 @@ const PROVIDER_ERROR_MESSAGE_LIMIT = 500;
  * credential error, so the settings page can say WHY a workspace's Automations
  * stopped instead of showing a row that still reads `active`.
  *
- * **Observational only.** Nothing in credential resolution or model routing
- * reads `status` — every reference in this file is a SELECT for display — so a
- * missed, stale or duplicated write can never strand a workspace or reroute a
- * turn. That is exactly why the caller treats a failure here as best-effort:
- * this is not durable dispatch/delivery state, and failing a delivered turn to
- * protect a status label would trade a real outcome for a cosmetic one.
+ * **Never a gate.** Credential resolution ignores `status` entirely. Model
+ * routing reads it in exactly one place — `resolveDispatchModel` prefers a
+ * healthy provider over an `error` one among refs the agent already lists and
+ * that are already routable — and only as a PREFERENCE: it cannot shrink the
+ * candidate set, so a missed, stale or duplicated write here can never strand a
+ * workspace or fail a turn that would otherwise have run. At worst it moves a
+ * turn onto a sibling the agent had already listed. That is why the caller
+ * still treats a failure here as best-effort: this is not durable
+ * dispatch/delivery state, and failing a delivered turn to protect a status
+ * label would trade a real outcome for a cosmetic one.
  *
  * `disabled` is an operator decision and is never overwritten.
  */

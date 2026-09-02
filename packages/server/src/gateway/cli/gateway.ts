@@ -10,10 +10,8 @@ import { orgContext } from "../../lobu/stores/org-context.js";
 import { isAllowedCorsOrigin } from "../../utils/cors-origin.js";
 import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
 import {
-  isAutomationRunConversationId,
+  claimPendingTool,
   pairAdminGrant,
-  peekPendingTool,
-  takePendingTool,
 } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
 import { createAuthProfileLabel } from "../auth/settings/auth-profiles-manager.js";
@@ -327,22 +325,21 @@ export function createGatewayApp(
             return { success: false, error: "Invalid decision" };
           }
 
-          // DELETE ... RETURNING atomically claims the pending invocation
-          // so a retry of POST /api/v1/agents/approve (CLI re-tries,
-          // double-clicks, Slack webhook retries) cannot double-execute the
-          // tool. The Slack/Telegram interaction-bridge path uses the same
-          // helper.
-          const preview = await peekPendingTool(requestId);
-          if (isAutomationRunConversationId(preview?.conversationId)) {
+          // One statement claims the pending invocation, so a retry of
+          // POST /api/v1/agents/approve (CLI re-tries, double-clicks, Slack
+          // webhook retries) cannot double-execute the tool. The
+          // Slack/Telegram interaction-bridge path uses the same helper.
+          const claim = await claimPendingTool(requestId);
+          if (!claim.ok) {
             return {
               success: false,
               error:
-                "Headless Automation approvals cannot be resumed interactively; configure standing tool access and retry the Automation",
+                claim.reason === "automation_headless"
+                  ? "Headless Automation approvals cannot be resumed interactively; configure standing tool access and retry the Automation"
+                  : "Request not found or expired",
             };
           }
-          const pending = await takePendingTool(requestId);
-          if (!pending)
-            return { success: false, error: "Request not found or expired" };
+          const pending = claim.invocation;
           if (!pending.organizationId) {
             return {
               success: false,

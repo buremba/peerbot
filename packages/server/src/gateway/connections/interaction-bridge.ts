@@ -22,9 +22,9 @@ import {
 } from "../../notifications/action-card-state.js";
 import { resolveInteractionActionOrigin } from "../../notifications/action-origin.js";
 import {
+	claimPendingTool,
 	pairAdminGrant,
   type PendingToolInvocation,
-	takePendingTool,
 } from "../auth/mcp/pending-tool-store.js";
 import type { DirectToolExecutionOptions } from "../auth/mcp/proxy.js";
 import type {
@@ -143,17 +143,6 @@ function resolveGrantExpiresAt(duration: string): number | null {
     default:
       return null;
   }
-}
-
-/**
- * Atomically fetch and delete the pending invocation. The PG-backed
- * `pending-tool` row uses DELETE ... RETURNING so the first click claims
- * the payload and subsequent webhook retries see null and no-op.
- */
-async function takePendingToolInvocation(
-	requestId: string,
-): Promise<PendingToolInvocation | null> {
-  return takePendingTool(requestId);
 }
 
 function actionEventTeamId(
@@ -1209,16 +1198,17 @@ export function registerActionHandlers(
 
 			if (!requestId) return;
 
-			// GETDEL atomically claims the pending invocation. On Slack retries of
-			// the same block_actions webhook the second GETDEL returns null and we
+			// One statement claims the pending invocation. On Slack retries of the
+			// same block_actions webhook the second claim finds nothing and we
 			// silently no-op (the first click already won). But if the card was
 			// never claimed before — i.e. the in-memory approval card is still
 			// tracked — this is a real first click landing on an expired/missing
-			// pending key, and we MUST surface that to the user. Otherwise the
+			// pending row, and we MUST surface that to the user. Otherwise the
 			// click looks like it did nothing.
-			const pending = await takePendingToolInvocation(requestId).catch(
-				() => null,
-      );
+			const claim = await claimPendingTool(requestId).catch(() => null);
+			const pending: PendingToolInvocation | null = claim?.ok
+				? claim.invocation
+				: null;
       if (!pending) {
         const sent = claimApprovalCard?.(requestId);
         if (sent) {

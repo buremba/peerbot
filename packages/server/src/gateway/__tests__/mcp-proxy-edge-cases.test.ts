@@ -28,7 +28,7 @@ import {
   verifyWorkerToken,
 } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
+import { claimPendingTool } from "../auth/mcp/pending-tool-store.js";
 import type { DirectToolExecutionOptions } from "../auth/mcp/proxy.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { buildSessionKey, computeScopeKey } from "../auth/mcp/proxy-shared.js";
@@ -621,19 +621,22 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
 
     expect(response.status).toBe(403);
     expect(requestId).toStartWith("ta_");
-    expect(await takePendingTool(requestId)).toMatchObject({
-      userId: "U_SLACK",
-      agentId: "agent1",
-      organizationId: "test-org",
-      conversationId: "slack:dm:123",
-      channelId: "slack:D123",
-      teamId: "T123",
-      connectionId: "432",
-      platform: "slack",
-      source: "chat",
-      adminTools: ["run_sdk"],
-      adminActorUserId: "auth-user-1",
-      deploymentName: "lobu-builder",
+    expect(await claimPendingTool(requestId)).toMatchObject({
+      ok: true,
+      invocation: {
+        userId: "U_SLACK",
+        agentId: "agent1",
+        organizationId: "test-org",
+        conversationId: "slack:dm:123",
+        channelId: "slack:D123",
+        teamId: "T123",
+        connectionId: "432",
+        platform: "slack",
+        source: "chat",
+        adminTools: ["run_sdk"],
+        adminActorUserId: "auth-user-1",
+        deploymentName: "lobu-builder",
+      },
     });
   });
 

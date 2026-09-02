@@ -82,7 +82,7 @@ export async function storePendingTool(
  * conversation. The live `tool-approval` SSE card is one-shot, so without this
  * a pending approval vanishes from the web UI on reload. The SPA fetches this
  * on load and replays open approvals as approval cards; resolution stays
- * claim-and-delete via `takePendingTool`, so a row surfaced here disappears the
+ * claim-and-delete via `claimPendingTool`, so a row surfaced here disappears the
  * moment the user approves/denies and never replays.
  *
  * `organizationId` is REQUIRED — it MUST be the caller's AUTHORIZED org
@@ -115,61 +115,78 @@ export async function listPendingToolsForConversation(
  * The conversation-id shape a headless Automation run uses
  * (`<agent>_automation_<id>_run_<id>`).
  *
- * Written as a POSIX class rather than `\d` so the one string is valid for
- * both Postgres's regex operator below and the JS predicate beside it — the
- * interactive-approval guard in cli/gateway.ts has to refuse exactly the rows
- * this DELETE refuses, and two hand-written copies would drift.
+ * A POSIX class rather than `\d` because Postgres's regex operator is the only
+ * thing that reads it: the claim below both refuses these rows and reports the
+ * refusal from one snapshot, so there is no second, hand-written JS copy left
+ * to drift out of step with it.
  */
 const AUTOMATION_RUN_CONVERSATION_PATTERN = "_automation_[0-9]+_run_[0-9]+$";
 
-/** Is this conversation id a headless Automation run's? */
-export function isAutomationRunConversationId(
-  conversationId: string | null | undefined,
-): boolean {
-  return new RegExp(AUTOMATION_RUN_CONVERSATION_PATTERN).test(
-    conversationId ?? "",
-  );
-}
+/**
+ * The outcome of trying to claim a pending tool invocation.
+ *
+ * A refusal is discriminated rather than described so the caller that renders
+ * it owns the wording, and this module stays free of user-facing copy.
+ */
+export type PendingToolClaim =
+  | { ok: true; invocation: PendingToolInvocation }
+  | { ok: false; reason: "missing" | "automation_headless" };
 
 /**
- * Atomically fetch and delete a pending tool invocation. Used by the
- * interaction bridge / CLI approve handler to claim the row exactly
- * once — Slack/Telegram webhook retries that arrive after the first
- * click see null and no-op.
+ * Atomically claim a pending tool invocation, or say why it cannot be claimed.
+ *
+ * Used by the interaction bridge / CLI approve handler to claim the row exactly
+ * once -- Slack/Telegram webhook retries arriving after the first click get
+ * `missing` and no-op.
+ *
+ * One statement, not a read followed by a delete. The DELETE already refuses a
+ * headless Automation row, so the peek that used to precede it existed only to
+ * restate that same predicate as a JS regex in order to choose the error text.
+ * Deciding the disposition alongside the DELETE keeps the rule in one place and
+ * one round trip; a claimable row that comes back with no payload was simply
+ * won by a concurrent caller, which is `missing`.
  */
-export async function takePendingTool(
-	requestId: string,
-): Promise<PendingToolInvocation | null> {
-  const sql = getDb();
-  const rows = await sql`
-    DELETE FROM oauth_states
-    WHERE id = ${requestId}
-      AND scope = ${SCOPE}
-      AND expires_at > now()
-      AND COALESCE(payload->>'conversationId', '') !~ ${AUTOMATION_RUN_CONVERSATION_PATTERN}
-    RETURNING payload
-  `;
-  if (rows.length === 0) return null;
-	const payload = (rows[0] as { payload: PendingToolInvocation }).payload;
-	return payload ? withPairedAdminGrant(payload) : null;
-}
-
-/** Read-only lookup used to explain why a headless approval cannot be claimed. */
-export async function peekPendingTool(
+export async function claimPendingTool(
   requestId: string,
-): Promise<PendingToolInvocation | null> {
+): Promise<PendingToolClaim> {
   const sql = getDb();
   const rows = await sql`
-    SELECT payload
-    FROM oauth_states
-    WHERE id = ${requestId}
-      AND scope = ${SCOPE}
-      AND expires_at > now()
-    LIMIT 1
+    WITH candidate AS (
+      SELECT id, payload
+      FROM oauth_states
+      WHERE id = ${requestId}
+        AND scope = ${SCOPE}
+        AND expires_at > now()
+    ), claimed AS (
+      DELETE FROM oauth_states
+      USING candidate
+      WHERE oauth_states.id = candidate.id
+        AND COALESCE(candidate.payload->>'conversationId', '')
+            !~ ${AUTOMATION_RUN_CONVERSATION_PATTERN}
+      RETURNING oauth_states.payload
+    )
+    SELECT
+      (SELECT payload FROM claimed) AS claimed_payload,
+      CASE
+        WHEN COALESCE(candidate.payload->>'conversationId', '')
+             ~ ${AUTOMATION_RUN_CONVERSATION_PATTERN}
+        THEN 'automation_headless'
+        ELSE 'claimable'
+      END AS disposition
+    FROM candidate
   `;
-  if (rows.length === 0) return null;
-  const payload = (rows[0] as { payload: PendingToolInvocation }).payload;
-  return payload ? withPairedAdminGrant(payload) : null;
+  const row = rows[0] as
+    | {
+        claimed_payload: PendingToolInvocation | null;
+        disposition: "automation_headless" | "claimable";
+      }
+    | undefined;
+  if (!row) return { ok: false, reason: "missing" };
+  if (row.disposition === "automation_headless") {
+    return { ok: false, reason: "automation_headless" };
+  }
+  if (!row.claimed_payload) return { ok: false, reason: "missing" };
+  return { ok: true, invocation: withPairedAdminGrant(row.claimed_payload) };
 }
 
 /** Active tool approvals belonging to this Automation run's agent session. */

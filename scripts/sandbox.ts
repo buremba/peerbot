@@ -782,6 +782,10 @@ async function claimSeat(sandbox: Sandbox, root: string): Promise<ClaimedSeat> {
     created_at: new Date().toISOString(),
   };
   await writeSeat(sandbox, seat);
+  // codeql[js/clear-text-logging]: printing the generated seat password once to
+  // the operator's own terminal is the point — it is the only moment the value
+  // is shown, it was minted here rather than taken from a store, and the same
+  // value is written to SEAT_FILE inside the developer's own sandbox anyway.
   console.log(`\n  seat:  ${email} / ${password}`);
   console.log(`         (shown once; kept in the sandbox at ${SEAT_FILE})`);
   return { seat, sessionToken: await signIn(sandbox, seat) };

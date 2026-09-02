@@ -495,6 +495,38 @@ describe("media", () => {
    * catch a cap shorter than the delay chosen. Guard the shape instead — no
    * timer may race a dispatch, whatever its constant.
    */
+  it("still matches the child-runner timeout message it depends on", () => {
+    // `whatsapp_web.ts` decides "retryable" vs "this media is gone" by matching
+    // the dispatch backstop's free-text message, which is produced in another
+    // package. Nothing links the two, so a reword there would silently
+    // downgrade every timed-out media item to `unavailable` — permanently
+    // gone, never retried — with all tests still green. Pin the substrings the
+    // connector actually greps for; if this fails, fix the matcher, not this.
+    const producer = readFileSync(
+      new URL(
+        "../../../connector-worker/src/executor/child-runner.ts",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const consumer = readFileSync(
+      new URL("../whatsapp_web.ts", import.meta.url),
+      "utf8",
+    );
+    const matched = [...consumer.matchAll(/text\.includes\("([^"]+)"\)/g)].map(
+      (m) => m[1],
+    );
+    expect(matched).toContain("IPC may be wedged");
+    // Every marker the connector greps for must exist in the producer, except
+    // "timed out", which is the generic phrasing several sources emit.
+    for (const marker of matched.filter((m) => m !== "timed out")) {
+      expect(
+        producer.includes(marker),
+        `child-runner.ts no longer emits "${marker}"; whatsapp_web.ts would downgrade a retryable timeout to unavailable`,
+      ).toBe(true);
+    }
+  });
+
   it("never races an uncancellable dispatch against a local timer", () => {
     const source = readFileSync(
       new URL("../whatsapp_web.ts", import.meta.url),

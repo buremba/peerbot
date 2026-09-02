@@ -38,6 +38,56 @@ export function isChromeNamespaceConnectorKey(connectorKey: string): boolean {
   return connectorKey === 'chrome' || connectorKey.startsWith('chrome.');
 }
 
+/** Every `chrome.*` artifact identity the extension serves natively. */
+const DEVICE_MANIFEST_SOURCE_PREFIX = 'device-manifest://chrome-extension/';
+
+/**
+ * The reserved `chrome.*` namespace declares "the Owletto extension implements
+ * this natively", and {@link isNativeChromeExtensionConnector} short-circuits
+ * on it. A key installed there with supplied code is therefore unreachable in
+ * both directions: the gateway withholds `compiled_code` from a native
+ * connector, and the extension has no handler for a key it does not implement,
+ * so every run dies with
+ *
+ *   Owletto for Chrome: unknown dispatch (connector='chrome.whatsapp', ...)
+ *
+ * Reject it at install instead of at first run. A connector that needs its own
+ * code delivered belongs on an ordinary key with a `chrome-extension` platform
+ * pin, which routes it through {@link isDelegatedBrowserAffinityConnector}.
+ *
+ * The admit test is EXACT identity, not a prefix, and it independently requires
+ * that no code was supplied. `resolveConnectorInstallSource` derives a
+ * `source_url` install's path as `url.pathname.replace(/^\//, '')`, so a URL
+ * whose pathname is `/device-manifest://chrome-extension/chrome.x` yields a
+ * sourcePath that satisfies any prefix test — while the same install compiles
+ * the caller's own source. Matching {@link isNativeChromeExtensionConnector}'s
+ * exact `<prefix><key>@<version>` form closes that, and the code check makes
+ * the guard state the real invariant rather than a proxy for it: a device
+ * manifest carries an identity, never a payload.
+ */
+export function assertChromeNamespaceInstallIsDeviceManifest(facts: {
+  connectorKey: string;
+  connectorVersion: string;
+  sourcePath: string | null | undefined;
+  compiledCode?: string | null;
+  sourceCode?: string | null;
+}): void {
+  if (!isChromeNamespaceConnectorKey(facts.connectorKey)) return;
+  const carriesCode =
+    (facts.compiledCode?.length ?? 0) > 0 || (facts.sourceCode?.length ?? 0) > 0;
+  const isDeviceManifestIdentity =
+    facts.sourcePath ===
+    `${DEVICE_MANIFEST_SOURCE_PREFIX}${facts.connectorKey}@${facts.connectorVersion}`;
+  if (isDeviceManifestIdentity && !carriesCode) return;
+  throw new Error(
+    `Connector key '${facts.connectorKey}' is in the reserved 'chrome.*' namespace, which is ` +
+      'only installable from an Owletto device manifest. A connector that ships its own code ' +
+      'cannot live there: the gateway withholds the bundle from a native connector and the ' +
+      'extension cannot dispatch a key it does not implement. Use a key outside the namespace ' +
+      'and pin the connection to a chrome-extension device for browser access.'
+  );
+}
+
 export function isLegacyNonManifestConnector(facts: {
   connectorKey: string;
   manifestBacked: boolean;
@@ -66,7 +116,7 @@ export function isNativeChromeExtensionConnector(facts: ConnectorExecutionSource
   return (
     facts.manifestBacked &&
     facts.artifactSourcePath ===
-      `device-manifest://chrome-extension/${facts.connectorKey}@${facts.connectorVersion}`
+      `${DEVICE_MANIFEST_SOURCE_PREFIX}${facts.connectorKey}@${facts.connectorVersion}`
   );
 }
 
@@ -98,6 +148,10 @@ export function nativeChromeExtensionConnectorSql<TFragment>(
         )
         AND COALESCE(${refs.manifestBacked}, false)
         AND ${refs.artifactSourcePath} =
+          -- Deliberately a literal, not the DEVICE_MANIFEST_SOURCE_PREFIX constant:
+          -- interpolating here would bind a PARAMETER rather than emit SQL text, and
+          -- concatenating an untyped parameter can fail Postgres type inference. Keep
+          -- it in step with the constant by hand; both sit in this file.
           'device-manifest://chrome-extension/' || ${refs.connectorKey} || '@' || ${refs.connectorVersion}
       )
     )

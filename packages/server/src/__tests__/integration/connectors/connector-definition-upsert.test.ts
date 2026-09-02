@@ -117,6 +117,52 @@ describe('upsertConnectorDefinitionRecords', () => {
     ]);
   });
 
+  it('rejects a reserved chrome.* key at the shared writer, and admits its device manifest', async () => {
+    // The guard lives in the shared definition writer rather than on the
+    // compile path, because a device-manifest install skips compilation
+    // entirely. This exercises that wiring — the pure helper's own unit tests
+    // cover the decision, but only this proves the writer actually consults it.
+    const sql = getTestDb();
+    const chromeMetadata: ConnectorMetadata = {
+      ...metadataFor('1.0.0'),
+      key: 'chrome.probe',
+    };
+
+    await expect(
+      upsertConnectorDefinitionRecords({
+        sql,
+        organizationId: orgId,
+        metadata: chromeMetadata,
+        // Ordinary compiled install: exactly what cannot live on a chrome.* key.
+        versionRecord: versionRecordFor('1.0.0'),
+        versionScope: 'organization',
+      })
+    ).rejects.toThrow(/reserved 'chrome\.\*' namespace/);
+
+    // Nothing was persisted — the guard runs before any definition or version
+    // row can become active.
+    const rejected = await sql<{ count: string }[]>`
+      SELECT COUNT(*)::text AS count FROM connector_definitions WHERE key = 'chrome.probe'
+    `;
+    expect(rejected[0]?.count).toBe('0');
+
+    // The legitimate path still works: an identity, no payload.
+    const admitted = await upsertConnectorDefinitionRecords({
+      sql,
+      organizationId: orgId,
+      metadata: chromeMetadata,
+      versionRecord: {
+        compiledCode: null,
+        compiledCodeHash: 'manifest-hash-chrome-probe',
+        compileConfigHash: null,
+        sourceCode: null,
+        sourcePath: 'device-manifest://chrome-extension/chrome.probe@1.0.0',
+      },
+      versionScope: 'organization',
+    });
+    expect(admitted.updated).toBe(false);
+  });
+
   it('replaces compiled provenance atomically with a device-manifest artifact', async () => {
     const sql = getTestDb();
     const version = '2.0.0';

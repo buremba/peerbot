@@ -31,7 +31,16 @@ vi.mock("@sentry/node", () => ({
 
 // --- heavy collaborators of createServerLifecycle, replaced so the spine
 // --- boots in-process against a real ephemeral HTTP server.
-vi.mock("../db/client", () => ({ closeDbSingleton: vi.fn(async () => {}) }));
+// Spread the real module: this mock leaks into other files sharing the worker,
+// and a hand-listed shape silently drops any export db/client later gains —
+// which surfaces far away as `No "<export>" export is defined on the mock`
+// inside whichever module happens to load under it. db/client has no
+// import-time side effects (the pool is created lazily by getDb), so keeping
+// the real exports costs nothing.
+vi.mock("../db/client", async (importOriginal) => ({
+	...((await importOriginal()) as Record<string, unknown>),
+	closeDbSingleton: vi.fn(async () => {}),
+}));
 vi.mock("../dev-vite", () => ({ mountViteDev: vi.fn(async () => null) }));
 vi.mock("../workspace", () => ({
 	initWorkspaceProvider: vi.fn(async () => undefined),

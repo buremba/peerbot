@@ -27,7 +27,11 @@ describe("resolvePinnedSelection — fail closed on total DB failure", () => {
     vi.resetModules();
     // The agents/sandboxes lookup RESOLVES (sbx-b, a repointed provider sandbox),
     // but every conversations query THROWS — codex's exact repro.
-    vi.doMock("../../../db/client.js", () => ({
+    // Spread the real module: vi.doMock is not hoisted or file-scoped, so a
+    // hand-listed shape leaks into later files in the same vitest worker and
+    // surfaces there as `No "<export>" export is defined on the mock`.
+    vi.doMock("../../../db/client.js", async (importOriginal) => ({
+      ...((await importOriginal()) as Record<string, unknown>),
       getDb: () => (strings: TemplateStringsArray, ..._v: unknown[]) => {
         const q = strings.join(" ");
         if (q.includes("FROM agents")) {

@@ -38,6 +38,7 @@ function buildRunWorkerAccess(args: {
 				platform: "api",
 				runId: args.runId,
 				automationRunId: args.automationRunId,
+				executionMode: args.executionMode,
 				source: args.source,
 				sessionKey: args.userId,
 			},

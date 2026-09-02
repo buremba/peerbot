@@ -411,7 +411,13 @@ async function prepareScheduledSourceFingerprint(params: {
 	const windowEnd = new Date(params.payload.window_end);
 	try {
 		return await params.sql.begin(async (tx) => {
-		await tx`SET LOCAL statement_timeout = '240s'`;
+		// Prod runs with no server-side statement_timeout, and the FOR UPDATE
+		// below is the same automations row every terminalization path locks —
+		// one wedged statement here would stall completion for the whole
+		// Automation. This bounds only statements on THIS transaction (a keyed
+		// SELECT, source normalization, two keyed UPDATEs); the source scan runs
+		// on getSourceReadDb() and carries its own per-query timeout.
+		await tx`SET LOCAL statement_timeout = '30s'`;
 		await tx`
 			SELECT id FROM automations
 			WHERE id = ${params.automation.id}

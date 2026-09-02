@@ -28,7 +28,12 @@ import {
 } from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import { intervals } from "../../../config/intervals.js";
-import { getDb, getDbListener, type DbClient } from "../../../db/client.js";
+import {
+	getDb,
+	getDbListener,
+	pgTextArray,
+	type DbClient,
+} from "../../../db/client.js";
 import { incrementCounter } from "../../metrics/prometheus.js";
 import { failAutomationParentRunFromQueue } from "../../../automations/run-completion.js";
 import { AUTOMATION_RUN_TYPES_PG } from "../../../runs/run-types.js";
@@ -1169,22 +1174,23 @@ export class RunsQueue implements IMessageQueue {
     `;
   }
 
-  /** Release all exact owners issued by this process, never another worker's. */
+  /**
+   * Release all exact owners issued by this process, never another worker's.
+   * One statement over the whole owner set: a long-lived gateway accumulates an
+   * owner per worker generation, and shutdown is not the place to run a query
+   * per restart the process happened to survive.
+   */
   private async releaseAllClaims(): Promise<number> {
-    const sql = getDb();
-    let released = 0;
-    for (const claimOwner of this.claimOwners) {
-      const result = await sql`
-        UPDATE public.runs
-        SET status = 'pending',
-            claimed_at = NULL,
-            claimed_by = NULL
-        WHERE status = 'claimed'
-          AND claimed_by = ${claimOwner}
-      `;
-      released += result.count;
-    }
-    return released;
+    if (this.claimOwners.size === 0) return 0;
+    const result = await getDb()`
+      UPDATE public.runs
+      SET status = 'pending',
+          claimed_at = NULL,
+          claimed_by = NULL
+      WHERE status = 'claimed'
+        AND claimed_by = ANY(${pgTextArray([...this.claimOwners])}::text[])
+    `;
+    return result.count;
   }
 
   /**

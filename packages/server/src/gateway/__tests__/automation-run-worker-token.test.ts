@@ -38,10 +38,41 @@ describe("Automation run WorkerToken parity", () => {
     expect(claims.organizationId).toBe("org-team");
     expect(claims.conversationId).toBe(access.conversationId);
     expect(claims.runId).toBe(456);
-		expect(claims.automationRunId).toBe(456);
+    expect(claims.automationRunId).toBe(456);
     expect(claims.channelId).toBe("api_automation_120");
     expect(claims.platform).toBe("api");
     expect(claims.source).toBe(AUTOMATION_RUN_SOURCE);
+  });
+
+  // A device-polled eval replay is minted here, and `executionMode: 'capture'`
+  // is the only thing that tells run_sdk and complete_window to record the turn
+  // instead of letting it touch the outside world. Dropping the claim between
+  // the caller and the token silently turns a replay into a live run.
+  test("signs the capture execution mode an eval replay depends on", () => {
+    const access = buildAutomationRunWorkerAccess({
+      agentId: "developer",
+      automationId: 120,
+      runId: 456,
+      organizationId: "org-team",
+      executionMode: "capture",
+    });
+    const claims = verifyWorkerToken(access.token);
+    expect(claims).not.toBeNull();
+    if (!claims) throw new Error("worker token did not verify");
+    expect(claims.executionMode).toBe("capture");
+  });
+
+  test("leaves executionMode unset for an ordinary live run", () => {
+    const access = buildAutomationRunWorkerAccess({
+      agentId: "developer",
+      automationId: 120,
+      runId: 456,
+      organizationId: "org-team",
+    });
+    const claims = verifyWorkerToken(access.token);
+    expect(claims).not.toBeNull();
+    if (!claims) throw new Error("worker token did not verify");
+    expect(claims.executionMode).toBeUndefined();
   });
 
   test("rejects a non-canonical conversation id", () => {

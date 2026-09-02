@@ -1521,7 +1521,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             automationId: row.automation_id,
             runId: row.run_id,
             organizationId: row.organization_id,
-			executionMode: executionModeForRunType(row.run_type),
+            executionMode: executionModeForRunType(row.run_type),
           });
           // Hand back the run's own ACP checkpoint only to the device that
           // wrote it, and only while the run still resolves to the same agent

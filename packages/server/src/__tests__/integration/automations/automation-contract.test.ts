@@ -451,6 +451,87 @@ describe("automation contract", () => {
 		expect(automation.schedule_auto_paused_at).toBeNull();
 	});
 
+	// The other half of the manual-open lifecycle, and the half that decides
+	// whether the release above is worth anything. The dispatcher hands the row
+	// back as `pending` -- NOT `running` -- so complete_window has to accept a
+	// pending run, or a manual-open Automation can be released and then never
+	// finished by anybody. Chained deliberately: release and completion were each
+	// covered alone, which is exactly how a row that is released into a state no
+	// client can act on stays green in tests and stuck in production.
+	it("completes a manual-open run released by its source preflight", async () => {
+		const { sql, dbClient, workspace, api, entityId, automationId } =
+			await createAutomatedAutomation();
+
+		await createTestEvent({
+			entity_id: entityId,
+			organization_id: workspace.org.id,
+			content: "Something a manual-open client should summarize.",
+			occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+		});
+
+		const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
+		const { windowStart, windowEnd } = await computePendingWindow(
+			dbClient,
+			automationId,
+			granularity
+		);
+		// No agent and no device pin: manual-open.
+		const queued = await createAutomationRun({
+			organizationId: workspace.org.id,
+			automationId,
+			windowStart: windowStart.toISOString(),
+			windowEnd: windowEnd.toISOString(),
+			dispatchSource: "scheduled",
+			sourcePreflightPending: true,
+		});
+
+		const dispatched = await dispatchPendingAutomationRuns({
+			db: dbClient,
+			runIds: [queued.runId],
+		});
+		expect(dispatched.requeued).toBe(1);
+		const [released] = await sql`
+			SELECT status FROM runs WHERE id = ${queued.runId}
+		`;
+		expect(String(released.status)).toBe("pending");
+
+		// The token must be RUN-BOUND. An automation-only read is refused by
+		// complete_window, which is right: a manual-open run is claimed by nobody,
+		// so the token is the only thing tying a completion to one specific run.
+		const content = (await handleAutomationMode(
+			{ automation_id: automationId, run_id: queued.runId },
+			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
+			dbClient,
+			{ organizationId: workspace.org.id, userId: null }
+		)) as { window_token: string };
+
+		const completion = (await api.automations.completeWindow({
+			automation_id: String(automationId),
+			run_id: queued.runId,
+			window_token: content.window_token,
+			extracted_data: { summary: "finished by a manual-open client" },
+		})) as { action: string; run_id: number };
+
+		expect(completion.action).toBe("complete_window");
+		expect(completion.run_id).toBe(queued.runId);
+		const [run] = await sql`
+			SELECT status, action_output FROM runs WHERE id = ${queued.runId}
+		`;
+		expect(String(run.status)).toBe("completed");
+		expect(run.action_output).toEqual({
+			summary: "finished by a manual-open client",
+		});
+
+		// A completed manual-open run must not have cost the Automation any of its
+		// scheduled-failure budget along the way.
+		const [after] = await sql`
+			SELECT consecutive_scheduled_failures, schedule_auto_paused_at
+			FROM automations WHERE id = ${automationId}
+		`;
+		expect(Number(after.consecutive_scheduled_failures)).toBe(0);
+		expect(after.schedule_auto_paused_at).toBeNull();
+	});
+
 	// completeAutomationRun answers an approval-blocked run from three separate
 	// gates -- the completion event, the server-side approval re-check, and the
 	// device-held nudge -- and they now share one reply builder. A worker

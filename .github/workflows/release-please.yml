@@ -150,7 +150,6 @@ jobs:
           [ "$current_sha" = "$ATTESTED_SHA" ] || { echo "::error::main advanced after attestation"; exit 1; }
 
       - name: Run Release Please against main
-        id: release
         uses: googleapis/release-please-action@v5
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
@@ -159,18 +158,6 @@ jobs:
           include-component-in-tag: true
           target-branch: main
           skip-github-release: true
-
-      - name: Verify emitted release SHA
-        if: steps.release.outputs.release_created == 'true'
-        env:
-          ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
-          RELEASE_SHA: ${{ steps.release.outputs.sha }}
-        run: |
-          set -euo pipefail
-          [ -n "$RELEASE_SHA" ] && [ "$RELEASE_SHA" = "$ATTESTED_SHA" ] || {
-            echo "::error::Release Please emitted a release for an unexpected SHA"
-            exit 1
-          }
 
       # release-please only opens the version-bump PR; the release itself is
       # created here so it is bound to the exact commit that was attested
@@ -219,7 +206,7 @@ jobs:
             exit 0
           fi
 
-          notes=$(git show "$ATTESTED_SHA:CHANGELOG.md")
+          notes=$(git show "$ATTESTED_SHA:CHANGELOG.md" || echo "")
           notes=${notes:0:12000}
           if ! gh api "repos/${REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
             gh api --method POST "repos/${REPOSITORY}/git/refs" \

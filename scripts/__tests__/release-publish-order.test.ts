@@ -193,9 +193,11 @@ describe("release provenance workflow structure", () => {
       "Recheck current main immediately before release action"
     );
     expect(write).toContain("target-branch: main");
-    expect(write).toContain("release_created");
-    expect(write).toContain("RELEASE_SHA");
     expect(write).toContain("skip-github-release: true");
+    // skip-github-release keeps release_created permanently false, and the
+    // step below re-verifies the binding by peeling the tag, so a
+    // release_created guard here would be dead and redundant at once.
+    expect(write).not.toContain("release_created");
     expect(write).toContain("Publish only a real immutable manifest bump");
     expect(write).toContain("release-provenance.mjs manifest-bump");
     expect(write).toContain("release-provenance.mjs verify-release");
@@ -216,6 +218,8 @@ describe("release provenance workflow structure", () => {
     // pipefail and kills the release step before it creates anything.
     expect(write).not.toContain("head -c");
     expect(write).toContain("notes=${notes:0:12000}");
+    // A commit with no CHANGELOG.md costs the release body, not the release.
+    expect(write).toContain('CHANGELOG.md" || echo ""');
   });
 
   it("separates manual image builds and guards before any checkout", () => {
@@ -244,15 +248,17 @@ describe("release provenance workflow structure", () => {
     expect(trigger).toContain("--ref main");
     expect(trigger).not.toContain('--ref "$RELEASE_TAG"');
     expect(trigger).toContain('-f release_tag="$RELEASE_TAG"');
-    expect(trigger).toContain("-f bump=skip");
     expect(trigger).toContain('-f image_run_id="$GITHUB_RUN_ID"');
+    expect(trigger).not.toContain("bump");
   });
 
   it("requires release and producer identifiers and removes fallback and bumps", () => {
     const publish = uncommented(read("publish-packages.yml"));
     expect(publish).toMatch(/release_tag:[\s\S]*required: true/);
     expect(publish).toMatch(/image_run_id:[\s\S]*required: true/);
-    expect(publish).toContain('BUMP" = skip');
+    // `skip` was the only accepted value, so the input was dead surface.
+    expect(publish).not.toContain("BUMP");
+    expect(uncommented(read("build-images.yml"))).not.toContain("-f bump=skip");
     expect(publish).not.toContain("workflow_runs[0]");
     expect(publish).not.toContain('node scripts/publish-packages.mjs "$BUMP"');
     expect(publish).toContain("--skip-bump");
@@ -292,6 +298,7 @@ describe("release provenance workflow structure", () => {
     expect(guard).toContain('"$WORKFLOW_REF" = refs/heads/main');
     expect(guard).not.toContain("git/ref/heads/main");
     expect(guard).not.toContain("DISPATCH_SHA");
+    expect(guard).not.toContain("GH_TOKEN");
   });
 
   it("keeps credentials out of the read-only gate and checks out the attested SHA", () => {

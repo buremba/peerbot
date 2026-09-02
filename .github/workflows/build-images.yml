@@ -342,7 +342,6 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --ref main \
             -f release_tag="$RELEASE_TAG" \
-            -f bump=skip \
             -f image_run_id="$GITHUB_RUN_ID"
 
   build-worker:

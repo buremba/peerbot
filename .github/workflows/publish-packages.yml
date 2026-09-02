@@ -11,11 +11,6 @@ on:
         description: "Exact Build and Push Images release run"
         required: true
         type: string
-      bump:
-        description: "Must be skip; versions come from the attested release"
-        required: true
-        default: skip
-        type: string
       provenance:
         description: "Attach npm provenance"
         required: false
@@ -53,12 +48,10 @@ jobs:
       # where main happens to be.
       - name: Verify current-main workflow policy
         env:
-          BUMP: ${{ inputs.bump }}
           WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           [ "$WORKFLOW_REF" = refs/heads/main ] || { echo "::error::publish policy must run from current main"; exit 1; }
-          [ "$BUMP" = skip ] || { echo "::error::hosted arbitrary version bumps are forbidden"; exit 1; }
 
       - name: Check out current main
         uses: actions/checkout@v7

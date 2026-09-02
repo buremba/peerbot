@@ -10,6 +10,9 @@
 // scripts/__tests__/release-publish-order.test.ts a test of the code that
 // actually decides whether a release ships.
 
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const LOBU_TAG_PREFIX = "lobu-v";
 const SHA1 = /^[0-9a-f]{40}$/;
@@ -164,17 +167,20 @@ export function verifyImmutableRelease({
     throw new Error("release tag/name mismatch");
   }
   if (release.draft === true) throw new Error("release is a draft");
-  if (release.prerelease === true || release.make_latest === false) {
-    throw new Error(
-      "stable release cannot be prerelease or excluded from latest"
-    );
-  }
+  if (release.prerelease === true) throw new Error("release is a prerelease");
   versionForReleaseTag(expectedTag);
   const sha = peelTag({ tagRef, tagObject });
   if (expectedSha !== undefined && sha !== expectedSha) {
     throw new Error("release does not target attested commit");
   }
-  if (release.target_commitish !== sha) {
+  // `target_commitish` is only a creation hint. GitHub stores a branch name
+  // when a release is cut from a branch and ignores the field entirely when
+  // the tag already exists, so it binds the release to a commit only when it
+  // is itself a commit SHA. The peeled tag above is the authoritative binding.
+  if (
+    SHA1.test(release.target_commitish ?? "") &&
+    release.target_commitish !== sha
+  ) {
     throw new Error("release target does not match peeled tag");
   }
   return { sha, version: versionForReleaseTag(expectedTag) };
@@ -199,7 +205,15 @@ const COMMANDS = {
 
 export const COMMAND_NAMES = Object.keys(COMMANDS);
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+// Compare real paths: a URL pathname is percent-encoded and neither side is
+// symlink-resolved, so the naive comparison made this file exit 0 printing
+// nothing whenever the checkout path had a space or a symlinked parent -- a
+// release gate that fails open.
+const invokedPath = process.argv[1] ? realpathSync(process.argv[1]) : "";
+if (
+  invokedPath &&
+  realpathSync(fileURLToPath(import.meta.url)) === invokedPath
+) {
   const command = process.argv[2];
   const run = COMMANDS[command];
   if (!run) {

@@ -203,6 +203,21 @@ describe("release provenance workflow structure", () => {
     expect(write).toContain('make_latest: "true"');
   });
 
+  it("does not turn a gh 404 body or a SIGPIPE into a failed release", () => {
+    const write = job(read("release-please.yml"), "release-please-write");
+    // `gh api` prints the 404 body on STDOUT, so `|| true` leaves a
+    // {"message":"Not Found"} document in the variable and the
+    // already-exists branch runs on every first release.
+    expect(write).not.toContain('releases/tags/${tag}" 2>/dev/null || true');
+    expect(write).toContain(
+      'if release=$(gh api "repos/${REPOSITORY}/releases/tags/${tag}"'
+    );
+    // CHANGELOG.md is ~475KB: `git show ... | head -c` exits 141 under
+    // pipefail and kills the release step before it creates anything.
+    expect(write).not.toContain("head -c");
+    expect(write).toContain("notes=${notes:0:12000}");
+  });
+
   it("separates manual image builds and guards before any checkout", () => {
     const images = uncommented(read("build-images.yml"));
     expect(images).toContain(
@@ -567,5 +582,20 @@ describe("release provenance helpers execute the attestation policy", () => {
         tagObject: { object: { sha: "d".repeat(40) } },
       })
     ).toThrow("attested commit");
+    // GitHub records a branch name when a release is cut from a branch, and
+    // ignores target_commitish entirely once the tag exists. Only a SHA in
+    // that field carries a binding, so only a SHA is enforced.
+    expect(
+      verifyImmutableRelease({
+        ...stable,
+        release: { ...stable.release, target_commitish: "main" },
+      })
+    ).toMatchObject({ sha });
+    expect(() =>
+      verifyImmutableRelease({
+        ...stable,
+        release: { ...stable.release, target_commitish: "b".repeat(40) },
+      })
+    ).toThrow("does not match peeled tag");
   });
 });

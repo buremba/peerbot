@@ -33,8 +33,6 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     outputs:
       sha: ${{ steps.producer.outputs.sha }}
-      image_run_id: ${{ steps.producer.outputs.image_run_id }}
-      ci_run_id: ${{ steps.runs.outputs.ci_run_id }}
     steps:
       # Deliberately before any checkout: no repository code runs until the
       # producing run is known to be a completed-success push to the current
@@ -85,7 +83,6 @@ jobs:
           fetch-depth: 2
 
       - name: Attest required image jobs and the exact CI run
-        id: runs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
@@ -115,7 +112,7 @@ jobs:
             sleep 20
           done
           [ -n "$ci_run_id" ] || { echo "::error::exact successful CI push/main run was not observed within the bounded wait"; exit 1; }
-          echo "ci_run_id=$ci_run_id" >> "$GITHUB_OUTPUT"
+          echo "attested CI run for ${ATTESTED_SHA}: ${ci_run_id}"
 
   release-please-write:
     name: Create release from attested main
@@ -216,14 +213,14 @@ jobs:
               | node scripts/release-provenance.mjs verify-release >/dev/null
           }
 
-          release=$(gh api "repos/${REPOSITORY}/releases/tags/${tag}" 2>/dev/null || true)
-          if [ -n "$release" ]; then
+          if release=$(gh api "repos/${REPOSITORY}/releases/tags/${tag}" 2>/dev/null); then
             verify_release "$release"
             echo "Immutable release already exists and matches $ATTESTED_SHA."
             exit 0
           fi
 
-          notes=$(git show "$ATTESTED_SHA:CHANGELOG.md" | head -c 12000)
+          notes=$(git show "$ATTESTED_SHA:CHANGELOG.md")
+          notes=${notes:0:12000}
           if ! gh api "repos/${REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
             gh api --method POST "repos/${REPOSITORY}/git/refs" \
               --input <(jq -n --arg ref "refs/tags/$tag" --arg sha "$ATTESTED_SHA" '{ref: $ref, sha: $sha}') >/dev/null

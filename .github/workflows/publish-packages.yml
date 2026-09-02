@@ -37,8 +37,6 @@ jobs:
     outputs:
       version: ${{ steps.release.outputs.version }}
       tag_sha: ${{ steps.release.outputs.tag_sha }}
-      image_run_id: ${{ steps.producer.outputs.image_run_id }}
-      ci_run_id: ${{ steps.producer.outputs.ci_run_id }}
     steps:
       # Deliberately before any checkout: this workflow holds the production
       # environment's publish credentials downstream, so nothing from the
@@ -87,7 +85,6 @@ jobs:
           echo "tag_sha=$tag_sha" >> "$GITHUB_OUTPUT"
 
       - name: Attest the producing image run and its exact CI run
-        id: producer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
@@ -114,9 +111,7 @@ jobs:
             '{runs: [$body.workflow_runs[] | . + {repo: .repository.full_name}],
               expected: {workflow_id: $workflow_id, repo: $repo, event: "push", head_branch: "main", head_sha: $sha, status: "completed", conclusion: "success"}}' \
             | node scripts/release-provenance.mjs select-run | jq -r '.id')
-          echo "image_run_id=$IMAGE_RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "ci_run_id=$ci_run_id" >> "$GITHUB_OUTPUT"
-
+          echo "attested CI run for ${TAG_SHA}: ${ci_run_id}"
 
   publish-packages:
     name: Publish attested packages

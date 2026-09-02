@@ -133,6 +133,32 @@ describe("every workflow file is well formed", () => {
       expect(read(file)).not.toContain("--input-type=module");
     }
   });
+
+  it("peels release tags in exactly one place", () => {
+    // Fetching the tag ref, peeling an annotated tag and handing all three
+    // documents to the helper was pasted into three workflows. One composite
+    // action owns it now, so the copies cannot drift as the inline jq did.
+    const callers = names.filter((file) =>
+      read(file).includes("./.github/actions/verify-release")
+    );
+    expect(callers.sort()).toEqual([
+      "build-images.yml",
+      "publish-packages.yml",
+      "release-please.yml",
+    ]);
+    for (const file of names) {
+      expect(read(file)).not.toContain("git/tags/");
+    }
+    const action = Bun.YAML.parse(
+      readFileSync(`${root}/.github/actions/verify-release/action.yml`, "utf8")
+    ) as { inputs: Record<string, unknown>; outputs: Record<string, unknown> };
+    expect(Object.keys(action.inputs).sort()).toEqual([
+      "expected-sha",
+      "tag",
+      "token",
+    ]);
+    expect(Object.keys(action.outputs).sort()).toEqual(["sha", "version"]);
+  });
 });
 
 describe("release-please only acts on a green main push", () => {
@@ -202,7 +228,6 @@ describe("the release is created bound to the attested commit", () => {
     // release_created guard would be dead and redundant at once.
     expect(read("release-please.yml")).not.toContain("release_created");
     expect(body()).toContain("release-provenance.mjs manifest-bump");
-    expect(body()).toContain("release-provenance.mjs verify-release");
     expect(body()).toContain("release-provenance.mjs assert-newer");
     // make_latest is a string enum in the REST API; a boolean is dropped.
     expect(body()).toContain('make_latest: "true"');
@@ -227,12 +252,28 @@ describe("the release is created bound to the attested commit", () => {
     });
   });
 
+  it("verifies once, after a creation that tolerates an existing release", () => {
+    const ids = (steps("release-please.yml", id).map((step) => step.name) ??
+      []) as string[];
+    expect(ids).toContain(
+      "Create the tag and release if they are not already there"
+    );
+    expect(ids).toContain("Verify the release binds to the attested commit");
+    // One verification covering both the already-exists and just-created
+    // paths, rather than two call sites that can drift apart.
+    expect(
+      steps("release-please.yml", id).filter((step) =>
+        step.uses?.includes("verify-release")
+      )
+    ).toHaveLength(1);
+    expect(body()).not.toContain("verify_release()");
+  });
+
   it("does not let a 404 body or a large changelog fail the release", () => {
     // `gh api` prints the 404 body on STDOUT, so `|| true` left
     // {"message":"Not Found"} in the variable and the already-exists branch
     // ran on the first release of every version. Branch on exit status.
-    expect(body()).not.toContain('releases/tags/${tag}" 2>/dev/null || true');
-    expect(body()).toContain("if release=$(gh api");
+    expect(body()).not.toContain("2>/dev/null || true");
     // CHANGELOG.md is ~475KB: `git show … | head -c` exits 141 under pipefail
     // and kills the step before it creates anything.
     expect(body()).not.toContain("head -c");
@@ -258,10 +299,12 @@ describe("image builds refuse an off-main manual dispatch", () => {
     );
   });
 
-  it("verifies a release binds to this commit through the helper", () => {
-    expect(shell("build-images.yml", "generate-tag")).toContain(
-      "release-provenance.mjs verify-release"
+  it("verifies a release binds to this commit through the shared action", () => {
+    const verify = steps("build-images.yml", "generate-tag").find((step) =>
+      step.uses?.includes("verify-release")
     );
+    expect(verify?.if).toBe("github.event_name == 'release'");
+    expect(verify?.with?.["expected-sha"]).toBe("${{ github.sha }}");
   });
 
   it("dispatches publication from main policy with exact inputs", () => {

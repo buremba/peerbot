@@ -108,23 +108,11 @@ jobs:
 
       - name: Verify published release binds to this immutable commit
         if: github.event_name == 'release'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          release=$(gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}")
-          tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
-          tag_object=null
-          if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then
-            tag_object=$(gh api "repos/${REPOSITORY}/git/tags/$(jq -r '.object.sha' <<<"$tag_ref")")
-          fi
-          jq -n --argjson release "$release" --argjson tagRef "$tag_ref" --argjson tagObject "$tag_object" \
-            --arg tag "$RELEASE_TAG" --arg sha "$RELEASE_SHA" \
-            '{release: $release, tagRef: $tagRef, tagObject: $tagObject, expectedTag: $tag, expectedSha: $sha}' \
-            | node scripts/release-provenance.mjs verify-release >/dev/null
+        uses: ./.github/actions/verify-release
+        with:
+          tag: ${{ github.event.release.tag_name }}
+          expected-sha: ${{ github.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       # Every tag decision lives in scripts/derive-image-tags.mjs so it is
       # covered by scripts/__tests__/derive-image-tags.test.ts. Computed once

@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       version: ${{ steps.release.outputs.version }}
-      tag_sha: ${{ steps.release.outputs.tag_sha }}
+      tag_sha: ${{ steps.release.outputs.sha }}
     steps:
       # Deliberately before any checkout: this workflow holds the production
       # environment's publish credentials downstream, so nothing from the
@@ -58,36 +58,28 @@ jobs:
 
       - name: Attest the release tag binds to an immutable commit
         id: release
+        uses: ./.github/actions/verify-release
+        with:
+          tag: ${{ inputs.release_tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require the release commit to be reachable from main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          TAG_SHA: ${{ steps.release.outputs.sha }}
         run: |
           set -euo pipefail
-          release=$(gh api "repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}")
-          tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${RELEASE_TAG}")
-          tag_object=null
-          if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then
-            tag_object=$(gh api "repos/${REPOSITORY}/git/tags/$(jq -r '.object.sha' <<<"$tag_ref")")
-          fi
-          verified=$(jq -n --argjson release "$release" --argjson tagRef "$tag_ref" --argjson tagObject "$tag_object" --arg tag "$RELEASE_TAG" \
-            '{release: $release, tagRef: $tagRef, tagObject: $tagObject, expectedTag: $tag}' \
-            | node scripts/release-provenance.mjs verify-release)
-          tag_sha=$(jq -r '.sha' <<<"$verified")
-
           current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-          compare_status=$(gh api "repos/${REPOSITORY}/compare/${tag_sha}...${current_sha}" --jq '.status')
+          compare_status=$(gh api "repos/${REPOSITORY}/compare/${TAG_SHA}...${current_sha}" --jq '.status')
           [ "$compare_status" = ahead ] || [ "$compare_status" = identical ] || { echo "::error::release tag is not reachable from current main"; exit 1; }
-
-          echo "version=$(jq -r '.version' <<<"$verified")" >> "$GITHUB_OUTPUT"
-          echo "tag_sha=$tag_sha" >> "$GITHUB_OUTPUT"
 
       - name: Attest the producing image run and its exact CI run
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           IMAGE_RUN_ID: ${{ inputs.image_run_id }}
-          TAG_SHA: ${{ steps.release.outputs.tag_sha }}
+          TAG_SHA: ${{ steps.release.outputs.sha }}
         run: |
           set -euo pipefail
           build_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/build-images.yml" --jq '.id')

@@ -12,7 +12,9 @@ The published packages ship as a synchronized release: `@lobu/core`, `@lobu/cli`
 
 Every gate in that chain is one subcommand of `scripts/release-provenance.mjs`, covered by `scripts/__tests__/release-publish-order.test.ts`. Change the policy there, not in the workflow YAML.
 
-To force a specific version (for example, `6.2.0-beta.1`), land a commit on `main` whose body contains `Release-As: 6.2.0-beta.1`; release-please then opens or updates the release PR for that version.
+To force a specific version, land a commit on `main` whose body contains `Release-As: 7.2.0`; release-please then opens or updates the release PR for that version.
+
+Only stable `X.Y.Z` versions can be released. The attestation chain rejects anything else — `parseStableVersion` in `scripts/release-provenance.mjs` throws, so a prerelease `Release-As:` fails the release step with `invalid stable Lobu version` rather than shipping. Release a prerelease by publishing from a branch by hand instead.
 
 ## Commit prefixes → version bump
 

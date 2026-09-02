@@ -164,11 +164,15 @@ jobs:
       # release-please only opens the version-bump PR; the release itself is
       # created here so it is bound to the exact commit that was attested
       # above, rather than to whatever the action considered HEAD.
-      - name: Publish only a real immutable manifest bump
+      # Split so the binding check can be the shared composite action rather
+      # than a third copy of the same tag-peeling shell. Creation is
+      # idempotent and verification runs once at the end, which covers the
+      # already-exists case and the just-created case with one assertion
+      # instead of two call sites that could drift apart.
+      - name: Decide whether this attested commit is a release
+        id: bump
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
-          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           read_version() { git show "$1:package.json" | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).version'; }
@@ -179,32 +183,31 @@ jobs:
             | node scripts/release-provenance.mjs manifest-bump)
           if [ "$(jq -r '.bumped' <<<"$bump")" != true ]; then
             echo "No release-version manifest bump at attested SHA; release PR only."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          tag=$(jq -n --arg version "$current_version" '{version: $version}' \
-            | node scripts/release-provenance.mjs release-tag | jq -r '.tag')
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+          echo "version=$current_version" >> "$GITHUB_OUTPUT"
+          jq -n --arg version "$current_version" '{version: $version}' \
+            | node scripts/release-provenance.mjs release-tag | jq -r '"tag=" + .tag' >> "$GITHUB_OUTPUT"
 
+      - name: Create the tag and release if they are not already there
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ steps.bump.outputs.tag }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
           releases=$(gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100")
-          jq -n --argjson pages "$releases" --arg current "$current_version" \
+          jq -n --argjson pages "$releases" --arg current "$VERSION" \
             '{current: $current, versions: [$pages[][] | select(.prerelease | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
             | node scripts/release-provenance.mjs assert-newer >/dev/null
 
-          verify_release() {
-            local tag_ref tag_object
-            tag_ref=$(gh api "repos/${REPOSITORY}/git/ref/tags/${tag}")
-            tag_object=null
-            if [ "$(jq -r '.object.type' <<<"$tag_ref")" = tag ]; then
-              tag_object=$(gh api "repos/${REPOSITORY}/git/tags/$(jq -r '.object.sha' <<<"$tag_ref")")
-            fi
-            jq -n --argjson release "$1" --argjson tagRef "$tag_ref" --argjson tagObject "$tag_object" \
-              --arg tag "$tag" --arg sha "$ATTESTED_SHA" \
-              '{release: $release, tagRef: $tagRef, tagObject: $tagObject, expectedTag: $tag, expectedSha: $sha}' \
-              | node scripts/release-provenance.mjs verify-release >/dev/null
-          }
-
-          if release=$(gh api "repos/${REPOSITORY}/releases/tags/${tag}" 2>/dev/null); then
-            verify_release "$release"
-            echo "Immutable release already exists and matches $ATTESTED_SHA."
+          if gh api "repos/${REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; the verification below still has to pass."
             exit 0
           fi
 
@@ -212,16 +215,22 @@ jobs:
           # CHANGELOG.md is ~475KB and newest-first, so a plain truncation puts
           # several past releases in every release body.
           changelog=$(git show "$ATTESTED_SHA:CHANGELOG.md" || echo "")
-          notes=$(jq -n --arg changelog "$changelog" --arg version "$current_version" \
+          notes=$(jq -n --arg changelog "$changelog" --arg version "$VERSION" \
             '{changelog: $changelog, version: $version}' \
             | node scripts/release-provenance.mjs release-notes | jq -r '.notes')
           notes=${notes:0:60000}
-          if ! gh api "repos/${REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+          if ! gh api "repos/${REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
             gh api --method POST "repos/${REPOSITORY}/git/refs" \
-              --input <(jq -n --arg ref "refs/tags/$tag" --arg sha "$ATTESTED_SHA" '{ref: $ref, sha: $sha}') >/dev/null
+              --input <(jq -n --arg ref "refs/tags/$TAG" --arg sha "$ATTESTED_SHA" '{ref: $ref, sha: $sha}') >/dev/null
           fi
           gh api --method POST "repos/${REPOSITORY}/releases" \
-            --input <(jq -n --arg tag "$tag" --arg sha "$ATTESTED_SHA" --arg body "$notes" \
+            --input <(jq -n --arg tag "$TAG" --arg sha "$ATTESTED_SHA" --arg body "$notes" \
               '{tag_name: $tag, target_commitish: $sha, name: $tag, body: $body, draft: false, prerelease: false, make_latest: "true"}') >/dev/null
 
-          verify_release "$(gh api "repos/${REPOSITORY}/releases/tags/${tag}")"
+      - name: Verify the release binds to the attested commit
+        if: steps.bump.outputs.bumped == 'true'
+        uses: ./.github/actions/verify-release
+        with:
+          tag: ${{ steps.bump.outputs.tag }}
+          expected-sha: ${{ needs.attest.outputs.sha }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}

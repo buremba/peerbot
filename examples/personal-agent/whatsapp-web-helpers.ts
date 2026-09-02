@@ -17,20 +17,27 @@ import type { EventEnvelope } from "@lobu/connector-sdk";
 
 export const WHATSAPP_ADAPTER_VERSION = 2;
 export const WHATSAPP_ORIGIN = "https://web.whatsapp.com";
-export const WHATSAPP_SOURCE = "whatsapp_web";
+const WHATSAPP_SOURCE = "whatsapp_web";
 export const APPLE_EPOCH_OFFSET_SECONDS = 978_307_200;
 /**
  * The legacy checkpoint is second-granularity. Re-read only that exact second
  * so messages sharing the checkpoint edge are recovered without replaying any
  * earlier legacy row.
  */
-export const LEGACY_OVERLAP_SECONDS = 0;
-export const RECENT_OVERLAP_SECONDS = 15 * 60;
-export const MAX_MESSAGES_PER_RUN = 1_000;
-export const MAX_CHATS_PER_RUN = 6;
-export const MAX_LOADS_PER_CHAT = 2;
+const LEGACY_OVERLAP_SECONDS = 0;
+const RECENT_OVERLAP_SECONDS = 15 * 60;
+const MAX_MESSAGES_PER_RUN = 1_000;
+const MAX_CHATS_PER_RUN = 6;
+const MAX_LOADS_PER_CHAT = 2;
 export const MAX_MEDIA_BYTES = 2 * 1024 * 1024;
 export const MAX_MEDIA_PER_RUN = 12;
+/**
+ * Ceiling on the time the page may spend paging history in one run. The real
+ * bound is MAX_CHATS_PER_RUN * MAX_LOADS_PER_CHAT, so this only catches a
+ * `loadEarlierMsgs` that hangs: without it a stuck load burns the whole device
+ * action and the run returns nothing instead of the messages already collected.
+ */
+const COLLECT_BUDGET_MS = 90_000;
 
 export type ChatFilter = "all" | "individual" | "group";
 
@@ -64,7 +71,6 @@ export interface WhatsAppMessage {
   is_forwarded?: boolean;
   is_starred?: boolean;
   is_system_event?: boolean;
-  _capture?: { adapter_installed_at?: number; sequence?: number };
   [key: string]: unknown;
 }
 
@@ -144,7 +150,12 @@ export interface CollectRequest {
   backfill_disabled: boolean;
   backfill: BrowserCheckpoint["backfill"];
   dirty_ranges?: Array<Omit<DirtyMarker, "reason">>;
-  deadline?: number | null;
+  /**
+   * How long the page may spend paging history, in milliseconds. Relative, not
+   * an absolute instant: the connector and the page run on different machines,
+   * so the page resolves this against its own clock.
+   */
+  budget_ms?: number | null;
 }
 
 export interface CollectResponse {
@@ -189,7 +200,7 @@ export function canonicalizeJid(value: unknown): string | null {
   return jid;
 }
 
-export function jidPhone(jid: unknown): string | null {
+function jidPhone(jid: unknown): string | null {
   const canonical = canonicalizeJid(jid);
   if (!canonical?.endsWith("@s.whatsapp.net")) return null;
   const digits = canonical.slice(0, -"@s.whatsapp.net".length);
@@ -305,6 +316,7 @@ export function buildCollectionPlan(run: {
         cutover == null ? null : Math.max(0, cutover - LEGACY_OVERLAP_SECONDS),
       backfill_disabled: cutover != null,
       backfill: checkpoint.backfill,
+      budget_ms: COLLECT_BUDGET_MS,
     },
   };
 }

@@ -733,13 +733,22 @@ export function whatsAppWebAdapterProgram() {
         0,
         Math.max(1, Number(request.max_chats) || 1)
       );
+      // The connector sends a relative budget, not an absolute instant: it runs
+      // on a different machine than this page, so any shared epoch would be off
+      // by the clock skew between them. Resolving it here against this page's
+      // own clock keeps the budget exact.
+      const budgetMs = Number(request.budget_ms);
+      const historyDeadline =
+        Number.isFinite(budgetMs) && budgetMs > 0
+          ? Date.now() + budgetMs
+          : null;
       for (const entry of selected) {
-        if (request.deadline && Date.now() >= request.deadline) break;
+        if (historyDeadline && Date.now() >= historyDeadline) break;
         try {
           const loaded = await loadEarlier(
             entry.chat,
             Math.max(1, Number(request.max_loads_per_chat) || 1),
-            request.deadline
+            historyDeadline
           );
           if (!loaded.available) {
             return {

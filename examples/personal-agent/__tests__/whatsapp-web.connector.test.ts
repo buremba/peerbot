@@ -17,6 +17,7 @@
 
 import { beforeEach, describe, expect, it, mock } from "bun:test";
 import WhatsAppWebConnector from "../whatsapp-web.connector.ts";
+import { whatsAppWebAdapterProgram } from "../whatsapp-web-adapter.js";
 import {
   APPLE_EPOCH_OFFSET_SECONDS,
   buildCollectionPlan,
@@ -180,6 +181,17 @@ describe("canonical WhatsApp identity and cutover", () => {
     expect(checkpoint.cutover_unix_seconds).toBe(1_787_358_184);
     expect(checkpoint.legacy_last_pk).toBe(66_904);
     expect(checkpoint.backfill.complete).toBe(true);
+  });
+
+  it("sends the history budget as a relative span the page can resolve", () => {
+    const { request } = buildCollectionPlan({});
+    // Absolute instants cannot cross the connector/page boundary: they run on
+    // different machines, so a shared epoch is off by the clock skew.
+    expect(request).not.toHaveProperty("deadline");
+    expect(request.budget_ms).toBeGreaterThan(0);
+    const source = whatsAppWebAdapterProgram.toString();
+    expect(source).toContain("request.budget_ms");
+    expect(source).not.toContain("request.deadline");
   });
 
   it("bounds legacy reconciliation and does not replay older history", () => {

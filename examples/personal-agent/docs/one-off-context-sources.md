@@ -225,7 +225,7 @@ Full step-by-step: [LinkedIn → Download your archive](#download-your-linkedin-
 |---|---|
 | **Download** | In app: chat → ⋮ → More → Export chat |
 | **Format** | `.zip` with `_chat.txt` + media |
-| **Ingest** | `whatsapp` / `whatsapp.web` is primary; exports for chats outside the paired device |
+| **Ingest** | `whatsapp` / `whatsapp.web` is primary; exports for chats outside the paired browser |
 | **Status** | _Not started_ |
 
 ---

@@ -25,7 +25,6 @@ import type RevolutTransactionsConnector from "./revolut-transactions.connector.
 import type SpotifyConnector from "./spotify.connector.ts";
 import { takeoutConfig } from "./takeout-dirs.ts";
 import type TwitterTakeoutConnector from "./twitter-takeout.connector.ts";
-import type WhatsAppCloudConnector from "./whatsapp.cloud.connector.ts";
 
 const hourlyTaskCollaboratorSkill = defineSkill({
   name: "hourly-task-collaborator",
@@ -206,7 +205,7 @@ const person = defineEntityType({
       by: "alias",
       field: "metadata->>'sender_jid'",
       against: "aliases",
-      where: "connector_key='whatsapp.local'",
+      where: "connector_key='whatsapp.web'",
     },
     x_posts: {
       by: "alias",
@@ -1529,9 +1528,6 @@ export default defineConfig({
     connectorFromFile<typeof LinkedInConnector>("./linkedin.connector.ts"),
     connectorFromFile<typeof HackerNewsConnector>("./hackernews.connector.ts"),
     connectorFromFile<typeof SpotifyConnector>("./spotify.connector.ts"),
-    connectorFromFile<typeof WhatsAppCloudConnector>(
-      "./whatsapp.cloud.connector.ts"
-    ),
     connectorFromFile<typeof GoogleTakeoutConnector>(
       "./google-takeout.connector.ts"
     ),

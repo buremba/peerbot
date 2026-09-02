@@ -3,6 +3,9 @@
     "target": "ES2022",
     "module": "Preserve",
     "moduleResolution": "bundler",
+    // Matches the root tsconfig; every connector here imports siblings by path
+    // with an explicit .ts extension.
+    "allowImportingTsExtensions": true,
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,

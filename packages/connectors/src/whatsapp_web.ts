@@ -1,5 +1,5 @@
 /**
- * WhatsApp Web connector (example-only — not bundled with Lobu).
+ * WhatsApp Web connector.
  *
  * Replaces the extension-native `whatsapp.local` connector. What it does is
  * the same and the event stream is byte-comparable; what changes is WHERE the

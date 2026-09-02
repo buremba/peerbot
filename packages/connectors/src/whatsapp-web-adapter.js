@@ -39,14 +39,14 @@ export function whatsAppWebAdapterProgram() {
   let readinessSignature = null;
   let readinessStableSince = 0;
 
+  // A WhatsApp tab outlives any one connector version, so an adapter from an
+  // earlier version can already be resident. Leave it alone when the versions
+  // match and replace it otherwise, so newly advertised operations stop
+  // calling the pre-update invoke table.
   const existing = globalThis[GLOBAL_KEY];
   if (existing?.version === ADAPTER_VERSION) {
     return;
   }
-  // A WhatsApp tab survives a page-lifetime longer than one connector version.
-  // Replace a resident adapter whose implementation revision is stale;
-  // otherwise the newly advertised operations keep calling the pre-update
-  // invoke table until the page reloads.
 
   function requireFirst(names) {
     for (const name of names) {

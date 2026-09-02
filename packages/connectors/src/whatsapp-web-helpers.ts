@@ -34,9 +34,7 @@ const COLLECT_BUDGET_MS = 90_000;
 
 export type ChatFilter = "all" | "individual" | "group";
 
-export interface WhatsAppReaction {
-  [key: string]: unknown;
-}
+export type WhatsAppReaction = Record<string, unknown>;
 
 /** A message after `normalizeRelayedMessage` — every field the port relies on. */
 export interface WhatsAppMessage {

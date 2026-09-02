@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { ProviderConfigEntry } from "@lobu/core";
-import { TranscriptionService } from "../services/transcription-service.js";
+import {
+  ProviderHttpError,
+  TranscriptionService,
+} from "../services/transcription-service.js";
 
 const openAiProviderConfig = (): Record<string, ProviderConfigEntry> => ({
   openai: {
@@ -80,6 +83,65 @@ describe("TranscriptionService provider fallback", () => {
     if ("text" in result) {
       expect(result.text).toBe("hello from groq");
       expect(result.provider).toBe("openai");
+    }
+  });
+
+  test("carries the upstream HTTP status per attempt, not just in the message", async () => {
+    // The status must survive as a FIELD. `provider-health-status.ts` is
+    // status-only precisely because matching provider wording missed OpenAI's
+    // "no credits remaining" in prod — so a caller must never have to parse
+    // the sentence to learn this was a 429.
+    const authProfilesManager = {
+      getBestProfile: mock(async (_agentId: string, providerId: string) =>
+        providerId === "chatgpt" ? { credential: "openai-key" } : null
+      ),
+    } as any;
+    const service = new TranscriptionService(authProfilesManager);
+    (service as any).transcribeWithProvider = mock(async () => {
+      throw new ProviderHttpError(
+        429,
+        'OpenAI API error: 429 - {"code":"credit_balance_exhausted"}'
+      );
+    });
+
+    const result = await service.transcribe(
+      Buffer.from("audio"),
+      "agent-429",
+      "audio/ogg"
+    );
+
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.attempts).toHaveLength(1);
+      expect(result.attempts?.[0]?.status).toBe(429);
+      expect(result.attempts?.[0]?.providerSlug).toBe("chatgpt");
+    }
+  });
+
+  test("reports no status when the call never reached the provider", async () => {
+    // A DNS failure or timeout is not a health verdict about the account.
+    // Leaving `status` undefined is what keeps it from marking a provider
+    // unhealthy — distinct from a 429, which does.
+    const authProfilesManager = {
+      getBestProfile: mock(async (_agentId: string, providerId: string) =>
+        providerId === "chatgpt" ? { credential: "openai-key" } : null
+      ),
+    } as any;
+    const service = new TranscriptionService(authProfilesManager);
+    (service as any).transcribeWithProvider = mock(async () => {
+      throw new Error("fetch failed");
+    });
+
+    const result = await service.transcribe(
+      Buffer.from("audio"),
+      "agent-net",
+      "audio/ogg"
+    );
+
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.attempts).toHaveLength(1);
+      expect(result.attempts?.[0]?.status).toBeUndefined();
     }
   });
 

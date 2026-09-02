@@ -37,6 +37,9 @@ import {
 } from "./embeddings";
 import { getEnvFromProcess } from "./env";
 import logger from "./logger";
+import { classifyProviderHealthStatus } from "../gateway/proxy/provider-health-status";
+import type { TranscriptionAttemptFailure } from "../gateway/services/transcription-service";
+import { markInferenceProviderUnhealthy } from "../lobu/stores/provider-secrets";
 
 /**
  * Hard cap on a single decoded attachment we'll publish. Server-side guard so
@@ -312,9 +315,23 @@ export function triggerAudioTranscriptions(
         return;
       }
 
-      for (const job of pending) {
+      for (const [index, job] of pending.entries()) {
         try {
-          await transcribeOne(job, organizationId, agentId);
+          const outcome = await transcribeOne(job, organizationId, agentId);
+          if (outcome === "provider-unavailable") {
+            // The account is walled, not this file. Transcribing the rest
+            // would produce the same failure per job while burning an
+            // upstream call each; they keep their placeholders instead.
+            logger.warn(
+              {
+                organizationId,
+                abandoned: pending.length - index - 1,
+                pending: pending.length,
+              },
+              "[inline-attachments] STT provider unavailable — abandoning the rest of this batch"
+            );
+            return;
+          }
         } catch (err) {
           logger.warn(
             { origin_id: job.originId, err: String(err) },
@@ -350,15 +367,27 @@ async function pickTranscriptionAgent(
   return null;
 }
 
+/**
+ * Outcome of a single transcription job.
+ *
+ * `provider-unavailable` means the ACCOUNT is walled (quota/credit or auth),
+ * not that this one file failed — every remaining job in the batch would fail
+ * identically, so the caller stops instead of burning the rest against it.
+ */
+export type TranscriptionOutcome =
+  | "transcribed"
+  | "failed"
+  | "provider-unavailable";
+
 export async function transcribeOne(
   job: AudioTranscriptionJob,
   organizationId: string,
   agentId: string
-): Promise<void> {
+): Promise<TranscriptionOutcome> {
   const coreServices = getLobuCoreServices();
   const artifactStore = coreServices!.getArtifactStore();
   const transcriptionService = coreServices!.getTranscriptionService();
-  if (!artifactStore || !transcriptionService) return;
+  if (!artifactStore || !transcriptionService) return "failed";
 
   const stored = await artifactStore.read(job.artifactId, {
     maxBytes: MAX_INLINE_ATTACHMENT_BYTES,
@@ -368,7 +397,7 @@ export async function transcribeOne(
       { artifact_id: job.artifactId },
       "[inline-attachments] artifact missing — cannot transcribe"
     );
-    return;
+    return "failed";
   }
   const result = await transcriptionService.transcribe(
     stored.bytes,
@@ -376,15 +405,29 @@ export async function transcribeOne(
     job.mimeType
   );
   if ("error" in result) {
-    logger.info(
-      { origin_id: job.originId, error: result.error },
-      "[inline-attachments] transcription returned error — keeping placeholder"
+    // Record provider health from the STATUS, never the wording. This path
+    // reaches the provider directly rather than through the LLM proxy, so
+    // without this the settings UI shows a credit-exhausted key as `active`
+    // — which is exactly how a silent multi-week STT outage stayed invisible.
+    const walled = await recordTranscriptionProviderHealth(
+      organizationId,
+      result.attempts
     );
-    return;
+    logger[walled ? "warn" : "info"](
+      {
+        origin_id: job.originId,
+        error: result.error,
+        provider_unavailable: walled,
+      },
+      walled
+        ? "[inline-attachments] transcription provider unavailable — keeping placeholder and stopping this batch"
+        : "[inline-attachments] transcription returned error — keeping placeholder"
+    );
+    return walled ? "provider-unavailable" : "failed";
   }
 
   const transcript = result.text.trim();
-  if (!transcript) return;
+  if (!transcript) return "failed";
 
   let embedding: number[] | undefined;
   let embeddingModel: string | undefined;
@@ -405,6 +448,7 @@ export async function transcribeOne(
   }
 
   const sql = getDb();
+  let wrote = false;
   await sql.begin(async (tx) => {
     // Use the same per-source lock as normal connector resync. The exact event
     // id ties this transcript to the bytes that produced it: if a newer resync
@@ -440,7 +484,12 @@ export async function transcribeOne(
       score: number | null;
     }>;
     const base = baseRows[0];
-    if (!base) return;
+    if (!base) {
+      // Superseded (or resynced) between transcribe and write — the head this
+      // transcript was derived from no longer exists, so there is nothing to
+      // enrich. Not "transcribed": nothing was written.
+      return;
+    }
 
     const meta = { ...(base.metadata ?? {}), transcript_provider: result.provider };
 
@@ -477,5 +526,44 @@ export async function transcribeOne(
         trustedIdentityScopeProjections: true,
       }
     );
+    wrote = true;
   });
+  return wrote ? "transcribed" : "failed";
+}
+
+/**
+ * Write provider health for the failed attempts of one transcription.
+ *
+ * Returns true when the ACCOUNT is walled (quota/credit or auth) rather than
+ * this one file being unsupported — the caller uses that to stop the batch.
+ *
+ * Best-effort, mirroring `secret-proxy`'s `recordProviderHealth`: nothing
+ * routes on `status` today, so failing to write a display label must never
+ * turn into a thrown error on a path that already kept its placeholder.
+ */
+async function recordTranscriptionProviderHealth(
+  organizationId: string,
+  attempts: TranscriptionAttemptFailure[] | undefined
+): Promise<boolean> {
+  if (!attempts?.length) return false;
+  let walled = false;
+  for (const attempt of attempts) {
+    if (attempt.status === undefined) continue;
+    const code = classifyProviderHealthStatus(attempt.status);
+    if (!code) continue;
+    walled = true;
+    try {
+      await markInferenceProviderUnhealthy(
+        organizationId,
+        attempt.providerSlug,
+        `HTTP ${attempt.status} — ${code} (speech-to-text)`
+      );
+    } catch (err) {
+      logger.warn(
+        { provider_slug: attempt.providerSlug, err: String(err) },
+        "[inline-attachments] failed to record STT provider health"
+      );
+    }
+  }
+  return walled;
 }

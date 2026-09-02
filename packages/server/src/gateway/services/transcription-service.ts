@@ -63,9 +63,41 @@ interface TranscriptionSuccess {
   provider: TranscriptionProvider;
 }
 
+/**
+ * An upstream provider call that failed with an HTTP status.
+ *
+ * The status is carried as a FIELD, never only in the message. Flattening it
+ * into prose is what made `provider-health-status.ts` status-only in the first
+ * place: OpenAI's "no credits remaining" and Alibaba's "quota has been
+ * exhausted" both went unclassified in prod when the code matched wording.
+ */
+export class ProviderHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ProviderHttpError";
+  }
+}
+
+/** One provider's failed attempt, with the status a health verdict needs. */
+export interface TranscriptionAttemptFailure {
+  /** `inference_providers.slug` — the row a health writeback targets. */
+  providerSlug: string;
+  /** Upstream HTTP status, absent when the call never reached the provider. */
+  status?: number;
+  message: string;
+}
+
 interface TranscriptionError {
   error: string;
   availableProviders: TranscriptionProvider[];
+  /**
+   * Per-provider failures, so a caller that knows the organization can record
+   * provider health. Absent when no provider was configured at all.
+   */
+  attempts?: TranscriptionAttemptFailure[];
 }
 
 type TranscriptionResult = TranscriptionSuccess | TranscriptionError;
@@ -161,6 +193,7 @@ export class TranscriptionService {
     }
 
     const attemptErrors: string[] = [];
+    const attempts: TranscriptionAttemptFailure[] = [];
     for (const config of configs) {
       logger.info("Transcribing audio", {
         agentId,
@@ -186,19 +219,28 @@ export class TranscriptionService {
       } catch (error) {
         const errorMessage =
           getErrorMessage(error);
+        const status =
+          error instanceof ProviderHttpError ? error.status : undefined;
         logger.error("Transcription failed", {
           agentId,
           provider: config.provider,
           profileProviderId: config.profileProviderId,
+          status,
           error: errorMessage,
         });
         attemptErrors.push(`${config.displayName}: ${errorMessage}`);
+        attempts.push({
+          providerSlug: config.profileProviderId,
+          status,
+          message: errorMessage,
+        });
       }
     }
 
     return {
       error: `Transcription failed with all configured providers: ${attemptErrors.join(" | ")}`,
       availableProviders: [...new Set(configs.map((c) => c.provider))],
+      attempts,
     };
   }
 
@@ -529,7 +571,10 @@ export class TranscriptionService {
 
     if (!resp.ok) {
       const error = await resp.text();
-      throw new Error(`OpenAI API error: ${resp.status} - ${error}`);
+      throw new ProviderHttpError(
+        resp.status,
+        `OpenAI API error: ${resp.status} - ${error}`
+      );
     }
 
     const data = (await resp.json()) as { text: string };

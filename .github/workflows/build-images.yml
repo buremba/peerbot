@@ -106,8 +106,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # Prefix-gated as well as event-gated: derive-image-tags deliberately
+      # returns should_publish=false for another component's release sharing
+      # this event feed (owletto-mac-v*), and verify-release would throw "not a
+      # Lobu release tag" first, turning that graceful skip into a red job.
       - name: Verify published release binds to this immutable commit
-        if: github.event_name == 'release'
+        if: >-
+          github.event_name == 'release' &&
+          startsWith(github.event.release.tag_name, 'lobu-v')
         uses: ./.github/actions/verify-release
         with:
           tag: ${{ github.event.release.tag_name }}

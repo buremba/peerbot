@@ -303,8 +303,14 @@ describe("image builds refuse an off-main manual dispatch", () => {
     const verify = steps("build-images.yml", "generate-tag").find((step) =>
       step.uses?.includes("verify-release")
     );
-    expect(verify?.if).toBe("github.event_name == 'release'");
     expect(verify?.with?.["expected-sha"]).toBe("${{ github.sha }}");
+    expect(verify?.if).toContain("github.event_name == 'release'");
+    // Another component's release shares this event feed, and
+    // derive-image-tags returns should_publish=false for it rather than
+    // failing. Verifying first would throw before that skip is reached.
+    expect(verify?.if).toContain(
+      "startsWith(github.event.release.tag_name, 'lobu-v')"
+    );
   });
 
   it("dispatches publication from main policy with exact inputs", () => {

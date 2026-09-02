@@ -13,13 +13,24 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   HOST_ONLY_ENV_KEYS,
+  SANDBOX_CONTROLLED_ENV_KEYS,
   authenticatedUrl,
+  bootEnv,
   buildTarball,
   credentialsFromConfig,
   ExpiredCliTokenError,
+  generateBearerToken,
+  generatePassword,
+  interpretSignUp,
   isAppleDouble,
+  loginLink,
+  previewUrlFor,
+  resolveOwnerEmail,
   sandboxName,
   sanitizedEnv,
+  sessionTokenFrom,
+  signInScript,
+  signUpScript,
 } from "../sandbox";
 
 const temporaryDirectories: string[] = [];
@@ -160,8 +171,202 @@ describe("sanitizedEnv", () => {
     expect(HOST_ONLY_ENV_KEYS).toContain("DATABASE_URL");
   });
 
+  test("drops every sandbox-controlled key", () => {
+    // dev-native.sh preserves only a fixed preset list across `source .env`,
+    // so any of these left in the file would override the boot env and quietly
+    // reopen sign-up or the anonymous worker lane on a public preview.
+    const root = temporaryDirectory("sandbox-env-owned-");
+    writeFileSync(
+      join(root, ".env"),
+      "LOBU_SINGLE_USER=0\nWORKER_API_TOKEN=host-token\nLOBU_DEV_DATA_ROOT=/tmp/elsewhere\nKEEP=yes\n"
+    );
+    const out = sanitizedEnv(root) ?? "";
+    expect(out).toContain("KEEP=yes");
+    for (const key of SANDBOX_CONTROLLED_ENV_KEYS) {
+      expect(out).not.toContain(`${key}=`);
+    }
+  });
+
   test("returns null when the worktree has no .env", () => {
     expect(sanitizedEnv(temporaryDirectory("sandbox-noenv-"))).toBeNull();
+  });
+});
+
+describe("bootEnv", () => {
+  const env = () =>
+    bootEnv({
+      previewUrl: "https://p.example",
+      workerApiToken: "tok-123",
+      embeddingsServiceToken: "emb-456",
+    });
+
+  test("closes sign-up and the anonymous worker lane", () => {
+    expect(env()).toContain("LOBU_SINGLE_USER='1'");
+    expect(env()).toContain("WORKER_API_TOKEN='tok-123'");
+  });
+
+  test("authenticates the embeddings sidecar", () => {
+    // Its bearer check is skipped entirely while the token is unset, and the
+    // preview proxy exposes the sidecar's port too.
+    expect(env()).toContain("EMBEDDINGS_SERVICE_TOKEN='emb-456'");
+  });
+
+  test("points the database at a root outside the Vite serving root", () => {
+    // The dev server serves /@fs/<workspace>/…, and the cluster holds raw
+    // session tokens, so the data root must not sit under the checkout.
+    const value = env().match(/DATABASE_URL='([^']+)'/)?.[1] ?? "";
+    expect(value.startsWith("file:///")).toBe(true);
+    expect(value).not.toContain("/workspace/lobu/");
+  });
+
+  test("binds the gateway to the preview origin", () => {
+    expect(env()).toContain("PUBLIC_GATEWAY_URL='https://p.example/lobu'");
+    expect(env()).toContain("HOST='0.0.0.0'");
+    expect(env()).toContain("PORT='8787'");
+  });
+
+  test("refuses a value that would break out of its shell quotes", () => {
+    expect(() =>
+      bootEnv({
+        previewUrl: "https://p.example",
+        workerApiToken: "a'b",
+        embeddingsServiceToken: "emb",
+      })
+    ).toThrow(/contains a quote/);
+  });
+});
+
+describe("generateBearerToken", () => {
+  test("is url-safe and long enough to be unguessable", () => {
+    const token = generateBearerToken();
+    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(token).not.toBe(generateBearerToken());
+  });
+});
+
+describe("resolveOwnerEmail", () => {
+  test("prefers the explicit override", () => {
+    expect(resolveOwnerEmail("me@example.com", "git@example.com")).toBe(
+      "me@example.com"
+    );
+  });
+
+  test("falls back to the worktree git identity", () => {
+    expect(resolveOwnerEmail(undefined, " git@example.com ")).toBe(
+      "git@example.com"
+    );
+  });
+
+  test("throws rather than inventing an owner", () => {
+    // A hardcoded address would be personal state in shipping code.
+    expect(() => resolveOwnerEmail(undefined, undefined)).toThrow(
+      /SANDBOX_OWNER_EMAIL/
+    );
+    expect(() => resolveOwnerEmail(undefined, "not-an-email")).toThrow(
+      /SANDBOX_OWNER_EMAIL/
+    );
+  });
+});
+
+describe("generatePassword", () => {
+  test("is url-safe and unique per call", () => {
+    expect(generatePassword()).toMatch(/^[A-Za-z0-9_-]{24}$/);
+    expect(generatePassword()).not.toBe(generatePassword());
+  });
+});
+
+describe("signUpScript", () => {
+  test("never puts the credentials on the shell command line", () => {
+    const script = signUpScript("me@example.com", "p'a\"ss", "Owner");
+    expect(script).not.toContain("me@example.com");
+    expect(script).not.toContain("p'a");
+    expect(script).toContain("base64 -d");
+    expect(script).toContain("/api/auth/sign-up/email");
+  });
+});
+
+describe("signInScript", () => {
+  test("never puts the credentials on the shell command line", () => {
+    const script = signInScript("me@example.com", "p'a\"ss");
+    expect(script).not.toContain("me@example.com");
+    expect(script).not.toContain("p'a");
+    expect(script).toContain("base64 -d");
+    expect(script).toContain("/api/auth/sign-in/email");
+  });
+});
+
+describe("interpretSignUp", () => {
+  test("2xx means the seat was claimed", () => {
+    expect(interpretSignUp('200\n{"token":"t"}')).toEqual({
+      status: "claimed",
+    });
+  });
+
+  test("the hook error code is what proves the seat is taken", () => {
+    expect(
+      interpretSignUp(
+        '403\n{"code":"SIGN_UP_DISABLED_IN_SINGLE_USER_MODE","message":"nope"}'
+      )
+    ).toEqual({ status: "seat_taken" });
+  });
+
+  test("a bare 403 is not proof that sign-up is closed", () => {
+    // Treating any 403 as "closed" would let an unrelated denial authorise
+    // making the preview public.
+    expect(interpretSignUp('403\n{"code":"RATE_LIMITED"}').status).toBe(
+      "error"
+    );
+  });
+
+  test("reports a transport failure rather than guessing", () => {
+    expect(interpretSignUp("").status).toBe("error");
+    expect(interpretSignUp("000\n").status).toBe("error");
+  });
+});
+
+describe("sessionTokenFrom", () => {
+  test("prefers the token in the response body", () => {
+    expect(sessionTokenFrom('{"token":"abc123","user":{}}')).toBe("abc123");
+  });
+
+  test("falls back to the token half of the signed cookie", () => {
+    expect(
+      sessionTokenFrom(
+        "HTTP/1.1 200 OK\nset-cookie: better-auth.session_token=abc123.SIGNATURE; Path=/; HttpOnly\n"
+      )
+    ).toBe("abc123");
+  });
+
+  test("returns undefined when there is no token at all", () => {
+    expect(sessionTokenFrom('{"error":"nope"}')).toBeUndefined();
+  });
+});
+
+describe("loginLink", () => {
+  test("hands the token to the exchange endpoint", () => {
+    expect(loginLink("https://p.example", "tok/en+value")).toBe(
+      "https://p.example/api/exchange-token?token=tok%2Fen%2Bvalue&next=%2F"
+    );
+  });
+
+  test("does not double the slash on a trailing-slash url", () => {
+    expect(loginLink("https://p.example/", "t")).toContain(
+      "https://p.example/api/exchange-token"
+    );
+  });
+});
+
+describe("previewUrlFor", () => {
+  test("a public preview needs no key in the url", () => {
+    expect(previewUrlFor(true, "https://p.example", "tok")).toBe(
+      "https://p.example"
+    );
+  });
+
+  test("a private preview still gets the key", () => {
+    expect(previewUrlFor(false, "https://p.example", "tok")).toBe(
+      "https://p.example?DAYTONA_SANDBOX_AUTH_KEY=tok"
+    );
   });
 });
 

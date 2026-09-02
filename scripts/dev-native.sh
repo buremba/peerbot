@@ -171,7 +171,7 @@ if [ "$_LOBU_EMBEDDED" = 1 ]; then
   echo "→ embedded Postgres   cluster: $DEV_DATA_ROOT/.lobu/pgdata"
   echo "→ server on http://${HOST}:${PORT}   (Vite HMR in-process)"
   lobu_dev_print_app_url
-  echo "→ first run seeds a web login: dev@lobu.local / lobudev123   (org 'dev')"
+  echo "→ first run: sign up in the app to claim its single account (LOBU_SINGLE_USER=1)"
   echo "→ then run \`lobu apply\` from a project dir to sync its lobu.config.ts"
   echo ""
   if [[ "${OPEN:-}" == "1" || "${OPEN:-}" == "true" ]]; then

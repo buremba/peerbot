@@ -246,8 +246,8 @@ export function parseAutomationRunPayload(
 		trigger_output:
 			payload.trigger_output === "silent" ||
 			payload.trigger_output === "reply_to_source"
-					? payload.trigger_output
-					: undefined,
+				? payload.trigger_output
+				: undefined,
 		source_fingerprint:
 			typeof payload.source_fingerprint === "string"
 				? payload.source_fingerprint
@@ -411,66 +411,125 @@ async function prepareScheduledSourceFingerprint(params: {
 	const windowEnd = new Date(params.payload.window_end);
 	try {
 		return await params.sql.begin(async (tx) => {
-		// Prod runs with no server-side statement_timeout, and the FOR UPDATE
-		// below is the same automations row every terminalization path locks —
-		// one wedged statement here would stall completion for the whole
-		// Automation. This bounds only statements on THIS transaction (a keyed
-		// SELECT, source normalization, two keyed UPDATEs); the source scan runs
-		// on getSourceReadDb() and carries its own per-query timeout.
-		await tx`SET LOCAL statement_timeout = '30s'`;
-		await tx`
-			SELECT id FROM automations
-			WHERE id = ${params.automation.id}
-			  AND organization_id = ${params.automation.organization_id}
-			FOR UPDATE
-		`;
-		const sourceRows = await tx<{
-			version_sources: unknown;
-			automation_sources: unknown;
-		}>`
-			SELECT version.version_sources, automation.sources AS automation_sources
-			FROM automations automation
-			JOIN automation_versions version
-			  ON version.id = COALESCE(
-			    ${params.payload.version_id}::bigint,
-			    automation.current_version_id
-			  )
-			 AND version.automation_id = automation.automation_group_id
-			WHERE automation.id = ${params.automation.id}
-			  AND automation.organization_id = ${params.automation.organization_id}
-			LIMIT 1
-		`;
-		if (sourceRows.length === 0) {
-			throw new AutomationSourceConfigurationError(
-				`Automation ${params.automation.id} has no runnable source version.`,
-			);
-		}
-		const parseSources = (value: unknown): AutomationSource[] => {
-			if (Array.isArray(value)) return value as AutomationSource[];
-			if (typeof value !== "string") return [];
-			try {
-				const parsed = JSON.parse(value);
-				return Array.isArray(parsed) ? (parsed as AutomationSource[]) : [];
-			} catch {
-				return [];
+			// Prod runs with no server-side statement_timeout, and the FOR UPDATE
+			// below is the same automations row every terminalization path locks —
+			// one wedged statement here would stall completion for the whole
+			// Automation. This bounds only statements on THIS transaction (a keyed
+			// SELECT, source normalization, two keyed UPDATEs); the source scan runs
+			// on getSourceReadDb() and carries its own per-query timeout.
+			await tx`SET LOCAL statement_timeout = '30s'`;
+			await tx`
+				SELECT id FROM automations
+				WHERE id = ${params.automation.id}
+				  AND organization_id = ${params.automation.organization_id}
+				FOR UPDATE
+			`;
+			const sourceRows = await tx<{
+				version_sources: unknown;
+				automation_sources: unknown;
+			}>`
+				SELECT version.version_sources, automation.sources AS automation_sources
+				FROM automations automation
+				JOIN automation_versions version
+				  ON version.id = COALESCE(
+				    ${params.payload.version_id}::bigint,
+				    automation.current_version_id
+				  )
+				 AND version.automation_id = automation.automation_group_id
+				WHERE automation.id = ${params.automation.id}
+				  AND automation.organization_id = ${params.automation.organization_id}
+				LIMIT 1
+			`;
+			if (sourceRows.length === 0) {
+				throw new AutomationSourceConfigurationError(
+					`Automation ${params.automation.id} has no runnable source version.`,
+				);
 			}
-		};
-		const versionSources = parseSources(sourceRows[0]?.version_sources);
-		const sources =
-			versionSources.length > 0
-				? versionSources
-				: parseSources(sourceRows[0]?.automation_sources);
-		await normalizeAutomationSources(
-			tx,
-			params.automation.organization_id,
-			sources,
-		);
+			const parseSources = (value: unknown): AutomationSource[] => {
+				if (Array.isArray(value)) return value as AutomationSource[];
+				if (typeof value !== "string") return [];
+				try {
+					const parsed = JSON.parse(value);
+					return Array.isArray(parsed) ? (parsed as AutomationSource[]) : [];
+				} catch {
+					return [];
+				}
+			};
+			const versionSources = parseSources(sourceRows[0]?.version_sources);
+			const sources =
+				versionSources.length > 0
+					? versionSources
+					: parseSources(sourceRows[0]?.automation_sources);
+			await normalizeAutomationSources(
+				tx,
+				params.automation.organization_id,
+				sources,
+			);
 
-		if (params.payload.source_fingerprint_required !== true) {
+			if (params.payload.source_fingerprint_required !== true) {
+				const ready = await tx`
+					UPDATE runs
+					SET approved_input = COALESCE(approved_input, '{}'::jsonb)
+					      - 'source_preflight_pending'
+					WHERE id = ${params.runId}
+					  AND status = 'claimed'
+					  AND claimed_by = ${params.claimToken}
+					RETURNING id
+				`;
+				if (ready.length === 0) return { kind: "requeued" };
+				return { kind: "ready" };
+			}
+
+			// Source execution owns a connection-pinned READ ONLY transaction. Use
+			// its dedicated pool while retaining this lifecycle lock so the selected
+			// version and normalized source configuration cannot change underneath
+			// the fingerprint. Reusing the main pool here deadlocks at DB_POOL_MAX=1.
+			const sourceState = await fingerprintAutomationSources({
+				sql: getSourceReadDb(),
+				automationId: params.automation.id,
+				versionId: params.payload.version_id,
+				windowStart: windowStart.toISOString(),
+				windowEnd: windowEnd.toISOString(),
+			});
+			const previous = await tx`
+				SELECT approved_input->>'source_fingerprint' AS fingerprint
+				FROM runs
+				WHERE automation_id = ${params.automation.id}
+				  AND run_type = 'automation'
+				  AND status = 'completed'
+				  AND approved_input->>'source_fingerprint' IS NOT NULL
+				ORDER BY completed_at DESC NULLS LAST, id DESC
+				LIMIT 1
+			`;
+			if (
+				sourceState.empty ||
+				previous[0]?.fingerprint === sourceState.fingerprint
+			) {
+				const completed = await completeSkippedAutomationRun(
+					tx,
+					params.automation.id,
+					params.runId,
+					windowStart,
+					granularity,
+					sourceState.fingerprint,
+					Boolean(params.automation.device_worker_id),
+					params.claimToken,
+				);
+				if (!completed) return { kind: "requeued" };
+				logger.info(
+					{ automationId: params.automation.id, empty: sourceState.empty },
+					"[automation] Skipped unchanged Automation sources before agent dispatch",
+				);
+				return { kind: "skipped" };
+			}
 			const ready = await tx`
 				UPDATE runs
-				SET approved_input = COALESCE(approved_input, '{}'::jsonb)
+				SET approved_input = (
+				      COALESCE(approved_input, '{}'::jsonb)
 				      - 'source_preflight_pending'
+				    ) || jsonb_build_object(
+				      'source_fingerprint', ${sourceState.fingerprint}::text
+				    )
 				WHERE id = ${params.runId}
 				  AND status = 'claimed'
 				  AND claimed_by = ${params.claimToken}
@@ -478,65 +537,6 @@ async function prepareScheduledSourceFingerprint(params: {
 			`;
 			if (ready.length === 0) return { kind: "requeued" };
 			return { kind: "ready" };
-		}
-
-		// Source execution owns a connection-pinned READ ONLY transaction. Use
-		// its dedicated pool while retaining this lifecycle lock so the selected
-		// version and normalized source configuration cannot change underneath
-		// the fingerprint. Reusing the main pool here deadlocks at DB_POOL_MAX=1.
-		const sourceState = await fingerprintAutomationSources({
-			sql: getSourceReadDb(),
-			automationId: params.automation.id,
-			versionId: params.payload.version_id,
-			windowStart: windowStart.toISOString(),
-			windowEnd: windowEnd.toISOString(),
-		});
-		const previous = await tx`
-			SELECT approved_input->>'source_fingerprint' AS fingerprint
-			FROM runs
-			WHERE automation_id = ${params.automation.id}
-			  AND run_type = 'automation'
-			  AND status = 'completed'
-			  AND approved_input->>'source_fingerprint' IS NOT NULL
-			ORDER BY completed_at DESC NULLS LAST, id DESC
-			LIMIT 1
-		`;
-		if (
-			sourceState.empty ||
-			previous[0]?.fingerprint === sourceState.fingerprint
-		) {
-			const completed = await completeSkippedAutomationRun(
-				tx,
-				params.automation.id,
-				params.runId,
-				windowStart,
-				granularity,
-				sourceState.fingerprint,
-				Boolean(params.automation.device_worker_id),
-				params.claimToken,
-			);
-			if (!completed) return { kind: "requeued" };
-			logger.info(
-				{ automationId: params.automation.id, empty: sourceState.empty },
-				"[automation] Skipped unchanged Automation sources before agent dispatch",
-			);
-			return { kind: "skipped" };
-		}
-		const ready = await tx`
-			UPDATE runs
-			SET approved_input = (
-			      COALESCE(approved_input, '{}'::jsonb)
-			      - 'source_preflight_pending'
-			    ) || jsonb_build_object(
-			      'source_fingerprint', ${sourceState.fingerprint}::text
-			    )
-			WHERE id = ${params.runId}
-			  AND status = 'claimed'
-			  AND claimed_by = ${params.claimToken}
-			RETURNING id
-		`;
-		if (ready.length === 0) return { kind: "requeued" };
-		return { kind: "ready" };
 		});
 	} catch (error) {
 		const message = `Automation source preflight failed: ${getErrorMessage(error)}`;
@@ -622,9 +622,9 @@ async function markAutomationRunFailedIdempotent(
           error_message = ${message}
       WHERE id = ${runId}
         AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-		AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
-	  RETURNING automation_id, organization_id, run_type,
-	            approved_input->>'dispatch_source' AS dispatch_source
+        AND (${claimedBy ?? null}::text IS NULL OR claimed_by = ${claimedBy ?? null})
+      RETURNING automation_id, organization_id, run_type,
+                approved_input->>'dispatch_source' AS dispatch_source
     `;
 		if (!failed) return;
 		if (failed.organization_id) {
@@ -816,21 +816,22 @@ export async function sweepStaleAutomationRuns(
 		sql,
 		coarseStaleInterval
 	);
-	const executingTimedOutRows: Awaited<ReturnType<typeof markStaleRunsAsTimeout>> =
-		[];
+	const executingTimedOutRows: Awaited<
+		ReturnType<typeof markStaleRunsAsTimeout>
+	> = [];
 	while (true) {
 		const batch = await sql.begin(async (tx) => {
-		const rows = await markStaleRunsAsTimeout(tx, {
-			// Both lanes are terminalized, but only a real Automation that reached
-			// `running` may count toward the schedule circuit breaker. A claimed
-			// row is a dispatch failure; an eval is a replay of live state.
-			runTypes: AUTOMATION_RUN_TYPES,
-			heartbeatSemantics: "beat-after-claim",
-			heartbeatStaleInterval,
-			coarseStaleInterval,
-			heartbeatErrorMessage: `Automation run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
-			coarseErrorMessage: `Automation run exceeded ${coarseStaleInterval} without reaching terminal state`,
-			maxRows: STALE_RUN_SWEEP_BATCH,
+			const rows = await markStaleRunsAsTimeout(tx, {
+				// Both lanes are terminalized, but only a real Automation that reached
+				// `running` may count toward the schedule circuit breaker. A claimed
+				// row is a dispatch failure; an eval is a replay of live state.
+				runTypes: AUTOMATION_RUN_TYPES,
+				heartbeatSemantics: "beat-after-claim",
+				heartbeatStaleInterval,
+				coarseStaleInterval,
+				heartbeatErrorMessage: `Automation run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
+				coarseErrorMessage: `Automation run exceeded ${coarseStaleInterval} without reaching terminal state`,
+				maxRows: STALE_RUN_SWEEP_BATCH,
 		});
 		for (const row of rows) {
 			if (row.organization_id) {
@@ -907,38 +908,38 @@ async function finalizeStalePendingAutomationRuns(
 			device_worker_id: string | null;
 			organization_id: string;
 		}>`
-	  WITH automation_locks AS MATERIALIZED (
-	    SELECT w.id
-	    FROM automations w
-	    WHERE w.id IN (
-	      SELECT r.automation_id
-	      FROM runs r
-	      WHERE r.run_type = 'automation'
-	        AND r.status = 'pending'
-	        AND r.created_at < current_timestamp - ${staleInterval}::interval
-	        AND NOT (
-	          COALESCE(r.approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
-	          AND NULLIF(r.approved_input->>'device_worker_id', '') IS NOT NULL
-	          AND EXISTS (
-	            SELECT 1 FROM device_workers dw
-	            WHERE dw.id::text = r.approved_input->>'device_worker_id'
-	          )
-	        )
-	      ORDER BY r.created_at ASC
-	      LIMIT 100
-	    )
-	    ORDER BY w.id
-	    -- SKIP LOCKED, as in stale-run-sweeper's identical CTE: another replica
-	    -- holding this automations row means it is already sweeping that
-	    -- Automation, so defer its runs to the next tick instead of blocking.
-	    FOR UPDATE SKIP LOCKED
-	  )
+      WITH automation_locks AS MATERIALIZED (
+        SELECT w.id
+        FROM automations w
+        WHERE w.id IN (
+          SELECT r.automation_id
+          FROM runs r
+          WHERE r.run_type = 'automation'
+            AND r.status = 'pending'
+            AND r.created_at < current_timestamp - ${staleInterval}::interval
+            AND NOT (
+              COALESCE(r.approved_input->>'dispatch_source', 'scheduled') = 'scheduled'
+              AND NULLIF(r.approved_input->>'device_worker_id', '') IS NOT NULL
+              AND EXISTS (
+                SELECT 1 FROM device_workers dw
+                WHERE dw.id::text = r.approved_input->>'device_worker_id'
+              )
+            )
+          ORDER BY r.created_at ASC
+          LIMIT 100
+        )
+        ORDER BY w.id
+        -- SKIP LOCKED, as in stale-run-sweeper's identical CTE: another replica
+        -- holding this automations row means it is already sweeping that
+        -- Automation, so defer its runs to the next tick instead of blocking.
+        FOR UPDATE SKIP LOCKED
+      )
       SELECT r.id, r.automation_id, r.organization_id, w.schedule, w.timezone,
              r.approved_input->>'dispatch_source' AS dispatch_source,
              NULLIF(r.approved_input->>'device_worker_id', '') AS device_worker_id
       FROM runs r
       JOIN automations w ON w.id = r.automation_id
-	  JOIN automation_locks locked ON locked.id = w.id
+      JOIN automation_locks locked ON locked.id = w.id
       WHERE r.run_type = 'automation'
         AND r.status = 'pending'
         AND r.created_at < current_timestamp - ${staleInterval}::interval
@@ -950,9 +951,9 @@ async function finalizeStalePendingAutomationRuns(
             SELECT 1 FROM device_workers dw
             WHERE dw.id::text = r.approved_input->>'device_worker_id'
           )
-      )
+        )
       ORDER BY r.created_at ASC
-	  FOR UPDATE OF r SKIP LOCKED
+      FOR UPDATE OF r SKIP LOCKED
       LIMIT 100
     `;
 
@@ -1053,7 +1054,7 @@ async function resetOrphanedAutomationRuns(
         error_message = NULL
     WHERE run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
       AND status = 'claimed'
-	  AND (claimed_by = 'lobu-dispatcher' OR claimed_by LIKE 'lobu-dispatcher:%')
+      AND (claimed_by = 'lobu-dispatcher' OR claimed_by LIKE 'lobu-dispatcher:%')
       AND claimed_at < now() - ${intervals.automationOrphanedClaimThreshold}::interval
       AND COALESCE(approved_input->>'dispatch_source', 'scheduled')
           IN ('scheduled', 'event')
@@ -1085,8 +1086,8 @@ export async function materializeDueAutomationRuns(
 			// dispatch-time `ensureAutomationAgentExists` check stays as a delete-after-select
 			// backstop.
 			const dueAutomations = await sql<DueAutomationRow>`
-				SELECT w.id, w.organization_id, w.agent_id, w.schedule, w.triggers,
-				       w.entity_ids, w.created_by, w.current_version_id,
+                SELECT w.id, w.organization_id, w.agent_id, w.schedule, w.triggers,
+                       w.entity_ids, w.created_by, w.current_version_id,
                w.device_worker_id::text AS device_worker_id, w.agent_kind
         FROM automations w
         WHERE w.status = 'active'
@@ -1523,7 +1524,17 @@ async function requeueAutomationRunAfterTransientDispatchFailure(
 	});
 }
 
-async function releaseDeviceAutomationAfterSourcePreflight(
+/**
+ * Hand a run back to `pending` once its source readiness is settled, for the
+ * two lanes the server dispatcher never executes itself: a device-pinned run
+ * belongs to its pin, and a manual-open run (no agent, no pin) belongs to
+ * whichever MCP client calls complete_window. The dispatcher claimed the row
+ * only to own the preflight, so it has to return it rather than fail it for
+ * having no assigned agent. The predicate mirrors claimAutomationRun's
+ * dispatchable branch, so a released row is no longer claimable and cannot
+ * loop back through preflight.
+ */
+async function releaseAutomationAfterSourcePreflight(
 	sql: DbClient,
 	runId: number,
 	claimToken: string,
@@ -1537,7 +1548,10 @@ async function releaseDeviceAutomationAfterSourcePreflight(
 		WHERE id = ${runId}
 		  AND status = 'claimed'
 		  AND claimed_by = ${claimToken}
-		  AND NULLIF(approved_input->>'device_worker_id', '') IS NOT NULL
+		  AND (
+		    NULLIF(approved_input->>'device_worker_id', '') IS NOT NULL
+		    OR NULLIF(approved_input->>'agent_id', '') IS NULL
+		  )
 		  AND COALESCE(approved_input->>'source_preflight_pending', 'false') <> 'true'
 	`;
 }
@@ -1556,11 +1570,12 @@ async function claimAutomationRun(
 		// proper column); both shapes are guarded here so the filter survives
 		// either schema.
 		const candidates = await tx`
-			SELECT r.id, r.organization_id, r.automation_id, r.run_type, r.approved_input
+      SELECT r.id, r.organization_id, r.automation_id, r.run_type,
+             r.approved_input
       FROM runs r
       WHERE r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
         AND r.status = 'pending'
-		AND r.run_at <= current_timestamp
+        AND r.run_at <= current_timestamp
         AND COALESCE(
           (r.approved_input->>'dispatch_retry_not_before')::timestamptz,
           '-infinity'::timestamptz
@@ -1573,22 +1588,22 @@ async function claimAutomationRun(
             AND active.run_type = r.run_type
             AND active.status IN ('claimed', 'running')
         )
-		AND (
-		  -- Source readiness belongs to the server even when execution is pinned
-		  -- to a device. Once ready, the dispatcher releases the row for the pin.
-		  COALESCE(r.approved_input->>'source_preflight_pending', 'false') = 'true'
-		  OR (
-		    (
-		      r.approved_input->>'device_worker_id' IS NULL
-		      OR r.approved_input->>'device_worker_id' = ''
-		    )
-		    -- Runs with NO agent and NO device pin are manual-open: any connected
-		    -- MCP client may execute and complete them (write-tier
-		    -- complete_window). The server dispatcher must leave them pending.
-		    AND r.approved_input->>'agent_id' IS NOT NULL
-		    AND r.approved_input->>'agent_id' <> ''
-		  )
-		)
+        AND (
+          -- Source readiness belongs to the server even when execution is pinned
+          -- to a device. Once ready, the dispatcher releases the row for the pin.
+          COALESCE(r.approved_input->>'source_preflight_pending', 'false') = 'true'
+          OR (
+            (
+              r.approved_input->>'device_worker_id' IS NULL
+              OR r.approved_input->>'device_worker_id' = ''
+            )
+            -- Runs with NO agent and NO device pin are manual-open: any connected
+            -- MCP client may execute and complete them (write-tier
+            -- complete_window). The server dispatcher must leave them pending.
+            AND r.approved_input->>'agent_id' IS NOT NULL
+            AND r.approved_input->>'agent_id' <> ''
+          )
+        )
         ${specificRunClause}
       ORDER BY r.created_at ASC
       FOR UPDATE SKIP LOCKED
@@ -1811,8 +1826,7 @@ async function dispatchAutomationRun(
 		return "failed";
 	}
 
-	const rawPayload = run.approved_input as Record<string, unknown>;
-	if (rawPayload.source_preflight_pending === true) {
+	if (payload.source_preflight_pending) {
 		let automation: DueAutomationRow | null;
 		try {
 			automation = await loadAutomationForAutomation(sql, run.automation_id);
@@ -1840,8 +1854,8 @@ async function dispatchAutomationRun(
 		if (prepared.kind === "skipped") return "reconciled";
 		if (prepared.kind === "failed") return "failed";
 		if (prepared.kind === "requeued") return "requeued";
-		if (payload.device_worker_id) {
-			await releaseDeviceAutomationAfterSourcePreflight(
+		if (payload.device_worker_id || !payload.agent_id) {
+			await releaseAutomationAfterSourcePreflight(
 				sql,
 				run.id,
 				run.claim_token,
@@ -1958,8 +1972,8 @@ async function dispatchAutomationRun(
           )
       WHERE id = ${run.id}
         AND status = 'claimed'
-		AND claimed_by = ${run.claim_token}
-	  RETURNING id
+        AND claimed_by = ${run.claim_token}
+      RETURNING id
     `;
 		if (persisted.length === 0) return "reconciled";
 	}
@@ -2009,8 +2023,8 @@ async function dispatchAutomationRun(
 	}
 
 	let sessionBody: {
-			agentId?: string;
-			messagesUrl?: string;
+		agentId?: string;
+		messagesUrl?: string;
 	};
 	try {
 		sessionBody = (await sessionResponse.json()) as typeof sessionBody;
@@ -2028,8 +2042,8 @@ async function dispatchAutomationRun(
 		);
 	}
 
-		// Mark the run 'running' with a durable message correlation BEFORE posting,
-		// so a late completion event arriving mid-POST has somewhere to land.
+	// Mark the run 'running' with a durable message correlation BEFORE posting,
+	// so a late completion event arriving mid-POST has somewhere to land.
 	const runningClaim = `lobu:${agentId}:${run.claim_token}`;
 	const promoted = await sql`
       UPDATE runs

@@ -396,6 +396,61 @@ describe("automation contract", () => {
 		expect((run.run_metadata as Record<string, unknown>).run_id).toBeUndefined();
 	});
 
+	// Source readiness is server-owned, so the dispatcher claims even the rows
+	// it will never execute. A manual-open run — no agent, no device pin — is
+	// completed by whichever MCP client calls complete_window, so once the
+	// preflight is settled the dispatcher owes the row back to `pending`.
+	// Failing it for "no assigned agent" would also burn the Automation's
+	// scheduled-failure budget and eventually auto-pause it.
+	it("returns a manual-open run to pending after its source preflight", async () => {
+		const { sql, dbClient, workspace, automationId } =
+			await createAutomatedAutomation();
+
+		const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
+		const { windowStart, windowEnd } = await computePendingWindow(
+			dbClient,
+			automationId,
+			granularity
+		);
+		const queued = await createAutomationRun({
+			organizationId: workspace.org.id,
+			automationId,
+			windowStart: windowStart.toISOString(),
+			windowEnd: windowEnd.toISOString(),
+			dispatchSource: "scheduled",
+			sourcePreflightPending: true,
+		});
+
+		const result = await dispatchPendingAutomationRuns({
+			db: dbClient,
+			runIds: [queued.runId],
+		});
+		expect(result.failed).toBe(0);
+		expect(result.requeued).toBe(1);
+
+		const [run] = await sql`
+      SELECT status, claimed_by, error_message, approved_input
+      FROM runs
+      WHERE id = ${queued.runId}
+    `;
+		expect(String(run.status)).toBe("pending");
+		expect(run.claimed_by).toBeNull();
+		expect(run.error_message).toBeNull();
+		// The preflight really ran: its pending marker is gone, so the row is no
+		// longer claimable by the dispatcher.
+		expect(
+			(run.approved_input as Record<string, unknown>).source_preflight_pending
+		).toBeUndefined();
+
+		const [automation] = await sql`
+      SELECT consecutive_scheduled_failures, schedule_auto_paused_at
+      FROM automations
+      WHERE id = ${automationId}
+    `;
+		expect(Number(automation.consecutive_scheduled_failures)).toBe(0);
+		expect(automation.schedule_auto_paused_at).toBeNull();
+	});
+
 	it("skips automation runs pinned to a device worker (#802)", async () => {
 		const { sql, dbClient, workspace, automationId, agent } =
 			await createAutomatedAutomation();

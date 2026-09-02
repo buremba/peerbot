@@ -2558,6 +2558,54 @@ describe("automation contract", () => {
 			expect(String(row.status)).toBe("running");
 		});
 
+		// The sweep drains in batches of STALE_RUN_SWEEP_BATCH and its passes are
+		// capped so a backlog that refills as fast as it drains cannot hold the
+		// scheduler tick open forever. The cap bounds the tick; it must not shorten
+		// the sweep, so a backlog spanning more than one batch still drains fully.
+		it("drains a stale backlog spanning more than one batch", async () => {
+			const { sql, workspace, agent } = await createAutomatedAutomation();
+			// One executing run per Automation is a DB invariant
+			// (idx_runs_executing_per_automation), so a real backlog is many
+			// Automations each holding one stale run -- not many runs under one.
+			// 150 spans two batches of STALE_RUN_SWEEP_BATCH.
+			const BACKLOG = 150;
+			await sql`
+				WITH base AS (
+					SELECT COALESCE(MAX(id), 0) AS max_id FROM automations
+				), made AS (
+					INSERT INTO automations (
+						id, automation_group_id, organization_id, created_by, agent_id,
+						name, slug
+					)
+					SELECT base.max_id + g, base.max_id + g, ${workspace.org.id},
+					       ${workspace.users.owner.id}, ${agent.agentId},
+					       'Backlog ' || g, 'backlog-' || g
+					FROM generate_series(1, ${BACKLOG}) g, base
+					RETURNING id
+				)
+				INSERT INTO runs (
+					organization_id, run_type, automation_id, status, approval_status,
+					claimed_by, claimed_at, last_heartbeat_at, approved_input
+				)
+				SELECT ${workspace.org.id}, 'automation', made.id, 'running', 'auto',
+				       'mac-backlog-test', NOW() - INTERVAL '3 hours',
+				       NOW() - INTERVAL '3 hours',
+				       '{"dispatch_source":"scheduled"}'::jsonb
+				FROM made
+			`;
+
+			const { timedOut } = await sweepStaleAutomationRuns(sql);
+			expect(timedOut).toBeGreaterThanOrEqual(BACKLOG);
+
+			// The pass cap bounds the tick; it must not shorten the sweep. A cap that
+			// stopped after one pass would strand the last 50 in `running` forever.
+			const [stranded] = await sql`
+				SELECT count(*)::int AS n FROM runs
+				WHERE claimed_by = 'mac-backlog-test' AND status <> 'timeout'
+			`;
+			expect(Number(stranded.n)).toBe(0);
+		}, 120_000);
+
 		it("does not coarse-reap a live heartbeating run older than the 2h TTL", async () => {
 			// Claimed 3h ago but heartbeating fresh (30s) → still alive. The coarse
 			// 2h backstop must NOT touch it; only the (un-lapsed) fast path governs

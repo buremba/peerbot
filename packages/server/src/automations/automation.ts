@@ -768,6 +768,8 @@ export async function reconcileAutomationRuns(
 
 /** Rows terminalized per stale-sweep batch; the loop exits on a short batch. */
 const STALE_RUN_SWEEP_BATCH = 100;
+/** Most batches one tick will sweep, so the tick cannot be held open. */
+const STALE_RUN_SWEEP_MAX_PASSES = 20;
 export async function sweepStaleAutomationRuns(
 	db?: DbClient
 ): Promise<{ timedOut: number }> {
@@ -781,7 +783,13 @@ export async function sweepStaleAutomationRuns(
 	const executingTimedOutRows: Awaited<
 		ReturnType<typeof markStaleRunsAsTimeout>
 	> = [];
-	while (true) {
+	// Bounded per tick. Draining in batches and stopping on a short one leaves
+	// "short" as the ONLY exit, so a row that stays stale after terminalization,
+	// or a backlog refilling as fast as it drains, would hand back full batches
+	// forever and spin the scheduler tick with it. Cap the passes instead: the
+	// work committed so far is durable, so whatever is left is swept by the next
+	// tick rather than being lost.
+	for (let pass = 0; pass < STALE_RUN_SWEEP_MAX_PASSES; pass++) {
 		const batch = await sql.begin(async (tx) => {
 			const rows = await markStaleRunsAsTimeout(tx, {
 				// Both lanes are terminalized, but only a real Automation that reached

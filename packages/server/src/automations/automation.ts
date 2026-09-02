@@ -330,7 +330,7 @@ async function enqueueAutomationRunForRecord(
 }
 
 async function completeSkippedAutomationRun(
-	sql: DbClient,
+	tx: DbClient,
 	automationId: number,
 	runId: number,
 	windowStart: Date,
@@ -340,45 +340,44 @@ async function completeSkippedAutomationRun(
 	claimToken: string,
 ): Promise<boolean> {
 	// Caller holds the Automation row lock across source snapshot and completion.
-	const tx = sql;
-		const [completed] = await tx`
-			UPDATE runs
-			SET status = 'completed',
-			    outcome = ${classifyRunOutcome({ status: "completed" })},
-			    claimed_by = NULL,
-			    claimed_at = NULL,
-			    action_output = '{}'::jsonb,
-			    output_tail = 'No-op: scheduled source content is unchanged.',
-			    approved_input = (
-			      COALESCE(approved_input, '{}'::jsonb)
-			      - 'source_preflight_pending'
-			    ) || jsonb_build_object(
-			      'granularity', ${granularity}::text,
-			      'source_fingerprint', ${sourceFingerprint}::text
-			    ),
-			    run_metadata = COALESCE(run_metadata, '{}'::jsonb)
-			      || '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
-			    completed_at = current_timestamp
-			WHERE id = ${runId}
-			  AND automation_id = ${automationId}
-			  AND status = 'claimed'
-			  AND claimed_by = ${claimToken}
-			RETURNING id
-		`;
-		if (!completed) return false;
-		await advanceExpectedAutomationWindow(
-			tx,
-			automationId,
-			windowStart,
-			granularity,
-		);
-		await advanceAutomationScheduleAfterSuccessfulWindow(
-			tx,
-			automationId,
-			devicePinned,
-			granularity,
-		);
-		return true;
+	const [completed] = await tx`
+		UPDATE runs
+		SET status = 'completed',
+		    outcome = ${classifyRunOutcome({ status: "completed" })},
+		    claimed_by = NULL,
+		    claimed_at = NULL,
+		    action_output = '{}'::jsonb,
+		    output_tail = 'No-op: scheduled source content is unchanged.',
+		    approved_input = (
+		      COALESCE(approved_input, '{}'::jsonb)
+		      - 'source_preflight_pending'
+		    ) || jsonb_build_object(
+		      'granularity', ${granularity}::text,
+		      'source_fingerprint', ${sourceFingerprint}::text
+		    ),
+		    run_metadata = COALESCE(run_metadata, '{}'::jsonb)
+		      || '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
+		    completed_at = current_timestamp
+		WHERE id = ${runId}
+		  AND automation_id = ${automationId}
+		  AND status = 'claimed'
+		  AND claimed_by = ${claimToken}
+		RETURNING id
+	`;
+	if (!completed) return false;
+	await advanceExpectedAutomationWindow(
+		tx,
+		automationId,
+		windowStart,
+		granularity,
+	);
+	await advanceAutomationScheduleAfterSuccessfulWindow(
+		tx,
+		automationId,
+		devicePinned,
+		granularity,
+	);
+	return true;
 }
 
 type SourceFingerprintPreparation =
@@ -791,6 +790,9 @@ export async function reconcileAutomationRuns(
  * semantics; thresholds live in config/intervals.ts
  * (AUTOMATION_RUN_STALE_INTERVAL / AUTOMATION_RUN_HEARTBEAT_STALE_INTERVAL).
  */
+
+/** Rows terminalized per stale-sweep batch; the loop exits on a short batch. */
+const STALE_RUN_SWEEP_BATCH = 100;
 export async function sweepStaleAutomationRuns(
 	db?: DbClient
 ): Promise<{ timedOut: number }> {
@@ -801,7 +803,8 @@ export async function sweepStaleAutomationRuns(
 		sql,
 		coarseStaleInterval
 	);
-	let executingTimedOutRows: Awaited<ReturnType<typeof markStaleRunsAsTimeout>> = [];
+	const executingTimedOutRows: Awaited<ReturnType<typeof markStaleRunsAsTimeout>> =
+		[];
 	while (true) {
 		const batch = await sql.begin(async (tx) => {
 		const rows = await markStaleRunsAsTimeout(tx, {
@@ -814,7 +817,7 @@ export async function sweepStaleAutomationRuns(
 			coarseStaleInterval,
 			heartbeatErrorMessage: `Automation run heartbeat went silent for over ${heartbeatStaleInterval} — the executor crashed or was abandoned`,
 			coarseErrorMessage: `Automation run exceeded ${coarseStaleInterval} without reaching terminal state`,
-			maxRows: 100,
+			maxRows: STALE_RUN_SWEEP_BATCH,
 		});
 		for (const row of rows) {
 			if (row.organization_id) {
@@ -839,7 +842,8 @@ export async function sweepStaleAutomationRuns(
 		return rows;
 		});
 		executingTimedOutRows.push(...batch);
-		if (batch.length < 100) break;
+		// A short batch means the sweep drained the backlog.
+		if (batch.length < STALE_RUN_SWEEP_BATCH) break;
 	}
 	const executingTimedOut = executingTimedOutRows.length;
 	const timedOut = pendingTimedOut + executingTimedOut;

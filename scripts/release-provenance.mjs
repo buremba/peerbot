@@ -195,6 +195,27 @@ export function verifyImmutableRelease({
   return { sha, version: versionForReleaseTag(expectedTag) };
 }
 
+/**
+ * The release body is this version's changelog entry, not the head of the
+ * whole file. release-please writes one `## [<version>](...)` section per
+ * release, newest first, so the entry runs to the next `## ` heading.
+ */
+export function releaseNotesFor({ changelog, version }) {
+  parseStableVersion(version);
+  const lines = String(changelog ?? "").split("\n");
+  const isHeading = (line) => /^## /.test(line);
+  const start = lines.findIndex(
+    (line) => isHeading(line) && line.includes(`[${version}]`)
+  );
+  // A missing entry is not fatal: the release still has to be created, and an
+  // empty body costs a reader one click to the changelog.
+  if (start < 0) return { version, notes: "", found: false };
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex(isHeading);
+  const notes = (end < 0 ? rest : rest.slice(0, end)).join("\n").trim();
+  return { version, notes, found: true };
+}
+
 /** Subcommands the workflows pipe JSON into. Every one is covered by
  * scripts/__tests__/release-publish-order.test.ts, which also asserts that no
  * workflow invokes a name that is missing from this table. */
@@ -210,6 +231,7 @@ const COMMANDS = {
   "manifest-bump": (input) => manifestBump(input),
   "release-tag": (input) => ({ tag: releaseTagForVersion(input.version) }),
   "verify-release": (input) => verifyImmutableRelease(input),
+  "release-notes": (input) => releaseNotesFor(input),
 };
 
 export const COMMAND_NAMES = Object.keys(COMMANDS);

@@ -208,8 +208,14 @@ jobs:
             exit 0
           fi
 
-          notes=$(git show "$ATTESTED_SHA:CHANGELOG.md" || echo "")
-          notes=${notes:0:12000}
+          # This version's changelog entry, not the head of the whole file:
+          # CHANGELOG.md is ~475KB and newest-first, so a plain truncation puts
+          # several past releases in every release body.
+          changelog=$(git show "$ATTESTED_SHA:CHANGELOG.md" || echo "")
+          notes=$(jq -n --arg changelog "$changelog" --arg version "$current_version" \
+            '{changelog: $changelog, version: $version}' \
+            | node scripts/release-provenance.mjs release-notes | jq -r '.notes')
+          notes=${notes:0:60000}
           if ! gh api "repos/${REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
             gh api --method POST "repos/${REPOSITORY}/git/refs" \
               --input <(jq -n --arg ref "refs/tags/$tag" --arg sha "$ATTESTED_SHA" '{ref: $ref, sha: $sha}') >/dev/null

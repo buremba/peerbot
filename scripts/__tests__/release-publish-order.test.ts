@@ -7,6 +7,7 @@ import {
   compareVersions,
   manifestBump,
   peelTag,
+  releaseNotesFor,
   releaseTagForVersion,
   selectLatestRequiredJobs,
   selectUniqueLatestRun,
@@ -207,6 +208,25 @@ describe("the release is created bound to the attested commit", () => {
     expect(body()).toContain('make_latest: "true"');
   });
 
+  it("posts this version's changelog entry, not the head of the file", () => {
+    // CHANGELOG.md is ~475KB and newest-first, so a plain truncation puts
+    // several past releases into every release body.
+    expect(body()).toContain("release-provenance.mjs release-notes");
+    const changelog = readFileSync(`${root}/CHANGELOG.md`, "utf8");
+    const headings = [...changelog.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)];
+    expect(headings.length).toBeGreaterThan(1);
+    const [current, previous] = headings.map((match) => match[1]);
+    const extracted = releaseNotesFor({ changelog, version: current });
+    expect(extracted.found).toBe(true);
+    expect(extracted.notes).not.toContain(`[${previous}]`);
+    expect(extracted.notes.length).toBeLessThan(changelog.length);
+    // A version with no entry still has to produce a release.
+    expect(releaseNotesFor({ changelog, version: "99.0.0" })).toMatchObject({
+      found: false,
+      notes: "",
+    });
+  });
+
   it("does not let a 404 body or a large changelog fail the release", () => {
     // `gh api` prints the 404 body on STDOUT, so `|| true` left
     // {"message":"Not Found"} in the variable and the already-exists branch
@@ -216,7 +236,7 @@ describe("the release is created bound to the attested commit", () => {
     // CHANGELOG.md is ~475KB: `git show … | head -c` exits 141 under pipefail
     // and kills the step before it creates anything.
     expect(body()).not.toContain("head -c");
-    expect(body()).toContain("notes=${notes:0:12000}");
+    expect(body()).toContain("notes=${notes:0:60000}");
     expect(body()).toContain('CHANGELOG.md" || echo ""');
   });
 });

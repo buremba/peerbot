@@ -309,6 +309,30 @@ describe("publishing requires an attested release", () => {
     );
   });
 
+  it("accepts the producer run that is still dispatching it", () => {
+    // trigger-package-publish lives *inside* the Build Images run and passes
+    // its own $GITHUB_RUN_ID, so that run is necessarily in_progress while
+    // this gate reads it. A run-level "completed" assertion can therefore
+    // never be satisfied, and strands the release off npm.
+    const dispatch = shell("build-images.yml", "trigger-package-publish");
+    expect(dispatch).toContain('-f image_run_id="$GITHUB_RUN_ID"');
+    const gate = shell("publish-packages.yml", "attest-publish");
+    expect(gate).not.toContain("Build Images release run is not completed");
+    expect(gate).not.toMatch(/'\.status'\s*<<<"\$build_run"/);
+    expect(gate).not.toMatch(/'\.conclusion'\s*<<<"\$build_run"/);
+    // Identity still has to hold, and per-job attestation is the evidence.
+    expect(gate).toContain("head_sha");
+    expect(gate).toContain("release-provenance.mjs attest-jobs");
+    // The dispatching job must not be one of the jobs it has to wait for.
+    const required = read("publish-packages.yml").match(
+      /REQUIRED_IMAGE_JOBS: (.+)/
+    )?.[1];
+    expect(required?.split(" ")).not.toContain("trigger-package-publish");
+    expect(required?.split(" ").sort()).toEqual(
+      [...REQUIRED_IMAGE_JOBS].sort()
+    );
+  });
+
   it("treats an unreadable registry as unknown, not as empty", () => {
     // `npm view --json` prints its error object to STDOUT, so `|| echo '[]'`
     // emitted two JSON values and the version gate could not run at all.

@@ -95,8 +95,15 @@ jobs:
           [ "$(jq -r '.workflow_id' <<<"$build_run")" = "$build_workflow_id" ] || { echo "::error::wrong Build Images workflow"; exit 1; }
           [ "$(jq -r '.head_repository.full_name // empty' <<<"$build_run")" = "$REPOSITORY" ] || { echo "::error::Build Images repository mismatch"; exit 1; }
           [ "$(jq -r '.event' <<<"$build_run")" = release ] || { echo "::error::Build Images run must be a release event"; exit 1; }
-          [ "$(jq -r '.status' <<<"$build_run")" = completed ] && [ "$(jq -r '.conclusion' <<<"$build_run")" = success ] || { echo "::error::Build Images release run is not completed-success"; exit 1; }
           [ "$(jq -r '.head_sha' <<<"$build_run")" = "$TAG_SHA" ] || { echo "::error::Build Images SHA does not match peeled tag"; exit 1; }
+          # Deliberately no run-level status/conclusion assertion. This publish
+          # is dispatched by trigger-package-publish, a job *inside* the run it
+          # names, so that run is still in_progress while this gate reads it --
+          # asserting "completed" here strands the release off npm, which is
+          # the defect this workflow exists to prevent. The per-job attestation
+          # below is stronger evidence anyway: it proves all six required image
+          # jobs are completed-success, which an unfinished producer cannot
+          # fake, and none of the six is the job doing the dispatching.
 
           jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}/jobs?filter=all&per_page=100")
           jq -n --argjson pages "$jobs" --arg required "$REQUIRED_IMAGE_JOBS" \

@@ -6,7 +6,6 @@
   "bump-minor-pre-major": false,
   "bump-patch-for-minor-pre-major": false,
   "draft": false,
-  "skip-github-release": true,
   "prerelease": false,
   "separate-pull-requests": false,
   "changelog-path": "CHANGELOG.md",

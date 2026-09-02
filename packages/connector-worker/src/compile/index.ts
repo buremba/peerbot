@@ -24,7 +24,8 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { build, type Plugin } from 'esbuild';
+import { build, type BuildOptions, type Metafile, type Plugin } from 'esbuild';
+import { IsolateLaneIneligibleError, isNodeBuiltinSpecifier } from '../isolate/eligibility.js';
 import { EXTERNAL_RUNTIME_DEPS } from '../runtime-deps.js';
 
 export {
@@ -93,6 +94,23 @@ export const SDK_SPECIFIER_RE = /^(lobu|@lobu\/connector-sdk)(\/.*)?$/;
 export function normalizeSdkSpecifier(specifier: string): string {
   return specifier.replace(/^lobu(?=$|\/)/, '@lobu/connector-sdk');
 }
+
+/**
+ * esbuild options for code that runs inside a V8 isolate: the gateway's script
+ * sandbox (`packages/server/src/sandbox/run-script.ts`, via the server's
+ * `compiler-core`) and the connector isolate lane. `external: []` inlines every
+ * import because an isolate has no module resolver, and `platform: 'node'`
+ * leaves Node builtins as bare `require()` calls that throw at load — the
+ * fail-closed signal `findIsolateIneligibleBuiltins` and the lane tests key
+ * on. One constant so the runtime and the tests that classify bundles can
+ * never disagree.
+ */
+export const ISOLATE_LANE_BUILD_OPTIONS = {
+  format: 'cjs',
+  target: 'esnext',
+  platform: 'node',
+  external: [],
+} as const satisfies Partial<BuildOptions>;
 
 /**
  * esbuild plugin that marks the connector SDK as **external** (runtime-provided)
@@ -340,4 +358,135 @@ export function createConnectorCompiler(options?: CompileOptions) {
   }
 
   return { compileConnectorFromFile };
+}
+
+/**
+ * esbuild plugin that resolves the `lobu` alias to `@lobu/connector-sdk` so the
+ * SDK is INLINED into the bundle. The isolate has no module loader, so unlike
+ * the process lane nothing is externalized; the real package name falls
+ * through to esbuild's own resolution.
+ */
+function createSdkInlinePlugin(): Plugin {
+  return {
+    name: 'sdk-inline',
+    setup(b) {
+      b.onResolve({ filter: /^lobu(\/.*)?$/ }, (args) =>
+        b.resolve(normalizeSdkSpecifier(args.path), {
+          resolveDir: args.resolveDir,
+          kind: args.kind,
+          importer: args.importer,
+        })
+      );
+    },
+  };
+}
+
+/**
+ * esbuild plugin that keeps `EXTERNAL_RUNTIME_DEPS` (Playwright, sharp, jimp)
+ * out of an isolate bundle. They are native or browser-launching packages that
+ * only a Node process can host; leaving them as bare `require()` calls makes
+ * the guest's fail-closed `require` name them at load instead of esbuild
+ * choking on a `.node` binary mid-bundle.
+ */
+function createRuntimeDepsExternalPlugin(): Plugin {
+  const roots = new Set<string>(EXTERNAL_RUNTIME_DEPS);
+  return {
+    name: 'runtime-deps-external',
+    setup(b) {
+      b.onResolve({ filter: /^[^./]/ }, (args) => {
+        const root = args.path.startsWith('@')
+          ? args.path.split('/').slice(0, 2).join('/')
+          : args.path.split('/')[0];
+        return roots.has(root) ? { path: args.path, external: true } : undefined;
+      });
+    },
+  };
+}
+
+export interface IsolateBundle {
+  /** CJS bundle text; `module.exports.default` is the ConnectorRuntime class. */
+  code: string;
+  /** Node builtins the bundle still requires (`node:` prefix stripped), sorted. Empty means isolate-eligible. */
+  builtins: string[];
+  bytes: number;
+}
+
+function builtinsFromMetafile(metafile: Metafile): string[] {
+  const found = new Set<string>();
+  for (const meta of Object.values(metafile.inputs)) {
+    for (const imp of meta.imports) {
+      if (imp.external && isNodeBuiltinSpecifier(imp.path)) found.add(imp.path.replace(/^node:/, ''));
+    }
+  }
+  return [...found].sort();
+}
+
+/**
+ * Compile a connector source file into a self-contained CJS bundle for the
+ * isolate lane (`ISOLATE_LANE_BUILD_OPTIONS`): the SDK and every pure-JS
+ * dependency are inlined; `npm:` specifiers must resolve (`unresolved:
+ * 'error'`) because the isolate cannot supply them at runtime. The metafile
+ * reports which Node builtins survive as bare requires, which is how a bundle
+ * is classified as needing the process lane.
+ */
+export function createIsolateConnectorCompiler(options?: Pick<CompileOptions, 'cacheMax'>) {
+  const cacheMax = options?.cacheMax ?? DEFAULT_CACHE_MAX;
+  const cache = new Map<string, { mtimeMs: number; bundle: IsolateBundle }>();
+  const plugins: Plugin[] = [
+    createSdkInlinePlugin(),
+    createRuntimeDepsExternalPlugin(),
+    createNpmSpecifierPlugin({ unresolved: 'error' }),
+  ];
+
+  function touch(filePath: string, entry: { mtimeMs: number; bundle: IsolateBundle }): void {
+    cache.delete(filePath);
+    cache.set(filePath, entry);
+    while (cache.size > cacheMax) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  }
+
+  async function bundleConnectorForIsolate(filePath: string): Promise<IsolateBundle> {
+    let mtimeMs: number | null = null;
+    try {
+      mtimeMs = (await stat(filePath)).mtimeMs;
+      const cached = cache.get(filePath);
+      if (cached && cached.mtimeMs === mtimeMs) {
+        touch(filePath, cached);
+        return cached.bundle;
+      }
+    } catch {
+      // stat failed — let the build surface the real error.
+    }
+    const result = await build({
+      ...ISOLATE_LANE_BUILD_OPTIONS,
+      entryPoints: [filePath],
+      bundle: true,
+      write: false,
+      metafile: true,
+      minify: false,
+      sourcemap: false,
+      logLevel: 'silent',
+      plugins,
+    });
+    const code = result.outputFiles[0]?.text ?? '';
+    const bundle: IsolateBundle = {
+      code,
+      builtins: builtinsFromMetafile(result.metafile),
+      bytes: Buffer.byteLength(code),
+    };
+    if (mtimeMs !== null) touch(filePath, { mtimeMs, bundle });
+    return bundle;
+  }
+
+  /** Bundle for the isolate lane, or throw `IsolateLaneIneligibleError` naming the builtins. */
+  async function compileConnectorForIsolateFromFile(filePath: string): Promise<string> {
+    const bundle = await bundleConnectorForIsolate(filePath);
+    if (bundle.builtins.length > 0) throw new IsolateLaneIneligibleError(bundle.builtins, filePath);
+    return bundle.code;
+  }
+
+  return { bundleConnectorForIsolate, compileConnectorForIsolateFromFile };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildConnectorConfig } from '../executor/child-runner.js';
+import { buildConnectorConfig } from '../executor/connector-config.js';
 
 /**
  * The trusted gateway sets LOBU_DB_EGRESS_POLICY on job.env. A tenant controls

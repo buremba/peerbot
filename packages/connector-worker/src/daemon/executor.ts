@@ -40,7 +40,8 @@ type JobCodeResult = { ok: true; code: string } | { ok: false; error: string };
 async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
   if (job.compiled_code) return { ok: true, code: job.compiled_code };
   // Inline compiled jobs must not load the optional compiler/SDK graph.
-  const { compileConnectorFromFile, findBundledConnectorFile } = await import('../compile-connector.js');
+  const { compileConnectorFromFile, compileConnectorForIsolateFromFile, findBundledConnectorFile } =
+    await import('../compile-connector.js');
   if (!job.connector_key) {
     return { ok: false, error: 'No compiled_code and no connector_key — gateway sent neither.' };
   }
@@ -54,7 +55,12 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
     };
   }
   try {
-    const code = await compileConnectorFromFile(localPath);
+    // The isolate lane needs a self-contained CJS bundle (SDK inlined, Node
+    // builtins rejected); the process lane keeps its SDK-externalized ESM.
+    const code =
+      job.lane === 'isolate'
+        ? await compileConnectorForIsolateFromFile(localPath)
+        : await compileConnectorFromFile(localPath);
     return { ok: true, code };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -63,7 +69,7 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
 }
 
 /**
- * Load the compiler and the subprocess runtime, together and on demand.
+ * Load the executor selector and the runtime, together and on demand.
  *
  * Dynamic on purpose. A daemon whose compiler/SDK artifacts are missing or
  * broken is precisely the case the daemon builtins exist to recover, and a
@@ -76,9 +82,33 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
  */
 async function loadCompiledRuntime() {
   return Promise.all([
-    import('../executor/subprocess.js'),
+    import('../executor/select.js'),
     import('../executor/runtime.js'),
   ]);
+}
+
+/**
+ * Pick the executor for a claimed run by its `lane`, or the reason it cannot
+ * run here. `lane: 'isolate'` is a requirement (the isolate is the security
+ * boundary for organization-supplied code), so a host without `isolated-vm`
+ * fails the run instead of forking a child.
+ */
+async function selectExecutorForJob(
+  select: typeof import('../executor/select.js'),
+  job: PollResponse,
+  timeoutMs: number,
+  cfg: ExecutorConfig
+): Promise<{ ok: true; executor: import('../executor/interface.js').SyncExecutor } | { ok: false; error: string }> {
+  try {
+    const executor = await select.selectExecutor({
+      lane: job.lane,
+      timeoutMs,
+      maxOldSpaceSize: cfg.maxOldSpaceSize,
+    });
+    return { ok: true, executor };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export interface ExecutorConfig {
@@ -230,11 +260,7 @@ async function executeSyncRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
-  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
-  const subprocessExecutor = new SubprocessExecutor({
-    timeoutMs: cfg.timeoutMs,
-    maxOldSpaceSize: cfg.maxOldSpaceSize,
-  });
+  const [select, { executeCompiledConnector }] = await loadCompiledRuntime();
   const {
     run_id,
     connector_key,
@@ -250,8 +276,12 @@ async function executeSyncRun(
   }
 
   const codeResult = await resolveJobCode(job);
-  if (!codeResult.ok) {
-    const errorMessage = `Run ${run_id} (${connector_key}): ${codeResult.error}`;
+  const executorResult = codeResult.ok
+    ? await selectExecutorForJob(select, job, cfg.timeoutMs, cfg)
+    : codeResult;
+  if (!codeResult.ok || !executorResult.ok) {
+    const reason = !codeResult.ok ? codeResult.error : (executorResult as { error: string }).error;
+    const errorMessage = `Run ${run_id} (${connector_key}): ${reason}`;
     log.info('[executor]', errorMessage);
     await client.complete({
       run_id,
@@ -263,6 +293,7 @@ async function executeSyncRun(
     return { itemsCollected: 0, error: errorMessage };
   }
   const compiled_code = codeResult.code;
+  const laneExecutor = executorResult.executor;
 
   log.info(`[executor] Starting sync run ${run_id} (${connector_key}/${feed_key})`);
 
@@ -324,7 +355,7 @@ async function executeSyncRun(
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
       nixPackages: job.nix_packages,
-      executor: subprocessExecutor,
+      executor: laneExecutor,
       job: {
         mode: 'sync',
         config: mergeEnv(env, job.connection_credentials, feedConfig),
@@ -489,15 +520,15 @@ async function executeActionRun(
     return await executeDaemonBuiltinActionRun(client, job, cfg);
   }
 
-  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
-  const subprocessExecutor = new SubprocessExecutor({
-    timeoutMs: cfg.timeoutMs,
-    maxOldSpaceSize: cfg.maxOldSpaceSize,
-  });
+  const [select, { executeCompiledConnector }] = await loadCompiledRuntime();
 
   const codeResult = await resolveJobCode(job);
-  if (!codeResult.ok) {
-    const errorMessage = `Action run ${run_id} (${connector_key}): ${codeResult.error}`;
+  const executorResult = codeResult.ok
+    ? await selectExecutorForJob(select, job, cfg.timeoutMs, cfg)
+    : codeResult;
+  if (!codeResult.ok || !executorResult.ok) {
+    const reason = !codeResult.ok ? codeResult.error : (executorResult as { error: string }).error;
+    const errorMessage = `Action run ${run_id} (${connector_key}): ${reason}`;
     log.info('[executor]', errorMessage);
     await completeActionOnce(client, {
       run_id,
@@ -508,6 +539,7 @@ async function executeActionRun(
     return { itemsCollected: 0, error: errorMessage };
   }
   const compiled_code = codeResult.code;
+  const laneExecutor = executorResult.executor;
 
   log.info(`[executor] Starting action run ${run_id} (${connector_key}/${action_key})`);
 
@@ -531,7 +563,7 @@ async function executeActionRun(
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
       nixPackages: job.nix_packages,
-      executor: subprocessExecutor,
+      executor: laneExecutor,
       job: {
         mode: 'action',
         // NOTE: unlike the gateway's inline action path (manage_operations
@@ -675,22 +707,20 @@ async function executeAuthRun(
   env: Env,
   cfg: ExecutorConfig
 ): Promise<{ itemsCollected: number; error?: string }> {
-  const [{ SubprocessExecutor }, { executeCompiledConnector }] = await loadCompiledRuntime();
-  // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
-  // redirects) — a fixed subprocess timeout would kill the pairing mid-flow.
-  // Terminate via the UI cancel signal instead.
-  const subprocessExecutor = new SubprocessExecutor({
-    timeoutMs: 0,
-    maxOldSpaceSize: cfg.maxOldSpaceSize,
-  });
+  const [select, { executeCompiledConnector }] = await loadCompiledRuntime();
   const { run_id, connector_key, previous_credentials } = job;
 
   if (!run_id || !connector_key) {
     throw new Error('Invalid auth run: missing run_id or connector_key');
   }
   const codeResult = await resolveJobCode(job);
-  if (!codeResult.ok) {
-    const errorMessage = `Auth run ${run_id} (${connector_key}): ${codeResult.error}`;
+  // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
+  // redirects) — a fixed timeout would kill the pairing mid-flow. Terminate
+  // via the UI cancel signal instead (timeoutMs: 0 on either lane).
+  const executorResult = codeResult.ok ? await selectExecutorForJob(select, job, 0, cfg) : codeResult;
+  if (!codeResult.ok || !executorResult.ok) {
+    const reason = !codeResult.ok ? codeResult.error : (executorResult as { error: string }).error;
+    const errorMessage = `Auth run ${run_id} (${connector_key}): ${reason}`;
     log.info('[executor]', errorMessage);
     await client.completeAuth({
       run_id,
@@ -701,6 +731,7 @@ async function executeAuthRun(
     return { itemsCollected: 0, error: errorMessage };
   }
   const compiled_code = codeResult.code;
+  const laneExecutor = executorResult.executor;
 
   log.info(`[executor] Starting auth run ${run_id} (${connector_key})`);
 
@@ -717,7 +748,7 @@ async function executeAuthRun(
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
       nixPackages: job.nix_packages,
-      executor: subprocessExecutor,
+      executor: laneExecutor,
       job: {
         mode: 'authenticate',
         config: {},

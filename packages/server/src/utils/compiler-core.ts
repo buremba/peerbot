@@ -35,19 +35,11 @@ const require = createRequire(import.meta.url);
 const SDK_PACKAGE = '@lobu/connector-sdk';
 
 /**
- * esbuild options for code that runs inside a V8 isolate (`sandbox/run-script.ts`
- * today; the connector isolate lane next). `external: []` inlines every import
- * because an isolate has no module resolver, and `platform: 'node'` leaves Node
- * builtins as bare `require()` calls that throw at load — the fail-closed signal
- * the isolate-lane test and lane derivation both key on. One constant so the
- * runtime and the tests that classify bundles can never disagree.
+ * esbuild options for code that runs inside a V8 isolate, owned by the
+ * connector worker's compile pipeline so the gateway sandbox
+ * (`sandbox/run-script.ts`) and the connector isolate lane share one config.
  */
-export const ISOLATE_LANE_BUILD_OPTIONS = {
-  format: 'cjs',
-  target: 'esnext',
-  platform: 'node',
-  external: [],
-} as const satisfies Partial<BuildOptions>;
+export { ISOLATE_LANE_BUILD_OPTIONS } from '@lobu/connector-worker/compile';
 
 /** The SDK's package root + its parsed `exports` map, read once. */
 let sdkPackageCache: { root: string; exports: Record<string, unknown> } | null | undefined;

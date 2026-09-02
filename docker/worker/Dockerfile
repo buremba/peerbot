@@ -12,8 +12,12 @@ ARG BUN_VERSION
 
 WORKDIR /app
 
+# python3 + build-essential: isolated-vm (the connector isolate lane's V8
+# addon) falls back to a node-gyp build when no prebuild matches this Node
+# line/arch. Mirrors docker/app/Dockerfile.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates curl unzip \
+      python3 build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s -- "bun-v${BUN_VERSION}" \
     && chmod +x /usr/local/bin/bun

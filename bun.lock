@@ -200,6 +200,10 @@
         "tsx": "^4.7.0",
         "typescript": "^5.3.3",
       },
+      "optionalDependencies": {
+        "isolated-vm": "^6.1.2",
+        "isolated-vm-next": "npm:isolated-vm@^7.0.0",
+      },
     },
     "packages/connectors": {
       "name": "@lobu/connectors",

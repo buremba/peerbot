@@ -3,7 +3,7 @@ import type { Env } from '@lobu/connector-sdk';
 import type { PollResponse } from '../daemon/client.js';
 import { resolveEffectiveEnv } from '../daemon/executor.js';
 import { buildConnectorWorkerEnv } from '../env.js';
-import { buildConnectorConfig } from '../executor/child-runner.js';
+import { buildConnectorConfig } from '../executor/connector-config.js';
 
 /**
  * The operator's DB egress allow-host list rides the SAME gateway-authoritative

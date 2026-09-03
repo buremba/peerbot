@@ -31,6 +31,14 @@
  *    delivery receipts — so a live-but-slow worker is never falsely failed,
  *    while a silent one lapses.
  *
+ *    That status_update proves the process is ALIVE, not that the turn is
+ *    PROGRESSING (it is an unconditional `setInterval` in `session-runner.ts`),
+ *    so on its own it did NOT cover the hung-but-heartbeating worker this
+ *    backstop names: a turn wedged after a terminal provider error renewed its
+ *    own deadline every 20s and hung the client indefinitely. The gap is closed
+ *    by {@link markTurnProviderFailed}, which withdraws the extension once the
+ *    proxy has seen the provider answer that turn terminally.
+ *
  * ## Multi-replica
  * Arming/extending/discharging all happen on the worker's owning pod (worker
  * child, dispatch, and `handleWorkerResponse` are co-located there). The marker
@@ -95,6 +103,27 @@ function asTurnRouting(value: unknown): TurnRouting | null {
   return v as unknown as TurnRouting;
 }
 
+/** The marker's `action_input` as the sweep reads it back. */
+type TurnMarkerInput = unknown;
+
+/**
+ * The provider-failure code recorded on a marker by {@link markTurnProviderFailed},
+ * or null when this turn was not ended by a provider answer.
+ *
+ * Validated against the `AgentErrorCode` enum rather than cast: the value is a
+ * jsonb field on a `runs` row, so it is DATA, and a bad one must degrade to the
+ * caller's default rather than reach `AGENT_ERRORS[code]` and render a broken
+ * (or attacker-chosen) CTA.
+ */
+function providerFailureCode(value: TurnMarkerInput): AgentErrorCode | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = (value as Record<string, unknown>).providerFailedCode;
+  if (typeof raw !== "string") return null;
+  return (Object.values(AgentErrorCode) as string[]).includes(raw)
+    ? (raw as AgentErrorCode)
+    : null;
+}
+
 /**
  * Build the marker's globally-unique key. `messageId` alone is NOT global —
  * platform message IDs (e.g. Telegram) are per-chat and API callers can supply
@@ -154,6 +183,13 @@ export async function extendTurnDeadlines(
         AND run_type = 'internal'
         AND queue_name = ${TURN_TIMEOUT_QUEUE}
         AND action_input->>'deploymentName' = ${deploymentName}
+        -- A turn whose provider call terminally failed no longer earns an
+        -- extension. Its worker is still heartbeating (the 20s status_update is
+        -- an unconditional setInterval, not a progress signal), so without this
+        -- predicate the wedged turn renews its own deadline forever and the
+        -- sweep -- the very backstop for "alive, never replies" -- can never
+        -- fire. See markTurnProviderFailed.
+        AND NOT COALESCE((action_input->>'providerFailed')::boolean, false)
     `;
   } catch (err) {
     // Non-throwing by design (a heartbeat ACK must never fail the worker),
@@ -169,6 +205,107 @@ export async function extendTurnDeadlines(
         err: getErrorMessage(err),
       },
       "Failed to extend turn-timeout deadline — in-flight turns for this deployment may be falsely failed by the sweep if extends keep failing"
+    );
+  }
+}
+
+/**
+ * Stop a deployment's in-flight turns from renewing their own deadlines, after
+ * the gateway proxy has seen the provider answer that turn terminally
+ * (quota/auth — see `classifyProviderHealthStatus`).
+ *
+ * **Why this exists.** `pi-ai` collapses a provider failure before the worker
+ * runtime sees a status, and in the wedged case the turn never terminalizes at
+ * all: exactly one upstream request, a 429, and then the session sits emitting
+ * its 20s `status_update` forever. That status_update is an unconditional
+ * `setInterval` in `session-runner.ts` — it means "the process is alive", NOT
+ * "the turn is progressing" — but `extendTurnDeadlines` treated it as liveness,
+ * so the turn pushed its own 60s deadline out indefinitely and the client hung
+ * with no terminal event. Reproduced in prod: 240s and 12 heartbeats after a
+ * single 429, still no answer.
+ *
+ * **Why a flag and not a kill.** The proxy cannot know whether the SDK will
+ * recover: the OpenAI client retries (default `maxRetries: 2`, honouring
+ * `Retry-After`) and a later attempt on the same turn may well succeed. Failing
+ * the turn here would kill turns that were about to work. Instead we only
+ * withdraw the *extension* — the turn keeps whatever deadline it already had
+ * (at most `turnDefaultDeadlineMs` from the last extension), which normally
+ * outlasts the SDK's short `Retry-After` backoff. If a retry succeeds the
+ * worker resumes real progress and {@link clearTurnProviderFailed} re-arms
+ * extension; if none does, the marker lapses and `sweepExpiredTurns` emits a
+ * terminal error carrying `code` — so the client is told the PROVIDER failed
+ * (e.g. `PROVIDER_QUOTA_EXHAUSTED`, which resolves to a real CTA) rather than
+ * the generic `WORKER_UNRESPONSIVE` it would get for a merely silent worker.
+ * `reason` rides along on the marker (`providerFailedReason`) for diagnosis.
+ *
+ * Best-effort and non-throwing, like `extendTurnDeadlines`: this must never fail
+ * a user's inference call. Losing the write costs only the prompt failure — the
+ * turn reverts to the pre-existing hang, never to a wrongly-killed turn.
+ */
+export async function markTurnProviderFailed(
+  deploymentName: string,
+  code: AgentErrorCode,
+  reason: string
+): Promise<void> {
+  try {
+    const sql = getDb();
+    await sql`
+      UPDATE public.runs
+      SET action_input = action_input
+        || jsonb_build_object(
+             'providerFailed', true,
+             'providerFailedCode', ${code}::text,
+             'providerFailedReason', ${reason}::text
+           )
+      WHERE status = 'pending'
+        AND run_type = 'internal'
+        AND queue_name = ${TURN_TIMEOUT_QUEUE}
+        AND action_input->>'deploymentName' = ${deploymentName}
+        AND NOT COALESCE((action_input->>'providerFailed')::boolean, false)
+    `;
+  } catch (err) {
+    logger.error(
+      {
+        deploymentName,
+        reason,
+        queue: TURN_TIMEOUT_QUEUE,
+        err: getErrorMessage(err),
+      },
+      "Failed to mark turn provider-failed — a wedged turn on this deployment may keep extending its own deadline and hang the client"
+    );
+  }
+}
+
+/**
+ * Re-arm deadline extension for a deployment's in-flight turns, called when a
+ * proxied request to the same provider succeeds again. This is what makes
+ * {@link markTurnProviderFailed} safe against the SDK's own retries: a 429
+ * followed by a successful retry clears the flag, so a turn that recovers
+ * before its deadline lapses is not failed for an error it got past.
+ */
+export async function clearTurnProviderFailed(
+  deploymentName: string
+): Promise<void> {
+  try {
+    const sql = getDb();
+    await sql`
+      UPDATE public.runs
+      SET action_input = ((action_input - 'providerFailed')
+        - 'providerFailedCode') - 'providerFailedReason'
+      WHERE status = 'pending'
+        AND run_type = 'internal'
+        AND queue_name = ${TURN_TIMEOUT_QUEUE}
+        AND action_input->>'deploymentName' = ${deploymentName}
+        AND COALESCE((action_input->>'providerFailed')::boolean, false)
+    `;
+  } catch (err) {
+    logger.error(
+      {
+        deploymentName,
+        queue: TURN_TIMEOUT_QUEUE,
+        err: getErrorMessage(err),
+      },
+      "Failed to clear turn provider-failed flag — a recovered turn may be failed by the sweep despite the provider working again"
     );
   }
 }
@@ -350,7 +487,17 @@ export async function failTurnsForDeployment(
           logger.error("Dropping unroutable turn-timeout marker (fast path)");
           continue;
         }
-        await enqueueTerminalError(tx, routing, code);
+        // A marker flagged by the proxy knows WHICH provider failure ended
+        // this turn, so relay that instead of the generic worker verdict —
+        // "quota exhausted on qwen" is actionable, "worker unresponsive" sends
+        // the operator looking at the wrong subsystem. Falls back to `code`
+        // for a genuinely silent/dead worker, and for any unrecognised value
+        // (the column is data, never a code path).
+        await enqueueTerminalError(
+          tx,
+          routing,
+          providerFailureCode(row.action_input) ?? code
+        );
         emitted += 1;
       }
       return emitted;
@@ -384,7 +531,7 @@ export async function sweepExpiredTurns(
   try {
     const sql = getDb();
     const failed = await sql.begin(async (tx: DbClient) => {
-      const rows = await tx.unsafe<{ action_input: unknown }>(
+      const rows = await tx.unsafe<{ action_input: TurnMarkerInput }>(
         // status + run_type match the partial predicate and leading column of
         // `runs_lobu_claim_idx`, so the inner SELECT is an index range scan
         // (run_type, queue_name, …, run_at) — not a full scan of `runs` (which
@@ -410,7 +557,13 @@ export async function sweepExpiredTurns(
           logger.error("Dropping unroutable turn-timeout marker (sweep)");
           continue;
         }
-        await enqueueTerminalError(tx, routing, code);
+        // Same relay as the fast path: a marker the proxy flagged carries the
+        // classified provider failure, which is what actually ended this turn.
+        await enqueueTerminalError(
+          tx,
+          routing,
+          providerFailureCode(row.action_input) ?? code
+        );
         emitted += 1;
       }
       return emitted;

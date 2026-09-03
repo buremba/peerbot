@@ -11,9 +11,13 @@
  * the Devices page.
  *
  * This reaper deletes device_workers rows that are BOTH stale (unseen far
- * beyond the 7-day freshness window) AND have no bindings — no pinned
- * connections, automations, or auth-profiles — so it never disturbs a device a
- * connection or automation still depends on. The no-binding predicate is re-checked
+ * beyond the 7-day freshness window) AND have no LIVE bindings — no pinned
+ * connections, non-archived automations, or auth-profiles — so it never
+ * disturbs a device a connection or a runnable automation still depends on.
+ * An ARCHIVED automation is not a binding: it can never execute again, so
+ * counting it would let one soft-deleted row anchor a dead machine forever.
+ * Its pin is released in the delete transaction, matching what the explicit
+ * device-delete path already does (`worker-api/device-management.ts`). The no-binding predicate is re-checked
  * inside the DELETE so a binding created between the candidate scan and the
  * delete keeps the row alive. Child PATs bound to the reaped worker_ids are
  * revoked on the way out.
@@ -43,7 +47,8 @@ export async function reapStaleDeviceWorkers(): Promise<{
         WHERE c.device_worker_id = device_workers.id AND c.deleted_at IS NULL
       )
       AND NOT EXISTS (
-        SELECT 1 FROM automations w WHERE w.device_worker_id = device_workers.id
+        SELECT 1 FROM automations w
+        WHERE w.device_worker_id = device_workers.id AND w.status <> 'archived'
       )
       AND NOT EXISTS (
         SELECT 1 FROM auth_profiles ap WHERE ap.device_worker_id = device_workers.id
@@ -77,6 +82,21 @@ export async function reapStaleDeviceWorkers(): Promise<{
   //    (see the note in worker-api/device-reconcile.ts). UUIDs are canonical
   //    lowercase, so text equality matches the uuid form 1:1.
   const deleted = await sql.begin(async (tx) => {
+    // `automations.device_worker_id` is a NO ACTION FK, so a pin held by an
+    // archived Automation would reject the DELETE even though the predicate
+    // above ignores it. Release those pins first — the same order, and the same
+    // reasoning, as the explicit device-delete path in
+    // `worker-api/device-management.ts`: archival is the supported soft-delete,
+    // and an archived row is retained for history but must not keep the
+    // restrictive FK alive. Scoped to the candidates and to `archived`, so a
+    // live pin still blocks its device in the re-check below rather than being
+    // silently cleared here.
+    await tx`
+      UPDATE automations
+      SET device_worker_id = NULL, updated_at = NOW()
+      WHERE device_worker_id::text = ANY(${pgTextArray(ids)}::text[])
+        AND status = 'archived'
+    `;
     const rows = (await tx`
       DELETE FROM device_workers
       WHERE id::text = ANY(${pgTextArray(ids)}::text[])
@@ -86,7 +106,8 @@ export async function reapStaleDeviceWorkers(): Promise<{
           WHERE c.device_worker_id = device_workers.id AND c.deleted_at IS NULL
         )
         AND NOT EXISTS (
-          SELECT 1 FROM automations w WHERE w.device_worker_id = device_workers.id
+          SELECT 1 FROM automations w
+          WHERE w.device_worker_id = device_workers.id AND w.status <> 'archived'
         )
         AND NOT EXISTS (
           SELECT 1 FROM auth_profiles ap WHERE ap.device_worker_id = device_workers.id

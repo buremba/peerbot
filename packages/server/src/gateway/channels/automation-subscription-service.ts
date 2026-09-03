@@ -518,7 +518,7 @@ export class AutomationSubscriptionService {
 					${model ? tx.json({ model }) : null}, '[]'::jsonb, 1, NULL,
 					ARRAY[${CHAT_LINK_TAG}]::text[], 'active', ${createdBy},
 					current_timestamp, current_timestamp, ${automationId},
-					date_trunc('milliseconds', current_timestamp),
+					date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
 					'{}'::tstzmultirange
 				)
 			`;

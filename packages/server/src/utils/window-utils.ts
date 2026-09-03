@@ -49,7 +49,15 @@ export function automationArrivalHorizon(dbNow: Date): Date {
 }
 
 /**
- * The database clock, millisecond-truncated.
+ * The database clock, rounded UP to the next whole millisecond.
+ *
+ * Truncating DOWN put the reading up to a millisecond behind the real clock, so
+ * a row stored a fraction of a millisecond before the read could land at or
+ * after the horizon and be dropped from a window that should have contained it.
+ * Invisible against a 60s settle budget; the dominant flake once that budget is
+ * collapsed. Rounding up keeps the millisecond precision the value needs to
+ * round-trip through a run's `approved_input`, and makes "stored before this
+ * read" mean "strictly behind the horizon".
  *
  * Every arrival instant is read from the clock that stamps `events.created_at`,
  * never from the application's, so application/database skew cannot move the
@@ -58,7 +66,8 @@ export function automationArrivalHorizon(dbNow: Date): Date {
  */
 export async function readDatabaseNow(sql: DbClient): Promise<Date> {
   const [row] = await sql<{ db_now: string | Date }>`
-    SELECT date_trunc('milliseconds', current_timestamp) AS db_now
+    SELECT date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
+             AS db_now
   `;
   return new Date(row.db_now);
 }
@@ -99,8 +108,8 @@ function arrivalWindowFromRow(row: ArrivalMarkRow, mark: Date): WindowDates {
  * it, and seeds a NULL mark to the database clock (a row that predates the mark
  * starts from its first read). Every instant comes from the database clock —
  * the clock that stamps `events.created_at` — so application/database skew can
- * never move the frontier. Millisecond-truncated so the value round-trips
- * through the run's `approved_input` unchanged.
+ * never move the frontier. Rounded to a whole millisecond so the value
+ * round-trips through the run's `approved_input` unchanged.
  */
 export async function computePendingWindow(
   sql: DbClient,
@@ -109,7 +118,8 @@ export async function computePendingWindow(
   const read = async (tx: DbClient): Promise<WindowDates> => {
     const [row] = await tx<ArrivalMarkRow>`
       SELECT next_window_start, last_completed_window_start,
-             date_trunc('milliseconds', current_timestamp) AS db_now
+             date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
+               AS db_now
       FROM automations
       WHERE id = ${automationId}
       FOR UPDATE
@@ -139,7 +149,8 @@ export async function readPendingWindow(
 ): Promise<WindowDates | null> {
   const [row] = await sql<ArrivalMarkRow>`
     SELECT next_window_start, last_completed_window_start,
-           date_trunc('milliseconds', current_timestamp) AS db_now
+           date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
+             AS db_now
     FROM automations
     WHERE id = ${automationId}
     LIMIT 1

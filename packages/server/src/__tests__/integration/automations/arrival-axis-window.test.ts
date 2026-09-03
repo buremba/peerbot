@@ -204,7 +204,8 @@ describe('Automation windows on the arrival axis', () => {
 
     expect(claimed.context.window_start).toBe(mark.toISOString());
     const windowEnd = new Date(claimed.context.window_end).getTime();
-    expect(windowEnd).toBeLessThanOrEqual(Date.now() - automationArrivalSettleMs());
+    // The database clock is rounded up to a whole millisecond, so allow that.
+    expect(windowEnd).toBeLessThanOrEqual(Date.now() - automationArrivalSettleMs() + 1);
     expect(windowEnd).toBeGreaterThan(now - automationArrivalSettleMs() - 10_000);
   });
 

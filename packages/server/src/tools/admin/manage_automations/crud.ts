@@ -349,7 +349,7 @@ export async function handleCreate(
         ${toJsonParam(tx, args.execution_config)},
         ${reactionScript}, ${reactionScriptCompiled},
         ${reactionInputSchema ? tx.json(reactionInputSchema) : null},
-        date_trunc('milliseconds', current_timestamp),
+        date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
         '{}'::tstzmultirange
       )
     `;
@@ -1039,7 +1039,7 @@ export async function handleCreateFromVersion(
             ${(version.reaction_script as string | null) ?? null},
             ${(version.reaction_script_compiled as string | null) ?? null},
             ${toJsonParam(tx, version.reaction_input_schema)},
-            date_trunc('milliseconds', current_timestamp),
+            date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
             '{}'::tstzmultirange
           )
         `;

@@ -47,10 +47,10 @@ DROP FUNCTION IF EXISTS public.record_automation_last_completed_window_from_run(
 -- that wants them asks for an explicit `since`/`until` range.
 --
 -- The instant comes from the database clock, the same clock that stamps
--- `events.created_at`, and is truncated to milliseconds so the value
+-- `events.created_at`, rounded up to a whole millisecond so the value
 -- round-trips through a run's `approved_input` unchanged.
 UPDATE automations
-SET next_window_start = date_trunc('milliseconds', current_timestamp),
+SET next_window_start = date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
     completed_window_coverage = '{}'::tstzmultirange,
     last_completed_window_start = NULL,
     window_projection_granularity = NULL;

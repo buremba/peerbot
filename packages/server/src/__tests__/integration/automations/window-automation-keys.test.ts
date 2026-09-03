@@ -108,9 +108,14 @@ describe("Automation window vocabulary", () => {
 		// The pending window a claim would hand out starts at the mark and runs to
 		// the arrival horizon — no period, no granularity.
 		expect(detail.pending_analysis?.next_window?.start).toBe(expectedMark.toISOString());
+		// Ends at the arrival horizon: behind the clock by the settle budget, give
+		// or take the millisecond the database clock is rounded up by.
 		expect(
 			new Date(detail.pending_analysis?.next_window?.end as string).getTime(),
-		).toBeLessThanOrEqual(Date.now());
+		).toBeLessThanOrEqual(Date.now() + 1);
+		expect(
+			new Date(detail.pending_analysis?.next_window?.end as string).getTime(),
+		).toBeGreaterThan(expectedMark.getTime());
 	});
 
 });

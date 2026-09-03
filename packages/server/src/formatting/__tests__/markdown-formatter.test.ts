@@ -223,7 +223,9 @@ describe('formatToolResult', () => {
       const md = formatToolResult('get_automation', result);
       expect(md).toContain('Automation Windows');
       expect(md).toContain('Sentiment');
-      expect(md).toContain('weekly');
+      // Arrival windows have no period shape, so the render names the BOUNDS.
+      expect(md).not.toContain('Granularity');
+      expect(md).toContain('Content Analyzed');
     });
 
     it('should format no Automation windows available', () => {

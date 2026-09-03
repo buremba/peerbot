@@ -148,6 +148,7 @@ export async function claimPendingAutomationRun(
     claimedBy: string;
     status: 'claimed' | 'running';
     expiresAt?: Date | null;
+    executedByDeviceWorkerId?: string | null;
   }
 ): Promise<boolean> {
   const automation = await tx`
@@ -169,6 +170,7 @@ export async function claimPendingAutomationRun(
               ELSE r.last_heartbeat_at
             END,
             claimed_by = ${params.claimedBy},
+            executed_by_device_worker_id = COALESCE(${params.executedByDeviceWorkerId ?? null}::uuid, r.executed_by_device_worker_id),
             expires_at = ${params.expiresAt?.toISOString() ?? null}::timestamptz
         WHERE r.id = ${params.runId}
           AND r.automation_id = ${params.automationId}
@@ -419,7 +421,7 @@ async function createSyncRunWithClient(
   // Get feed details (including pinned_version)
   const feedRows = await sql`
     SELECT f.organization_id, f.connection_id, f.pinned_version, f.schedule, f.timezone,
-           c.connector_key,
+           c.connector_key, c.device_worker_id,
            cd.definition_id,
            COALESCE(cd.feed_operations, '[]'::jsonb) AS feed_operations
     FROM feeds f
@@ -456,6 +458,7 @@ async function createSyncRunWithClient(
     organization_id: string;
     connection_id: number;
     connector_key: string;
+    device_worker_id: string | null;
     pinned_version: string | null;
     schedule: string | null;
     timezone: string | null;
@@ -559,11 +562,11 @@ async function createSyncRunWithClient(
     INSERT INTO runs (
       organization_id, run_type, feed_id, connection_id,
       connector_key, connector_version, status, approval_status, created_at,
-      dry_run
+      dry_run, target_device_worker_id
     ) VALUES (
       ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
       ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp,
-      true
+      true, ${feed.device_worker_id == null ? null : sql`${feed.device_worker_id}::uuid`}
     )
     RETURNING id
   `
@@ -571,10 +574,12 @@ async function createSyncRunWithClient(
     WITH inserted AS (
       INSERT INTO runs (
         organization_id, run_type, feed_id, connection_id,
-        connector_key, connector_version, status, approval_status, created_at
+        connector_key, connector_version, status, approval_status, created_at,
+        target_device_worker_id
       ) VALUES (
         ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
-        ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp
+        ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp,
+        ${feed.device_worker_id == null ? null : sql`${feed.device_worker_id}::uuid`}
       )
       RETURNING id, feed_id
     )
@@ -728,6 +733,7 @@ async function createAutomationRunWithClient(
       status,
       approved_input,
       idempotency_key,
+      target_device_worker_id,
       created_at
     ) VALUES (
       ${params.organizationId},
@@ -737,6 +743,7 @@ async function createAutomationRunWithClient(
       'pending',
       ${sql.json(payload)},
       ${idempotencyKey},
+      ${normalizedDeviceWorkerId == null ? null : sql`${normalizedDeviceWorkerId}::uuid`},
       current_timestamp
     )
     RETURNING id, status
@@ -1061,11 +1068,12 @@ export async function createAutomationEventRun(
     const inserted = await tx`
       INSERT INTO runs (
         organization_id, run_type, automation_id, approval_status, status,
-        approved_input, idempotency_key, created_at
+        approved_input, idempotency_key, target_device_worker_id, created_at
       ) VALUES (
         ${params.organizationId}, 'automation', ${params.automationId}, 'auto',
         'pending', ${tx.json(payload)},
         ${`automation:${params.automationId}:${params.signal.delivery_id}`},
+        ${params.deviceWorkerId == null ? null : tx`${params.deviceWorkerId}::uuid`},
         current_timestamp
       )
       RETURNING id, status
@@ -1307,6 +1315,16 @@ export async function createConnectorOperationRun(params: {
     facts: resolved.facts,
   });
 
+  let targetDeviceWorkerId: string | null = null;
+  if (params.connectionId && params.approvalMode !== 'inline') {
+    const connRows = await sql<{ device_worker_id: string | null }>`
+      SELECT device_worker_id FROM connections
+      WHERE id = ${params.connectionId}
+      LIMIT 1
+    `;
+    targetDeviceWorkerId = connRows[0]?.device_worker_id ?? null;
+  }
+
   const inserted = await sql<{
     id: number;
     status: string;
@@ -1323,6 +1341,7 @@ export async function createConnectorOperationRun(params: {
       action_idempotency_key, expires_at, claimed_at, last_heartbeat_at, claimed_by,
       activation_kind, activation_target_urls,
       run_metadata,
+      target_device_worker_id,
       created_at
     ) VALUES (
       ${params.organizationId}, 'action', ${params.connectionId},
@@ -1342,6 +1361,7 @@ export async function createConnectorOperationRun(params: {
       ${params.activation?.kind ?? null},
       ${params.activation ? pgTextArray(params.activation.urls) : null}::text[],
       ${params.runMetadata == null ? null : sql.json(params.runMetadata)},
+      ${targetDeviceWorkerId == null ? null : sql`${targetDeviceWorkerId}::uuid`},
       current_timestamp
     )
     ON CONFLICT (organization_id, action_idempotency_key)

@@ -48,6 +48,7 @@ interface ConnectorClaimLaneRefs {
   activationKind: SqlFragment;
   activatedAt: SqlFragment;
   connectionDeviceWorkerId: SqlFragment;
+  runTargetDeviceWorkerId?: SqlFragment;
   pinPlatform: SqlFragment;
   runRequiredCapability: SqlFragment;
   runManifestBacked: SqlFragment;
@@ -201,6 +202,7 @@ export function connectorClaimLaneSql(
         OR (
           ${context.isUserScopedWorker}
           AND ${refs.connectionDeviceWorkerId} IS NULL
+          AND (${refs.runTargetDeviceWorkerId ?? sql`NULL`}::uuid IS NULL)
           AND (
             (
               COALESCE(${refs.runManifestBacked}, false)
@@ -223,7 +225,7 @@ export function connectorClaimLaneSql(
         OR (
           ${context.isUserScopedWorker}
           AND ${context.deviceWorkerId}::uuid IS NOT NULL
-          AND ${refs.connectionDeviceWorkerId} = ${context.deviceWorkerId}::uuid
+          AND COALESCE(${refs.runTargetDeviceWorkerId ?? sql`NULL`}::uuid, ${refs.connectionDeviceWorkerId}) = ${context.deviceWorkerId}::uuid
           AND (
             NOT COALESCE(${refs.runManifestBacked}, false)
             OR (${manifestAuthorization})

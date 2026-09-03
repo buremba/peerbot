@@ -251,6 +251,33 @@ describe("connection-to-device operation routing lifecycle", () => {
 			output: { owner: "A" },
 		});
 
+		// Historical run attribution is immutable: moving the connection to device B
+		// does not change firstRun's target or execution attribution.
+		const firstRunDetails = (await manageOperations(
+			{ action: "get_run", run_id: firstRunId },
+			{} as Env,
+			ctx,
+		)) as { run: Record<string, unknown> };
+		expect(firstRunDetails.run.target_device_worker_id).toBe(deviceA.id);
+		expect(firstRunDetails.run.executed_by_device_worker_id).toBe(deviceA.id);
+		expect(firstRunDetails.run.device_worker_id).toBe(deviceA.id);
+
+		// list_runs filtered by device A finds firstRun even though connection was moved to B
+		const runsForA = (await manageOperations(
+			{ action: "list_runs", device_worker_id: deviceA.id },
+			{} as Env,
+			ctx,
+		)) as { runs: Array<Record<string, unknown>> };
+		expect(runsForA.runs.some((r) => r.id === firstRunId)).toBe(true);
+
+		// list_runs filtered by device B does NOT claim firstRun
+		const runsForBBeforeSecond = (await manageOperations(
+			{ action: "list_runs", device_worker_id: deviceB.id },
+			{} as Env,
+			ctx,
+		)) as { runs: Array<Record<string, unknown>> };
+		expect(runsForBBeforeSecond.runs.some((r) => r.id === firstRunId)).toBe(false);
+
 		// B going stale makes the moved target non-executable; its next poll both
 		// restores readiness and is the only legal claim for the next operation.
 		await sql`
@@ -293,6 +320,23 @@ describe("connection-to-device operation routing lifecycle", () => {
 			output: { owner: "B" },
 		});
 
+		const secondRunDetails = (await manageOperations(
+			{ action: "get_run", run_id: secondRunId },
+			{} as Env,
+			ctx,
+		)) as { run: Record<string, unknown> };
+		expect(secondRunDetails.run.target_device_worker_id).toBe(deviceB.id);
+		expect(secondRunDetails.run.executed_by_device_worker_id).toBe(deviceB.id);
+		expect(secondRunDetails.run.device_worker_id).toBe(deviceB.id);
+
+		const runsForBAfterSecond = (await manageOperations(
+			{ action: "list_runs", device_worker_id: deviceB.id },
+			{} as Env,
+			ctx,
+		)) as { runs: Array<Record<string, unknown>> };
+		expect(runsForBAfterSecond.runs.some((r) => r.id === secondRunId)).toBe(true);
+		expect(runsForBAfterSecond.runs.some((r) => r.id === firstRunId)).toBe(false);
+
 		// Chrome pinning a non-Chrome connector chooses delegated scrape affinity;
 		// it must not move the connector's parent operation off the gateway.
 		const chrome = await seedDevice(user.id, org.id, "Chrome", "chrome-extension");
@@ -323,12 +367,26 @@ describe("connection-to-device operation routing lifecycle", () => {
 			output: { inline: true, value: "chrome-affinity" },
 		});
 		const [chromeRun] = (await sql`
-			SELECT status, claimed_by
+			SELECT status, claimed_by, target_device_worker_id, executed_by_device_worker_id
 			FROM runs
 			WHERE connection_id = ${chromeAffinityConnection.id}
 			  AND action_idempotency_key = 'device-routing:chrome-affinity'
-		`) as unknown as Array<{ status: string; claimed_by: string | null }>;
+		`) as unknown as Array<{
+			status: string;
+			claimed_by: string | null;
+			target_device_worker_id: string | null;
+			executed_by_device_worker_id: string | null;
+		}>;
 		expectInlineCompleted(chromeRun);
+		expect(chromeRun.target_device_worker_id).toBeNull();
+		expect(chromeRun.executed_by_device_worker_id).toBeNull();
+
+		const runsForChrome = (await manageOperations(
+			{ action: "list_runs", device_worker_id: chrome.id },
+			{} as Env,
+			ctx,
+		)) as { runs: Array<Record<string, unknown>> };
+		expect(runsForChrome.runs.some((r) => r.connection_id === chromeAffinityConnection.id)).toBe(false);
 
 		// A connector whose key merely starts with "chrome" is still non-Chrome.
 		// A chrome-extension pin therefore remains delegated browser affinity: the

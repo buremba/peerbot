@@ -143,11 +143,20 @@ export async function handleListRuns(
     where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
   }
   if (args.device_worker_id) {
-    where = sql`${where} AND r.connection_id IN (
-      SELECT id FROM connections
-      WHERE device_worker_id = ${args.device_worker_id}
-        AND organization_id = ${ctx.organizationId}
-        AND deleted_at IS NULL
+    where = sql`${where} AND (
+      r.executed_by_device_worker_id = ${args.device_worker_id}::uuid
+      OR (r.executed_by_device_worker_id IS NULL AND r.target_device_worker_id = ${args.device_worker_id}::uuid)
+      OR (
+        r.executed_by_device_worker_id IS NULL
+        AND r.target_device_worker_id IS NULL
+        AND (r.claimed_by IS NULL OR r.claimed_by NOT LIKE 'gateway-inline-%')
+        AND r.connection_id IN (
+          SELECT id FROM connections
+          WHERE device_worker_id = ${args.device_worker_id}::uuid
+            AND organization_id = ${ctx.organizationId}
+            AND deleted_at IS NULL
+        )
+      )
     )`;
   }
   if (args.connector_key) {
@@ -185,7 +194,13 @@ export async function handleListRuns(
            r.created_at, r.completed_at,
            r.initiator_kind, r.initiator_ref, r.created_by_user_id,
            f.feed_key, f.display_name AS feed_display_name,
-           c.display_name AS connection_display_name, c.device_worker_id
+           c.display_name AS connection_display_name,
+           r.target_device_worker_id,
+           r.executed_by_device_worker_id,
+           CASE
+             WHEN r.claimed_by LIKE 'gateway-inline-%' THEN NULL
+             ELSE COALESCE(r.executed_by_device_worker_id, r.target_device_worker_id, c.device_worker_id)
+           END AS device_worker_id
     FROM runs r
     LEFT JOIN feeds f ON f.id = r.feed_id
     LEFT JOIN connections c ON c.id = r.connection_id
@@ -232,8 +247,16 @@ export async function handleGetRun(
            -- read them back, so a timed-out device Automation could only be
            -- diagnosed by querying the database directly. Single-row fetch only:
            -- output_tail is up to 2000 chars, too heavy for a list page.
-           r.exit_reason, r.exit_code, r.exit_signal, r.output_tail
+           r.exit_reason, r.exit_code, r.exit_signal, r.output_tail,
+           r.target_device_worker_id,
+           r.executed_by_device_worker_id,
+           CASE
+             WHEN r.claimed_by LIKE 'gateway-inline-%' THEN NULL
+             ELSE COALESCE(r.executed_by_device_worker_id, r.target_device_worker_id, c.device_worker_id)
+           END AS device_worker_id,
+           c.display_name AS connection_display_name
     FROM runs r
+    LEFT JOIN connections c ON c.id = r.connection_id
     WHERE r.id = ${args.run_id}
       AND r.organization_id = ${ctx.organizationId}
       AND r.run_type <> ALL(${pgTextArray([...LIST_RUNS_DEFAULT_EXCLUDED_RUN_TYPES])}::text[])

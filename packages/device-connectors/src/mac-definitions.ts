@@ -1207,7 +1207,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   },
   {
     key: "os.shell",
-    version: "0.1.0",
+    version: "0.2.0",
     name: "Mac Shell",
     description:
       "Run shell commands on this Mac through Lobu for Mac, as the signed-in user. Returns structured stdout/stderr/exit_code. Same trust tier as computer use — commands run in the user's real environment (host PATH, gh, files). Enable it explicitly in Lobu for Mac; it advertises nothing until switched on.",
@@ -1257,10 +1257,10 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
             timeout_ms: {
               type: "integer",
               minimum: 100,
-              maximum: 300000,
+              maximum: 150000,
               default: 60000,
               description:
-                "Wall-clock budget in milliseconds. On timeout the process gets SIGTERM (3s grace) then SIGKILL. Default 60000, max 300000.",
+                "Wall-clock budget in milliseconds. On timeout the process gets SIGTERM (3s grace) then SIGKILL. Default 60000, max 150000.",
             },
             stdin: {
               type: "string",

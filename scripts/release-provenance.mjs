@@ -47,24 +47,18 @@ export function versionForReleaseTag(tag) {
   return version;
 }
 
-export function manifestBump({ current, parent }) {
-  parseStableVersion(current);
-  parseStableVersion(parent);
-  if (current === parent) return { bumped: false, version: current };
-  if (compareVersions(current, parent) <= 0) {
-    throw new Error(`release version ${current} is not newer than ${parent}`);
-  }
-  return { bumped: true, version: current };
-}
-
 /**
  * A release may only move versions forward. Both callers -- the GitHub release
  * list and `npm view @lobu/cli versions` -- reduce to the same question, so
  * they ask it here instead of each spelling out its own comparison.
  */
+function normalizeVersionList(versions) {
+  return Array.isArray(versions) ? versions : [versions];
+}
+
 export function assertNoNewerStable({ current, versions }) {
   parseStableVersion(current);
-  const listed = Array.isArray(versions) ? versions : [versions];
+  const listed = normalizeVersionList(versions);
   // Fail closed on a shape we do not understand. `npm view --json` prints its
   // error object to stdout, so a failed probe can reach here looking like data;
   // silently filtering it out would turn "the registry is unreadable" into
@@ -83,6 +77,29 @@ export function assertNoNewerStable({ current, versions }) {
     );
   }
   return { ok: true, current, compared: stable.length };
+}
+
+/**
+ * Whether the manifest version at the attested commit still needs a GitHub
+ * release. Deliberately stateless -- it asks "is this version released yet",
+ * never "did THIS commit perform the bump". Keying on a parent diff gave a
+ * release a window only as wide as the gap between merging the release PR and
+ * the next merge to main, because the bump commit stops being main's tip the
+ * moment anything lands behind it. On 2026-09-03 that window was six minutes:
+ * 18.0.0 was stranded unreleased, and because release-please refuses to open a
+ * new release PR while an untagged merged one is outstanding, every subsequent
+ * release was blocked behind it. Asking about the release list instead makes
+ * the decision idempotent, so a build that arrives late still cuts the release
+ * rather than declining forever.
+ */
+export function releaseNeeded({ current, versions }) {
+  assertNoNewerStable({ current, versions });
+  const listed = normalizeVersionList(versions);
+  // Exact match, so a prerelease such as 18.0.0-rc.1 is never mistaken for the
+  // stable 18.0.0 it precedes -- no stable-only filter needed here. Non-string
+  // entries were already rejected by assertNoNewerStable, which fails closed on
+  // an unreadable version list rather than reporting "nothing released yet".
+  return { needed: !listed.includes(current), version: current };
 }
 
 function flattenJobs(pages) {
@@ -228,7 +245,7 @@ const COMMANDS = {
     id: String(selectUniqueLatestRun(input.runs, input.expected).id),
   }),
   "assert-newer": (input) => assertNoNewerStable(input),
-  "manifest-bump": (input) => manifestBump(input),
+  "release-needed": (input) => releaseNeeded(input),
   "release-tag": (input) => ({ tag: releaseTagForVersion(input.version) }),
   "verify-release": (input) => verifyImmutableRelease(input),
   "release-notes": (input) => releaseNotesFor(input),

@@ -169,23 +169,36 @@ jobs:
       # idempotent and verification runs once at the end, which covers the
       # already-exists case and the just-created case with one assertion
       # instead of two call sites that could drift apart.
-      - name: Decide whether this attested commit is a release
+      # Asks whether the manifest's version is released yet, NOT whether this
+      # commit performed the bump. The bump commit stops being main's tip as
+      # soon as anything merges behind it, so a parent diff only ever fired
+      # inside that gap -- six minutes on 2026-09-03, which left 18.0.0
+      # unreleased and, since release-please will not open a release PR while
+      # an untagged merged one is outstanding, blocked every release after it.
+      - name: Decide whether the attested manifest version needs a release
         id: bump
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          read_version() { git show "$1:package.json" | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).version'; }
-          current_version=$(read_version "$ATTESTED_SHA")
-          parent_version=$(read_version "$(git rev-parse "${ATTESTED_SHA}^1")")
-          bump=$(jq -n --arg current "$current_version" --arg parent "$parent_version" \
-            '{current: $current, parent: $parent}' \
-            | node scripts/release-provenance.mjs manifest-bump)
-          if [ "$(jq -r '.bumped' <<<"$bump")" != true ]; then
-            echo "No release-version manifest bump at attested SHA; release PR only."
+          current_version=$(git show "${ATTESTED_SHA}:package.json" \
+            | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+          releases=$(gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100")
+          # Drafts are excluded as well as prereleases: the list endpoint returns
+          # drafts to a write-scoped token, and a draft lobu-v<version> counted
+          # as released would make this step skip creation AND the verify step
+          # below, turning a loud "release is a draft" failure into silence.
+          decision=$(jq -n --argjson pages "$releases" --arg current "$current_version" \
+            '{current: $current, versions: [$pages[][] | select((.draft or .prerelease) | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
+            | node scripts/release-provenance.mjs release-needed)
+          if [ "$(jq -r '.needed' <<<"$decision")" != true ]; then
+            echo "Manifest version ${current_version} is already released; nothing to cut."
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          echo "Manifest version ${current_version} has no release yet; cutting it."
           echo "bumped=true" >> "$GITHUB_OUTPUT"
           echo "version=$current_version" >> "$GITHUB_OUTPUT"
           jq -n --arg version "$current_version" '{version: $version}' \
@@ -203,7 +216,7 @@ jobs:
           set -euo pipefail
           releases=$(gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100")
           jq -n --argjson pages "$releases" --arg current "$VERSION" \
-            '{current: $current, versions: [$pages[][] | select(.prerelease | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
+            '{current: $current, versions: [$pages[][] | select((.draft or .prerelease) | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
             | node scripts/release-provenance.mjs assert-newer >/dev/null
 
           if gh api "repos/${REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1; then

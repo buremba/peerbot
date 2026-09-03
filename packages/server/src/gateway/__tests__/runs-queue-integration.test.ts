@@ -326,10 +326,28 @@ describe("RunsQueue — worker re-registration", () => {
 
     // Both rows reached a terminal state rather than being stranded as
     // `claimed` by a worker that got swapped out from under them.
-    const leftover = await sql<{ count: string }>`
-      SELECT count(*)::text AS count FROM runs
-      WHERE queue_name = 'test-reconnect' AND status <> 'completed'
-    `;
+    //
+    // Polled rather than read once: `order` is pushed from inside the handler,
+    // and runs-queue.ts awaits `markCompleted` only *after* `worker.handler`
+    // resolves, so seeing turn 2 in `order` guarantees nothing about its row.
+    // Reading immediately raced that second round-trip and failed CI with
+    // `Expected "0" Received "1"`. The deadline still fails a genuine strand --
+    // it removes the race, not the assertion.
+    let leftover: { count: string; statuses: string | null }[] = [];
+    const settleBy = Date.now() + 10_000;
+    while (Date.now() < settleBy) {
+      leftover = await sql<{ count: string; statuses: string | null }>`
+        SELECT count(*)::text AS count,
+               string_agg(DISTINCT status, ',') AS statuses
+        FROM runs
+        WHERE queue_name = 'test-reconnect' AND status <> 'completed'
+      `;
+      if (leftover[0]?.count === "0") break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    // Asserted on the statuses first so a strand reports what it was stuck as
+    // ("claimed") instead of an opaque count mismatch.
+    expect(leftover[0]?.statuses ?? "none").toBe("none");
     expect(leftover[0]?.count).toBe("0");
   });
 });

@@ -139,6 +139,8 @@ describe('deep-link token exchange', () => {
     expect(res.headers.get('content-type') ?? '').toMatch(/text\/html/i);
     const html = await res.text();
     expect(html).toContain('/api/extension-session');
+    expect(html).toContain('color-scheme');
+    expect(html).toContain('#0a0a0a');
     expect(html).toContain('sessionStorage');
     expect(html).toContain('location.hash');
     expect(html).toContain('replaceState');

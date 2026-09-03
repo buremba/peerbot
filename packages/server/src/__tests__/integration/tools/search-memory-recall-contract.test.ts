@@ -359,4 +359,56 @@ describe('search_memory > recall contract', () => {
     // …while still listing the genuinely public ones.
     expect(err).toContain('min_similarity');
   });
+
+  // ── Actionable read guidance on empty results ───────────────────────────
+  it('provides actionable read steps in suggestion when search finds no results', async () => {
+    const result = await search(
+      {
+        query: 'nonexistent-query-for-empty-guidance',
+        entity_type: 'ticket',
+        include_content: true,
+      },
+      env,
+      ctx
+    );
+
+    expect(result.discovery_status).toBe('not_found');
+    expect(result.matches).toEqual([]);
+    expect(result.content ?? []).toEqual([]);
+
+    const suggestion = result.suggestion ?? '';
+    expect(suggestion).toContain('No matches found for "nonexistent-query-for-empty-guidance"');
+    expect(suggestion).toContain('Additional steps to read relevant data:');
+    expect(suggestion).toContain('client.feeds.readMany');
+    expect(suggestion).toContain('query_sql');
+    expect(suggestion).toContain('audit');
+    expect(suggestion).toContain("remove entity_type='ticket'");
+    expect(suggestion).toContain('min_similarity');
+    expect(suggestion).toContain('save_memory');
+    expect(suggestion).toContain('client.entities.create');
+  });
+
+  it('reports memory content recalled without entity-create coaching when recall matches', async () => {
+    await createTestEvent({
+      organization_id: org.id,
+      title: 'Infrastructure migration notes',
+      content: 'Discussion on database migration and deployment infrastructure roadmap',
+    });
+
+    const result = await search(
+      {
+        query: 'deployment infrastructure roadmap',
+        fuzzy: false,
+        include_content: true,
+      },
+      env,
+      ctx
+    );
+
+    expect(result.discovery_status).toBe('complete');
+    expect(result.matches).toEqual([]);
+    expect(result.content?.length).toBeGreaterThan(0);
+    expect(result.suggestion).toContain('related memory content was recalled below');
+    expect(result.suggestion).not.toContain('entities.create');
+  });
 });

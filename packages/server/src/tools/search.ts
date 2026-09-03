@@ -647,18 +647,18 @@ function buildEmptySearchSuggestion(
       .join(', ');
     const moreSuffix = sourceFeeds.length > 3 ? ` and ${sourceFeeds.length - 3} more` : '';
     lines.push(
-      `1. **Check unqueried source feeds:** Connected feeds are not queried automatically. Inspect \`coverage.source_feeds\` (${feedSamples}${moreSuffix}) and use \`query_sdk\` with \`client.feeds.readMany({ reads: [...] })\` to read external source data directly.`
+      `1. **Check unqueried source feeds:** Connected feeds are not queried automatically. Inspect \`coverage.source_feeds\` (${feedSamples}${moreSuffix}) and pass each entry's \`feed_id\` to \`client.feeds.readMany({ reads: [{ feed_id }] })\` via \`query_sdk\` to read external source data directly.`
     );
   } else {
     lines.push(
-      '1. **Check connected source feeds:** Connected feeds are not queried automatically. Discover available feeds with `search_sdk` or `client.feeds.list` and read them with `client.feeds.readMany` via `query_sdk`.'
+      '1. **Check connected source feeds:** Connected feeds are not queried automatically. List them with `client.feeds.list()` and read them with `client.feeds.readMany({ reads: [...] })` via `query_sdk`.'
     );
   }
 
-  // The literal comes from the shared constant so the SQL we hand the agent
-  // cannot drift from the value audit events are actually written with.
+  // The literals come from the shared constant so the SQL and the filter we
+  // hand the agent cannot drift from the value audit events are written with.
   lines.push(
-    `2. **Check activity and audit records:** tool invocations and other operational events are stored in \`events\` without embeddings, so semantic recall never reaches them. Read them explicitly with \`query_sql\` (e.g. \`SELECT id, title, semantic_type, occurred_at FROM events WHERE semantic_type = '${AUDIT_SEMANTIC_TYPE}' ORDER BY occurred_at DESC LIMIT 50\`) or with \`client.knowledge.read\` through \`query_sdk\`.`
+    `2. **Check activity and audit records:** tool invocations and other operational events are written to \`events\` with no body text and no embedding, so semantic recall cannot rank them and only their titles are searchable. Read them explicitly with \`query_sql\` (e.g. \`SELECT id, title, semantic_type, occurred_at FROM events WHERE semantic_type = '${AUDIT_SEMANTIC_TYPE}' ORDER BY occurred_at DESC LIMIT 50\`) or with \`client.knowledge.read({ semantic_type: '${AUDIT_SEMANTIC_TYPE}' })\` through \`query_sdk\`.`
   );
 
   const filterRelaxations: string[] = [];
@@ -666,24 +666,26 @@ function buildEmptySearchSuggestion(
     filterRelaxations.push(`remove entity_type='${args.entity_type}'`);
   }
   if (args.workspace) {
-    filterRelaxations.push(`omit workspace='${args.workspace}' to search all granted workspaces`);
+    filterRelaxations.push(
+      `omit workspace='${args.workspace}' to search every workspace this connection can reach`
+    );
   }
   filterRelaxations.push('lower min_similarity (default 0.3)');
   filterRelaxations.push('try alternate keywords or synonyms');
-  lines.push(`3. **Broaden the search:** retry after you ${filterRelaxations.join('; ')}.`);
+  lines.push(
+    `3. **Broaden the search:** retry with one of these relaxations: ${filterRelaxations.join('; ')}.`
+  );
 
   lines.push('');
   lines.push('**If this is new knowledge to persist:**');
   lines.push('- To save facts or notes: call `save_memory` with content and semantic_type.');
-  if (!isFederated && query) {
-    lines.push(
-      `- To create a new entity: call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${query}' })\`.`
-    );
-  } else {
-    lines.push(
-      "- To create a new entity: call `run_sdk` with `await client.entities.create({ type: '<entity_type>', name: '...' })`."
-    );
-  }
+  // Only a single-workspace text search names one entity worth pre-filling:
+  // federated results span workspaces, and an embedding-only call has no query
+  // text at all. Both fall back to a placeholder.
+  const newEntityName = !isFederated && query ? query : '...';
+  lines.push(
+    `- To create a new entity: its type must exist first (\`client.entitySchema.listTypes()\` to check, \`client.entitySchema.createType(...)\` for a type new to this workspace), then call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${newEntityName}' })\`.`
+  );
 
   return lines.join('\n');
 }

@@ -411,4 +411,39 @@ describe('search_memory > recall contract', () => {
     expect(result.suggestion).toContain('related memory content was recalled below');
     expect(result.suggestion).not.toContain('entities.create');
   });
+
+  // Runs LAST: it gives the org its first read-capable source feed, which
+  // changes `coverage` for every search after it. The step-1 wording above is
+  // the no-feeds variant precisely because the fixture connector declares no
+  // feeds_schema, so its `default` feed is not read-capable.
+  it('names the discovered source feeds and their feed_id when the org has read-capable feeds', async () => {
+    await createTestConnectorDefinition({
+      key: 'readable-feed-connector',
+      name: 'Readable Feed',
+      organization_id: org.id,
+      feeds_schema: { default: { operations: ['read', 'sync'] } },
+    });
+    await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'readable-feed-connector',
+      slug: 'readable-feed',
+    });
+
+    const result = await search(
+      { query: 'zzzz-no-such-thing-with-feeds-present' },
+      env,
+      ctx
+    );
+
+    const discovered = result.coverage?.source_feeds ?? [];
+    expect(discovered.map((feed) => feed.connection_slug)).toContain('readable-feed');
+
+    const suggestion = result.suggestion ?? '';
+    // The feeds-present branch must name the handle `feeds.readMany` actually
+    // keys on, not just the human-readable slug/key pair.
+    expect(suggestion).toContain('Check unqueried source feeds');
+    expect(suggestion).toContain('`readable-feed/default`');
+    expect(suggestion).toContain('feed_id');
+    expect(suggestion).toContain('client.feeds.readMany({ reads: [{ feed_id }] })');
+  });
 });

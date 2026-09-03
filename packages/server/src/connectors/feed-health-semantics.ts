@@ -97,8 +97,12 @@
  * (`connectors/connector-health.ts`). Hand-copied jsonb predicates drift, and
  * drift here means the two surfaces silently disagree about one feed.
  *
- * `jsonb_typeof(...) = 'array'` short-circuits the EXISTS, so a scalar or
- * object `events` cannot reach `jsonb_array_elements` and error.
+ * The type guard is a CASE, not `AND`, deliberately. Postgres does not promise
+ * that `AND` short-circuits left-to-right ("Expression Evaluation Rules" — use
+ * CASE when order matters), and if the planner evaluated the EXISTS first a
+ * scalar or object `events` would reach `jsonb_array_elements` and raise
+ * "cannot extract elements from a scalar", 500ing a user-facing read path.
+ * CASE makes the guard ordering part of the semantics rather than a bet.
  */
 export function feedWebhookDrivenSql(
   definitionAlias: string,
@@ -107,13 +111,12 @@ export function feedWebhookDrivenSql(
   const events =
     `${definitionAlias}.feeds_schema -> ${feedAlias}.feed_key` +
     ` -> 'webhook' -> 'events'`;
-  return `jsonb_typeof(${events}) = 'array'
-          AND EXISTS (
+  return `CASE WHEN jsonb_typeof(${events}) = 'array' THEN EXISTS (
             SELECT 1
             FROM jsonb_array_elements(${events}) AS declared_event
             WHERE jsonb_typeof(declared_event) = 'string'
               AND declared_event #>> '{}' <> ''
-          )`;
+          ) ELSE false END`;
 }
 
 type FeedExecutionMode = "source_only" | "streaming" | "scheduled" | "no_schedule";

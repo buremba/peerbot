@@ -12,6 +12,10 @@ import {
   markInferenceProviderUnhealthy,
   readOrgSharedProviderApiKey,
 } from "../../lobu/stores/provider-secrets.js";
+import {
+  clearTurnProviderFailed,
+  markTurnProviderFailed,
+} from "../orchestration/turn-liveness.js";
 import type { SecretStore } from "../secrets/index.js";
 import { getClientIp } from "../utils/rate-limiter.js";
 import { classifyProviderHealthStatus } from "./provider-health-status.js";
@@ -608,6 +612,19 @@ export class SecretProxy {
   }
 
   /**
+   * The `deploymentName` bound into the SIGNED worker token — the key
+   * turn-liveness markers are stored under. Taken from the token rather than the
+   * URL because it decides whether a turn keeps renewing its deadline, and the
+   * URL carries only agent/org/user.
+   */
+  private extractWorkerTokenDeployment(c: Context): string | undefined {
+    for (const data of this.verifiedWorkerClaims(c)) {
+      if (data.deploymentName) return data.deploymentName;
+    }
+    return undefined;
+  }
+
+  /**
    * Extract the bearer/api-key value the caller used to authenticate.
    * Returns the raw token string, or null if no auth header is present.
    */
@@ -1053,7 +1070,8 @@ export class SecretProxy {
     await this.recordProviderHealth(
       expectedOrganizationId,
       resolvedSlug,
-      response
+      response,
+      this.extractWorkerTokenDeployment(c)
     );
 
     // Build response headers (skip hop-by-hop)
@@ -1118,12 +1136,18 @@ export class SecretProxy {
   private async recordProviderHealth(
     organizationId: string | undefined,
     slug: string | undefined,
-    response: Response
+    response: Response,
+    deploymentName?: string
   ): Promise<void> {
     if (!organizationId || !slug) return;
     try {
       if (response.ok) {
         await clearInferenceProviderError(organizationId, slug);
+        // The same success re-arms deadline extension for this deployment's
+        // turns: an SDK retry that recovers must not leave the turn flagged and
+        // waiting to be swept. Keyed on deployment, so it only ever unblocks
+        // turns whose own worker just proved the provider works.
+        if (deploymentName) await clearTurnProviderFailed(deploymentName);
         return;
       }
       const code = classifyProviderHealthStatus(response.status);
@@ -1138,6 +1162,21 @@ export class SecretProxy {
         slug,
         `HTTP ${response.status}${retryAfter ? ` (retry-after: ${retryAfter})` : ""} — ${code}`
       );
+      // Withdraw this deployment's deadline EXTENSION (not the turn itself).
+      // The worker keeps heartbeating after a terminal provider answer even
+      // though the turn will never produce a reply, and that heartbeat was
+      // renewing the turn's own liveness deadline forever. Dropping the
+      // extension lets the existing deadline lapse so the sweep fails the turn
+      // (WORKER_UNRESPONSIVE; the provider reason is kept on the marker for
+      // diagnosis), while the SDK's own retries can still recover and clear the
+      // flag on the next 2xx.
+      if (deploymentName) {
+        await markTurnProviderFailed(
+          deploymentName,
+          code,
+          `${slug}: HTTP ${response.status} — ${code}`
+        );
+      }
     } catch (err) {
       logger.warn(
         `Failed to record provider health for ${slug}: ${err instanceof Error ? err.message : String(err)}`

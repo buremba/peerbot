@@ -23,11 +23,13 @@ import { getDb } from "../../db/client.js";
 import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import {
   armTurnTimeout,
+  clearTurnProviderFailed,
   commitTerminalReply,
   extendTurnDeadlines,
   failTurnIfPending,
   failTurnsForDeployment,
   hasLiveTurnForMessage,
+  markTurnProviderFailed,
   sweepExpiredTurns,
   type TurnRouting,
 } from "../orchestration/turn-liveness.js";
@@ -393,6 +395,93 @@ describe("turn-liveness", () => {
     expect(await sweepExpiredTurns()).toBe(0);
     expect(await markerCount("dep-7")).toBe(1);
     expect(await errorRowCount()).toBe(0);
+  });
+
+  test("PF1: after a terminal provider answer the heartbeat NO LONGER extends, so the sweep fires", async () => {
+    // The prod hang, in one test. A turn wedged after a 429 keeps emitting its
+    // 20s status_update (an unconditional setInterval — alive, not progressing),
+    // and that heartbeat used to renew the deadline forever, so the backstop for
+    // "alive, never replies" could never fire. Reproduced live: 240s and 12
+    // heartbeats after a single 429, still no terminal event.
+    await armTurnTimeout(queue, routing("dep-pf1", "m"));
+    await markTurnProviderFailed(
+      "dep-pf1",
+      AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+      "qwen: HTTP 429 — PROVIDER_QUOTA_EXHAUSTED"
+    );
+    await expireAllMarkers();
+
+    await extendTurnDeadlines("dep-pf1"); // the wedged worker's heartbeat
+
+    // Contrast with "a live worker's heartbeat extends the deadline" above,
+    // which is byte-identical except for the mark — there the sweep returns 0.
+    expect(await sweepExpiredTurns()).toBe(1);
+    expect(await markerCount("dep-pf1")).toBe(0);
+    expect(await errorRowCount()).toBe(1);
+    // And the client is told the PROVIDER failed — not the generic
+    // WORKER_UNRESPONSIVE, which would point the operator at the wrong system.
+    expect(await latestErrorCode()).toBe("PROVIDER_QUOTA_EXHAUSTED");
+  });
+
+  test("PF2: a provider recovery clears the flag and extension resumes", async () => {
+    // Why the fix withdraws the EXTENSION instead of killing the turn: the SDK
+    // retries (maxRetries 2, honouring Retry-After), so a 429 followed by a
+    // successful retry must leave the turn alive.
+    await armTurnTimeout(queue, routing("dep-pf2", "m"));
+    await markTurnProviderFailed(
+      "dep-pf2",
+      AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+      "qwen: HTTP 429 — PROVIDER_QUOTA_EXHAUSTED"
+    );
+    await clearTurnProviderFailed("dep-pf2"); // next proxied 2xx
+    await expireAllMarkers();
+
+    await extendTurnDeadlines("dep-pf2");
+
+    expect(await sweepExpiredTurns()).toBe(0);
+    expect(await markerCount("dep-pf2")).toBe(1);
+    expect(await errorRowCount()).toBe(0);
+  });
+
+  test("PF3: the flag is scoped to its own deployment", async () => {
+    await armTurnTimeout(queue, routing("dep-pf3a", "m"));
+    await armTurnTimeout(queue, routing("dep-pf3b", "m"));
+    await markTurnProviderFailed(
+      "dep-pf3a",
+      AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+      "qwen: HTTP 429 — PROVIDER_QUOTA_EXHAUSTED"
+    );
+    await expireAllMarkers();
+
+    await extendTurnDeadlines("dep-pf3a");
+    await extendTurnDeadlines("dep-pf3b");
+
+    // Only the flagged deployment lapses; the healthy neighbour keeps running.
+    expect(await sweepExpiredTurns()).toBe(1);
+    expect(await markerCount("dep-pf3a")).toBe(0);
+    expect(await markerCount("dep-pf3b")).toBe(1);
+  });
+
+  test("PF4: the reason is recorded on the marker for diagnosis", async () => {
+    await armTurnTimeout(queue, routing("dep-pf4", "m"));
+    await markTurnProviderFailed(
+      "dep-pf4",
+      AgentErrorCode.PROVIDER_QUOTA_EXHAUSTED,
+      "qwen: HTTP 429 — PROVIDER_QUOTA_EXHAUSTED"
+    );
+
+    const rows = (await getDb()`
+      SELECT action_input->>'providerFailedReason' AS reason,
+             action_input->>'providerFailedCode' AS code,
+             action_input->>'providerFailed' AS flag
+      FROM public.runs
+      WHERE queue_name = ${TURN_TIMEOUT_QUEUE}
+        AND action_input->>'deploymentName' = 'dep-pf4'
+    `) as Array<{ reason: string | null; code: string | null; flag: string | null }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.flag).toBe("true");
+    expect(rows[0]?.code).toBe("PROVIDER_QUOTA_EXHAUSTED");
+    expect(rows[0]?.reason).toBe("qwen: HTTP 429 — PROVIDER_QUOTA_EXHAUSTED");
   });
 
   test("marker key is globally unique: same messageId in two deployments is isolated", async () => {

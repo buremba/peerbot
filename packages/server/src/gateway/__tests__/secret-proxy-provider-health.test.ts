@@ -21,8 +21,11 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { generateWorkerToken } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import * as providerSecrets from "../../lobu/stores/provider-secrets.js";
+import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
+import { armTurnTimeout } from "../orchestration/turn-liveness.js";
 import type { SecretStore } from "../secrets/index.js";
 import {
   ensureDbForGatewayTests,
@@ -136,6 +139,115 @@ beforeEach(async () => {
 });
 
 describe("secret proxy — inference-provider health writeback", () => {
+  // --- Turn-liveness wiring -------------------------------------------------
+  // A terminal provider answer must ALSO stop the wedged turn from renewing its
+  // own liveness deadline. This half is easy to ship INERT: it only runs when
+  // the SIGNED worker token carries a `deploymentName`, and the other tests in
+  // this file authenticate with an unsigned placeholder bearer, so they would
+  // pass whether or not the wiring exists. These drive a real signed token.
+
+  const TURN_TIMEOUT_QUEUE = "internal:turn_timeout";
+
+  function signedWorkerToken(deploymentName: string, organizationId: string) {
+    return generateWorkerToken("user-1", `conv-${deploymentName}`, deploymentName, {
+      channelId: "chan",
+      agentId: "agent-1",
+      organizationId,
+      platform: "api",
+      responseThreadId: "api:chan:thread-1",
+      runId: 1,
+      messageId: "m-1",
+    });
+  }
+
+  async function armMarker(deploymentName: string): Promise<void> {
+    // `runs` has an FK to `organization`; the marker row needs a real org.
+    await getDb()`
+      INSERT INTO public.organization (id, name, slug)
+      VALUES ('org-1', 'org-1', 'org-1')
+      ON CONFLICT (id) DO NOTHING
+    `;
+    const queue = new RunsQueue();
+    await queue.start();
+    try {
+      await armTurnTimeout(queue, {
+        deploymentName,
+        messageId: "m-1",
+        platform: "api",
+        channelId: "chan",
+        conversationId: `conv-${deploymentName}`,
+        userId: "user-1",
+        organizationId: "org-1",
+      });
+    } finally {
+      await queue.stop();
+    }
+  }
+
+  async function providerFailedFlag(deploymentName: string): Promise<string | null> {
+    const rows = (await getDb()`
+      SELECT action_input->>'providerFailed' AS flag
+      FROM public.runs
+      WHERE queue_name = ${TURN_TIMEOUT_QUEUE}
+        AND action_input->>'deploymentName' = ${deploymentName}
+    `) as Array<{ flag: string | null }>;
+    return rows[0]?.flag ?? null;
+  }
+
+  /** Same as driveProxiedTurn, but authenticating with a real signed token. */
+  async function driveSignedTurn(
+    proxy: InstanceType<typeof SecretProxy>,
+    deploymentName: string
+  ) {
+    return proxy
+      .getApp()
+      .request("/api/proxy/zai/a/agent-1/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${signedWorkerToken(deploymentName, "org-1")}`,
+        },
+        body: JSON.stringify({ model: "zai/glm-5.2", prompt: "hi" }),
+      });
+  }
+
+  test("TL1: a 429 flags the deployment's turn marker so its heartbeat stops extending", async () => {
+    await seedProvider("org-1", "zai");
+    await armMarker("dep-tl1");
+    expect(await providerFailedFlag("dep-tl1")).toBeNull();
+
+    const proxy = makeProxy("org-1");
+    const restore = mockUpstream(429, { "retry-after": "60" });
+    try {
+      expect((await driveSignedTurn(proxy, "dep-tl1")).status).toBe(429);
+    } finally {
+      restore();
+    }
+    expect(await providerFailedFlag("dep-tl1")).toBe("true");
+  });
+
+  test("TL2: a subsequent 2xx clears the flag so an SDK retry that recovers is not swept", async () => {
+    await seedProvider("org-1", "zai");
+    await armMarker("dep-tl2");
+
+    const proxy = makeProxy("org-1");
+    let restore = mockUpstream(429, { "retry-after": "1" });
+    try {
+      await driveSignedTurn(proxy, "dep-tl2");
+    } finally {
+      restore();
+    }
+    expect(await providerFailedFlag("dep-tl2")).toBe("true");
+
+    restore = mockUpstream(200);
+    try {
+      expect((await driveSignedTurn(proxy, "dep-tl2")).status).toBe(200);
+    } finally {
+      restore();
+    }
+    expect(await providerFailedFlag("dep-tl2")).toBeNull();
+  });
+
   test("an upstream quota rejection (429) marks the provider row error", async () => {
     await seedProvider("org-1", "zai");
     const proxy = makeProxy("org-1");

@@ -4,7 +4,7 @@
  * `computePendingWindow` is the only reader that may WRITE (it seeds a NULL
  * mark), `readPendingWindow` is its read-only twin for status surfaces, and
  * `advanceAutomationArrivalMark` is the only writer that may move the mark.
- * The end-to-end delivery behaviour these produce lives in
+ * The end-to-end delivery these produce is covered by
  * `__tests__/integration/automations/arrival-axis-window.test.ts`; this suite
  * pins the bookkeeping itself.
  */

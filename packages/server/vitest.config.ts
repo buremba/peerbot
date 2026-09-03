@@ -16,7 +16,7 @@ export default defineConfig({
     // is claimable 60s after it lands. An integration test inserts a row and
     // claims a window in the same breath, which that budget would hide
     // entirely. Collapse it here; `arrival-axis-window.test.ts` restores the
-    // production value for the cases that exist to prove the settle behaviour.
+    // production value for the cases that exist to prove the settle window.
     // Set through `test.env` rather than `globalSetup`, which runs in a
     // separate process whose env does not reliably reach the forked workers.
     env: {

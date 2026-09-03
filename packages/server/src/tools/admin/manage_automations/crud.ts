@@ -334,7 +334,7 @@ export async function handleCreate(
         min_cooldown_seconds,
         delivery_target, execution_config,
         reaction_script, reaction_script_compiled, reaction_input_schema,
-        next_window_start, completed_window_coverage
+        next_window_start
       ) VALUES (
         ${automationId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
@@ -351,8 +351,7 @@ export async function handleCreate(
         ${reactionScript}, ${reactionScriptCompiled},
         ${reactionInputSchema ? tx.json(reactionInputSchema) : null},
         date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
-          - make_interval(secs => ${intervals.automationFirstWindowLookbackMs / 1000}),
-        '{}'::tstzmultirange
+          - make_interval(secs => ${intervals.automationFirstWindowLookbackMs / 1000})
       )
     `;
 
@@ -1026,7 +1025,7 @@ export async function handleCreateFromVersion(
             current_version_id, tags, status, created_by, created_at, updated_at,
             automation_group_id, source_automation_id,
             reaction_script, reaction_script_compiled, reaction_input_schema,
-            next_window_start, completed_window_coverage
+            next_window_start
           ) VALUES (
             ${automationId}, ${automationName}, ${automationSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
@@ -1042,8 +1041,7 @@ export async function handleCreateFromVersion(
             ${(version.reaction_script_compiled as string | null) ?? null},
             ${toJsonParam(tx, version.reaction_input_schema)},
             date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
-              - make_interval(secs => ${intervals.automationFirstWindowLookbackMs / 1000}),
-            '{}'::tstzmultirange
+              - make_interval(secs => ${intervals.automationFirstWindowLookbackMs / 1000})
           )
         `;
 

@@ -79,19 +79,16 @@ describe('automation CRUD', () => {
     })) as { automation_id: string };
     const automationId = created.automation_id;
     expect(automationId).toBeDefined();
-    // A new Automation starts covering arrivals from its creation instant: the
-    // mark is seeded, nothing is booked, and no granularity interprets either.
+    // A new Automation starts covering arrivals from its lookback seed: the
+    // mark is set and nothing has completed yet.
     const [createdProjection] = await getTestDb()<{
       next_window_start: string | Date | null;
-      completed_window_coverage: string;
       last_completed_window_start: string | Date | null;
     }[]>`
-      SELECT next_window_start, completed_window_coverage::text AS completed_window_coverage,
-             last_completed_window_start
+      SELECT next_window_start, last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
     expect(createdProjection.next_window_start).not.toBeNull();
-    expect(createdProjection.completed_window_coverage).toBe('{}');
     expect(createdProjection.last_completed_window_start).toBeNull();
 
     const got = (await owner.automations.get({ automation_id: automationId })) as {
@@ -143,9 +140,6 @@ describe('automation CRUD', () => {
     await sql`
       UPDATE automations
       SET next_window_start = '2025-01-01T00:00:00.000Z'::timestamptz,
-          completed_window_coverage = tstzmultirange(
-            tstzrange('2025-01-08T00:00:00.000Z', '2025-01-09T00:00:00.000Z', '[)')
-          ),
           last_completed_window_start = '2025-01-08T00:00:00.000Z'::timestamptz
       WHERE id = ${created.automation_id}
     `;
@@ -157,17 +151,14 @@ describe('automation CRUD', () => {
 
     const [projection] = await sql<{
       next_window_start: string | Date;
-      completed_window_coverage: string;
       last_completed_window_start: string | Date | null;
     }[]>`
-      SELECT next_window_start, completed_window_coverage::text AS completed_window_coverage,
-             last_completed_window_start
+      SELECT next_window_start, last_completed_window_start
       FROM automations WHERE id = ${created.automation_id}
     `;
     expect(new Date(projection.next_window_start).toISOString()).toBe(
       '2025-01-01T00:00:00.000Z'
     );
-    expect(projection.completed_window_coverage).not.toBe('{}');
     expect(new Date(projection.last_completed_window_start as string).toISOString()).toBe(
       '2025-01-08T00:00:00.000Z'
     );
@@ -1306,7 +1297,6 @@ describe('automation CRUD', () => {
       const [clone] = await sql`
         SELECT managed_agent_id, device_worker_id, agent_kind,
                triggers::text AS triggers, next_window_start,
-               completed_window_coverage::text AS completed_window_coverage,
                last_completed_window_start
         FROM automations WHERE id = ${cloneId}
       `;
@@ -1314,7 +1304,6 @@ describe('automation CRUD', () => {
       expect(clone.device_worker_id).toBe(deviceId);
       expect(clone.agent_kind).toBe('codex');
       expect(clone.next_window_start).not.toBeNull();
-      expect(clone.completed_window_coverage).toBe('{}');
       expect(clone.last_completed_window_start).toBeNull();
       // The schedule trigger is preserved and still resolves via the device pin.
       expect(clone.triggers).toMatch(/schedule/);

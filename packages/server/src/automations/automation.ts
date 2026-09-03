@@ -697,7 +697,8 @@ async function finalizeStalePendingAutomationRuns(
 			}
 			if (!candidate.schedule) continue;
 			// An orphaned device snapshot must retry the same unfinished window under
-			// current ownership, so preserve both schedule and coverage cursors.
+			// current ownership, so leave both cursors alone: `next_run_at` and the
+			// arrival mark `next_window_start`.
 			if (candidate.device_worker_id) continue;
 			const next = nextRunAt(
 				candidate.schedule,

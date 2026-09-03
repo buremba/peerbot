@@ -510,7 +510,7 @@ export class AutomationSubscriptionService {
 					schedule, next_run_at, triggers, managed_agent_id, model_config,
 					execution_config, sources, version, current_version_id, tags,
 					status, created_by, created_at, updated_at, automation_group_id,
-					next_window_start, completed_window_coverage
+					next_window_start
 				) VALUES (
 					${automationId}, ${`Messages in ${channelId}`}, ${`chat-${platform}-${automationId}`},
 					'Chat subscription', ${organizationId}, '{}'::bigint[],
@@ -518,8 +518,7 @@ export class AutomationSubscriptionService {
 					${model ? tx.json({ model }) : null}, '[]'::jsonb, 1, NULL,
 					ARRAY[${CHAT_LINK_TAG}]::text[], 'active', ${createdBy},
 					current_timestamp, current_timestamp, ${automationId},
-					date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
-					'{}'::tstzmultirange
+					date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
 				)
 			`;
 			await tx`

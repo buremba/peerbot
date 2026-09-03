@@ -88,10 +88,8 @@ describe("AutomationSubscriptionService connection-scoped routing", () => {
 		expect(rows).toHaveLength(2);
 		const projections = await getDb()<{
 			next_window_start: string | Date | null;
-			completed_window_coverage: string;
 		}>`
-			SELECT next_window_start,
-			       completed_window_coverage::text AS completed_window_coverage
+			SELECT next_window_start
 			FROM automations
 			WHERE organization_id = ${ORG_A}
 			  AND tags @> ARRAY['system:chat-link']::text[]
@@ -99,7 +97,6 @@ describe("AutomationSubscriptionService connection-scoped routing", () => {
 		expect(projections).toHaveLength(2);
 		for (const projection of projections) {
 			expect(projection.next_window_start).not.toBeNull();
-			expect(projection.completed_window_coverage).toBe("{}");
 		}
 	});
 

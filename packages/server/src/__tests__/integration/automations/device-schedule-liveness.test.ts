@@ -287,7 +287,6 @@ describe("device-pinned scheduled Automation liveness (#2538)", () => {
 		await sql`
 			UPDATE automations
 			SET next_window_start = ${mark.toISOString()}::timestamptz,
-				completed_window_coverage = '{}'::tstzmultirange,
 				next_run_at = current_timestamp - interval '2 hours'
 			WHERE id = ${automationId}
 		`;

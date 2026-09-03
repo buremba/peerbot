@@ -294,12 +294,11 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // QUERYABLE_SCHEMA entry until the phase-2 migration. next_window_start is
     // internal scheduler coordination state, exposed through the Automation
     // contract as pending_analysis.next_window rather than raw query_sql. The
-    // coverage multirange, its granularity, and the latest-completion scalar are
-    // the rest of that same scheduler-internal projection.
+    // latest-completion scalar is the rest of that same scheduler-internal
+    // projection.
     automations: new Set([
       'scheduler_client_id',
       'next_window_start',
-      'completed_window_coverage',
       'last_completed_window_start',
     ]),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),

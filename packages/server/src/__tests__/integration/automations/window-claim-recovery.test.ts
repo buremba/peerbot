@@ -153,8 +153,7 @@ describe('Automation window claim and recovery', () => {
     });
     await sql`
       UPDATE automations
-      SET next_window_start = ${failedStart.toISOString()}::timestamptz,
-          completed_window_coverage = '{}'::tstzmultirange
+      SET next_window_start = ${failedStart.toISOString()}::timestamptz
       WHERE id = ${automationId}
     `;
     const event = await createTestEvent({
@@ -216,7 +215,6 @@ describe('Automation window claim and recovery', () => {
     await sql`
       UPDATE automations
       SET next_window_start = ${staleMark.toISOString()}::timestamptz,
-          completed_window_coverage = '{}'::tstzmultirange,
           last_completed_window_start = NULL
       WHERE id = ${automationId}
     `;
@@ -238,18 +236,14 @@ describe('Automation window claim and recovery', () => {
 
     const [projection] = await sql<{
       next_window_start: string | Date;
-      completed_window_coverage: string;
       last_completed_window_start: string | Date | null;
     }>`
-      SELECT next_window_start,
-             completed_window_coverage::text AS completed_window_coverage,
-             last_completed_window_start
+      SELECT next_window_start, last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
     expect(new Date(projection.next_window_start).toISOString()).toBe(
       staleMark.toISOString()
     );
-    expect(projection.completed_window_coverage).toBe('{}');
     expect(projection.last_completed_window_start).toBeNull();
 
     // And the claim still hands out the whole unclaimed range.
@@ -678,7 +672,6 @@ describe('Automation window claim and recovery', () => {
     await sql`
       UPDATE automations
       SET next_window_start = ${staleMark.toISOString()}::timestamptz,
-          completed_window_coverage = '{}'::tstzmultirange,
           last_completed_window_start = NULL
       WHERE id = ${automationId}
     `;

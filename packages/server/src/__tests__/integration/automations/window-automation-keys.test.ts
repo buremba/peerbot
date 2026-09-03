@@ -84,8 +84,7 @@ describe("Automation window vocabulary", () => {
 		const expectedMark = new Date("2026-08-01T00:00:00.000Z");
 		await sql`
 			UPDATE automations
-			SET next_window_start = ${expectedMark.toISOString()}::timestamptz,
-				completed_window_coverage = '{}'::tstzmultirange
+			SET next_window_start = ${expectedMark.toISOString()}::timestamptz
 			WHERE id = ${automationId}
 		`;
 		await createTestEvent({

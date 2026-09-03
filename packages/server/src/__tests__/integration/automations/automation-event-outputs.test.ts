@@ -203,7 +203,7 @@ describe('Automation event outputs', () => {
     await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationId}`;
 
     const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
-    const pending = await computePendingWindow(sql as unknown as DbClient, automationId, granularity);
+    const pending = await computePendingWindow(sql as unknown as DbClient, automationId);
     const source = await createTestEvent({
       entity_id: parent.id,
       organization_id: workspace.org.id,

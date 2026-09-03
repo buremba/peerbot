@@ -331,7 +331,6 @@ describe("device-pinned scheduled Automation liveness (#2538)", () => {
 					run_id: run.id,
 					window_start: windowStart,
 					window_end: windowEnd,
-					granularity: "daily",
 					content_count: 0,
 					content_ids: [],
 				},

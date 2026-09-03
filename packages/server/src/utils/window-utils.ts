@@ -17,6 +17,7 @@
  * is retyped to a single timestamptz.
  */
 
+import { intervals } from '../config/intervals';
 import type { DbClient } from '../db/client';
 import type { UnprocessedRange } from '../types/automations';
 import { parseDateAlias } from './date-aliases';
@@ -33,14 +34,18 @@ import { ToolUserError } from './errors';
  * Bound the writer, not the reader: `events-insert-sites.test.ts` enumerates the
  * two `INSERT INTO events` sites and asserts their transactions stay far inside
  * this budget, and prod's `idle_in_transaction_session_timeout` is one minute.
- * A larger value costs only freshness — a row stored inside the settle window
- * belongs to the next run, never to none.
+ *
+ * Read through the lazy getter, never cached: an operator widens it during an
+ * incident without a deploy, and an integration test collapses it to see a row
+ * it just inserted. Default and rationale live in `config/intervals.ts`.
  */
-export const AUTOMATION_ARRIVAL_SETTLE_MS = 60_000;
+export function automationArrivalSettleMs(): number {
+  return intervals.automationArrivalSettleMs;
+}
 
 /** The newest instant a window may reach, given the database clock. */
 export function automationArrivalHorizon(dbNow: Date): Date {
-  return new Date(dbNow.getTime() - AUTOMATION_ARRIVAL_SETTLE_MS);
+  return new Date(dbNow.getTime() - automationArrivalSettleMs());
 }
 
 /**

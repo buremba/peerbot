@@ -345,7 +345,6 @@ describe('external manual Automation execution', () => {
             windowStart: queuedWindowStart,
             windowEnd: queuedWindowEnd,
             templateVersionId: queuedVersionId,
-            granularity: 'weekly',
           },
         }
       )
@@ -371,7 +370,6 @@ describe('external manual Automation execution', () => {
         automation_id: automationId,
         window_start: queuedWindowStart,
         window_end: queuedWindowEnd,
-        granularity: 'weekly',
         content_count: 0,
         content_ids: [],
       },
@@ -604,7 +602,6 @@ describe('external manual Automation execution', () => {
           windowStart: legacyWindowStart,
           windowEnd: legacyWindowEnd,
           templateVersionId: queuedVersionId,
-          granularity: 'weekly',
         },
       }
     );
@@ -612,7 +609,6 @@ describe('external manual Automation execution', () => {
     const inProcessToken = await verifyWindowToken(inProcessRead.window_token, TEST_ENV);
     expect(inProcessToken).toMatchObject({
       run_id: inProcessRun.runId,
-      granularity: 'weekly',
     });
 
     const promoted = await sql<{

@@ -191,11 +191,7 @@ async function setupKeyedAutomation() {
  */
 async function queueRunningRun(ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>) {
   const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
-  const { windowStart, windowEnd } = await computePendingWindow(
-    ctx.dbClient,
-    ctx.automationId,
-    granularity
-  );
+  const { windowStart, windowEnd } = await computePendingWindow(ctx.dbClient, ctx.automationId);
   const queued = await createAutomationRun({
     organizationId: ctx.workspace.org.id,
     automationId: ctx.automationId,
@@ -424,11 +420,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     // Place the in-window event inside the automation's pending daily window so
     // read_knowledge actually grants it in the token's content_ids.
     const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
-    const { windowStart } = await computePendingWindow(
-      ctx.dbClient,
-      ctx.automationId,
-      granularity
-    );
+    const { windowStart } = await computePendingWindow(ctx.dbClient, ctx.automationId);
     const inWindow = await createTestEvent({
       entity_id: parentEntityId,
       organization_id: workspace.org.id,

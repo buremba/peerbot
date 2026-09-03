@@ -159,7 +159,7 @@ describe('Automation window claim and recovery', () => {
       occurred_at: new Date(failedStart.getTime() + 3_600_000),
     });
 
-    const pending = await computePendingWindow(sql, automationId, 'daily');
+    const pending = await computePendingWindow(sql, automationId);
     expect(pending.windowStart.toISOString()).toBe(failedStart.toISOString());
 
     const detail = (await api.automations.get({
@@ -650,7 +650,6 @@ describe('Automation window claim and recovery', () => {
       ) VALUES (
         ${orgId}, 'automation', ${automationId}, 'completed', 'scoreable',
         ${sql.json({
-          granularity: 'daily',
           window_start: completedStart.toISOString(),
           window_end: new Date(completedEnd.getTime() - 1).toISOString(),
         })},
@@ -666,7 +665,6 @@ describe('Automation window claim and recovery', () => {
       ) VALUES (
         ${orgId}, 'automation', ${automationId}, 'completed', 'scoreable',
         ${sql.json({
-          granularity: 'daily',
           window_start: dayStart(2).toISOString(),
           window_end: dayStart(1).toISOString(),
         })},
@@ -687,7 +685,7 @@ describe('Automation window claim and recovery', () => {
       WHERE id = ${automationId}
     `;
 
-    const pending = await computePendingWindow(sql, automationId, 'daily');
+    const pending = await computePendingWindow(sql, automationId);
     expect(pending.windowStart.toISOString()).toBe(completedEnd.toISOString());
 
     type PendingDetail = {

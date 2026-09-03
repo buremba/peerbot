@@ -123,7 +123,6 @@ describe("Automation window lag is visible and actionable", () => {
 		await createAutomationResultRun({
 			automationId: automationId,
 			organizationId: orgId,
-			granularity: "daily",
 			windowStart,
 			windowEnd: new Date(windowStart.getTime() + DAY_MS),
 			contentAnalyzed: 40,

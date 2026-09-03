@@ -134,11 +134,7 @@ async function liveDeviceRun(workerId: string) {
 	const deviceWorkerId = String(device.id);
 
 	const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-	const { windowStart, windowEnd } = await computePendingWindow(
-		sql as unknown as DbClient,
-		automationId,
-		granularity
-	);
+	const { windowStart, windowEnd } = await computePendingWindow(sql as unknown as DbClient, automationId);
 	const queued = await createAutomationRun({
 		organizationId: workspace.org.id,
 		automationId,

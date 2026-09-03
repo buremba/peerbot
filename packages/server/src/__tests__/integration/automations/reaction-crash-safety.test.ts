@@ -79,11 +79,7 @@ async function seedRunnableWindow(reactionScript: string) {
 	});
 
 	const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-	const { windowStart, windowEnd } = await computePendingWindow(
-		sql as never,
-		automationId,
-		granularity,
-	);
+	const { windowStart, windowEnd } = await computePendingWindow(sql as never, automationId);
 	const queued = await createAutomationRun({
 		organizationId: workspace.org.id,
 		automationId,

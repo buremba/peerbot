@@ -25,7 +25,7 @@ import { getRecentFeedbackSummary } from '../../utils/automation-feedback';
 import { getAvailableOperations, getPastReactionsSummary } from '../../utils/automation-reactions';
 import { deriveAutomationExtractionSchema } from '../../utils/automation-extraction-schema';
 import {
-  AUTOMATION_ARRIVAL_SETTLE_MS,
+  automationArrivalSettleMs,
   computePendingWindow,
   describeUnclaimedArrivals,
   foldUnprocessedRanges,
@@ -783,7 +783,7 @@ export async function handleAutomationMode(
       throw new ToolUserError(
         `Automation ${automationId} has no settled arrivals in the requested range: ` +
           `everything at or after ${windowStart.toISOString()} was stored within the last ` +
-          `${AUTOMATION_ARRIVAL_SETTLE_MS / 1000}s and is still settling.`,
+          `${automationArrivalSettleMs() / 1000}s and is still settling.`,
         409
       );
     }

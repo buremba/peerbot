@@ -9,7 +9,7 @@ import {
 import { classifyRunOutcome } from '../../../runs/run-outcome';
 import { ToolUserError } from '../../../utils/errors';
 import {
-  AUTOMATION_ARRIVAL_SETTLE_MS,
+  automationArrivalSettleMs,
   computePendingWindow,
 } from '../../../utils/window-utils';
 import { handleAutomationMode } from '../../get_content/automation-mode';
@@ -163,7 +163,7 @@ export async function handleClaimNextWindow(
       if (windowEnd <= windowStart) {
         throw new ToolUserError(
           `Automation ${automationId} has nothing new to claim yet: rows stored after ` +
-            `${windowStart.toISOString()} become claimable ${AUTOMATION_ARRIVAL_SETTLE_MS / 1000}s after they land.`,
+            `${windowStart.toISOString()} become claimable ${automationArrivalSettleMs() / 1000}s after they land.`,
           409
         );
       }

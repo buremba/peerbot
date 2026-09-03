@@ -32,7 +32,7 @@ import { ToolUserError } from "../utils/errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import {
-	AUTOMATION_ARRIVAL_SETTLE_MS,
+	automationArrivalSettleMs,
 	advanceAutomationArrivalMark,
 	computePendingWindow,
 } from "../utils/window-utils";
@@ -275,7 +275,7 @@ async function enqueueAutomationRunForRecord(
 	if (windowEnd <= windowStart) {
 		throw new ToolUserError(
 			`Automation ${automation.id} has nothing new to run yet: rows stored after ` +
-				`${windowStart.toISOString()} become claimable ${AUTOMATION_ARRIVAL_SETTLE_MS / 1000}s after they land.`,
+				`${windowStart.toISOString()} become claimable ${automationArrivalSettleMs() / 1000}s after they land.`,
 			409,
 		);
 	}

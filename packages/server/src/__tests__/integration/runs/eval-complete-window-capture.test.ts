@@ -82,11 +82,7 @@ async function setup() {
   });
 
   const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
-  const { windowStart, windowEnd } = await computePendingWindow(
-    sql as unknown as DbClient,
-    automationId,
-    granularity
-  );
+  const { windowStart, windowEnd } = await computePendingWindow(sql as unknown as DbClient, automationId);
   const sourceRun = await createAutomationRun({
     organizationId: workspace.org.id,
     automationId,

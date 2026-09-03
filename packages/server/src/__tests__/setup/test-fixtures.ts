@@ -798,7 +798,13 @@ export async function createTestEvent(options: {
   title?: string;
   content: string;
   occurred_at?: Date;
-  /** When Lobu stored the row. Defaults to now; set to simulate a late arrival. */
+  /**
+   * When Lobu stored the row — the axis Automation windows run on.
+   *
+   * Defaults to `NOW()`, which the suite's collapsed arrival settle window
+   * (see `vitest.config.ts`) makes immediately claimable. Set it to simulate a
+   * late arrival, or to exercise the settle window itself.
+   */
   created_at?: Date;
   origin_id?: string;
   embedding?: number[];
@@ -963,7 +969,6 @@ export async function createTestDeviceCode(
 export async function createAutomationResultRun(options: {
   automationId: number;
   organizationId: string;
-  granularity?: string;
   windowStart: Date | string;
   windowEnd: Date | string;
   extractedData?: Record<string, unknown>;
@@ -978,11 +983,9 @@ export async function createAutomationResultRun(options: {
   runMetadata?: Record<string, unknown> | null;
 }): Promise<number> {
   const sql = getTestDb();
-  const granularity = options.granularity ?? 'weekly';
   const windowStartIso = new Date(options.windowStart as string).toISOString();
   const windowEndIso = new Date(options.windowEnd as string).toISOString();
   const approvedInput = {
-    granularity,
     window_start: windowStartIso,
     window_end: windowEndIso,
     version_id: options.versionId ?? null,

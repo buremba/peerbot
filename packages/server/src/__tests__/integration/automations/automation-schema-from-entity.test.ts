@@ -116,11 +116,7 @@ type Ctx = Awaited<ReturnType<typeof setupEntityTypedAutomation>>;
 
 async function queueRunningRun(ctx: Ctx) {
   const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
-  const { windowStart, windowEnd } = await computePendingWindow(
-    ctx.dbClient,
-    ctx.automationId,
-    granularity
-  );
+  const { windowStart, windowEnd } = await computePendingWindow(ctx.dbClient, ctx.automationId);
   const queued = await createAutomationRun({
     organizationId: ctx.workspace.org.id,
     automationId: ctx.automationId,

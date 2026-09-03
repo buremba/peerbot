@@ -213,7 +213,6 @@ describe('formatToolResult', () => {
             automation_name: 'Sentiment',
             window_start: '2025-01-01T00:00:00Z',
             window_end: '2025-01-07T00:00:00Z',
-            granularity: 'weekly',
             content_analyzed: 50,
             model_used: 'test-model',
             execution_time_ms: 100,

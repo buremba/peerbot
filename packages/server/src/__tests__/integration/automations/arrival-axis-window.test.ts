@@ -17,9 +17,9 @@
  * range while its writer could still be uncommitted.
  */
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
-import { AUTOMATION_ARRIVAL_SETTLE_MS } from '../../../utils/window-utils';
+import { automationArrivalSettleMs } from '../../../utils/window-utils';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -50,8 +50,20 @@ describe('Automation windows on the arrival axis', () => {
   let automationId: number;
   let api: TestApiClient;
 
+  // The rest of the suite runs with the settle window collapsed to zero so a
+  // fixture row is claimable the instant it lands (`vitest.config.ts`). These
+  // cases exist to prove the settle window itself, so they restore the
+  // production budget — every row below is stamped relative to it.
+  const suiteSettleMs = process.env.AUTOMATION_ARRIVAL_SETTLE_MS;
+
   beforeAll(async () => {
+    process.env.AUTOMATION_ARRIVAL_SETTLE_MS = String(MINUTE_MS);
     await initWorkspaceProvider();
+  });
+
+  afterAll(() => {
+    if (suiteSettleMs === undefined) delete process.env.AUTOMATION_ARRIVAL_SETTLE_MS;
+    else process.env.AUTOMATION_ARRIVAL_SETTLE_MS = suiteSettleMs;
   });
 
   beforeEach(async () => {
@@ -192,8 +204,8 @@ describe('Automation windows on the arrival axis', () => {
 
     expect(claimed.context.window_start).toBe(mark.toISOString());
     const windowEnd = new Date(claimed.context.window_end).getTime();
-    expect(windowEnd).toBeLessThanOrEqual(Date.now() - AUTOMATION_ARRIVAL_SETTLE_MS);
-    expect(windowEnd).toBeGreaterThan(now - AUTOMATION_ARRIVAL_SETTLE_MS - 10_000);
+    expect(windowEnd).toBeLessThanOrEqual(Date.now() - automationArrivalSettleMs());
+    expect(windowEnd).toBeGreaterThan(now - automationArrivalSettleMs() - 10_000);
   });
 
   it("reclaims a failed run's range instead of skipping it", async () => {

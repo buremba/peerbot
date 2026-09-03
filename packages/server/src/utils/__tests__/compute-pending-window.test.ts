@@ -1,395 +1,225 @@
-/** Scheduled Automation period rollover from completed run timestamps. */
+/**
+ * The arrival mark and the window it hands out.
+ *
+ * `computePendingWindow` is the only reader that may WRITE (it seeds a NULL
+ * mark), `readPendingWindow` is its read-only twin for status surfaces, and
+ * `advanceAutomationArrivalMark` is the only writer that may move the mark.
+ * The end-to-end delivery behaviour these produce lives in
+ * `__tests__/integration/automations/arrival-axis-window.test.ts`; this suite
+ * pins the bookkeeping itself.
+ */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  advanceExpectedAutomationWindow,
+  advanceAutomationArrivalMark,
+  automationArrivalHorizon,
+  automationArrivalSettleMs,
   computePendingWindow,
-  nextAutomationWindowStart,
+  describeUnclaimedArrivals,
+  readDatabaseNow,
+  readLastCompletedWindowStart,
+  readPendingWindow,
+  requestedArrivalWindow,
 } from '../window-utils';
-import type { AutomationTimeGranularity } from '@lobu/connector-sdk';
+import type { DbClient } from '../../db/client';
 import { cleanupTestDatabase, getTestDb } from '../../__tests__/setup/test-db';
 import {
   createTestAgent,
   createTestOrganization,
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
-import { createAutomationRun } from '../../runs/queue-service';
 
-/** Insert a completed result run covering [start, end). */
-async function seedWindow(opts: {
-  orgId: string;
-  userId: string;
-  automationId: number;
-  granularity: AutomationTimeGranularity;
-  start: string;
-  end: string;
-  dispatchSource?: 'scheduled' | 'event';
-}): Promise<void> {
-  const sql = getTestDb();
-  const agent = await createTestAgent({
-    organizationId: opts.orgId,
-    ownerUserId: opts.userId,
-  });
-  const initialWindowStart =
-    opts.dispatchSource === 'event'
-      ? nextAutomationWindowStart(null, new Date(), opts.granularity)
-      : new Date(opts.start);
-  await sql`
+const MINUTE_MS = 60_000;
+
+let orgId: string;
+let userId: string;
+let sql: DbClient;
+
+/** An Automation whose mark starts wherever the caller says (NULL to leave it unseeded). */
+async function seedAutomation(automationId: number, mark: Date | null): Promise<void> {
+  const agent = await createTestAgent({ organizationId: orgId, ownerUserId: userId });
+  await getTestDb()`
     INSERT INTO automations (
       id, name, slug, created_by, organization_id, managed_agent_id, automation_group_id,
-      next_window_start, completed_window_coverage, window_projection_granularity
+      next_window_start, completed_window_coverage
     ) VALUES (
-      ${opts.automationId}, ${`Window ${opts.automationId}`},
-      ${`window-${opts.automationId}`}, ${opts.userId}, ${opts.orgId},
-      ${agent.agentId}, ${opts.automationId},
-      ${initialWindowStart.toISOString()}::timestamptz,
-      '{}'::tstzmultirange, ${opts.granularity}
+      ${automationId}, ${`Window ${automationId}`}, ${`window-${automationId}`},
+      ${userId}, ${orgId}, ${agent.agentId}, ${automationId},
+      ${mark ? mark.toISOString() : null}::timestamptz, '{}'::tstzmultirange
     )
-    ON CONFLICT (id) DO NOTHING
   `;
-  const run = await createAutomationRun({
-    organizationId: opts.orgId,
-    automationId: opts.automationId,
-    agentId: agent.agentId,
-    windowStart: opts.start,
-    windowEnd: opts.end,
-    dispatchSource: opts.dispatchSource ?? 'scheduled',
+}
+
+async function readMark(automationId: number): Promise<Date | null> {
+  const [row] = await getTestDb()`
+    SELECT next_window_start FROM automations WHERE id = ${automationId}
+  `;
+  return row?.next_window_start ? new Date(row.next_window_start) : null;
+}
+
+/** Coverage as bounds plus range count — asserted semantically, never as rendered text. */
+async function readCoverage(
+  automationId: number
+): Promise<{ from: Date | null; to: Date | null; ranges: number }> {
+  const [row] = await getTestDb()`
+    SELECT lower(completed_window_coverage) AS from_ts,
+           upper(completed_window_coverage) AS to_ts,
+           (SELECT count(*) FROM unnest(completed_window_coverage) r) AS ranges
+    FROM automations WHERE id = ${automationId}
+  `;
+  return {
+    from: row.from_ts ? new Date(row.from_ts) : null,
+    to: row.to_ts ? new Date(row.to_ts) : null,
+    ranges: Number(row.ranges),
+  };
+}
+
+describe('the arrival mark', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+    const org = await createTestOrganization({ name: 'Arrival Org' });
+    const user = await createTestUser({ email: 'arrival@test.example.com' });
+    orgId = org.id;
+    userId = user.id;
+    sql = getTestDb() as unknown as DbClient;
   });
-  await sql`
-    UPDATE runs SET status = 'completed', completed_at = ${opts.end},
-      action_output = '{}'::jsonb,
-      approved_input = approved_input || ${sql.json({ granularity: opts.granularity })}::jsonb
-    WHERE id = ${run.runId}
-  `;
-  if (opts.dispatchSource !== 'event') {
-    await sql.begin((tx) =>
-      advanceExpectedAutomationWindow(
-        tx,
-        opts.automationId,
-        new Date(opts.start),
-        opts.granularity
-      )
-    );
-  }
-}
 
-async function seedOrg() {
-  await cleanupTestDatabase();
-  const org = await createTestOrganization({ name: 'Window Org' });
-  const user = await createTestUser({ email: 'window@test.example.com' });
-  return { orgId: org.id, userId: user.id };
-}
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Start of the UTC day `offsetDays` back from now. */
-const dayStart = (offsetDays: number): Date => {
-  const d = new Date(Date.now() - offsetDays * DAY_MS);
-  d.setUTCHours(0, 0, 0, 0);
-  return d;
-};
-
-/** Start of the Monday `offsetWeeks` back from the current week. */
-const weekStart = (offsetWeeks: number): Date => {
-  const d = new Date(Date.now() - offsetWeeks * 7 * DAY_MS);
-  const dayOfWeek = d.getUTCDay();
-  d.setUTCDate(d.getUTCDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
-  d.setUTCHours(0, 0, 0, 0);
-  return d;
-};
-
-describe('computePendingWindow', () => {
   afterEach(async () => {
     await cleanupTestDatabase();
   });
 
-  // The Automation 71 failure, reduced. A daily window closed with an INCLUSIVE
-  // end must still roll the period forward to the next midnight.
-  it('rolls forward to the next aligned period after an inclusive-end window', async () => {
-    const { orgId, userId } = await seedOrg();
-    const automationId = 9001;
-    const previous = dayStart(2);
-    await seedWindow({
-      orgId,
-      userId,
-      automationId,
-      granularity: 'daily',
-      start: previous.toISOString(),
-      end: new Date(previous.getTime() + DAY_MS - 1).toISOString(), // inclusive convention
-    });
+  it('hands out [mark, horizon) from the database clock', async () => {
+    const mark = new Date(Date.now() - 30 * MINUTE_MS);
+    await seedAutomation(1, mark);
 
-    const { windowStart, windowEnd } = await computePendingWindow(
-      getTestDb(),
-      automationId,
-      'daily'
+    const dbNow = await readDatabaseNow(sql);
+    const { windowStart, windowEnd } = await computePendingWindow(sql, 1);
+
+    expect(windowStart.toISOString()).toBe(mark.toISOString());
+    // The end is the horizon as the DATABASE clock sees it, not the app's.
+    expect(windowEnd.getTime()).toBeGreaterThanOrEqual(
+      automationArrivalHorizon(dbNow).getTime()
     );
-
-    // The NEXT day at midnight — not 23:59:59.999, and not the seeded day again.
-    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
-    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
+    expect(windowEnd.getTime()).toBeLessThan(dbNow.getTime() + MINUTE_MS);
   });
 
-  it('rolls forward identically when the previous end was exclusive', async () => {
-    const { orgId, userId } = await seedOrg();
-    const automationId = 9002;
-    const previous = dayStart(2);
-    await seedWindow({
-      orgId,
-      userId,
-      automationId,
-      granularity: 'daily',
-      start: previous.toISOString(),
-      end: dayStart(1).toISOString(), // exclusive convention
-    });
+  it('seeds an unseeded mark to the database clock, and only once', async () => {
+    await seedAutomation(1, null);
+    expect(await readMark(1)).toBeNull();
 
-    const { windowStart, windowEnd } = await computePendingWindow(
-      getTestDb(),
-      automationId,
-      'daily'
-    );
+    const first = await computePendingWindow(sql, 1);
+    const seeded = await readMark(1);
+    expect(seeded).not.toBeNull();
+    expect(seeded?.toISOString()).toBe(first.windowStart.toISOString());
 
-    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
-    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
+    // A second read is a plain read: it must not re-seed and move the frontier.
+    const second = await computePendingWindow(sql, 1);
+    expect(second.windowStart.toISOString()).toBe(first.windowStart.toISOString());
+    expect((await readMark(1))?.toISOString()).toBe(seeded?.toISOString());
   });
 
-  it('does not use event-triggered runs as the scheduled window cursor', async () => {
-    const { orgId, userId } = await seedOrg();
-    const automationId = 9007;
-    await seedWindow({
-      orgId,
-      userId,
-      automationId,
-      granularity: 'daily',
-      start: dayStart(10).toISOString(),
-      end: dayStart(9).toISOString(),
-      dispatchSource: 'event',
-    });
+  it('never inverts: nothing settled since the mark is an empty window, not a negative one', async () => {
+    // A mark in the future of the horizon is exactly the state right after a
+    // completion. The window collapses to a point; the claim path refuses it.
+    const mark = new Date(Date.now() + 10 * MINUTE_MS);
+    await seedAutomation(1, mark);
 
-    const { windowStart, windowEnd } = await computePendingWindow(
-      getTestDb(),
-      automationId,
-      'daily'
-    );
-
-    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
-    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
+    const { windowStart, windowEnd } = await computePendingWindow(sql, 1);
+    expect(windowEnd.getTime()).toBe(windowStart.getTime());
   });
 
-  // Self-heal: the 14 already-misaligned prod rows must recover on their own,
-  // without a data migration rewriting window identities. The corrupt start is a
-  // period boundary minus a millisecond, exactly as prod stores it — chaining off
-  // it unaligned would carry the `23:59:59.999` into the next window forever.
-  it('recovers from an already-misaligned stored window', async () => {
-    const { orgId, userId } = await seedOrg();
-    const automationId = 9003;
-    const corruptStart = new Date(dayStart(2).getTime() + DAY_MS - 1);
-    await seedWindow({
-      orgId,
-      userId,
-      automationId,
-      granularity: 'daily',
-      start: corruptStart.toISOString(),
-      end: new Date(dayStart(1).getTime() + DAY_MS - 1).toISOString(),
-    });
-
-    const { windowStart, windowEnd } = await computePendingWindow(
-      getTestDb(),
-      automationId,
-      'daily'
-    );
-
-    expect(windowStart.toISOString()).toBe(dayStart(1).toISOString());
-    expect(windowEnd.toISOString()).toBe(dayStart(0).toISOString());
-    expect(windowStart.getUTCHours()).toBe(0);
+  it('reads without a lock or a seed for status surfaces', async () => {
+    await seedAutomation(1, null);
+    const pending = await readPendingWindow(sql, 1);
+    expect(pending).not.toBeNull();
+    // The status read reported a mark, but did NOT write one.
+    expect(await readMark(1)).toBeNull();
+    expect(await readPendingWindow(sql, 9007)).toBeNull();
   });
 
-  // Gap 2. No window may ever be shorter than its granularity — that is what
-  // produced five 0-second windows with content_analyzed = 0.
-  it('never produces a degenerate window, whatever the stored boundary', async () => {
-    const { orgId, userId } = await seedOrg();
-    const cases = [
-      { id: 9101, start: '2026-07-23T23:59:59.999Z', end: '2026-07-24T00:00:00.000Z' },
-      { id: 9102, start: '2026-07-24T23:59:59.999Z', end: '2026-07-25T00:00:00.000Z' },
-      { id: 9103, start: '2026-07-25T00:00:00.000Z', end: '2026-07-25T23:59:59.999Z' },
-    ];
-    for (const c of cases) {
-      await seedWindow({
-        orgId,
-        userId,
-        automationId: c.id,
-        granularity: 'daily',
-        start: c.start,
-        end: c.end,
-      });
-    }
+  it('books a completed range by moving the mark to its end', async () => {
+    const mark = new Date(Date.now() - 30 * MINUTE_MS);
+    await seedAutomation(1, mark);
+    const end = new Date(mark.getTime() + 10 * MINUTE_MS);
 
-    for (const c of cases) {
-      const { windowStart, windowEnd } = await computePendingWindow(
-        getTestDb(),
-        c.id,
-        'daily'
-      );
-      const duration = windowEnd.getTime() - windowStart.getTime();
-      expect(duration, `automation ${c.id} window duration`).toBe(DAY_MS);
-      expect(windowStart.toISOString().endsWith('T00:00:00.000Z')).toBe(true);
-    }
+    expect(await advanceAutomationArrivalMark(sql, 1, mark, end)).toBe(true);
+    expect((await readMark(1))?.toISOString()).toBe(end.toISOString());
+    expect(await readLastCompletedWindowStart(sql, 1)).toEqual(mark);
+    // Coverage stays ONE contiguous range: [first booked, mark).
+    expect(await readCoverage(1)).toEqual({ from: mark, to: end, ranges: 1 });
   });
 
-  // The other direction. An hourly cron gets a DAILY window (there is no hourly
-  // granularity), so every run inside the same day must resolve to the SAME
-  // period rather than minting future periods for later runs that day.
-  it('re-dispatches the CURRENT period rather than minting a future one', async () => {
-    const { orgId, userId } = await seedOrg();
-    const automationId = 9004;
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const todayIso = today.toISOString();
-    const tomorrowIso = new Date(today.getTime() + DAY_MS).toISOString();
+  it('keeps coverage contiguous across consecutive completions', async () => {
+    const first = new Date(Date.now() - 30 * MINUTE_MS);
+    const second = new Date(first.getTime() + 10 * MINUTE_MS);
+    const third = new Date(second.getTime() + 10 * MINUTE_MS);
+    await seedAutomation(1, first);
 
-    // Today's window is already complete — the state after the first run of the day.
-    await seedWindow({
-      orgId,
-      userId,
-      automationId,
-      granularity: 'daily',
-      start: todayIso,
-      end: tomorrowIso,
-    });
+    await advanceAutomationArrivalMark(sql, 1, first, second);
+    await advanceAutomationArrivalMark(sql, 1, second, third);
 
-    const { windowStart, windowEnd } = await computePendingWindow(
-      getTestDb(),
-      automationId,
-      'daily'
-    );
-
-    // Still today. Advancing here would mint tomorrow's window before tomorrow.
-    expect(windowStart.toISOString()).toBe(todayIso);
-    expect(windowEnd.toISOString()).toBe(tomorrowIso);
+    expect((await readMark(1))?.toISOString()).toBe(third.toISOString());
+    // One range, not two: the multirange never fragments on the arrival axis.
+    expect(await readCoverage(1)).toEqual({ from: first, to: third, ranges: 1 });
   });
 
-  // A stale Automation advances one successful period at a time so every logical
-  // period remains recoverable instead of disappearing behind the clock.
-  it('returns the next missing period when far behind', async () => {
-    const { orgId, userId } = await seedOrg();
-    const automationId = 9005;
-    await seedWindow({
-      orgId,
-      userId,
-      automationId,
-      granularity: 'daily',
-      start: '2026-01-10T00:00:00.000Z',
-      end: '2026-01-11T00:00:00.000Z',
-    });
+  it('books nothing for a range that is entirely behind the mark (a re-read)', async () => {
+    const mark = new Date(Date.now() - 10 * MINUTE_MS);
+    await seedAutomation(1, mark);
+    const stale = new Date(mark.getTime() - 20 * MINUTE_MS);
 
-    const { windowStart, windowEnd } = await computePendingWindow(
-      getTestDb(),
-      automationId,
-      'daily'
-    );
-
-    expect(windowStart.toISOString()).toBe('2026-01-11T00:00:00.000Z');
-    expect(windowEnd.toISOString()).toBe('2026-01-12T00:00:00.000Z');
+    expect(await advanceAutomationArrivalMark(sql, 1, stale, mark)).toBe(false);
+    expect((await readMark(1))?.toISOString()).toBe(mark.toISOString());
   });
 
-  it('aligns weekly windows to the week boundary', async () => {
-    const { orgId, userId } = await seedOrg();
-    const automationId = 9006;
-    const previousWeek = weekStart(2);
-    await seedWindow({
-      orgId,
-      userId,
-      automationId,
-      granularity: 'weekly',
-      start: previousWeek.toISOString(), // a Monday
-      end: new Date(previousWeek.getTime() + 7 * DAY_MS - 1).toISOString(), // inclusive, as stored on prod
-    });
+  it('books nothing for an explicitly selected LATER range, leaving the gap claimable', async () => {
+    const mark = new Date(Date.now() - 30 * MINUTE_MS);
+    await seedAutomation(1, mark);
+    const laterStart = new Date(mark.getTime() + 10 * MINUTE_MS);
+    const laterEnd = new Date(mark.getTime() + 20 * MINUTE_MS);
 
-    const { windowStart, windowEnd } = await computePendingWindow(
-      getTestDb(),
-      automationId,
-      'weekly'
-    );
-
-    expect(windowStart.toISOString()).toBe(weekStart(1).toISOString());
-    expect(windowEnd.toISOString()).toBe(weekStart(0).toISOString());
-    expect(windowStart.getUTCDay()).toBe(1); // Monday
-  });
-
-  it('starts from an aligned period when the Automation has no windows yet', async () => {
-    await seedOrg();
-
-    const { windowStart, windowEnd } = await computePendingWindow(
-      getTestDb(),
-      9007,
-      'daily'
-    );
-
-    expect(windowStart.toISOString().endsWith('T00:00:00.000Z')).toBe(true);
-    expect(windowEnd.getTime() - windowStart.getTime()).toBe(DAY_MS);
+    expect(await advanceAutomationArrivalMark(sql, 1, laterStart, laterEnd)).toBe(false);
+    // The mark did not jump the gap, so an ordinary claim still returns it.
+    expect((await readMark(1))?.toISOString()).toBe(mark.toISOString());
   });
 });
 
-/**
- * The rule itself, at a fixed instant and with no database.
- *
- * `get_automation`'s `next_window` PREVIEWS what `computePendingWindow`
- * dispatches. While those were two implementations they drifted — the preview
- * chained off `window_end` and the dispatcher off `window_start`, a full period
- * apart on a legacy row with an inclusive end, so the agent was shown one
- * window and the run was handed another. They now share this function, and
- * these cases pin the shared contract rather than either caller.
- */
-describe('nextAutomationWindowStart', () => {
-  const NOW = new Date('2026-07-31T17:26:00.000Z');
-
-  it('advances one aligned period from the previous start', () => {
-    expect(
-      nextAutomationWindowStart(new Date('2026-07-30T00:00:00.000Z'), NOW, 'daily').toISOString()
-    ).toBe('2026-07-31T00:00:00.000Z');
-  });
-
-  // Both boundary conventions, and a corrupt start, must land on the same period.
-  it.each([
-    ['aligned start', '2026-07-30T00:00:00.000Z'],
-    ['inclusive-end-derived start', '2026-07-30T23:59:59.999Z'],
-    ['mid-period start', '2026-07-30T11:17:03.221Z'],
-  ])('normalises a %s to the same next period', (_label, stored) => {
-    expect(nextAutomationWindowStart(new Date(stored), NOW, 'daily').toISOString()).toBe(
-      '2026-07-31T00:00:00.000Z'
+describe('an agent-chosen arrival range', () => {
+  it("treats `until` as inclusive and clamps the end to the horizon", () => {
+    const now = new Date('2026-09-03T12:00:00.000Z');
+    const { windowStart, windowEnd } = requestedArrivalWindow(
+      new Date('2026-09-01T00:00:00.000Z'),
+      new Date('2026-09-02T00:00:00.000Z'),
+      now
     );
+    expect(windowStart.toISOString()).toBe('2026-09-01T00:00:00.000Z');
+    // "through Sep 2" ends at the start of Sep 3, which is behind the horizon.
+    expect(windowEnd.toISOString()).toBe('2026-09-03T00:00:00.000Z');
   });
 
-  it('caps at the current period instead of minting a future one', () => {
-    // Today is already done — a sub-daily cron must get today again, not tomorrow.
-    expect(
-      nextAutomationWindowStart(new Date('2026-07-31T00:00:00.000Z'), NOW, 'daily').toISOString()
-    ).toBe('2026-07-31T00:00:00.000Z');
-  });
-
-  // Historical backlog remains sequential regardless of how far the clock moved.
-  it('does not skip completed periods when far behind', () => {
-    expect(
-      nextAutomationWindowStart(new Date('2026-01-10T00:00:00.000Z'), NOW, 'daily').toISOString()
-    ).toBe('2026-01-11T00:00:00.000Z');
-  });
-
-  it('starts one aligned period back when there is no previous window', () => {
-    expect(nextAutomationWindowStart(null, NOW, 'daily').toISOString()).toBe(
-      '2026-07-30T00:00:00.000Z'
+  it('never reaches past the horizon, however far `until` asks', () => {
+    const now = new Date('2026-09-03T12:00:00.000Z');
+    const { windowEnd } = requestedArrivalWindow(
+      new Date('2026-09-01T00:00:00.000Z'),
+      new Date('2027-01-01T00:00:00.000Z'),
+      now
     );
+    expect(windowEnd.getTime()).toBe(now.getTime() - automationArrivalSettleMs());
+  });
+});
+
+describe('unclaimed-arrival guidance', () => {
+  it('is silent when the range starts at or before the mark', () => {
+    const mark = new Date('2026-09-03T12:00:00.000Z');
+    expect(describeUnclaimedArrivals(mark, mark)).toBeNull();
+    expect(describeUnclaimedArrivals(mark, new Date('2026-09-03T11:00:00.000Z'))).toBeNull();
   });
 
-  // Chaining a weekly Automation lands on a Monday...
-  it('aligns weekly to Monday', () => {
-    const out = nextAutomationWindowStart(new Date('2026-07-19T23:59:59.999Z'), NOW, 'weekly');
-    expect(out.getUTCDay()).toBe(1);
-    expect(out.toISOString()).toBe('2026-07-20T00:00:00.000Z');
-  });
-
-  // Historical weekly backlog also stays aligned while advancing sequentially.
-  it('chains weekly backlog to the next Monday', () => {
-    const out = nextAutomationWindowStart(new Date('2026-06-28T23:59:59.999Z'), NOW, 'weekly');
-    expect(out.getUTCDay()).toBe(1);
-    expect(out.toISOString()).toBe('2026-06-29T00:00:00.000Z');
+  it('names both ends of the gap and says the mark does not move', () => {
+    const mark = new Date('2026-09-01T00:00:00.000Z');
+    const note = describeUnclaimedArrivals(mark, new Date('2026-09-03T00:00:00.000Z'));
+    expect(note).toContain('2026-09-01T00:00:00.000Z');
+    expect(note).toContain('2026-09-03T00:00:00.000Z');
+    expect(note).toContain('The mark stays where it is');
   });
 });

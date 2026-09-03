@@ -139,4 +139,30 @@ export const intervals = {
   get sseBacklogLimit(): number {
     return parseEnvInt('SSE_BACKLOG_LIMIT', 100);
   },
+
+  /**
+   * How far behind the database clock an Automation's arrival window may reach.
+   *
+   * Automation windows select rows by `events.created_at`, and `created_at` is
+   * stamped when the inserting statement runs while the row becomes VISIBLE
+   * only at commit. Between the two, a concurrent reader can compute a horizon
+   * that already sits past a row it cannot see — and that row would fall inside
+   * a window which completes without it. The horizon is therefore
+   * `now() - this`, and the exposure is exactly one writer's transaction
+   * length.
+   *
+   * Bound the WRITER, not the reader: `events-insert-sites.test.ts` enumerates
+   * the two `INSERT INTO events` sites and asserts their transactions stay far
+   * inside this budget, and production's `idle_in_transaction_session_timeout`
+   * is one minute. The knob exists so an operator can widen the budget during
+   * an incident without a deploy, and so integration tests can collapse it to
+   * see a row they just inserted; widening costs only freshness, since a row
+   * stored inside the settle window belongs to the next run, never to none.
+   *
+   * Zero is a legal value (tests), so this getter does not use `parseEnvInt`.
+   */
+  get automationArrivalSettleMs(): number {
+    const raw = Number(process.env.AUTOMATION_ARRIVAL_SETTLE_MS);
+    return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 60_000;
+  },
 };

@@ -132,7 +132,6 @@ describe('Automation schema vocabulary', () => {
               ${org.id}, '{}'::bigint[], ${params.slug}, 'json_template', ${tx.json(params.payload)},
               ${tx.json({
                 [params.metadataIdKey]: automation.id,
-                granularity: 'daily',
                 window_start: windowStart,
                 window_end: windowEnd,
                 content_analyzed: params.contentAnalyzed,
@@ -227,7 +226,6 @@ describe('Automation schema vocabulary', () => {
           approved_input: {
             automation_id: skipped.automationId,
             dispatch_source: 'scheduled',
-            granularity: 'daily',
             window_start: windowStart,
             window_end: windowEnd,
           },
@@ -253,7 +251,6 @@ describe('Automation schema vocabulary', () => {
           approved_input: {
             automation_id: legacyResult.automationId,
             dispatch_source: 'scheduled',
-            granularity: 'daily',
             window_start: windowStart,
             window_end: windowEnd,
           },
@@ -283,7 +280,6 @@ describe('Automation schema vocabulary', () => {
         expect(linkedRuns[0]).toMatchObject({
           action_output: linkedPayload,
           approved_input: {
-            granularity: 'daily',
             window_start: windowStart,
             window_end: windowEnd,
           },

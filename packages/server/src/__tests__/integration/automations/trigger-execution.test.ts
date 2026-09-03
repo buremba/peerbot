@@ -291,7 +291,6 @@ describe("Automation trigger execution contract", () => {
 		const pending = await computePendingWindow(
 			sql as unknown as DbClient,
 			Number(automation.automation_id),
-			inferAutomationGranularityFromSchedule(null),
 		);
 		const queued = await createAutomationRun({
 			organizationId: workspace.org.id,

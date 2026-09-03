@@ -181,12 +181,19 @@ export async function advanceAutomationArrivalMark(
 ): Promise<boolean> {
   const start = windowStart.toISOString();
   const end = windowEnd.toISOString();
+  // The mark may never land in the future. Every forward path is already
+  // horizon-bounded, so the clamp is a no-op for them — it exists for ONE
+  // window: a token minted before the cutover, by the old `alignRequestedWindow`,
+  // which never clamped an agent-supplied `until`. Such a token can complete
+  // after the migration and push the mark past `now`, and an Automation whose
+  // mark is in the future claims nothing until the clock catches up, silently.
+  // `LEAST` can only ever lower the value, so it cannot mask a real advance.
   const moved = await sql`
     UPDATE automations
-    SET next_window_start = ${end}::timestamptz,
+    SET next_window_start = LEAST(${end}::timestamptz, current_timestamp),
         completed_window_coverage = tstzmultirange(tstzrange(
           LEAST(lower(completed_window_coverage), ${start}::timestamptz),
-          ${end}::timestamptz,
+          LEAST(${end}::timestamptz, current_timestamp),
           '[)'
         )),
         last_completed_window_start = GREATEST(

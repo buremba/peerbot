@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createConnectorCompiler,
+  createIsolateConnectorCompiler,
   findBundledConnectorFile as findInDirs,
 } from './compile/index.js';
 
@@ -45,3 +46,9 @@ export function findBundledConnectorFile(key: string): string | null {
 const compiler = createConnectorCompiler();
 
 export const compileConnectorFromFile = compiler.compileConnectorFromFile;
+
+// Isolate-lane bundles inline the SDK and fail on a surviving Node builtin;
+// selected by `resolveJobCode` when the job carries `lane: 'isolate'`.
+const isolateCompiler = createIsolateConnectorCompiler();
+
+export const compileConnectorForIsolateFromFile = isolateCompiler.compileConnectorForIsolateFromFile;

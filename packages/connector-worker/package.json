@@ -32,9 +32,17 @@
       "import": "./dist/executor/interface.js",
       "types": "./dist/executor/interface.d.ts"
     },
+    "./executor/isolate": {
+      "import": "./dist/executor/isolate.js",
+      "types": "./dist/executor/isolate.d.ts"
+    },
     "./compile": {
       "import": "./dist/compile/index.js",
       "types": "./dist/compile/index.d.ts"
+    },
+    "./isolate": {
+      "import": "./dist/isolate/index.js",
+      "types": "./dist/isolate/index.d.ts"
     },
     "./self-check": {
       "import": "./dist/self-check/index.js",
@@ -74,6 +82,10 @@
     "@types/node": "^20.10.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
+  },
+  "optionalDependencies": {
+    "isolated-vm": "^6.1.2",
+    "isolated-vm-next": "npm:isolated-vm@^7.0.0"
   },
   "engines": {
     "node": ">=20.9.0"

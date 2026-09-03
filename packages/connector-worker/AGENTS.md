@@ -28,10 +28,20 @@ pipeline also used by `@lobu/cli` and `@lobu/server`.
   (`compileConnectorFromFile`, `EXTERNAL_RUNTIME_DEPS`, the `npm:` resolver, an
   mtime-keyed LRU). It owns compile flags and filename resolution; callers own
   their environment-specific candidate-directory lists.
-- `executor/` — isolated child execution (`child-runner.ts`, `runtime.ts`,
-  `subprocess.ts`); parent↔child speak `ExecutorJob` / `ExecutorResult` over
-  IPC. `redact.ts` removes recognized secret patterns from child output before
-  it reaches logs.
+- `executor/` — connector execution behind one `SyncExecutor` contract
+  (`interface.ts`). `select.ts` picks the lane from the job: `subprocess.ts` +
+  `child-runner.ts` fork a Node child (parent↔child speak `ExecutorJob` /
+  `ExecutorResult` over IPC); `isolate.ts` runs a pure-JS bundle inside a V8
+  isolate in-process. A job that says `lane: 'isolate'` never falls back to a
+  child: without `isolated-vm` the run fails. `redact.ts` removes recognized
+  secret patterns from either lane's output before it reaches logs.
+- `isolate/` — the isolate lane's host side: `load.ts` (Node-major gated
+  `isolated-vm` loader, null under Bun), `bridge.ts` (`IsolateHost`: memory
+  limit, wall clock, named sync/async capabilities as `ivm.Reference`s),
+  `prelude.ts` (the guest's globals — timers, console, URL, TextEncoder,
+  AbortController, fetch — all over host capabilities; add one only with a
+  connector that needs it), `eligibility.ts` (rejects bundles that still
+  `require()` a Node builtin).
 - `daemon/` — the poll loop (`worker.ts`, `executor.ts`) that claims and runs
   jobs from the worker API. `automation.ts` is the device-only Automation arm:
   it spawns the user's local agent CLI per its `AgentSpec` (from

@@ -93,7 +93,7 @@ export class SubprocessError extends Error implements SubprocessDiagnostics {
 }
 
 /** Per-stream ring buffer that preserves the most recent bytes. */
-class RingBuffer {
+export class RingBuffer {
   private chunks: string[] = [];
   private size = 0;
   constructor(private readonly cap: number) {}

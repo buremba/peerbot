@@ -109,11 +109,11 @@ export const RESERVED_ENTITY_TYPE_SLUGS = [
   ...OWNER_ROUTE_SEGMENTS,
   ...REMOVED_OWNER_SEGMENTS,
   // Live /$owner/<segment> routes that are NOT owner-nav segments (so they are
-  // absent from OWNER_ROUTE_SEGMENTS): an entity type with this slug would get
-  // its list page permanently shadowed by the static route. Create-time
-  // hygiene only — deliberately not added to OWNER_ROUTE_SEGMENTS, which also
-  // feeds the SPA's entity-splat routing guard and would break any existing
-  // entity type already using the slug.
+  // absent from OWNER_ROUTE_SEGMENTS): an entity type with one of these slugs
+  // would get its list page permanently shadowed by the static route.
+  // Create-time hygiene only — deliberately not added to OWNER_ROUTE_SEGMENTS,
+  // which also feeds the SPA's entity-splat routing guard and would break any
+  // existing entity type already using the slug.
   "entity-types",
   "recent",
   "organization",

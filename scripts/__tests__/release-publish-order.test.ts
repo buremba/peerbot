@@ -5,7 +5,7 @@ import {
   assertNoNewerStable,
   COMMAND_NAMES,
   compareVersions,
-  manifestBump,
+  releaseNeeded,
   peelTag,
   releaseNotesFor,
   releaseTagForVersion,
@@ -227,7 +227,7 @@ describe("the release is created bound to the attested commit", () => {
     // release step re-verifies the binding by peeling the tag, so a
     // release_created guard would be dead and redundant at once.
     expect(read("release-please.yml")).not.toContain("release_created");
-    expect(body()).toContain("release-provenance.mjs manifest-bump");
+    expect(body()).toContain("release-provenance.mjs release-needed");
     expect(body()).toContain("release-provenance.mjs assert-newer");
     // make_latest is a string enum in the REST API; a boolean is dropped.
     expect(body()).toContain('make_latest: "true"');
@@ -471,9 +471,10 @@ describe("the helper CLI the workflows invoke", () => {
     ).toEqual({ tag: "lobu-v17.4.0" });
     expect(
       JSON.parse(
-        cli("manifest-bump", { current: "17.4.0", parent: "17.3.0" }).stdout
+        cli("release-needed", { current: "17.4.0", versions: ["17.3.0"] })
+          .stdout
       )
-    ).toEqual({ bumped: true, version: "17.4.0" });
+    ).toEqual({ needed: true, version: "17.4.0" });
     expect(
       JSON.parse(
         cli("select-run", {
@@ -560,18 +561,27 @@ describe("the attestation policy itself", () => {
     expect(() => selectUniqueLatestRun([], expected)).toThrow("no matching");
   });
 
-  it("only lets versions move forward", () => {
-    expect(manifestBump({ current: "17.3.0", parent: "17.2.0" })).toEqual({
-      bumped: true,
+  it("cuts a release only for a version that is not released yet", () => {
+    expect(releaseNeeded({ current: "17.3.0", versions: ["17.2.0"] })).toEqual({
+      needed: true,
       version: "17.3.0",
     });
-    expect(manifestBump({ current: "17.2.0", parent: "17.2.0" })).toEqual({
-      bumped: false,
-      version: "17.2.0",
-    });
-    expect(() => manifestBump({ current: "17.1.0", parent: "17.2.0" })).toThrow(
-      "not newer"
-    );
+    expect(
+      releaseNeeded({ current: "17.2.0", versions: ["17.2.0", "17.1.0"] })
+    ).toEqual({ needed: false, version: "17.2.0" });
+    expect(() =>
+      releaseNeeded({ current: "17.1.0", versions: ["17.2.0"] })
+    ).toThrow("newer stable version");
+    // The regression that stranded 18.0.0: the bump commit is no longer main's
+    // tip, so nothing about the attested commit says "this is the release".
+    // Only the release list can answer it, and it still says yes.
+    expect(
+      releaseNeeded({ current: "18.0.0", versions: ["17.2.0", "17.1.0"] })
+    ).toEqual({ needed: true, version: "18.0.0" });
+    // A prerelease entry must not be mistaken for the stable release.
+    expect(
+      releaseNeeded({ current: "18.0.0", versions: ["18.0.0-rc.1", "17.2.0"] })
+    ).toEqual({ needed: true, version: "18.0.0" });
     expect(compareVersions("17.10.0", "17.9.0")).toBe(1);
     expect(releaseTagForVersion("17.3.0")).toBe("lobu-v17.3.0");
     expect(() =>

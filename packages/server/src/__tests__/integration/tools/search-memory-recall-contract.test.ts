@@ -359,4 +359,98 @@ describe('search_memory > recall contract', () => {
     // …while still listing the genuinely public ones.
     expect(err).toContain('min_similarity');
   });
+
+  // ── Actionable read guidance on empty results ───────────────────────────
+  it('provides actionable read steps in suggestion when search finds no results', async () => {
+    const result = await search(
+      {
+        query: 'nonexistent-query-for-empty-guidance',
+        entity_type: 'ticket',
+        include_content: true,
+      },
+      env,
+      ctx
+    );
+
+    expect(result.discovery_status).toBe('not_found');
+    expect(result.matches).toEqual([]);
+    expect(result.content ?? []).toEqual([]);
+
+    const suggestion = result.suggestion ?? '';
+    expect(suggestion).toContain('No matches found for "nonexistent-query-for-empty-guidance"');
+    expect(suggestion).toContain('Additional steps to read relevant data:');
+    expect(suggestion).toContain('client.feeds.readMany');
+    expect(suggestion).toContain('query_sql');
+    expect(suggestion).toContain('audit');
+    expect(suggestion).toContain("remove entity_type='ticket'");
+    expect(suggestion).toContain('min_similarity');
+    expect(suggestion).toContain('save_memory');
+    expect(suggestion).toContain('client.entities.create');
+  });
+
+  it('reports memory content recalled without entity-create coaching when recall matches', async () => {
+    await createTestEvent({
+      organization_id: org.id,
+      title: 'Infrastructure migration notes',
+      content: 'Discussion on database migration and deployment infrastructure roadmap',
+    });
+
+    const result = await search(
+      {
+        query: 'deployment infrastructure roadmap',
+        fuzzy: false,
+        include_content: true,
+      },
+      env,
+      ctx
+    );
+
+    expect(result.discovery_status).toBe('complete');
+    expect(result.matches).toEqual([]);
+    expect(result.content?.length).toBeGreaterThan(0);
+    expect(result.suggestion).toContain('related memory content was recalled below');
+    expect(result.suggestion).not.toContain('entities.create');
+  });
+
+  // Its own org, so a read-capable feed cannot leak into `coverage` for the
+  // cases above and test order stays irrelevant. The step-1 wording asserted
+  // earlier is the no-feeds variant because THIS suite's main fixture
+  // connector declares no feeds_schema, not because this case runs last.
+  it('names the discovered source feeds and their feed_id when the org has read-capable feeds', async () => {
+    const feedOrg = await createTestOrganization({ name: 'Recall Feed Coverage Org' });
+    const feedUser = await createTestUser({ email: 'recall-feed-coverage@example.com' });
+    await addUserToOrganization(feedUser.id, feedOrg.id, 'owner');
+    await createTestConnectorDefinition({
+      key: 'readable-feed-connector',
+      name: 'Readable Feed',
+      organization_id: feedOrg.id,
+      feeds_schema: { default: { operations: ['read', 'sync'] } },
+    });
+    await createTestConnection({
+      organization_id: feedOrg.id,
+      connector_key: 'readable-feed-connector',
+      slug: 'readable-feed',
+    });
+
+    const result = await search(
+      { query: 'zzzz-no-such-thing-with-feeds-present' },
+      env,
+      {
+        organizationId: feedOrg.id,
+        userId: feedUser.id,
+        tokenType: 'session',
+      } as ToolContext
+    );
+
+    const discovered = result.coverage?.source_feeds ?? [];
+    expect(discovered.map((feed) => feed.connection_slug)).toContain('readable-feed');
+
+    const suggestion = result.suggestion ?? '';
+    // The feeds-present branch must name the handle `feeds.readMany` actually
+    // keys on, not just the human-readable slug/key pair.
+    expect(suggestion).toContain('Check unqueried source feeds');
+    expect(suggestion).toContain('`readable-feed/default`');
+    expect(suggestion).toContain('feed_id');
+    expect(suggestion).toContain('client.feeds.readMany({ reads: [{ feed_id }] })');
+  });
 });

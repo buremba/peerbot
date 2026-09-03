@@ -15,6 +15,7 @@ import {
   resolveGrantedWorkspaceTarget,
 } from '../auth/oauth/workspace-grants';
 import { isInProcessSystemCall } from './access-control';
+import { AUDIT_SEMANTIC_TYPE } from './constants';
 import { evaluateEntityMutation, resolveActingPrincipal } from '../authz/entity-policy';
 import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
@@ -622,6 +623,74 @@ function unavailableWorkspaceCoverage(workspace: GrantedMemberWorkspace): Worksp
   };
 }
 
+function buildEmptySearchSuggestion(
+  query: string | null,
+  args: SearchArgs,
+  coverage?: SearchCoverage
+): string {
+  const isFederated = coverage?.scope === 'all_granted';
+  const queryLabel = !isFederated && query ? ` for "${query}"` : '';
+  const scopeLabel = isFederated
+    ? 'in the currently accessible workspaces granted to this connection'
+    : 'in saved workspace memory';
+
+  const lines: string[] = [`No matches found${queryLabel} ${scopeLabel}.`];
+
+  lines.push('');
+  lines.push('**Additional steps to read relevant data:**');
+
+  const sourceFeeds = coverage?.source_feeds ?? [];
+  if (sourceFeeds.length > 0) {
+    const feedSamples = sourceFeeds
+      .slice(0, 3)
+      .map((f) => `\`${f.connection_slug}/${f.feed_key}\``)
+      .join(', ');
+    const moreSuffix = sourceFeeds.length > 3 ? ` and ${sourceFeeds.length - 3} more` : '';
+    lines.push(
+      `1. **Check unqueried source feeds:** Connected feeds are not queried automatically. Inspect \`coverage.source_feeds\` (${feedSamples}${moreSuffix}) and pass each entry's \`feed_id\` to \`client.feeds.readMany({ reads: [{ feed_id }] })\` via \`query_sdk\` to read external source data directly.`
+    );
+  } else {
+    lines.push(
+      '1. **Check connected source feeds:** Connected feeds are not queried automatically. List them with `client.feeds.list()` and read them with `client.feeds.readMany({ reads: [...] })` via `query_sdk`.'
+    );
+  }
+
+  // The literals come from the shared constant so the SQL and the filter we
+  // hand the agent cannot drift from the value audit events are written with.
+  lines.push(
+    `2. **Check activity and audit records:** tool invocations and other operational events are written to \`events\` with no body text and no embedding, so semantic recall cannot rank them and only their titles are searchable. Read them explicitly with \`query_sql\` (e.g. \`SELECT id, title, semantic_type, occurred_at FROM events WHERE semantic_type = '${AUDIT_SEMANTIC_TYPE}' ORDER BY occurred_at DESC LIMIT 50\`) or with \`client.knowledge.read({ semantic_type: '${AUDIT_SEMANTIC_TYPE}' })\` through \`query_sdk\`.`
+  );
+
+  const filterRelaxations: string[] = [];
+  if (args.entity_type) {
+    filterRelaxations.push(`remove entity_type='${args.entity_type}'`);
+  }
+  if (args.workspace) {
+    filterRelaxations.push(
+      `omit workspace='${args.workspace}' to search every workspace this connection can reach`
+    );
+  }
+  filterRelaxations.push('lower min_similarity (default 0.3)');
+  filterRelaxations.push('try alternate keywords or synonyms');
+  lines.push(
+    `3. **Broaden the search:** retry with one of these relaxations: ${filterRelaxations.join('; ')}.`
+  );
+
+  lines.push('');
+  lines.push('**If this is new knowledge to persist:**');
+  lines.push('- To save facts or notes: call `save_memory` with content and semantic_type.');
+  // Only a single-workspace text search names one entity worth pre-filling:
+  // federated results span workspaces, and an embedding-only call has no query
+  // text at all. Both fall back to a placeholder in the SAME angle-bracket
+  // shape as `<entity_type>` below — a bare `...` reads as copyable literal.
+  const newEntityName = !isFederated && query ? query : '<entity_name>';
+  lines.push(
+    `- To create a new entity: its type must exist first (\`client.entitySchema.listTypes()\` to check, \`client.entitySchema.createType(...)\` for a type new to this workspace), then call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${newEntityName}' })\`.`
+  );
+
+  return lines.join('\n');
+}
+
 export function mergeFederatedSearchResults(
   args: SearchArgs,
   targets: readonly GrantedMemberWorkspace[],
@@ -750,7 +819,7 @@ export function mergeFederatedSearchResults(
       : status === 'partial'
         ? 'Search returned partial results; one or more granted workspaces was temporarily unavailable.'
         : matches.length === 0 && !hasAnyRecall
-          ? 'No matches found in the currently accessible workspaces granted to this connection.'
+          ? buildEmptySearchSuggestion(args.query ?? null, args, coverage)
           : selectedResult?.suggestion,
     ...(entity && selectedResult?.view_url ? { view_url: selectedResult.view_url } : {}),
     metadata: {
@@ -1650,21 +1719,26 @@ async function searchWorkspaceImpl(
   }
 
   // ========================================
-  // NOT FOUND
+  // NOT FOUND (or recall-only hit)
   // ========================================
-  logger.info(`[search] No matches found for "${query}" in existing database`);
+  const hasRecallHits =
+    (recall.content != null && recall.content.length > 0) ||
+    (recall.conversation_messages != null && recall.conversation_messages.length > 0);
 
-  const suggestionText =
-    `No matches found for "${query}" in existing database.\n\n` +
-    '**Next steps:** call `run_sdk` with a TS script over `client`:\n' +
-    `1. Create the entity: \`await client.entities.create({ type: '<entity_type>', name: '${query}' })\` (optionally pass parent_id for hierarchy)\n` +
-    "2. Create a connection: `await client.connections.create({ connector_key: '<connector>', ... })`, then scope it with `await client.feeds.create({ ... })`\n" +
-    '3. Wait for ingestion to start automatically, then discover Automations with `client.automations.list(...)` and inspect results with `client.knowledge.read(...)` / `client.automations.get(...)`.\n\n' +
-    '**Alternative:** If you know this entity should exist, verify the spelling or try a different search term.';
+  if (hasRecallHits) {
+    logger.info(`[search] Recalled memory hits for "${query}" with no entity match`);
+  } else {
+    logger.info(`[search] No matches found for "${query}" in existing database`);
+  }
+
+  const suggestionText = hasRecallHits
+    ? 'No matching entities found, but related memory content was recalled below.'
+    : buildEmptySearchSuggestion(query, args, recall.coverage);
 
   const result = withRecall(
     emptyResult({
       ...(title ? { title } : {}),
+      discovery_status: hasRecallHits ? 'complete' : 'not_found',
       suggestion: suggestionText,
     }),
     recall

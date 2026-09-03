@@ -43,6 +43,8 @@
 #
 # Env:
 #   LOBU_VERSION   npm version/tag to install (default "latest")
+#   PUBLISH_WAIT   seconds to keep retrying an unresolvable version while the
+#                  registry propagates (default 600; 0 = single attempt)
 #   SMOKE_AS_USER  unprivileged username to drop to (default: run as-is)
 #   GW_PORT        gateway port (default 8799)
 #   MOCK_PORT      mock provider port (default 11439)
@@ -55,6 +57,17 @@ HARNESS="$REPO_ROOT/scripts/sdk-e2e"
 LOBU_VERSION="${1:-${LOBU_VERSION:-latest}}"
 GW_PORT="${GW_PORT:-8799}"
 MOCK_PORT="${MOCK_PORT:-11439}"
+PUBLISH_WAIT="${PUBLISH_WAIT:-600}"
+# PUBLISH_WAIT feeds `[ ... -ge ... ]` in the install loop; a non-integer would
+# make that test error on every pass and spin until the job timeout instead of
+# failing, the same trap ROLLOUT_WAIT guards against in prod-smoke.sh.
+case "$PUBLISH_WAIT" in
+  *[!0-9]*)
+    echo "PUBLISH_WAIT must be a non-negative integer (seconds), got: ${PUBLISH_WAIT}" >&2
+    exit 1
+    ;;
+esac
+PUBLISH_POLL=10
 MOCK_REPLY="ARTIFACT_SMOKE_OK"
 
 WORK="${SMOKE_WORK:-/tmp/lobu-artifact-smoke}"
@@ -96,15 +109,37 @@ note "install @lobu/cli@$LOBU_VERSION from npm"
 INSTALL_DIR="$WORK/install"; mkdir -p "$INSTALL_DIR"
 INSTALL_LOG="$WORK/npm-install.log"
 ( cd "$INSTALL_DIR" && npm init -y >/dev/null 2>&1 )
+# A release publishes all eight @lobu/* packages, then this gate installs one
+# of them and lets the resolver pull the other seven. Registry visibility is
+# not atomic across them, so for the first minutes after a publish the resolver
+# can report ETARGET for a sibling that is already published -- 18.0.0 failed
+# all four legs on "No matching version found for @lobu/embeddings@18.0.0"
+# while every package was in fact on the registry. The old 5x10s ladder gave up
+# ~2.5min in and reported a healthy release as broken, so what this needs is a
+# time budget, not a retry count.
+#
+# Only an unresolvable version earns the wait. A corrupt tarball, an auth
+# failure or a missing bin will not fix itself, and burning the whole budget on
+# one would just delay the report and eat into the job timeout.
 INSTALL_OK=0
-for attempt in 1 2 3 4 5; do
+waited=0
+attempt=0
+while :; do
+  attempt=$((attempt + 1))
   if ( cd "$INSTALL_DIR" && npm install --no-audit --no-fund "@lobu/cli@$LOBU_VERSION" > "$INSTALL_LOG" 2>&1 ); then
     INSTALL_OK=1
+    [ "$waited" -gt 0 ] && echo "version resolved after ${waited}s of registry propagation"
     break
   fi
-  echo "npm install attempt $attempt/5 failed" >&2
+  echo "install attempt $attempt failed (waited ${waited}s of ${PUBLISH_WAIT}s)" >&2
   tail -5 "$INSTALL_LOG" >&2
-  [ "$attempt" -lt 5 ] && sleep 10
+  if ! grep -qE 'ETARGET|E404|No matching version found|404 Not Found' "$INSTALL_LOG"; then
+    echo "not a version-resolution failure; not waiting for propagation" >&2
+    break
+  fi
+  [ "$waited" -ge "$PUBLISH_WAIT" ] && { echo "gave up after ${waited}s waiting for the registry" >&2; break; }
+  sleep "$PUBLISH_POLL"
+  waited=$((waited + PUBLISH_POLL))
 done
 tail -5 "$INSTALL_LOG"
 LOBU_BIN="$INSTALL_DIR/node_modules/.bin/lobu"

@@ -41,11 +41,11 @@ async function seedAutomation(automationId: number, mark: Date | null): Promise<
   await getTestDb()`
     INSERT INTO automations (
       id, name, slug, created_by, organization_id, managed_agent_id, automation_group_id,
-      next_window_start, completed_window_coverage
+      next_window_start
     ) VALUES (
       ${automationId}, ${`Window ${automationId}`}, ${`window-${automationId}`},
       ${userId}, ${orgId}, ${agent.agentId}, ${automationId},
-      ${mark ? mark.toISOString() : null}::timestamptz, '{}'::tstzmultirange
+      ${mark ? mark.toISOString() : null}::timestamptz
     )
   `;
 }
@@ -55,23 +55,6 @@ async function readMark(automationId: number): Promise<Date | null> {
     SELECT next_window_start FROM automations WHERE id = ${automationId}
   `;
   return row?.next_window_start ? new Date(row.next_window_start) : null;
-}
-
-/** Coverage as bounds plus range count — asserted semantically, never as rendered text. */
-async function readCoverage(
-  automationId: number
-): Promise<{ from: Date | null; to: Date | null; ranges: number }> {
-  const [row] = await getTestDb()`
-    SELECT lower(completed_window_coverage) AS from_ts,
-           upper(completed_window_coverage) AS to_ts,
-           (SELECT count(*) FROM unnest(completed_window_coverage) r) AS ranges
-    FROM automations WHERE id = ${automationId}
-  `;
-  return {
-    from: row.from_ts ? new Date(row.from_ts) : null,
-    to: row.to_ts ? new Date(row.to_ts) : null,
-    ranges: Number(row.ranges),
-  };
 }
 
 describe('the arrival mark', () => {
@@ -145,22 +128,21 @@ describe('the arrival mark', () => {
     expect(await advanceAutomationArrivalMark(sql, 1, mark, end)).toBe(true);
     expect((await readMark(1))?.toISOString()).toBe(end.toISOString());
     expect(await readLastCompletedWindowStart(sql, 1)).toEqual(mark);
-    // Coverage stays ONE contiguous range: [first booked, mark).
-    expect(await readCoverage(1)).toEqual({ from: mark, to: end, ranges: 1 });
   });
 
-  it('keeps coverage contiguous across consecutive completions', async () => {
+  it('walks the mark contiguously across consecutive completions', async () => {
     const first = new Date(Date.now() - 30 * MINUTE_MS);
     const second = new Date(first.getTime() + 10 * MINUTE_MS);
     const third = new Date(second.getTime() + 10 * MINUTE_MS);
     await seedAutomation(1, first);
 
-    await advanceAutomationArrivalMark(sql, 1, first, second);
-    await advanceAutomationArrivalMark(sql, 1, second, third);
+    // Each advance requires `start <= mark < end`, so a second completion can
+    // only ever butt against the first: [first, third) cannot fragment.
+    expect(await advanceAutomationArrivalMark(sql, 1, first, second)).toBe(true);
+    expect(await advanceAutomationArrivalMark(sql, 1, second, third)).toBe(true);
 
     expect((await readMark(1))?.toISOString()).toBe(third.toISOString());
-    // One range, not two: the multirange never fragments on the arrival axis.
-    expect(await readCoverage(1)).toEqual({ from: first, to: third, ranges: 1 });
+    expect(await readLastCompletedWindowStart(sql, 1)).toEqual(second);
   });
 
   it('books nothing for a range that is entirely behind the mark (a re-read)', async () => {

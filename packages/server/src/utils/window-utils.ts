@@ -11,10 +11,10 @@
  *
  * The bookkeeping is one mark per Automation, `automations.next_window_start`:
  * every row with `created_at >= mark` is unclaimed. Claims are serialized per
- * Automation (a second claim gets 409 while one is active), so a set of covered
- * ranges can never diverge from the mark — `completed_window_coverage` holds
- * exactly one contiguous range, [first booked instant, mark), until the column
- * is retyped to a single timestamptz.
+ * Automation (a second claim gets 409 while one is active), so the mark alone is
+ * the whole record of progress: everything before it is covered, everything at
+ * or after it is not. `last_completed_window_start` records where the newest
+ * completed run began, which is what the `window_lag` surface reports.
  */
 
 import { intervals } from '../config/intervals';
@@ -164,12 +164,13 @@ export async function readPendingWindow(
  * A range entirely behind the mark is a re-read and books nothing. A range that
  * starts after the mark is an explicitly selected later span and books nothing
  * either: the rows stored between the mark and it stay unclaimed, and the next
- * ordinary claim returns them. Coverage stays one contiguous range.
+ * ordinary claim returns them. The booked span behind the mark therefore
+ * stays contiguous.
  *
  * This is the only writer of the mark. The two completion sites that store
  * `action_output` — `complete-window.ts` and the unchanged-source skip in
  * `automations/automation.ts` — both call it inside their completion
- * transaction; no trigger re-derives coverage from run history any more.
+ * transaction; no trigger re-derives the mark from run history any more.
  *
  * Returns whether the mark moved.
  */
@@ -191,11 +192,6 @@ export async function advanceAutomationArrivalMark(
   const moved = await sql`
     UPDATE automations
     SET next_window_start = LEAST(${end}::timestamptz, current_timestamp),
-        completed_window_coverage = tstzmultirange(tstzrange(
-          LEAST(lower(completed_window_coverage), ${start}::timestamptz),
-          LEAST(${end}::timestamptz, current_timestamp),
-          '[)'
-        )),
         last_completed_window_start = GREATEST(
           last_completed_window_start,
           ${start}::timestamptz

@@ -147,29 +147,14 @@ describe('Automation windows on the arrival axis', () => {
   async function readProjection() {
     const [row] = await sql<{
       next_window_start: Date | string;
-      coverage_lower: Date | string | null;
-      coverage_upper: Date | string | null;
-      coverage_ranges: number | string;
       last_completed_window_start: Date | string | null;
     }>`
-      SELECT next_window_start,
-             lower(completed_window_coverage) AS coverage_lower,
-             upper(completed_window_coverage) AS coverage_upper,
-             (SELECT count(*) FROM unnest(completed_window_coverage)) AS coverage_ranges,
-             last_completed_window_start
+      SELECT next_window_start, last_completed_window_start
       FROM automations
       WHERE id = ${automationId}
     `;
     return {
       mark: new Date(row.next_window_start).toISOString(),
-      coverage:
-        row.coverage_lower == null || row.coverage_upper == null
-          ? null
-          : {
-              lower: new Date(row.coverage_lower).toISOString(),
-              upper: new Date(row.coverage_upper).toISOString(),
-              ranges: Number(row.coverage_ranges),
-            },
       lastCompletedWindowStart:
         row.last_completed_window_start == null
           ? null
@@ -258,28 +243,22 @@ describe('Automation windows on the arrival axis', () => {
     await complete(first);
 
     const projection = await readProjection();
+    // The mark IS the coverage record: everything before it is booked, so a run
+    // that starts exactly where the mark sits can never leave a gap behind it.
     expect(projection.mark).toBe(first.context.window_end);
-    // One contiguous range from the seed to the mark — never a set with gaps.
-    expect(projection.coverage).toEqual({
-      lower: mark.toISOString(),
-      upper: first.context.window_end,
-      ranges: 1,
-    });
     expect(projection.lastCompletedWindowStart).toBe(first.context.window_start);
 
     const second = await claim();
     expect(second.context.window_start).toBe(first.context.window_end);
     expect(second.context.content.map((r) => r.id)).not.toContain(row.id);
 
-    // Completing the second range keeps the coverage a single range.
+    // Completing the second range walks the mark forward with no gap: the second
+    // window began exactly at the first mark (asserted above) and the mark now
+    // sits at its end, so [seed, mark) stays contiguous without a coverage set.
     await complete(second);
     const after = await readProjection();
     expect(after.mark).toBe(second.context.window_end);
-    expect(after.coverage).toEqual({
-      lower: mark.toISOString(),
-      upper: second.context.window_end,
-      ranges: 1,
-    });
+    expect(after.lastCompletedWindowStart).toBe(second.context.window_start);
   });
 
   it('lets a scheduled tick inside a fresh mark\'s settle budget wait instead of erroring', async () => {

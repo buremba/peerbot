@@ -123,7 +123,6 @@ describe("Automation arrival lag is visible and actionable", () => {
 		await sql`
 			UPDATE automations
 			SET next_window_start = ${mark.toISOString()}::timestamptz,
-				completed_window_coverage = '{}'::tstzmultirange,
 				last_completed_window_start = NULL
 			WHERE id = ${automationId}
 		`;

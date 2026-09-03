@@ -70,8 +70,7 @@ describe("Automation trigger execution contract", () => {
 		windowStart.setUTCDate(windowStart.getUTCDate() - 2);
 		await sql`
       UPDATE automations
-      SET next_window_start = ${windowStart.toISOString()}::timestamptz,
-          completed_window_coverage = '{}'::tstzmultirange
+      SET next_window_start = ${windowStart.toISOString()}::timestamptz
       WHERE id = ${Number(automation.automation_id)}
     `;
 		const claim = (await workspace.owner.automations.claimNextWindow({

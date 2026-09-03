@@ -408,7 +408,6 @@ export interface IsolateBundle {
   code: string;
   /** Node builtins the bundle still requires (`node:` prefix stripped), sorted. Empty means isolate-eligible. */
   builtins: string[];
-  bytes: number;
 }
 
 function builtinsFromMetafile(metafile: Metafile): string[] {
@@ -475,7 +474,6 @@ export function createIsolateConnectorCompiler(options?: Pick<CompileOptions, 'c
     const bundle: IsolateBundle = {
       code,
       builtins: builtinsFromMetafile(result.metafile),
-      bytes: Buffer.byteLength(code),
     };
     if (mtimeMs !== null) touch(filePath, { mtimeMs, bundle });
     return bundle;

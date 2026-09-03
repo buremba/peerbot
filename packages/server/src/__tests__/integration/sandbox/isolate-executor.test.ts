@@ -11,8 +11,10 @@
  *  3. a fixture connector exercises each boundary: chunked emit, checkpoint
  *     hooks, chrome dispatch, auth artifacts/signals, domain-restricted fetch,
  *     the body cap, wall-clock and heap limits, error shape parity, redaction;
- *  4. the guest prelude is compared against Node's own URL / URLSearchParams /
- *     TextEncoder / TextDecoder / atob / btoa over 100+ inputs each.
+ *  4. the guest's URL / URLSearchParams / TextEncoder / TextDecoder / atob /
+ *     btoa are compared against Node's over 100+ inputs each. The host computes
+ *     them for the guest, so this checks the bridge wiring (typed arrays, error
+ *     names and codes across the boundary), not a reimplementation.
  *
  * Runs under Node (vitest). Like `run-script-runtime.test.ts` it FAILS rather
  * than skips when `isolated-vm` cannot load: a silent skip is how the lane

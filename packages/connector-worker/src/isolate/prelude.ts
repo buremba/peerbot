@@ -13,10 +13,12 @@
  *    capability; a callback that throws ends the run through `fatal`, as an
  *    uncaught exception ends the process lane's child.
  *  - `process = { env }` from the job env.
- *  - `TextEncoder`/`TextDecoder` (UTF-8), `atob`/`btoa`.
+ *  - `TextEncoder`/`TextDecoder` and `atob`/`btoa`: object shells whose
+ *    byte-level work the host does with Node's own codecs.
  *  - `URL` over the host `urlParse`/`urlSet` capabilities: the host runs Node's
  *    own URL, so both lanes agree on every input by construction.
- *    `URLSearchParams` is guest-side and writes back through `search`.
+ *    `URLSearchParams` keeps its list guest-side, parses and serializes through
+ *    the host, and writes back through `search`.
  *  - `AbortController`/`AbortSignal`.
  *  - `Headers`, `Response` and `fetch` over the host `fetch` capability. The
  *    host performs the network call and returns status, headers and a bounded
@@ -97,11 +99,23 @@ function guestUrlRecord(url: URL): GuestUrlRecord {
   };
 }
 
+function asBytes(value: unknown, what: string): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  throw new TypeError(`${what}: expected an ArrayBuffer or ArrayBufferView`);
+}
+
+function asPairs(value: unknown): [string, string][] {
+  if (!Array.isArray(value)) throw new TypeError('formUrlencodedSerialize: expected a list of [name, value] pairs');
+  return value.map((pair) => [String((pair as unknown[])[0]), String((pair as unknown[])[1])]);
+}
+
 /**
  * Host halves of prelude globals that delegate to Node. `IsolateHost` installs
  * them under every run, so they are part of the guest's standard library
- * rather than a capability a particular executor grants. Parsing only: no
- * network, no filesystem.
+ * rather than a capability a particular executor grants. Pure conversions
+ * only: no network, no filesystem.
  */
 export const PRELUDE_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> = {
   urlParse: (input: unknown, base: unknown): GuestUrlRecord =>
@@ -114,6 +128,19 @@ export const PRELUDE_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> 
     (url as unknown as Record<string, string>)[name] = String(value);
     return guestUrlRecord(url);
   },
+  utf8Encode: (input: unknown): Uint8Array => new TextEncoder().encode(String(input)),
+  /** Canonical name for a `TextDecoder` label; throws Node's RangeError for one it does not support. */
+  textEncodingName: (label: unknown): string => new TextDecoder(String(label)).encoding,
+  textDecode: (encoding: unknown, bytes: unknown, fatal: unknown, ignoreBOM: unknown): string =>
+    new TextDecoder(String(encoding), { fatal: Boolean(fatal), ignoreBOM: Boolean(ignoreBOM) }).decode(
+      asBytes(bytes, 'textDecode')
+    ),
+  base64Encode: (latin1: unknown): string => btoa(String(latin1)),
+  base64Decode: (encoded: unknown): string => atob(String(encoded)),
+  // The guest has already stripped one leading '?'. A leading '&' is an empty
+  // pair the parser skips, so a query that still begins with '?' keeps it.
+  formUrlencodedParse: (input: unknown): [string, string][] => Array.from(new URLSearchParams(`&${String(input)}`)),
+  formUrlencodedSerialize: (list: unknown): string => new URLSearchParams(asPairs(list)).toString(),
 };
 
 export const GUEST_PRELUDE = String.raw`
@@ -324,103 +351,15 @@ var exports = module.exports;
   global.process = { env: env };
 
   // ---------------------------------------------------------------------------
-  // UTF-8 codecs
+  // Text codecs: the host runs Node's TextEncoder/TextDecoder
   // ---------------------------------------------------------------------------
 
   function utf8Encode(input) {
-    var str = String(input);
-    var out = new Uint8Array(str.length * 3);
-    var o = 0;
-    for (var i = 0; i < str.length; i++) {
-      var c = str.charCodeAt(i);
-      if (c >= 0xd800 && c <= 0xdbff) {
-        var next = i + 1 < str.length ? str.charCodeAt(i + 1) : 0;
-        if (next >= 0xdc00 && next <= 0xdfff) {
-          c = 0x10000 + ((c - 0xd800) << 10) + (next - 0xdc00);
-          i++;
-        } else {
-          c = 0xfffd;
-        }
-      } else if (c >= 0xdc00 && c <= 0xdfff) {
-        c = 0xfffd;
-      }
-      if (c < 0x80) {
-        out[o++] = c;
-      } else if (c < 0x800) {
-        out[o++] = 0xc0 | (c >> 6);
-        out[o++] = 0x80 | (c & 63);
-      } else if (c < 0x10000) {
-        out[o++] = 0xe0 | (c >> 12);
-        out[o++] = 0x80 | ((c >> 6) & 63);
-        out[o++] = 0x80 | (c & 63);
-      } else {
-        out[o++] = 0xf0 | (c >> 18);
-        out[o++] = 0x80 | ((c >> 12) & 63);
-        out[o++] = 0x80 | ((c >> 6) & 63);
-        out[o++] = 0x80 | (c & 63);
-      }
-    }
-    return out.slice(0, o);
+    return hostSync('utf8Encode', String(input));
   }
 
-  function codePointsToString(points) {
-    var parts = [];
-    for (var i = 0; i < points.length; i += 8192) {
-      parts.push(String.fromCodePoint.apply(null, points.slice(i, i + 8192)));
-    }
-    return parts.join('');
-  }
-
-  // WHATWG Encoding Standard UTF-8 decoder: maximal-subpart replacement.
-  function utf8Decode(bytes, fatal, ignoreBOM) {
-    var codePoint = 0, bytesSeen = 0, bytesNeeded = 0, lower = 0x80, upper = 0xbf;
-    var out = [];
-    var start = 0;
-    if (!ignoreBOM && bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) start = 3;
-    for (var i = start; i < bytes.length; i++) {
-      var b = bytes[i];
-      if (bytesNeeded === 0) {
-        if (b <= 0x7f) {
-          out.push(b);
-        } else if (b >= 0xc2 && b <= 0xdf) {
-          bytesNeeded = 1;
-          codePoint = b & 0x1f;
-        } else if (b >= 0xe0 && b <= 0xef) {
-          if (b === 0xe0) lower = 0xa0;
-          if (b === 0xed) upper = 0x9f;
-          bytesNeeded = 2;
-          codePoint = b & 0xf;
-        } else if (b >= 0xf0 && b <= 0xf4) {
-          if (b === 0xf0) lower = 0x90;
-          if (b === 0xf4) upper = 0x8f;
-          bytesNeeded = 3;
-          codePoint = b & 0x7;
-        } else {
-          if (fatal) throw new TypeError('The encoded data was not valid for encoding utf-8');
-          out.push(0xfffd);
-        }
-        continue;
-      }
-      if (b < lower || b > upper) {
-        codePoint = 0; bytesNeeded = 0; bytesSeen = 0; lower = 0x80; upper = 0xbf;
-        if (fatal) throw new TypeError('The encoded data was not valid for encoding utf-8');
-        out.push(0xfffd);
-        i--; // reprocess this byte as a lead byte
-        continue;
-      }
-      lower = 0x80; upper = 0xbf;
-      codePoint = (codePoint << 6) | (b & 0x3f);
-      bytesSeen++;
-      if (bytesSeen === bytesNeeded) {
-        out.push(codePoint);
-        codePoint = 0; bytesNeeded = 0; bytesSeen = 0;
-      }
-    }
-    if (bytesNeeded !== 0) {
-      if (fatal) throw new TypeError('The encoded data was not valid for encoding utf-8');
-      out.push(0xfffd);
-    }
-    return codePointsToString(out);
+  function utf8Decode(bytes) {
+    return hostSync('textDecode', 'utf-8', bytes, false, false);
   }
 
   function toBytes(input, what) {
@@ -430,8 +369,6 @@ var exports = module.exports;
     if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
     throw new TypeError(what + ': argument must be an ArrayBuffer or ArrayBufferView');
   }
-
-  var UTF8_LABELS = { 'utf-8': true, 'utf8': true, 'unicode-1-1-utf-8': true, 'unicode11utf8': true, 'unicode20utf8': true, 'x-unicode20utf8': true };
 
   function TextEncoder() {
     if (!(this instanceof TextEncoder)) throw new TypeError("Class constructor TextEncoder cannot be invoked without 'new'");
@@ -446,175 +383,49 @@ var exports = module.exports;
     // Never split a code point: back off to the last complete sequence.
     while (written > 0 && written < bytes.length && (bytes[written] & 0xc0) === 0x80) written--;
     destination.set(bytes.subarray(0, written));
-    var read = utf8Decode(bytes.subarray(0, written), false, true).length;
+    var read = hostSync('textDecode', 'utf-8', bytes.slice(0, written), false, true).length;
     return { read: read, written: written };
   };
 
   function TextDecoder(label, options) {
     if (!(this instanceof TextDecoder)) throw new TypeError("Class constructor TextDecoder cannot be invoked without 'new'");
-    var name = label === undefined ? 'utf-8' : String(label).trim().toLowerCase();
-    if (!UTF8_LABELS[name]) throw new RangeError('The "' + name + '" encoding is not supported on the isolate lane (utf-8 only)');
+    this._encoding = hostSync('textEncodingName', label === undefined ? 'utf-8' : String(label));
     this._fatal = !!(options && options.fatal);
     this._ignoreBOM = !!(options && options.ignoreBOM);
   }
-  Object.defineProperty(TextDecoder.prototype, 'encoding', { get: function () { return 'utf-8'; }, enumerable: true });
+  Object.defineProperty(TextDecoder.prototype, 'encoding', { get: function () { return this._encoding; }, enumerable: true });
   Object.defineProperty(TextDecoder.prototype, 'fatal', { get: function () { return this._fatal; }, enumerable: true });
   Object.defineProperty(TextDecoder.prototype, 'ignoreBOM', { get: function () { return this._ignoreBOM; }, enumerable: true });
   TextDecoder.prototype.decode = function decode(input) {
-    return utf8Decode(toBytes(input, 'TextDecoder.decode'), this._fatal, this._ignoreBOM);
+    return hostSync('textDecode', this._encoding, toBytes(input, 'TextDecoder.decode'), this._fatal, this._ignoreBOM);
   };
 
   global.TextEncoder = TextEncoder;
   global.TextDecoder = TextDecoder;
 
   // ---------------------------------------------------------------------------
-  // base64 (forgiving-base64 per the Infra Standard)
+  // base64: the host runs Node's btoa/atob
   // ---------------------------------------------------------------------------
-
-  var B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  var B64_LOOKUP = new Int16Array(256).fill(-1);
-  for (var bi = 0; bi < B64_CHARS.length; bi++) B64_LOOKUP[B64_CHARS.charCodeAt(bi)] = bi;
-
-  function invalidCharacterError() {
-    var err = new Error('Invalid character');
-    err.name = 'InvalidCharacterError';
-    err.code = 5;
-    return err;
-  }
-
-  function bytesToBase64(bytes) {
-    var out = '';
-    var i;
-    for (i = 0; i + 2 < bytes.length; i += 3) {
-      var n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
-      out += B64_CHARS[n >> 18] + B64_CHARS[(n >> 12) & 63] + B64_CHARS[(n >> 6) & 63] + B64_CHARS[n & 63];
-    }
-    if (i < bytes.length) {
-      var rest = bytes[i] << 16;
-      if (i + 1 < bytes.length) rest |= bytes[i + 1] << 8;
-      out += B64_CHARS[rest >> 18] + B64_CHARS[(rest >> 12) & 63];
-      out += i + 1 < bytes.length ? B64_CHARS[(rest >> 6) & 63] : '=';
-      out += '=';
-    }
-    return out;
-  }
-
-  function base64ToBytes(input) {
-    var s = String(input).replace(/[\t\n\f\r ]/g, '');
-    if (s.length % 4 === 0) s = s.replace(/={1,2}$/, '');
-    if (s.length % 4 === 1) throw invalidCharacterError();
-    var out = new Uint8Array(Math.floor((s.length * 3) / 4));
-    var o = 0, acc = 0, bits = 0;
-    for (var i = 0; i < s.length; i++) {
-      var v = B64_LOOKUP[s.charCodeAt(i) & 0xff];
-      if (v < 0 || s.charCodeAt(i) > 0xff) throw invalidCharacterError();
-      acc = (acc << 6) | v;
-      bits += 6;
-      if (bits >= 8) {
-        bits -= 8;
-        out[o++] = (acc >> bits) & 0xff;
-      }
-    }
-    return out.subarray(0, o);
-  }
 
   global.btoa = function btoa(data) {
     if (arguments.length === 0) throw new TypeError('1 argument required, but only 0 present');
-    var s = String(data);
-    var bytes = new Uint8Array(s.length);
-    for (var i = 0; i < s.length; i++) {
-      var c = s.charCodeAt(i);
-      if (c > 0xff) throw invalidCharacterError();
-      bytes[i] = c;
-    }
-    return bytesToBase64(bytes);
+    return hostSync('base64Encode', String(data));
   };
 
   global.atob = function atob(data) {
     if (arguments.length === 0) throw new TypeError('1 argument required, but only 0 present');
-    var bytes = base64ToBytes(data);
-    var out = '';
-    for (var i = 0; i < bytes.length; i += 8192) out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
-    return out;
+    return hostSync('base64Decode', String(data));
   };
 
   // ---------------------------------------------------------------------------
-  // application/x-www-form-urlencoded percent-encoding (URLSearchParams only;
-  // URL itself is parsed by the host, see below)
-  // ---------------------------------------------------------------------------
-
-  // The form-urlencoded percent-encode set: only ASCII alphanumerics and
-  // * - . _ stay literal; space becomes '+'.
-  function inFormUrlencodedSet(b) {
-    return !((b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a) || b === 0x2a || b === 0x2d || b === 0x2e || b === 0x5f);
-  }
-
-  var HEX = '0123456789ABCDEF';
-  function percentEncodeBytes(bytes, inSet, spaceAsPlus) {
-    var out = '';
-    for (var i = 0; i < bytes.length; i++) {
-      var b = bytes[i];
-      if (spaceAsPlus && b === 0x20) out += '+';
-      else if (inSet(b)) out += '%' + HEX[b >> 4] + HEX[b & 15];
-      else out += String.fromCharCode(b);
-    }
-    return out;
-  }
-  function percentEncodeString(str, inSet, spaceAsPlus) {
-    return percentEncodeBytes(utf8Encode(str), inSet, !!spaceAsPlus);
-  }
-
-  function isHexDigit(c) { return (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66); }
-  function percentDecodeBytes(bytes) {
-    var out = new Uint8Array(bytes.length);
-    var o = 0;
-    for (var i = 0; i < bytes.length; i++) {
-      var b = bytes[i];
-      if (b === 0x25 && i + 2 < bytes.length && isHexDigit(bytes[i + 1]) && isHexDigit(bytes[i + 2])) {
-        out[o++] = parseInt(String.fromCharCode(bytes[i + 1], bytes[i + 2]), 16);
-        i += 2;
-      } else {
-        out[o++] = b;
-      }
-    }
-    return out.subarray(0, o);
-  }
-
-  // ---------------------------------------------------------------------------
-  // URLSearchParams
+  // URLSearchParams: the list lives here; the host parses and serializes it
   // ---------------------------------------------------------------------------
 
   function parseFormUrlencoded(input) {
-    var out = [];
-    var bytes = utf8Encode(input);
-    var start = 0;
-    for (var i = 0; i <= bytes.length; i++) {
-      if (i === bytes.length || bytes[i] === 0x26) {
-        if (i > start) {
-          var seq = bytes.subarray(start, i);
-          var eq = -1;
-          for (var j = 0; j < seq.length; j++) if (seq[j] === 0x3d) { eq = j; break; }
-          var nameBytes = eq === -1 ? seq : seq.subarray(0, eq);
-          var valueBytes = eq === -1 ? new Uint8Array(0) : seq.subarray(eq + 1);
-          out.push([decodeFormComponent(nameBytes), decodeFormComponent(valueBytes)]);
-        }
-        start = i + 1;
-      }
-    }
-    return out;
-  }
-  function decodeFormComponent(bytes) {
-    var plusToSpace = new Uint8Array(bytes.length);
-    for (var i = 0; i < bytes.length; i++) plusToSpace[i] = bytes[i] === 0x2b ? 0x20 : bytes[i];
-    return utf8Decode(percentDecodeBytes(plusToSpace), false, true);
+    return hostSync('formUrlencodedParse', String(input));
   }
   function serializeFormUrlencoded(list) {
-    var out = '';
-    for (var i = 0; i < list.length; i++) {
-      if (i > 0) out += '&';
-      out += percentEncodeString(list[i][0], inFormUrlencodedSet, true) + '=' + percentEncodeString(list[i][1], inFormUrlencodedSet, true);
-    }
-    return out;
+    return hostSync('formUrlencodedSerialize', list);
   }
 
   function URLSearchParams(init) {
@@ -1025,7 +836,7 @@ var exports = module.exports;
     return this._consume().then(function (bytes) { return new Uint8Array(bytes); });
   };
   Response.prototype.text = function () {
-    return this._consume().then(function (bytes) { return utf8Decode(bytes, false, false); });
+    return this._consume().then(function (bytes) { return utf8Decode(bytes); });
   };
   Response.prototype.json = function () {
     return this.text().then(function (text) { return JSON.parse(text); });

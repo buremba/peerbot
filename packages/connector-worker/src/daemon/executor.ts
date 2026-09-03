@@ -101,7 +101,7 @@ async function resolveJobExecution(
   select: typeof import('../executor/select.js'),
   job: PollResponse,
   timeoutMs: number,
-  cfg: ExecutorConfig
+  maxOldSpaceSize: number
 ): Promise<JobExecution> {
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) return codeResult;
@@ -112,7 +112,7 @@ async function resolveJobExecution(
     const executor = await select.selectExecutor({
       lane: job.lane,
       timeoutMs,
-      maxOldSpaceSize: cfg.maxOldSpaceSize,
+      maxOldSpaceSize,
     });
     return { ok: true, code: codeResult.code, executor };
   } catch (err) {
@@ -284,7 +284,7 @@ async function executeSyncRun(
     throw new Error('Invalid run: missing run_id or connector_key');
   }
 
-  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg);
+  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg.maxOldSpaceSize);
   if (!execution.ok) {
     const errorMessage = `Run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
@@ -527,7 +527,7 @@ async function executeActionRun(
 
   const [select, { executeCompiledConnector }] = await loadCompiledRuntime();
 
-  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg);
+  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg.maxOldSpaceSize);
   if (!execution.ok) {
     const errorMessage = `Action run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
@@ -717,7 +717,7 @@ async function executeAuthRun(
   // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
   // redirects) — a fixed timeout would kill the pairing mid-flow. Terminate
   // via the UI cancel signal instead (timeoutMs: 0 on either lane).
-  const execution = await resolveJobExecution(select, job, 0, cfg);
+  const execution = await resolveJobExecution(select, job, 0, cfg.maxOldSpaceSize);
   if (!execution.ok) {
     const errorMessage = `Auth run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);

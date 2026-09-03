@@ -64,7 +64,7 @@ interface ResourceRow<D, R> extends BaseRow {
  *
  * Automations are deliberately excluded too, though they are not secret-bearing:
  * their values reach the plan only through the two-way `diffAutomation` row, whose
- * field identifiers differ from the projection's (`agent` vs `agent_id`), and
+ * field identifiers differ from the projection's (`agent` vs `managed_agent_id`), and
  * the name-mapping table that reconciled them was not worth its weight.
  */
 interface ValuePreviewRow {
@@ -1262,7 +1262,7 @@ export const projectDesiredAutomation = (
 const projectRemoteAutomation = (
   w: RemoteAutomation
 ): AutomationProjection => ({
-  agent: w.agent_id ?? null,
+  agent: w.managed_agent_id ?? null,
   // `?? null` mirrors projectDesiredAutomation: an unnamed remote Automation must
   // compare EQUAL to the desired side that inherited it, or deepEqual(null,
   // undefined) false-blocks the first baseline.
@@ -1406,8 +1406,8 @@ function diffAutomation(
   if (!deepEqual(desired.triggers ?? [], remote.triggers ?? [])) {
     scalar.push("triggers");
   }
-  if (desired.agent !== (remote.agent_id ?? "")) {
-    scalar.push("agent_id");
+  if (desired.agent !== (remote.managed_agent_id ?? "")) {
+    scalar.push("managed_agent_id");
   }
   if (
     desired.deviceWorkerId !== undefined &&

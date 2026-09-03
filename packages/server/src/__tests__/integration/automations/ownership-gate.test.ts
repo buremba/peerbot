@@ -102,7 +102,7 @@ async function seedAutomationAndRun(workspace: TestWorkspace, suffix: string) {
     slug: `gate-automation-${suffix}`,
     name: `Gate Automation ${suffix}`,
     prompt: 'Analyze inputs.',
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   const runId = await createAutomationResultRun({
     automationId: Number(automation.automation_id),

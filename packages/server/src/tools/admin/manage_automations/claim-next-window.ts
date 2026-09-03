@@ -103,11 +103,11 @@ export async function handleClaimNextWindow(
     const [automation] = await tx<{
       organization_id: string;
       schedule: string | null;
-      agent_id: string | null;
+      managed_agent_id: string | null;
       device_worker_id: string | null;
       agent_kind: string | null;
     }>`
-      SELECT organization_id, schedule, agent_id, device_worker_id, agent_kind
+      SELECT organization_id, schedule, managed_agent_id, device_worker_id, agent_kind
       FROM automations
       WHERE id = ${automationId}
         AND organization_id = ${ctx.organizationId}
@@ -213,7 +213,7 @@ export async function handleClaimNextWindow(
             {
               organizationId: automation.organization_id,
               automationId,
-              agentId: automation.agent_id,
+              agentId: automation.managed_agent_id,
               windowStart: windowStart.toISOString(),
               windowEnd: windowEnd.toISOString(),
               dispatchSource: 'manual',

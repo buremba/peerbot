@@ -54,7 +54,7 @@ describe("automation custom-SQL source validation", () => {
 				slug: `src-validate-${Date.now()}`,
 				name: "Source validate",
 				prompt: "Summarize.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				...(entity ? { entity_id: Number(entity.id) } : {}),
 				sources: [{ name: "src", query }],
 				triggers: [
@@ -93,7 +93,7 @@ describe("automation custom-SQL source validation", () => {
 				slug: `cfv-src-${Date.now()}`,
 				name: "Clone source",
 				prompt: "Summarize.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				entity_id: Number(sourceEntity.id),
 				sources: [{ name: "src", query }],
 				triggers: [
@@ -169,7 +169,7 @@ describe("automation custom-SQL source validation", () => {
 				slug: `src-slug-${Date.now()}`,
 				name: "Slug source",
 				prompt: "Summarize.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				sources: [{ name: "src", query: "SELECT id FROM company" }],
 				triggers: [
 					{
@@ -205,7 +205,7 @@ describe("automation custom-SQL source validation", () => {
 				slug: `src-public-slug-${Date.now()}`,
 				name: "Public slug source",
 				prompt: "Summarize.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				sources: [{ name: "src", query: 'SELECT id FROM "catalog-company"' }],
 				triggers: [
 					{
@@ -308,7 +308,7 @@ describe("automation custom-SQL source validation", () => {
 				slug: `src-cv-${Date.now()}`,
 				name: "Source create_version",
 				prompt: "Summarize.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				sources: [{ name: "src", query: "SELECT id FROM events WHERE 1=0" }],
 				triggers: [
 					{

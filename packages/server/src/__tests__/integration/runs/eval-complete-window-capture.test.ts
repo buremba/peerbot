@@ -70,7 +70,7 @@ async function setup() {
     name: 'Eval Capture Automation',
     prompt: 'Summarize activity for {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(created.automation_id);
   await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationId}`;

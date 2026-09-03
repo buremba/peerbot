@@ -55,7 +55,7 @@ async function seedReactionAutomation(workspace: TestWorkspace, suffix: string, 
     name: `React ${suffix}`,
     prompt: 'Summarize {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(automation.automation_id);
   await manageAutomations(

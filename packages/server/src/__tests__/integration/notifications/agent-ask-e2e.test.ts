@@ -110,7 +110,7 @@ describe("notify input_schema — agent asks a human", () => {
 			const id = await getNextNumericId(tx, "automations");
 			return tx`
 				INSERT INTO automations (
-					id, automation_group_id, organization_id, agent_id, created_by, name, slug
+					id, automation_group_id, organization_id, managed_agent_id, created_by, name, slug
 				) VALUES (
 					${id}, ${id}, ${org.id}, 'asking-agent', ${owner.id},
 					'Ask provenance automation', 'ask-provenance-automation'
@@ -491,7 +491,7 @@ describe("notify input_schema — agent asks a human", () => {
 					active_run: "queue",
 				},
 			],
-			agent_id: reducerAgent.agentId,
+			managed_agent_id: reducerAgent.agentId,
 		});
 
 		const tasksBefore = await sql`
@@ -1230,7 +1230,7 @@ describe("notify input_schema — agent asks a human", () => {
 			const id = await getNextNumericId(tx, "automations");
 			return tx`
 				INSERT INTO automations (
-					id, automation_group_id, organization_id, agent_id, created_by, name, slug
+					id, automation_group_id, organization_id, managed_agent_id, created_by, name, slug
 				) VALUES (
 					${id}, ${id}, ${victimOrg.id}, 'victim-agent', ${victimOwner.id},
 					'Victim automation', ${`victim-automation-${Date.now()}`}

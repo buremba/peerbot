@@ -102,7 +102,7 @@ async function isRunOwnedByJwtScope(
         -- ownership from the automation's own agent plus the same derived id.
         OR (
           r.run_type = 'automation'
-          AND automation.agent_id = ${agentId}
+          AND automation.managed_agent_id = ${agentId}
           AND ${conversationId} =
             ${agentId} || '_automation_' || r.automation_id::text || '_run_' || r.id::text
         )

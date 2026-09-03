@@ -211,7 +211,7 @@ export class ChatResponseBridge implements ResponseRenderer {
         FROM automations
         WHERE id = ${automationId}
           AND organization_id = ${organizationId}
-          AND agent_id = ${agentId}
+          AND managed_agent_id = ${agentId}
           AND status = 'active'
         LIMIT 1
       `;

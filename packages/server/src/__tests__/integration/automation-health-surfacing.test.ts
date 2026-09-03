@@ -38,7 +38,7 @@ async function createScheduledAutomation(): Promise<{
       slug: `health-automation-${Date.now()}`,
       name: "Health automation",
       prompt: "Summarize newly landed content.",
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
       sources: [
         {
           name: "github",

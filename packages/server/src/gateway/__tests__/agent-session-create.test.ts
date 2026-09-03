@@ -423,7 +423,7 @@ describe("POST /api/v1/agents — automation_run intent verification", () => {
     const [automation] = (await sql`
       WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
       INSERT INTO automations (
-        id, automation_group_id, organization_id, agent_id, created_by, name, slug
+        id, automation_group_id, organization_id, managed_agent_id, created_by, name, slug
       )
       SELECT id, id, ${orgId}, ${AGENT}, ${SEED_USER},
              'Intent fixture', 'intent-fixture-' || id

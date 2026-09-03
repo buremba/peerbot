@@ -817,7 +817,7 @@ describe("Automation three-way attribution", () => {
     return {
       slug: "digest",
       automation_id: "b-1",
-      agent_id: "agent-a",
+      managed_agent_id: "agent-a",
       name: "Digest",
       prompt: "Summarize",
       ...overrides,
@@ -837,7 +837,7 @@ describe("Automation three-way attribution", () => {
       {
         slug: "digest",
         automation_id: "b-1",
-        agent_id: "agent-a",
+        managed_agent_id: "agent-a",
         prompt: "Summarize",
         // name intentionally absent
       } as any,
@@ -855,7 +855,9 @@ describe("Automation three-way attribution", () => {
     const desired = buildState([]);
     desired.automations = [desiredAutomation() as any];
     const remote = emptyRemote();
-    remote.automations = [remoteAutomation({ agent_id: "agent-b" }) as any];
+    remote.automations = [
+      remoteAutomation({ managed_agent_id: "agent-b" }) as any,
+    ];
     const baseline = {
       recorded: true,
       attribution: {
@@ -939,10 +941,10 @@ describe("Automation three-way attribution", () => {
     );
     expect(row?.verb).toBe("update");
     expect(row?.changedFields).toEqual(
-      expect.arrayContaining(["agent_id", "name"])
+      expect.arrayContaining(["managed_agent_id", "name"])
     );
     // Automations reach the plan through the two-way `diffAutomation` row, whose
-    // field identifiers differ from the projection's (`agent` vs `agent_id`).
+    // field identifiers differ from the projection's (`agent` vs `managed_agent_id`).
     // Rendering values there needed a name-mapping table that was not worth
     // its weight, so Automations keep the bare field-name list on purpose.
     expect(row).not.toHaveProperty("changedValues");
@@ -958,7 +960,7 @@ describe("Automation three-way attribution", () => {
     const remote = emptyRemote();
     remote.automations = [
       remoteAutomation({
-        agent_id: "agent-b",
+        managed_agent_id: "agent-b",
         prompt: "old prompt",
       }) as any,
     ];
@@ -968,7 +970,10 @@ describe("Automation three-way attribution", () => {
         entityTypes: [],
         relationshipTypes: [],
         automations: [
-          remoteAutomation({ agent_id: "agent-a", prompt: "old prompt" }),
+          remoteAutomation({
+            managed_agent_id: "agent-a",
+            prompt: "old prompt",
+          }),
         ],
       },
       owned: new Set<string>(["automation:b-1"]),
@@ -1129,7 +1134,7 @@ describe("legacy org — no baseline was ever recorded", () => {
       {
         slug: "digest",
         automation_id: "1",
-        agent_id: "triage",
+        managed_agent_id: "triage",
         name: "Digest",
         prompt: "Produce a digest.",
         triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],

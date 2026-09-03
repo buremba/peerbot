@@ -88,7 +88,7 @@ describe('device management deletion', () => {
       name: 'Pinned Device Automation',
       prompt: 'Run only on the explicitly selected device.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
       device_worker_id: deviceId,
     })) as { automation_id: string };
     const automationId = created.automation_id;

@@ -106,7 +106,7 @@ async function createAutomatedAutomation() {
 				skip_if_unchanged: false,
 			},
 		],
-		agent_id: agent.agentId,
+		managed_agent_id: agent.agentId,
 	})) as { automation_id: string };
 	const automationId = Number(automation.automation_id);
 
@@ -243,7 +243,7 @@ describe("automation contract", () => {
 			extracted_data: { summary: "Automated automation summary" },
 			run_metadata: {
 				executor: "lobu-agent",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				run_id: queued.runId,
 				dispatch_source: "scheduled",
 				prompt_rendered: "forged by completion payload",
@@ -1988,7 +1988,7 @@ describe("automation contract", () => {
 						skip_if_unchanged: false,
 					},
 				],
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 			})) as { automation_id: string };
 			const automationBId = Number(automationB.automation_id);
 			await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationBId}`;
@@ -2016,7 +2016,7 @@ describe("automation contract", () => {
 			// Point the automation at a non-existent agent, no device pin, due now.
 			await sql`
         UPDATE automations
-        SET agent_id = 'ghost-agent-deleted', device_worker_id = NULL,
+        SET managed_agent_id = 'ghost-agent-deleted', device_worker_id = NULL,
             next_run_at = NOW() - INTERVAL '10 minutes'
         WHERE id = ${automationId}
       `;

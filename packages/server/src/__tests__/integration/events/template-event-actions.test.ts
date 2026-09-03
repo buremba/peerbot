@@ -108,7 +108,7 @@ describe("template event actions", () => {
 		await api.automations.create({
 			slug: "poll-vote-reducer",
 			prompt: "Reduce the verified vote event.",
-			agent_id: agent.agentId,
+			managed_agent_id: agent.agentId,
 			triggers: [
 				{
 					kind: "event",

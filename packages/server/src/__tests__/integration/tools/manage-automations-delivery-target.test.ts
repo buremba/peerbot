@@ -99,7 +99,7 @@ describe("manage_automations delivery_target", () => {
 				slug: "delivery-targeted",
 				name: "Delivery targeted",
 				prompt: "Send a concise update.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				delivery_target: {
 					connection_id: connectionId,
 					channel_id: "slack:C_TASKS",
@@ -150,22 +150,22 @@ describe("manage_automations delivery_target", () => {
 				{
 					action: "update",
 					automation_id: created.automation_id,
-					agent_id: otherAgentId,
+					managed_agent_id: otherAgentId,
 				},
 				TEST_ENV,
 				ownerCtx,
 			),
 		).rejects.toThrow(/must be an active chat channel already bound to the same agent/);
 		const [afterRejectedMove] = await sql<{
-			agent_id: string;
+			managed_agent_id: string;
 			delivery_target: Record<string, unknown>;
 		}>`
-			SELECT agent_id, delivery_target
+			SELECT managed_agent_id, delivery_target
 			FROM automations
 			WHERE id = ${created.automation_id}
 		`;
 		expect(afterRejectedMove).toMatchObject({
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			delivery_target: stored.delivery_target,
 		});
 

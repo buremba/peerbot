@@ -436,10 +436,10 @@ routes.get("/", async (c) => {
 		countRuntimeMessagingClientsByAgent(orgId),
 		// Automations owned by each agent (active only).
 		sql`
-        SELECT agent_id, count(*)::int as count
+        SELECT managed_agent_id, count(*)::int as count
         FROM automations
-        WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
-        GROUP BY agent_id
+        WHERE organization_id = ${orgId} AND status = 'active' AND managed_agent_id IS NOT NULL
+        GROUP BY managed_agent_id
       `,
 		// Distinct end-users per agent across messaging platforms.
 		sql`
@@ -481,7 +481,7 @@ routes.get("/", async (c) => {
 		for (const clientId of runtimeIds) ids.add(clientId);
 	}
 	const automationCountMap = new Map(
-		automationCounts.map((r: any) => [r.agent_id, r.count])
+		automationCounts.map((r: any) => [r.managed_agent_id, r.count])
 	);
 	const userCountMap = new Map(
 		userCounts.map((r: any) => [r.agent_id, r.count])

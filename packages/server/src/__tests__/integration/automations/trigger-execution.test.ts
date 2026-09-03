@@ -29,9 +29,9 @@ describe("Automation trigger execution contract", () => {
 			created_by: workspace.users.owner.id,
 		});
 		let executor:
-			| { agent_id: string }
+			| { managed_agent_id: string }
 			| {
-					agent_id: null;
+					managed_agent_id: null;
 					device_worker_id: string;
 					agent_kind: "claude-code";
 				};
@@ -41,7 +41,7 @@ describe("Automation trigger execution contract", () => {
 				ownerUserId: workspace.users.owner.id,
 				agentId: "externally-leased-trigger-agent",
 			});
-			executor = { agent_id: agent.agentId };
+			executor = { managed_agent_id: agent.agentId };
 		} else {
 			const [device] = await sql<{ id: string }>`
         INSERT INTO device_workers (
@@ -53,7 +53,7 @@ describe("Automation trigger execution contract", () => {
         RETURNING id::text AS id
       `;
 			executor = {
-				agent_id: null,
+				managed_agent_id: null,
 				device_worker_id: device.id,
 				agent_kind: "claude-code",
 			};
@@ -96,7 +96,7 @@ describe("Automation trigger execution contract", () => {
 			slug: "external-trigger-contract",
 			name: "External Trigger Contract",
 			prompt: "Summarize the current window.",
-			agent_id: null,
+			managed_agent_id: null,
 		})) as { automation_id: string };
 
 		const triggered = (await workspace.owner.automations.trigger({
@@ -134,7 +134,7 @@ describe("Automation trigger execution contract", () => {
 		});
 		await workspace.owner.automations.update({
 			automation_id: automation.automation_id,
-			agent_id: retargetAgent.agentId,
+			managed_agent_id: retargetAgent.agentId,
 		});
 		const retriggered = (await workspace.owner.automations.trigger({
 			automation_id: automation.automation_id,
@@ -159,7 +159,7 @@ describe("Automation trigger execution contract", () => {
 			slug: "concurrent-trigger-contract",
 			name: "Concurrent Trigger Contract",
 			prompt: "Summarize the current window.",
-			agent_id: null,
+			managed_agent_id: null,
 		})) as { automation_id: string };
 
 		const results = (await Promise.all([
@@ -210,7 +210,7 @@ describe("Automation trigger execution contract", () => {
 			slug: "device-trigger-contract",
 			name: "Device Trigger Contract",
 			prompt: "Summarize the current window.",
-			agent_id: null,
+			managed_agent_id: null,
 			device_worker_id: device.id,
 			agent_kind: "claude-code",
 		})) as { automation_id: string };
@@ -237,7 +237,7 @@ describe("Automation trigger execution contract", () => {
     `;
 		await workspace.owner.automations.update({
 			automation_id: automation.automation_id,
-			agent_id: retargetAgent.agentId,
+			managed_agent_id: retargetAgent.agentId,
 			device_worker_id: null,
 			agent_kind: null,
 		});
@@ -286,7 +286,7 @@ describe("Automation trigger execution contract", () => {
 			slug: "managed-trigger-contract",
 			name: "Managed Trigger Contract",
 			prompt: "Summarize the current window.",
-			agent_id: originalAgent.agentId,
+			managed_agent_id: originalAgent.agentId,
 		})) as { automation_id: string };
 		const pending = await computePendingWindow(
 			sql as unknown as DbClient,
@@ -308,7 +308,7 @@ describe("Automation trigger execution contract", () => {
     `;
 		await workspace.owner.automations.update({
 			automation_id: automation.automation_id,
-			agent_id: null,
+			managed_agent_id: null,
 		});
 
 		const retriggered = (await workspace.owner.automations.trigger({
@@ -323,7 +323,7 @@ describe("Automation trigger execution contract", () => {
 			execution: {
 				lane: "managed_agent",
 				owner: "lobu",
-				agent_id: originalAgent.agentId,
+				managed_agent_id: originalAgent.agentId,
 				next_action: { kind: "handled_elsewhere" },
 			},
 		});
@@ -471,7 +471,7 @@ describe("Automation trigger execution contract", () => {
 			slug: "managed-trigger-preflight",
 			name: "Managed Trigger Preflight",
 			prompt: "Summarize the current window.",
-			agent_id: agent.agentId,
+			managed_agent_id: agent.agentId,
 		})) as { automation_id: string };
 
 		await expect(

@@ -147,7 +147,7 @@ describe('Automation event outputs', () => {
         observations: { event: 'observation' },
         drafts: { event: 'draft_reply' },
       },
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
     await api.automations.update({
@@ -181,7 +181,7 @@ describe('Automation event outputs', () => {
           query: 'SELECT id, payload_text, occurred_at FROM events WHERE false',
         },
       ],
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     const consumerId = Number(consumer.automation_id);
     const unrelatedConsumer = (await api.automations.create({
@@ -197,7 +197,7 @@ describe('Automation event outputs', () => {
           active_run: 'queue',
         },
       ],
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     const unrelatedConsumerId = Number(unrelatedConsumer.automation_id);
     await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationId}`;
@@ -504,7 +504,7 @@ describe('Automation event outputs', () => {
             active_run: 'queue',
           },
         ],
-        agent_id: agent.agentId,
+        managed_agent_id: agent.agentId,
       })) as { automation_id: string };
       fanoutConsumerIds.push(Number(fanoutConsumer.automation_id));
     }
@@ -607,7 +607,7 @@ describe('Automation event outputs', () => {
       prompt: 'Emit refined voice profiles.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       outputs: { profiles: { event: 'observation', key: ['channel', 'mode'] } },
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
 
@@ -778,7 +778,7 @@ describe('Automation event outputs', () => {
       prompt: 'Return one durable event.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       outputs: { result: { event: 'observation' } },
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
 
@@ -870,7 +870,7 @@ describe('Automation event outputs', () => {
       prompt: 'Rank new posts as observation drafts.',
       triggers: [{ kind: 'schedule', cron: '25 * * * *' }],
       outputs: { signals: { event: 'observation' } },
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
 

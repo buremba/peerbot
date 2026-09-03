@@ -200,7 +200,7 @@ describe('agent-facing content read bounds', () => {
       slug: 'content-bounds-automation',
       name: 'Content Bounds Automation',
       prompt: 'Summarize {{content}}.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       sources: [{ name: 'content', query: `@feed:${feedId}` }],
     })) as { automation_id: string };
     const result = (await owner.knowledge.read({
@@ -230,7 +230,7 @@ describe('agent-facing content read bounds', () => {
       slug: 'content-bounds-default-automation',
       name: 'Content Bounds Default Automation',
       prompt: 'Summarize {{content}}.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
     const defaultResult = (await owner.knowledge.read({
       automation_id: Number(defaultCreated.automation_id),
@@ -254,7 +254,7 @@ describe('agent-facing content read bounds', () => {
       slug: 'content-bounds-custom-sql-automation',
       name: 'Content Bounds Custom SQL Automation',
       prompt: 'Summarize {{content}}.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       sources: [
         {
           name: 'content',

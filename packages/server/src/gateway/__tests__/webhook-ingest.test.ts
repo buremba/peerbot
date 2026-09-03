@@ -165,7 +165,7 @@ async function seedWebhookEventAutomation({
 		const [automation] = await tx<{ id: number }>`
 			WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
 			INSERT INTO automations (
-				id, automation_group_id, organization_id, agent_id, created_by,
+				id, automation_group_id, organization_id, managed_agent_id, created_by,
 				name, slug, status, triggers
 			)
 			SELECT id, id, ${ORG}, ${AGENT}, ${creatorId},

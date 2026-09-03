@@ -75,7 +75,7 @@ describe('automations/feeds timezone-aware schedules', () => {
       triggers: [
         { kind: 'schedule', cron: '0 9 * * *', timezone: 'Asia/Taipei' },
       ],
-      agent_id: 'tz-automation-agent',
+      managed_agent_id: 'tz-automation-agent',
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
 
@@ -107,7 +107,7 @@ describe('automations/feeds timezone-aware schedules', () => {
       name: 'TZ Automation Update',
       prompt: 'Summarize {{entities}}.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      agent_id: 'tz-automation-agent',
+      managed_agent_id: 'tz-automation-agent',
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
 
@@ -143,7 +143,7 @@ describe('automations/feeds timezone-aware schedules', () => {
             timezone: 'Mars/Olympus_Mons',
           },
         ],
-        agent_id: 'tz-automation-agent',
+        managed_agent_id: 'tz-automation-agent',
       }),
     ).rejects.toThrow(/Unknown IANA timezone/);
   });

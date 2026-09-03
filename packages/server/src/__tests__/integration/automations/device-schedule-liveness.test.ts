@@ -43,7 +43,7 @@ async function setupDeviceAutomation() {
 				skip_if_unchanged: false,
 			},
 		],
-		agent_id: agent.agentId,
+		managed_agent_id: agent.agentId,
 	})) as { automation_id: string };
 	const automationId = Number(created.automation_id);
 	const [device] = await sql<{ id: string }>`

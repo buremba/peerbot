@@ -108,7 +108,7 @@ async function setupDevicePinnedAutomation(opts: { workerId: string }): Promise<
     name: 'Trigger Automation',
     prompt: 'Summarize {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(automation.automation_id);
 

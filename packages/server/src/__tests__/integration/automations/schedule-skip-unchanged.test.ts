@@ -27,7 +27,7 @@ describe("scheduled Automation unchanged gate", () => {
 				slug: "empty-minute-batch",
 				name: "Empty minute batch",
 				prompt: "Summarize newly landed GitHub content.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				sources: [
 					{
 						name: "github",
@@ -141,7 +141,7 @@ describe("scheduled Automation unchanged gate", () => {
 				slug: "empty-default-source",
 				name: "Empty default source",
 				prompt: "Summarize new workspace content.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "schedule",

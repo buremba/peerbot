@@ -561,16 +561,16 @@ export default async (_ctx, client) => {
 		access: "admin",
 		throws: ["EntityNotFound"],
 		signature:
-			"automations.create(input: { slug: string; agent_id: string; prompt?: string; device_worker_id?: string | null; agent_kind?: 'claude-code' | 'codex' | 'opencode' | 'pi' | 'agy' | null; ... }): Promise<{ action: 'create'; automation_id: string; version: number; status: string; ... } | { action: 'create'; status: 'pending_approval'; run_id: number; ... }>",
+			"automations.create(input: { slug: string; managed_agent_id: string; prompt?: string; device_worker_id?: string | null; agent_kind?: 'claude-code' | 'codex' | 'opencode' | 'pi' | 'agy' | null; ... }): Promise<{ action: 'create'; automation_id: string; version: number; status: string; ... } | { action: 'create'; status: 'pending_approval'; run_id: number; ... }>",
 		example:
-			"const created = await client.automations.create({ slug: 'pricing', agent_id: 'agt_123', device_worker_id: 'device-worker-uuid', agent_kind: 'opencode', prompt: 'Extract pricing records and notable changes.', outputs: { prices: { entity: 'price', key: ['sku'] }, alerts: { event: 'observation' } }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] }); const automationId = 'automation_id' in created ? created.automation_id : undefined; // undefined when the create was policy-gated into an approval",
+			"const created = await client.automations.create({ slug: 'pricing', managed_agent_id: 'agt_123', device_worker_id: 'device-worker-uuid', agent_kind: 'opencode', prompt: 'Extract pricing records and notable changes.', outputs: { prices: { entity: 'price', key: ['sku'] }, alerts: { event: 'observation' } }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] }); const automationId = 'automation_id' in created ? created.automation_id : undefined; // undefined when the create was policy-gated into an approval",
 		usageExample: `// Stand up an Automation that extracts pricing entities from recent events.
 // The output contract is derived from the \`price\` entity type metadata_schema;
 // sources[].query is a read-only SELECT projecting \`id\` (a URL here would be rejected).
 export default async (_ctx, client) => {
   return client.automations.create({
     slug: 'pricing',
-    agent_id: 'agt_123',
+    managed_agent_id: 'agt_123',
     prompt: 'Extract current pricing records from the window content.',
     outputs: { prices: { entity: 'price', key: ['sku'] } },
     sources: [

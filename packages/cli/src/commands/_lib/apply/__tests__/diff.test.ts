@@ -800,7 +800,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
         },
@@ -838,7 +838,7 @@ describe("apply diff — automations", () => {
       automations: [
         {
           slug: "minimal-schedule",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [
             {
@@ -877,7 +877,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
           device_worker_id: "dev-1",
@@ -900,7 +900,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
           execution_config: { model: "opencode-go/deepseek-v4-flash" },
@@ -930,7 +930,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
           device_worker_id: "dev-1",
@@ -954,7 +954,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 10 * * 1" }],
         },
@@ -977,7 +977,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Old prompt",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
         },
@@ -1001,7 +1001,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
           outputs: {
@@ -1029,7 +1029,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
           outputs: {
@@ -1066,7 +1066,7 @@ describe("apply diff — automations", () => {
         {
           slug: "weekly-digest",
           name: "Weekly digest",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "Produce a digest.",
           triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],
         },

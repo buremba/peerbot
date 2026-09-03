@@ -240,7 +240,7 @@ interface AutomationQueryRow {
   consecutive_scheduled_failures: number;
   schedule_auto_paused_at: string | null;
   last_event_activation_at: string | null;
-  agent_id: string | null;
+  managed_agent_id: string | null;
   delivery_target: {
     connection_id: number;
     channel_id: string;
@@ -584,7 +584,7 @@ async function getAutomationImpl(
         i.consecutive_scheduled_failures,
         i.schedule_auto_paused_at,
         i.last_event_activation_at,
-        i.agent_id,
+        i.managed_agent_id,
         i.delivery_target,
         i.device_worker_id,
         i.agent_kind,
@@ -842,7 +842,7 @@ async function getAutomationImpl(
       consecutive_scheduled_failures:
         automationRow.consecutive_scheduled_failures,
       schedule_auto_paused_at: automationRow.schedule_auto_paused_at,
-      agent_id: automationRow.agent_id,
+      managed_agent_id: automationRow.managed_agent_id,
       delivery_target: automationRow.delivery_target ?? null,
       device_worker_id: automationRow.device_worker_id ?? null,
       agent_kind: automationRow.agent_kind ?? null,

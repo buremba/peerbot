@@ -528,9 +528,11 @@ function emitAutomation(
   minter: IdentMinter
 ): { handle: Handle; reactionFile?: { relPath: string; body: string } } {
   imports.use("defineAutomation");
-  const agentRef = w.agent_id ? agentHandles.get(w.agent_id) : undefined;
+  const agentRef = w.managed_agent_id
+    ? agentHandles.get(w.managed_agent_id)
+    : undefined;
   const fields: string[] = [
-    `agent: ${agentRef ?? str(w.agent_id ?? "")}`,
+    `agent: ${agentRef ?? str(w.managed_agent_id ?? "")}`,
     `slug: ${str(w.slug)}`,
   ];
   if (w.name) fields.push(`name: ${str(w.name)}`);
@@ -964,14 +966,15 @@ function generateProject(
       );
     }
     const library =
-      agentsById.get(automation.agent_id ?? "")?.skillsConfig?.skills ?? [];
+      agentsById.get(automation.managed_agent_id ?? "")?.skillsConfig?.skills ??
+      [];
     for (const snapshot of automation.skills ?? []) {
       const current = library.find(
         (skill) => !skill.system && skill.name === snapshot.name
       );
       if (!current) {
         warnings.push(
-          `Automation "${automation.slug}" pins skill "${snapshot.name}", but that skill is absent from agent "${automation.agent_id ?? ""}"'s current library — restore it or remove the Automation reference before \`lobu apply\`.`
+          `Automation "${automation.slug}" pins skill "${snapshot.name}", but that skill is absent from agent "${automation.managed_agent_id ?? ""}"'s current library — restore it or remove the Automation reference before \`lobu apply\`.`
         );
         continue;
       }

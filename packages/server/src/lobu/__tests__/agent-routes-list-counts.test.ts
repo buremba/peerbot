@@ -54,7 +54,7 @@ beforeEach(async () => {
 	// on a mere "some rows exist" read.
 	await sql`
 		INSERT INTO automations (
-			id, organization_id, slug, name, agent_id, created_by,
+			id, organization_id, slug, name, managed_agent_id, created_by,
 			automation_group_id, status
 		) VALUES (
 			9001, ${ORG}, 'counted-automation', 'Counted Automation', ${AGENT},

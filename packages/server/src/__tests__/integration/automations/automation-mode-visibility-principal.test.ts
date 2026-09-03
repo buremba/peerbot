@@ -54,7 +54,7 @@ describe('Automation private-connection visibility', () => {
       slug: 'automation-visibility-principal',
       name: 'Automation Visibility Principal',
       prompt: 'Summarize the visible content.',
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
       sources: [{ name: 'content', query: 'SELECT * FROM events' }],
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
@@ -159,7 +159,7 @@ describe('Automation private-connection visibility', () => {
       slug: 'automation-visibility-other',
       name: 'Other Automation',
       prompt: 'Other',
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
       sources: [{ name: 'content', query: 'SELECT * FROM events' }],
     })) as { automation_id: string };
     const otherAutomationId = Number(otherCreated.automation_id);
@@ -215,7 +215,7 @@ describe('Automation private-connection visibility', () => {
       slug: 'automation-audit-exclusion',
       name: 'Automation Audit Exclusion',
       prompt: 'Summarize the visible content.',
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
       sources: [{ name: 'content', query: 'SELECT * FROM events' }],
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);

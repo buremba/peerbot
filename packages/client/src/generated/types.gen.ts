@@ -4543,9 +4543,9 @@ export type ManageAutomationsData = {
         }
     >;
     /**
-     * [create/update] Optional managed agent for this Automation. Null clears the assignment; agentless manual Automations may be completed by an external MCP client. [list] Optional owner filter.
+     * [create/update] Optional managed agent that executes this Automation's runs (server dispatch lane). Null clears the assignment; an Automation with neither managed_agent_id nor device_worker_id is manual-only and may be completed by an external MCP client. [list] Optional owner filter.
      */
-    agent_id?: string | null;
+    managed_agent_id?: string | null;
     /**
      * [list] Optional status filter. Omit to include active Automations only.
      */
@@ -4832,7 +4832,7 @@ export type ManageAutomationsResponses = {
           | {
               lane: "managed_agent";
               owner: "lobu";
-              agent_id: string;
+              managed_agent_id: string;
               next_action: {
                 kind: "handled_elsewhere";
               };
@@ -5186,7 +5186,7 @@ export type GetAutomationResponses = {
       next_run_at?: string | null;
       consecutive_scheduled_failures?: number;
       schedule_auto_paused_at?: string | null;
-      agent_id?: string | null;
+      managed_agent_id?: string | null;
       delivery_target?: {
         /**
          * Numeric ID of the active chat connection that owns the bound channel.

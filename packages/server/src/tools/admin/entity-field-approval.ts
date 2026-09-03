@@ -352,9 +352,9 @@ async function loadAutomationLabel(
 	}
 	const rows = await getDb()<{
 		name: string | null;
-		agent_id: string | null;
+		managed_agent_id: string | null;
 	}>`
-    SELECT name, agent_id
+    SELECT name, managed_agent_id
     FROM automations
     WHERE id = ${automationId}
       AND organization_id = ${ctx.organizationId}
@@ -363,7 +363,7 @@ async function loadAutomationLabel(
 	return {
 		actorLabel: rows[0]?.name ?? `Automation ${automationId}`,
 		automationName: rows[0]?.name ?? null,
-		automationAgentId: rows[0]?.agent_id ?? null,
+		automationAgentId: rows[0]?.managed_agent_id ?? null,
 	};
 }
 
@@ -990,7 +990,7 @@ export async function proposeEntityChange(
 		initiator_ref: Record<string, unknown> | null;
 		initiator_agent_id: string | null;
 	}>`
-		SELECT r.initiator_kind, r.initiator_ref, w.agent_id AS initiator_agent_id
+		SELECT r.initiator_kind, r.initiator_ref, w.managed_agent_id AS initiator_agent_id
 		FROM runs r
 		LEFT JOIN automations w
 			ON w.id = r.automation_id AND w.organization_id = r.organization_id

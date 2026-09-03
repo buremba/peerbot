@@ -183,14 +183,14 @@ async function findMatchingWorkspaceEventActivations(
     },
   ];
   const rows = await db`
-    SELECT w.id, w.organization_id, w.agent_id, w.entity_ids,
+    SELECT w.id, w.organization_id, w.managed_agent_id, w.entity_ids,
            w.device_worker_id::text AS device_worker_id,
            w.agent_kind, w.triggers
     FROM automations w
     WHERE w.organization_id = ${organizationId}
       AND w.status = 'active'
       AND w.current_version_id IS NOT NULL
-      AND (w.agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
+      AND (w.managed_agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
       AND w.triggers @> ${db.json(needle)}::jsonb
     ORDER BY w.id ASC
   `;
@@ -218,7 +218,7 @@ async function findMatchingWorkspaceEventActivations(
     );
     if (!trigger) continue;
     const executor = resolveAutomationExecutor({
-      agentId: row.agent_id as string | null,
+      agentId: row.managed_agent_id as string | null,
       deviceWorkerId:
         typeof row.device_worker_id === 'string' ? row.device_worker_id : null,
       agentKind: typeof row.agent_kind === 'string' ? row.agent_kind : null,

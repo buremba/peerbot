@@ -725,7 +725,7 @@ describe("executePlan — atomic Automation triggers+prompt update", () => {
         {
           slug: "digest",
           automation_id: "42",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "",
           triggers: [
             {
@@ -802,7 +802,7 @@ describe("executePlan — atomic Automation triggers+prompt update", () => {
         {
           slug: desired.slug,
           automation_id: "43",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "",
           skills: null,
           triggers: [
@@ -875,7 +875,7 @@ describe("executePlan — atomic Automation triggers+prompt update", () => {
         {
           slug: desired.slug,
           automation_id: "44",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: desired.prompt,
           triggers: desired.triggers,
           outputs: { items: { entity: "company", key: ["name"] } },
@@ -945,7 +945,7 @@ describe("executePlan — atomic Automation triggers+prompt update", () => {
         {
           slug: desired.slug,
           automation_id: "45",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: desired.prompt,
           triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
           outputs: { items: { entity: "company", key: ["name"] } },
@@ -1015,7 +1015,7 @@ describe("executePlan — atomic Automation triggers+prompt update", () => {
         {
           slug: desired.slug,
           automation_id: "50",
-          agent_id: "triage",
+          managed_agent_id: "triage",
           prompt: "",
           triggers: [
             {

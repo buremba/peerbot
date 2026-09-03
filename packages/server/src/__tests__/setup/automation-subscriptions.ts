@@ -94,7 +94,7 @@ export async function createTestAutomationSubscription(opts: {
 		await tx`
 			INSERT INTO automations (
 				id, name, slug, description, organization_id, entity_ids,
-				triggers, agent_id, model_config, execution_config, sources, version,
+				triggers, managed_agent_id, model_config, execution_config, sources, version,
 				current_version_id, tags, status, created_by, automation_group_id
 			) VALUES (
 				${automationId}, ${`Messages in ${opts.channelId}`}, ${`test-chat-${automationId}`},
@@ -130,7 +130,7 @@ export async function archiveTestAutomationSubscriptions(opts: {
 		UPDATE automations
 		SET status = 'archived', updated_at = current_timestamp
 		WHERE organization_id = ${opts.organizationId}
-		  ${opts.agentId ? sql`AND agent_id = ${opts.agentId}` : sql``}
+		  ${opts.agentId ? sql`AND managed_agent_id = ${opts.agentId}` : sql``}
 		  AND EXISTS (
 			SELECT 1
 			FROM jsonb_array_elements(triggers) trigger
@@ -143,7 +143,7 @@ export async function archiveTestAutomationSubscriptions(opts: {
 export interface TestAutomationSubscription {
 	automation_id: number;
 	organization_id: string;
-	agent_id: string;
+	managed_agent_id: string;
 	platform: string;
 	channel_id: string;
 	team_id: string | null;
@@ -163,7 +163,7 @@ export async function listTestAutomationSubscriptions(filters?: {
 			SELECT
 				w.id AS automation_id,
 				w.organization_id,
-				w.agent_id,
+				w.managed_agent_id,
 				trigger->>'connector_key' AS platform,
 				COALESCE(
 					NULLIF(trigger->'match'->>'channel_key', ''),

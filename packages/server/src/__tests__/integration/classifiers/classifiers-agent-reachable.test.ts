@@ -141,7 +141,7 @@ describe('classifiers reachable by agents', () => {
 
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
     const [automation] = (await sql`
-      INSERT INTO automations (organization_id, agent_id, automation_group_id, name, created_by, status)
+      INSERT INTO automations (organization_id, managed_agent_id, automation_group_id, name, created_by, status)
       VALUES (${org.id}, ${agent.agentId}, 0, 'owner', ${user.id}, 'active')
       RETURNING id
     `) as unknown as Array<{ id: number }>;

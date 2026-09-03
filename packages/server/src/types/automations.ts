@@ -136,7 +136,7 @@ export const AutomationMetadataSchema = Type.Object({
   schedule_auto_paused_at: Type.Optional(
     Type.Union([Type.String(), Type.Null()])
   ),
-  agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  managed_agent_id: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   delivery_target: Type.Optional(
     Type.Union([AutomationDeliveryTargetSchema, Type.Null()])
   ),

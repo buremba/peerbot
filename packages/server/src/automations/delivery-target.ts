@@ -94,10 +94,10 @@ export async function loadConfiguredAutomationDeliveryTarget(
   automationId: number
 ): Promise<ConfiguredAutomationDeliveryTarget> {
   const rows = await sql<{
-    agent_id: string | null;
+    managed_agent_id: string | null;
     delivery_target: AutomationDeliveryTarget | null;
   }>`
-    SELECT agent_id, delivery_target
+    SELECT managed_agent_id, delivery_target
     FROM automations
     WHERE id = ${automationId}
       AND organization_id = ${organizationId}
@@ -110,7 +110,7 @@ export async function loadConfiguredAutomationDeliveryTarget(
     target: await resolveAutomationDeliveryTarget(
       sql,
       organizationId,
-      row.agent_id,
+      row.managed_agent_id,
       row.delivery_target
     ),
   };

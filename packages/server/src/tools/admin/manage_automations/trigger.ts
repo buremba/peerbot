@@ -83,7 +83,7 @@ async function loadTriggerExecution(
     persistedExecution = {
       lane: "managed_agent",
       owner: "lobu",
-      agent_id: executor.agentId,
+      managed_agent_id: executor.agentId,
       next_action: { kind: "handled_elsewhere" },
     };
   } else if (executor?.kind === "device") {

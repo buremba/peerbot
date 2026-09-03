@@ -214,11 +214,11 @@ describe("listAgentThreads scope=all", () => {
 		// An automation + one of its run snapshots.
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
       VALUES (${AUTOMATION_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Test Automation', 'active', 0, now(), now())`;
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
       VALUES (${OTHER_AUTOMATION_ID}, ${org}, ${OTHER_AGENT}, ${userId}, 0, 'Other Agent Automation', 'active', 0, now(), now())`;
 		await sql`
 			INSERT INTO runs
@@ -260,7 +260,7 @@ describe("listAgentThreads scope=all", () => {
 		// it drops out with no lifecycle sync anywhere.
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name, status, min_cooldown_seconds, created_at, updated_at)
       VALUES (${ARCHIVED_AUTOMATION_ID}, ${org}, ${AGENT}, ${userId}, 0, 'Archived Automation', 'archived', 0, now(), now())`;
 		const [archivedRun] = await sql<{ id: number }[]>`
 			INSERT INTO runs
@@ -527,15 +527,15 @@ describe("listAgentThreads scope=all", () => {
 		});
 		const ownerOf = async () =>
 			(
-				await sql<{ agent_id: string }[]>`
-					SELECT w.agent_id
+				await sql<{ managed_agent_id: string }[]>`
+					SELECT w.managed_agent_id
 					FROM automations w
 					CROSS JOIN LATERAL jsonb_array_elements(w.triggers) t
 					WHERE w.organization_id = ${org}
 					  AND w.status = 'active'
 					  AND t->'match'->>'channel_id' = 'CEXPLICIT'
 					LIMIT 1`
-			)[0]?.agent_id;
+			)[0]?.managed_agent_id;
 		expect(await ownerOf()).toBe(OTHER_AGENT);
 
 		// The connection-owner fallback fires for the same channel with AGENT.

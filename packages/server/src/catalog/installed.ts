@@ -187,7 +187,7 @@ export async function listOrgInstalled(
 				detail: {
 					slug: automation.slug,
 					status: automation.status,
-					agent_id: automation.agent_id,
+					managed_agent_id: automation.managed_agent_id,
 					entity_id: automation.entity_id,
 					schedule: automation.schedule,
 					version: automation.version,

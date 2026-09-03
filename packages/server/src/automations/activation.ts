@@ -123,13 +123,13 @@ export async function findMatchingAutomationActivations(
         )`
       : db`w.triggers @> ${db.json([baseNeedle])}::jsonb`;
   const rows = await db`
-		SELECT w.id, w.organization_id, w.agent_id, w.device_worker_id::text AS device_worker_id,
+		SELECT w.id, w.organization_id, w.managed_agent_id, w.device_worker_id::text AS device_worker_id,
 		       w.agent_kind, w.triggers, w.execution_config->>'model' AS model,
 		       w.min_cooldown_seconds, v.prompt
 		FROM automations w
 		JOIN automation_versions v ON v.id = w.current_version_id
 		WHERE w.status = 'active'
-		  AND (w.agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
+		  AND (w.managed_agent_id IS NOT NULL OR w.device_worker_id IS NOT NULL)
 		  AND ${triggerFilter}
 		  ${organizationFilter}
 		ORDER BY w.id ASC
@@ -155,7 +155,7 @@ export async function findMatchingAutomationActivations(
     // device pin). The create/update matrix guarantees automated Automations
     // resolve; skip defensively if a legacy row slips through.
     const executor = resolveAutomationExecutor({
-      agentId: row.agent_id as string | null,
+      agentId: row.managed_agent_id as string | null,
       deviceWorkerId:
         typeof row.device_worker_id === "string" ? row.device_worker_id : null,
       agentKind: typeof row.agent_kind === "string" ? row.agent_kind : null,

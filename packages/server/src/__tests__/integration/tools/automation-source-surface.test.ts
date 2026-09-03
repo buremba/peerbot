@@ -39,7 +39,7 @@ async function orgWithAutomationAndRun(name: string, slug: string) {
   const created = (await api.automations.create({
     slug,
     prompt: 'Anything.',
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(created.automation_id);
   const runId = await createAutomationResultRun({

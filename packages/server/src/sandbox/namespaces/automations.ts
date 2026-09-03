@@ -56,7 +56,7 @@ export interface AutomationCreateInput {
 	classifiers?: Record<string, unknown>;
 	reactions_guidance?: string;
 	reaction_script?: string;
-	agent_id?: string | null;
+	managed_agent_id?: string | null;
 	device_worker_id?: string;
 	agent_kind?: AgentKind;
 	model_config?: Record<string, unknown>;
@@ -67,7 +67,7 @@ export interface AutomationCreateInput {
 export interface AutomationUpdateInput {
 	automation_id: AutomationId;
 	triggers?: AutomationTrigger[];
-	agent_id?: string | null;
+	managed_agent_id?: string | null;
 	device_worker_id?: string | null;
 	agent_kind?: AgentKind | null;
 	model_config?: Record<string, unknown>;

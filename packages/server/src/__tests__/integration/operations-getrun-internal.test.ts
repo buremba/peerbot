@@ -159,7 +159,7 @@ describe("manage_operations get_run — internal runs", () => {
 				SELECT nextval('automations_id_seq')::integer AS id
 			)
 			INSERT INTO automations (
-				id, automation_group_id, organization_id, agent_id, created_by, name, slug
+				id, automation_group_id, organization_id, managed_agent_id, created_by, name, slug
 			)
 			SELECT id, id, ${orgId}, 'personal-agent', ${creator.id}, 'Public vocabulary', 'public-vocabulary'
 			FROM next_id

@@ -122,7 +122,7 @@ describe("agent history — org member who does not own the agent", () => {
     `;
     await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id,
          name, status, min_cooldown_seconds, last_run_completed_at,
          created_at, updated_at)
       VALUES
@@ -146,7 +146,7 @@ describe("agent history — org member who does not own the agent", () => {
     const sql = getDb();
     await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id,
          name, status, min_cooldown_seconds, created_at, updated_at)
       VALUES
         (${AUTOMATION_ID}, ${AGENT_ORG}, ${AGENT_ID}, ${AGENT_OWNER_ID}, 0,

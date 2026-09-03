@@ -61,7 +61,7 @@ async function insertAutomation(
   const sql = getDb();
   const [automation] = await sql`
     INSERT INTO automations (
-      organization_id, created_by, automation_group_id, name, slug, agent_id
+      organization_id, created_by, automation_group_id, name, slug, managed_agent_id
     ) VALUES (
       ${organizationId}, ${userId}, 0, 'Approval attribution',
       'approval-attribution', 'approval-agent'

@@ -388,7 +388,7 @@ describe('notification list > source attribution', () => {
     await sql`
       INSERT INTO automations (
         id, name, slug, organization_id, entity_ids, schedule, timezone,
-        next_run_at, agent_id, model_config, sources, version, tags, status,
+        next_run_at, managed_agent_id, model_config, sources, version, tags, status,
         created_by, created_at, updated_at, automation_group_id, triggers
       ) VALUES (
         ${automationId}, 'Attr Notif Automation', 'attr-notif-automation',
@@ -446,7 +446,7 @@ describe('notification list > source attribution', () => {
     await sql`
       UPDATE automations
       SET current_version_id = ${v2.id},
-          agent_id = 'replacement-agent',
+          managed_agent_id = 'replacement-agent',
           device_worker_id = ${replacementDevice.id}
       WHERE id = ${automationId}
     `;

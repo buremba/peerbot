@@ -79,7 +79,7 @@ export async function readAutomationRunThreads(args: {
 			 AND w.organization_id = r.organization_id
 			WHERE r.organization_id = ${organizationId}
 			  AND r.automation_id = ${automationId}
-			  AND w.agent_id = ${agentId}
+			  AND w.managed_agent_id = ${agentId}
 			  AND r.run_type = ANY(${AUTOMATION_RUN_TYPES_PG}::text[])
 			ORDER BY COALESCE(r.completed_at, r.created_at) DESC, r.id DESC
 			LIMIT ${limit}
@@ -216,7 +216,7 @@ export async function readAutomationRunThreads(args: {
 		  ON w.id = r.automation_id
 		 AND w.organization_id = r.organization_id
 		WHERE e.organization_id = ${organizationId}
-		  AND w.agent_id = ${agentId}
+		  AND w.managed_agent_id = ${agentId}
 		  AND r.automation_id = ${automationId}
 		  AND e.interaction_type = 'approval'
 		  AND r.parent_run_id = ANY(${pgBigintArray(runIds)}::bigint[])

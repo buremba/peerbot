@@ -39,7 +39,7 @@ describe("Automation window vocabulary", () => {
 				slug: "window-vocab",
 				name: "Window vocab",
 				prompt: "Summarize.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [{ kind: "schedule", cron: "0 0 * * *" }],
 				sources: [
 					{

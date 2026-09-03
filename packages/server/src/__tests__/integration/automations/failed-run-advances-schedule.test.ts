@@ -51,7 +51,7 @@ async function createDueAutomationWithDispatchedRun(opts: {
         skip_if_unchanged: opts.skipIfUnchanged ?? false,
       },
     ],
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(automation.automation_id);
 

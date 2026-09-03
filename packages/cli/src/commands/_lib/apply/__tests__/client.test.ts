@@ -183,7 +183,7 @@ describe("ApplyClient", () => {
     expect(body).toEqual({
       action: "create",
       slug: "digest",
-      agent_id: "triage",
+      managed_agent_id: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
       triggers: [{ kind: "schedule", cron: "0 9 * * 1" }],

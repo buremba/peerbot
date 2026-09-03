@@ -4,7 +4,7 @@
  * An Automation is an org-level goal with one durable contract (prompt, outputs,
  * reaction script, budget) and exactly ONE executor:
  *
- *  - `agent_id` — a managed Lobu agent executes runs (server dispatch lane)
+ *  - `managed_agent_id` — a managed Lobu agent executes runs (server dispatch lane)
  *  - `device_worker_id` — the pinned device worker's local CLI executes them
  *    (device lane); `agent_kind` picks the local runtime, null = device
  *    default
@@ -53,7 +53,7 @@ export type ResolvedExecutor =
     };
 
 /** Resolve the Automation's executor.
- * Precedence is DEVICE PIN FIRST: legacy dual rows carried both agent_id and
+ * Precedence is DEVICE PIN FIRST: legacy dual rows carried both managed_agent_id and
  * device_worker_id and always ran on the device lane (#802) — agent-first
  * fallback would silently flip those runs to server dispatch. */
 export function resolveAutomationExecutor(
@@ -90,7 +90,7 @@ export function assertAutomationExecutorsResolve(
   if (!automated) return;
   if (!resolveAutomationExecutor(defaults)) {
     throw new ToolUserError(
-      "Automated Automations need an executor: set agent_id (managed agent) or device_worker_id (device). Manual-only Automations (no triggers) may omit both."
+      "Automated Automations need an executor: set managed_agent_id (managed agent) or device_worker_id (device). Manual-only Automations (no triggers) may omit both."
     );
   }
 }

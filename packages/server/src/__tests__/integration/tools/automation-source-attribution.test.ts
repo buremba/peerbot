@@ -39,7 +39,7 @@ async function orgWithAutomation(name: string, slug: string) {
   const created = (await api.automations.create({
     slug,
     prompt: 'Anything.',
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(created.automation_id);
   const runId = await createAutomationResultRun({
@@ -106,7 +106,7 @@ describe('declared automation_source verification', () => {
     const created = (await org.api.automations.create({
       slug: 'pair-other',
       prompt: 'Anything.',
-      agent_id: org.agentId,
+      managed_agent_id: org.agentId,
     })) as { automation_id: string };
     const otherRunId = await createAutomationResultRun({
       automationId: Number(created.automation_id),

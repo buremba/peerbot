@@ -674,10 +674,10 @@ export const ManageAutomationsSchema = Type.Object(
           "[create/update/create_version] Canonical Automation activations. Use a schedule trigger for cadence and timezone.",
       })
     ),
-    agent_id: Type.Optional(
+    managed_agent_id: Type.Optional(
       Type.Union([Type.String({ minLength: 1 }), Type.Null()], {
         description:
-          "[create/update] Optional managed agent for this Automation. Null clears the assignment; agentless manual Automations may be completed by an external MCP client. [list] Optional owner filter.",
+          "[create/update] Optional managed agent that executes this Automation's runs (server dispatch lane). Null clears the assignment; an Automation with neither managed_agent_id nor device_worker_id is manual-only and may be completed by an external MCP client. [list] Optional owner filter.",
       })
     ),
     status: Type.Optional(
@@ -915,7 +915,7 @@ export type AutomationUpdatePatch = Pick<
   | "model_config"
   | "execution_config"
   | "triggers"
-  | "agent_id"
+  | "managed_agent_id"
   | "tags"
   | "device_worker_id"
   | "agent_kind"
@@ -956,7 +956,7 @@ export function normalizeAutomationTags(values: unknown): string[] {
  *   - model_config ?? {}
  *   - tags → normalizeAutomationTags (trim/drop-empty/dedupe)
  *   - min_cooldown_seconds ?? 0
- *   - null-clearable fields (agent_id/device_worker_id/agent_kind,
+ *   - null-clearable fields (managed_agent_id/device_worker_id/agent_kind,
  *     delivery_target, and execution_config) keep null (a real clear the write
  *     applies) — NOT coerced to undefined, which would hide the clear.
  */
@@ -971,7 +971,8 @@ export function normalizeAutomationUpdatePatch(
   if (args.execution_config !== undefined)
     patch.execution_config = args.execution_config ?? null;
   if (args.triggers !== undefined) patch.triggers = args.triggers;
-  if (args.agent_id !== undefined) patch.agent_id = args.agent_id ?? null;
+  if (args.managed_agent_id !== undefined)
+    patch.managed_agent_id = args.managed_agent_id ?? null;
   if (args.tags !== undefined) patch.tags = normalizeAutomationTags(args.tags);
   if (args.device_worker_id !== undefined)
     patch.device_worker_id = args.device_worker_id ?? null;
@@ -1073,7 +1074,7 @@ export const AutomationTriggerExecutionSchema = Type.Union([
   Type.Object({
     lane: Type.Literal("managed_agent"),
     owner: Type.Literal("lobu"),
-    agent_id: Type.String(),
+    managed_agent_id: Type.String(),
     next_action: Type.Object({ kind: Type.Literal("handled_elsewhere") }),
   }),
   Type.Object({
@@ -1287,7 +1288,7 @@ export interface ManageAutomationsProposal {
 export const ListAutomationsSchema = Type.Pick(ManageAutomationsSchema, [
   "automation_id",
   "entity_id",
-  "agent_id",
+  "managed_agent_id",
   "status",
   "include_details",
   "order_by",

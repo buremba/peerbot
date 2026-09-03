@@ -20,7 +20,7 @@ describe("agent delete archives its Automations", () => {
 
 	/**
 	 * The legacy agent_channel_bindings table unlinked channels through an FK
-	 * cascade when an agent was deleted. automations has no FK on agent_id, so
+	 * cascade when an agent was deleted. automations has no FK on managed_agent_id, so
 	 * the DB trigger must archive the deleted agent's Automations — otherwise
 	 * chat routing keeps resolving a nonexistent agent forever.
 	 */
@@ -46,7 +46,7 @@ describe("agent delete archives its Automations", () => {
 					slug,
 					name: slug,
 					prompt: "Reply in the linked channel.",
-					agent_id: agentId,
+					managed_agent_id: agentId,
 					triggers: [
 						{
 							kind: "event",
@@ -130,7 +130,7 @@ describe("agent delete archives its Automations", () => {
 					slug,
 					name: slug,
 					prompt: "Reply in the linked channel.",
-					agent_id: agentId,
+					managed_agent_id: agentId,
 					triggers: [
 						{
 							kind: "event",

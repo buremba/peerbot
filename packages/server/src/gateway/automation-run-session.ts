@@ -69,7 +69,7 @@ export async function resolveAutomationRunSkills(
 		JOIN automations automation
 		  ON automation.id = automation_run.automation_id
 		 AND automation.organization_id = automation_run.organization_id
-		 AND automation.agent_id = ${args.agentId}
+		 AND automation.managed_agent_id = ${args.agentId}
 		JOIN automation_versions version
 		  ON version.id = COALESCE(
 		       NULLIF(automation_run.approved_input->>'version_id', '')::bigint,

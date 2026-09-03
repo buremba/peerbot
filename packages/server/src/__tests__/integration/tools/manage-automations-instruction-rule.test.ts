@@ -100,7 +100,7 @@ describe("manage_automations — instruction-presence rule", () => {
 			{
 				action: "create",
 				slug: "ir-listen",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				triggers: [TURN_TRIGGER],
 			},
 			TEST_ENV,
@@ -116,7 +116,7 @@ describe("manage_automations — instruction-presence rule", () => {
 				{
 					action: "create",
 					slug: "ir-sched",
-					agent_id: agentId,
+					managed_agent_id: agentId,
 					triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 				},
 				TEST_ENV,
@@ -129,7 +129,7 @@ describe("manage_automations — instruction-presence rule", () => {
 		await expect(
 			executeTool(
 				"manage_automations",
-				{ action: "create", slug: "ir-manual", agent_id: agentId },
+				{ action: "create", slug: "ir-manual", managed_agent_id: agentId },
 				TEST_ENV,
 				ownerCtx
 			)
@@ -142,7 +142,7 @@ describe("manage_automations — instruction-presence rule", () => {
 			{
 				action: "create",
 				slug: "ir-skills-only",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				skills: [
 					{
 						name: "ir-runbook",
@@ -211,7 +211,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-reaction-only",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				reaction_script: REACTION_SCRIPT,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
@@ -244,7 +244,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-reaction-versioned",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				reaction_script: REACTION_SCRIPT,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
@@ -272,7 +272,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-reaction-updated",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				reaction_script: REACTION_SCRIPT,
 				triggers: [TURN_TRIGGER],
 			},
@@ -310,7 +310,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-reaction-cloned",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				entity_id: rootEntity.id,
 				reaction_script: REACTION_SCRIPT,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
@@ -349,7 +349,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-reaction-cleared",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				reaction_script: REACTION_SCRIPT,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
@@ -385,7 +385,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-reaction-cleared-with-prompt",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				prompt: "Daily digest instructions.",
 				reaction_script: REACTION_SCRIPT,
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
@@ -421,7 +421,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-sched-ok",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				prompt: "Daily digest instructions.",
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
@@ -464,7 +464,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-listen-v",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				prompt: "Initial listen guidance.",
 				triggers: [TURN_TRIGGER],
 			},
@@ -492,7 +492,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-turn-to-sched-update",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				triggers: [TURN_TRIGGER],
 			},
 			TEST_ENV,
@@ -519,7 +519,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-turn-to-sched-cv",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				triggers: [TURN_TRIGGER],
 			},
 			TEST_ENV,
@@ -547,7 +547,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-turn-to-sched-ok",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				triggers: [TURN_TRIGGER],
 			},
 			TEST_ENV,
@@ -575,7 +575,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-sched-to-turn",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				prompt: "Scheduled instructions.",
 				triggers: [{ kind: "schedule", cron: "0 9 * * *" }],
 			},
@@ -618,7 +618,7 @@ export default async function reaction(ctx, client) {
 			{
 				action: "create",
 				slug: "ir-group-root",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				entity_id: rootEntity.id,
 				prompt: "Shared scheduled instructions.",
 				triggers: [{ kind: "schedule", cron: "0 10 * * *" }],

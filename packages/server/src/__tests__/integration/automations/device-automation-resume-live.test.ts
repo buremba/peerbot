@@ -120,7 +120,7 @@ async function liveDeviceRun(workerId: string) {
 				skip_if_unchanged: false,
 			},
 		],
-		agent_id: agent.agentId,
+		managed_agent_id: agent.agentId,
 	})) as { automation_id: string };
 	const automationId = Number(created.automation_id);
 

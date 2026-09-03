@@ -81,7 +81,7 @@ describe('external manual Automation execution', () => {
         },
       ],
       outputs: TASK_OUTPUTS,
-      agent_id: null,
+      managed_agent_id: null,
     })) as { automation_id: string };
     const automationId = Number(created.automation_id);
 
@@ -157,7 +157,7 @@ describe('external manual Automation execution', () => {
     });
     await workspace.owner.automations.update({
       automation_id: created.automation_id,
-      agent_id: liveAgent.agentId,
+      managed_agent_id: liveAgent.agentId,
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
     });
     const [edited] = await sql<{ current_version_id: number }>`

@@ -75,7 +75,7 @@ describe('automation CRUD', () => {
       name: 'Lifecycle Automation',
       prompt: 'Track product launches.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
     const automationId = created.automation_id;
     expect(automationId).toBeDefined();
@@ -132,7 +132,7 @@ describe('automation CRUD', () => {
       slug: 'projection-granularity-reset',
       prompt: 'Track each scheduled period.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
     await sql`
       UPDATE automations
@@ -194,7 +194,7 @@ describe('automation CRUD', () => {
       slug: 'schedule-auto-pause-reset-contract',
       prompt: 'Track the scheduled period.',
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
     const pauseAt = new Date('2026-08-27T12:00:00.000Z');
     await sql`
@@ -274,7 +274,7 @@ describe('automation CRUD', () => {
       slug: 'atomic-reaction-automation',
       name: 'Atomic Reaction Automation',
       prompt: 'Return merge proposals.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       reaction_script: reaction,
     })) as { automation_id: string };
 
@@ -349,7 +349,7 @@ describe('automation CRUD', () => {
       slug: 'reaction-merge-exec-automation',
       name: 'Reaction Merge Exec Automation',
       prompt: 'Find and merge duplicate people.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       sources: template.detail.sources,
       reaction_script: reactionScript,
     })) as { automation_id: string };
@@ -454,7 +454,7 @@ describe('automation CRUD', () => {
         slug: 'invalid-reaction-automation',
         name: 'Invalid Reaction Automation',
         prompt: 'Return merge proposals.',
-        agent_id: agentId,
+        managed_agent_id: agentId,
         reaction_script: 'export default async function reaction() {',
       })
     ).rejects.toThrow();
@@ -476,7 +476,7 @@ describe('automation CRUD', () => {
           slug: 'race-automation',
           name: 'Race Automation',
           prompt: 'Track races.',
-          agent_id: agentId,
+          managed_agent_id: agentId,
         })
       )
     );
@@ -506,7 +506,7 @@ describe('automation CRUD', () => {
           slug: `distinct-race-${i}`,
           name: `Distinct Race ${i}`,
           prompt: 'Track things.',
-          agent_id: agentId,
+          managed_agent_id: agentId,
         })
       )
     );
@@ -535,7 +535,7 @@ describe('automation CRUD', () => {
         slug: `cfv-group-race-base-${i}`,
         name: `CFV Group Race Base ${i}`,
         prompt: 'Track things.',
-        agent_id: agentId,
+        managed_agent_id: agentId,
         sources: [{ name: 'content', query: 'SELECT id FROM events' }],
       })) as { automation_id: string };
       baseIds.push(base.automation_id);
@@ -584,7 +584,7 @@ describe('automation CRUD', () => {
       slug: 'cfv-race-base',
       name: 'CFV Race Base',
       prompt: 'Track things.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       sources: [{ name: 'content', query: 'SELECT id FROM events' }],
     })) as { automation_id: string };
     const [row] = await sql<{ current_version_id: number }[]>`
@@ -634,7 +634,7 @@ describe('automation CRUD', () => {
       slug: 'cfv-slug-race-base',
       name: 'CFV Slug Race Base',
       prompt: 'Track things.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       sources: [{ name: 'content', query: 'SELECT id FROM events' }],
     })) as { automation_id: string };
     const [row] = await sql<{ current_version_id: number }[]>`
@@ -686,7 +686,7 @@ describe('automation CRUD', () => {
       slug: 'cfv-rollback-base',
       name: 'CFV Rollback Base',
       prompt: 'Track things.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       sources: [{ name: 'content', query: 'SELECT id FROM events' }],
     })) as { automation_id: string };
     const [row] = await sql<{ current_version_id: number }[]>`
@@ -738,7 +738,7 @@ describe('automation CRUD', () => {
       name: 'Org Scoped Summary Automation',
       prompt: 'Summarize recent workspace activity.',
       triggers: [{ kind: 'schedule', cron: '0 12 * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     const got = (await owner.automations.get({
@@ -767,7 +767,7 @@ describe('automation CRUD', () => {
       slug: 'prompt-derived-sources-automation',
       name: 'Prompt Derived Sources Automation',
       prompt,
-      agent_id: agentId,
+      managed_agent_id: agentId,
       // NOTE: no `sources` — the backend must derive them from the prompt token.
     })) as { automation_id: string };
 
@@ -797,7 +797,7 @@ describe('automation CRUD', () => {
       slug: 'sql-edit-rederive-automation',
       name: 'SQL Edit Rederive Automation',
       prompt: `Watch @[sql:recent:Recent](${enc(oldQuery)}).`,
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     const readSources = async () => {
@@ -841,7 +841,7 @@ describe('automation CRUD', () => {
       slug: 'clear-sources-on-edit-automation',
       name: 'Clear Sources On Edit Automation',
       prompt: `Watch @[sql:recent:Recent](${enc(query)}).`,
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     const readSources = async () => {
@@ -876,7 +876,7 @@ describe('automation CRUD', () => {
       slug: 'clear-outputs-automation',
       name: 'Clear Outputs Automation',
       prompt: 'Extract companies.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       outputs: {
         items: { entity: 'company', key: ['name'] },
       },
@@ -906,7 +906,7 @@ describe('automation CRUD', () => {
       slug: 'clear-serialized-outputs-automation',
       name: 'Clear Serialized Outputs Automation',
       prompt: 'Extract companies.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       outputs: {
         items: { entity: 'company', key: ['name'] },
       },
@@ -936,7 +936,7 @@ describe('automation CRUD', () => {
       slug: 'exec-config-automation',
       name: 'Exec Config Automation',
       prompt: 'Track things.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
       execution_config: {
         timeout_seconds: 1800,
         max_budget_usd: 2.5,
@@ -1008,7 +1008,7 @@ describe('automation CRUD', () => {
       slug: 'no-exec-config-automation',
       name: 'No Exec Config',
       prompt: 'Track things.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     const list = (await owner.automations.list({ entity_id: entityId })) as {
@@ -1029,7 +1029,7 @@ describe('automation CRUD', () => {
       entity_id: entityId,
       name: 'Bad Exec',
       prompt: 'x',
-      agent_id: agentId,
+      managed_agent_id: agentId,
     };
     // timeout_seconds below minimum
     await expect(
@@ -1072,7 +1072,7 @@ describe('automation CRUD', () => {
       slug: 'org-scoped-automation',
       name: 'Org Scoped',
       prompt: 'Track org-wide signals.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
     expect(created.automation_id).toBeDefined();
 
@@ -1093,7 +1093,7 @@ describe('automation CRUD', () => {
         slug: 'no-org-automation',
         name: 'No Org',
         prompt: 'should fail',
-        agent_id: agentId,
+        managed_agent_id: agentId,
       })
     ).rejects.toThrow(/organization|entity_id/i);
   });
@@ -1103,7 +1103,7 @@ describe('automation CRUD', () => {
       slug: 'cross-org-org-scoped-automation',
       name: 'Cross Org Protected',
       prompt: 'Track org-wide signals.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     await expect(intruder.automations.get({ automation_id: created.automation_id })).rejects.toThrow(
@@ -1135,7 +1135,7 @@ describe('automation CRUD', () => {
       slug: 'protected-automation',
       name: 'Protected',
       prompt: 'guarded.',
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     const member = owner.withAuth({ memberRole: 'member' });
@@ -1178,7 +1178,7 @@ describe('automation CRUD', () => {
         slug: 'device-pin-allowed',
         name: 'Device Pin Allowed',
         prompt: 'x',
-        agent_id: agentId,
+        managed_agent_id: agentId,
         device_worker_id: deviceId,
       })) as { automation_id: string };
       expect(created.automation_id).toBeDefined();
@@ -1207,7 +1207,7 @@ describe('automation CRUD', () => {
           slug: 'device-pin-foreign',
           name: 'Device Pin Foreign',
           prompt: 'x',
-          agent_id: agentId,
+          managed_agent_id: agentId,
           device_worker_id: foreignDeviceId,
         })
       ).rejects.toThrow(/device you own|not found or not accessible/i);
@@ -1221,7 +1221,7 @@ describe('automation CRUD', () => {
           slug: 'device-pin-missing',
           name: 'Device Pin Missing',
           prompt: 'x',
-          agent_id: agentId,
+          managed_agent_id: agentId,
           device_worker_id: '00000000-0000-0000-0000-000000000000',
         })
       ).rejects.toThrow(/not found or not accessible/i);
@@ -1233,7 +1233,7 @@ describe('automation CRUD', () => {
         slug: 'device-pin-update',
         name: 'Device Pin Update',
         prompt: 'x',
-        agent_id: agentId,
+        managed_agent_id: agentId,
       })) as { automation_id: string };
 
       const foreignDeviceId = await seedDevice({
@@ -1273,7 +1273,7 @@ describe('automation CRUD', () => {
       })) as { entity: { id: number } };
 
       // Device-pinned (agent present for skills anchoring, device wins at
-      // dispatch). The old clone path copied only agent_id, silently dropping
+      // dispatch). The old clone path copied only managed_agent_id, silently dropping
       // device_worker_id + agent_kind — a clone that flipped from device
       // execution to server/agent dispatch. The clone must carry the pin.
       const base = (await owner.automations.manage({
@@ -1283,7 +1283,7 @@ describe('automation CRUD', () => {
         name: 'CFV Device Base',
         prompt: 'Track on device.',
         triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-        agent_id: agentId,
+        managed_agent_id: agentId,
         device_worker_id: deviceId,
         agent_kind: 'codex',
       })) as { automation_id: string };
@@ -1299,13 +1299,13 @@ describe('automation CRUD', () => {
       const cloneId = res.created[0].automation_id;
 
       const [clone] = await sql`
-        SELECT agent_id, device_worker_id, agent_kind,
+        SELECT managed_agent_id, device_worker_id, agent_kind,
                triggers::text AS triggers, next_window_start,
                completed_window_coverage::text AS completed_window_coverage,
                window_projection_granularity, last_completed_window_start
         FROM automations WHERE id = ${cloneId}
       `;
-      expect(clone.agent_id).toBe(agentId);
+      expect(clone.managed_agent_id).toBe(agentId);
       expect(clone.device_worker_id).toBe(deviceId);
       expect(clone.agent_kind).toBe('codex');
       expect(clone.next_window_start).not.toBeNull();
@@ -1328,7 +1328,7 @@ describe('automation CRUD', () => {
       })) as { entity: { id: number } };
 
       // No triggers → manual-only → executor optional. Both create and the
-      // clone must accept an executor-less row (agent_id nullable, no device
+      // clone must accept an executor-less row (managed_agent_id nullable, no device
       // pin) — the manual activation stays pending for any MCP client.
       const base = (await owner.automations.create({
         entity_id: entityId,
@@ -1339,7 +1339,7 @@ describe('automation CRUD', () => {
       })) as { automation_id: string; view_url?: string };
 
       // The Automation route is workspace-level, so an agentless Automation gets a
-      // link like any other. Gating view_url on agent_id left exactly the rows
+      // link like any other. Gating view_url on managed_agent_id left exactly the rows
       // this feature adds (device-pinned / manual-only) with no way for an MCP
       // agent to hand the user a link. Asserted on the path, not the origin:
       // a local packages/owletto/dist flips the builder to a relative URL.
@@ -1356,9 +1356,9 @@ describe('automation CRUD', () => {
       })) as { created: Array<{ automation_id: string }> };
       const cloneId = res.created[0].automation_id;
       const [clone] = await sql`
-        SELECT agent_id, device_worker_id FROM automations WHERE id = ${cloneId}
+        SELECT managed_agent_id, device_worker_id FROM automations WHERE id = ${cloneId}
       `;
-      expect(clone.agent_id).toBeNull();
+      expect(clone.managed_agent_id).toBeNull();
       expect(clone.device_worker_id).toBeNull();
 
       // Same for the read paths an agent actually calls.
@@ -1392,7 +1392,7 @@ describe('automation CRUD', () => {
         slug: 'org-scoped-url-check',
         name: 'Org Scoped URL Check',
         prompt: 'Org-scoped, no entity.',
-        agent_id: agentId,
+        managed_agent_id: agentId,
       })) as { automation_id: string };
 
       const listed = (await owner.automations.manage({

@@ -132,7 +132,7 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     const [automation] = await sql<{ id: number }>`
       WITH next_id AS (SELECT nextval('automations_id_seq')::integer AS id)
       INSERT INTO automations (
-        id, automation_group_id, organization_id, agent_id, created_by, name, slug
+        id, automation_group_id, organization_id, managed_agent_id, created_by, name, slug
       )
       SELECT id, id, ${orgId}, ${agentId}, ${userId}, 'ACP Automation', 'acp-' || id
       FROM next_id

@@ -39,7 +39,7 @@ async function pinAutomation(opts: {
   const id = await getNextNumericId(sql, 'automations');
   await sql`
     INSERT INTO automations (
-      id, status, created_by, organization_id, agent_id, automation_group_id,
+      id, status, created_by, organization_id, managed_agent_id, automation_group_id,
       min_cooldown_seconds,
       device_worker_id, slug, created_at, updated_at
     ) VALUES (

@@ -49,7 +49,7 @@ async function seedAutomation(
     slug: `feedback-automation-${suffix}`,
     name: `Feedback Automation ${suffix}`,
     prompt: 'Analyze inputs.',
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
 
   const runId = await createAutomationResultRun({

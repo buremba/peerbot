@@ -46,7 +46,7 @@ describe('classifier CRUD', () => {
       slug: 'cls-automation',
       name: 'Classifier Automation',
       prompt: 'gather signals.',
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     automationId = w.automation_id;
   });

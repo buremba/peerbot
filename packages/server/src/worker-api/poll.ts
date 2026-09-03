@@ -1000,7 +1000,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         CASE WHEN cd.version = r.connector_version THEN cd.options_schema ELSE NULL END AS connector_options_schema,
         ap.auth_data AS auth_profile_auth_data,
         w.name AS automation_name,
-        w.agent_id AS automation_agent_id,
+        w.managed_agent_id AS automation_agent_id,
         w.slug AS automation_slug,
         w.agent_kind AS automation_agent_kind,
         w.execution_config AS automation_execution_config,

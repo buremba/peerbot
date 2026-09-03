@@ -75,7 +75,7 @@ async function setupAutomation() {
     name: 'Pending Uniq Automation',
     prompt: 'Summarize {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
 
   return {
@@ -120,7 +120,7 @@ describe('createAutomationRun pending non-event unique index', () => {
     const holder = (sql as unknown as DbClient).begin(async (tx) => {
       const payload = {
         automation_id: automationId,
-        agent_id: agentId,
+        managed_agent_id: agentId,
         window_start: '2026-01-01T00:00:00.000Z',
         window_end: '2026-01-02T00:00:00.000Z',
         dispatch_source: 'scheduled',

@@ -322,26 +322,34 @@ export function automationIdFromPrincipalId(
  * Resolve the optional managed agent attached to an Automation.
  *
  * The Automation itself is always the write principal (`automation:<id>`). When
- * `agent_id` is present, its agent policy is folded in as a restrictive ancestor.
- * Agentless manual Automations are still valid principals and resolve with no
- * ancestor. Only a missing Automation row, or a non-empty `agent_id` whose agent
- * row no longer exists, is unresolved and must fail closed.
+ * `managed_agent_id` is present, its agent policy is folded in as a restrictive
+ * ancestor. Automations with no managed agent are still valid principals and
+ * resolve with no ancestor. Only a missing Automation row, or a
+ * `managed_agent_id` whose agent row no longer exists, is unresolved and must
+ * fail closed.
  *
+ * `IS NULL` is the complete test for "no managed agent" because
+ * `automations_managed_agent_id_nonempty` forbids the empty string. Before that
+ * constraint existed, `agent_id = ''` read as a named owner, missed the `agents`
+ * lookup, and deny-listed every entity write the Automation declared.
  */
 export async function resolveAutomationOwner(
 	sql: DbClient,
 	automationId: number,
 	organizationId: string,
 ): Promise<{ ownerAgentId: string | null; resolved: boolean }> {
-	const rows = await sql<{ agent_id: string | null; owner_resolved: boolean }>`
+	const rows = await sql<{
+		managed_agent_id: string | null;
+		owner_resolved: boolean;
+	}>`
     SELECT
-      w.agent_id,
+      w.managed_agent_id,
       CASE
-        WHEN w.agent_id IS NULL THEN true
+        WHEN w.managed_agent_id IS NULL THEN true
         ELSE EXISTS (
           SELECT 1
           FROM agents a
-          WHERE a.id = w.agent_id
+          WHERE a.id = w.managed_agent_id
             AND a.organization_id = w.organization_id
         )
       END AS owner_resolved
@@ -352,7 +360,7 @@ export async function resolveAutomationOwner(
   `;
 	if (rows.length === 0) return { ownerAgentId: null, resolved: false };
 	return {
-		ownerAgentId: rows[0].agent_id ?? null,
+		ownerAgentId: rows[0].managed_agent_id ?? null,
 		resolved: rows[0].owner_resolved === true,
 	};
 }
@@ -685,7 +693,7 @@ async function loadCandidatePolicies(args: {
 	 * primary `principalKind='automation'`) AND the agent's rows, folded max-
 	 * restrictive — so a pre-existing automation-specific `deny` can only tighten and
 	 * the agent envelope can never loosen it away. Null = no owning agent (the
-	 * only two-principal case in the model: `automations.agent_id` is the sole
+	 * only two-principal case in the model: `automations.managed_agent_id` is the sole
 	 * principal-ownership edge, so there is never a third principal to fold).
 	 */
 	ownerAgentId?: string | null;

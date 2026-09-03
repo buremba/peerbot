@@ -1,4 +1,3 @@
-import { inferAutomationGranularityFromSchedule } from "@lobu/connector-sdk";
 import type {
 	AutomationClaimNextWindowResult,
 	AutomationTriggerResult,

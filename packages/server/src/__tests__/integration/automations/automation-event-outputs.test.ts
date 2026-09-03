@@ -1,4 +1,3 @@
-import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { activateWorkspaceEventTask } from '../../../automations/workspace-event';
 import { enqueueWorkspaceEventActivations } from '../../../automations/workspace-event-enqueue';
@@ -201,8 +200,6 @@ describe('Automation event outputs', () => {
     })) as { automation_id: string };
     const unrelatedConsumerId = Number(unrelatedConsumer.automation_id);
     await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationId}`;
-
-    const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
     const pending = await computePendingWindow(sql as unknown as DbClient, automationId);
     const source = await createTestEvent({
       entity_id: parent.id,

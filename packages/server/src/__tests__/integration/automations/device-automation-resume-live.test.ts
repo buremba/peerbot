@@ -18,7 +18,6 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
-import { inferAutomationGranularityFromSchedule } from "@lobu/connector-sdk";
 import {
 	executeClaimedAutomationRun,
 	executeRun,
@@ -132,8 +131,6 @@ async function liveDeviceRun(workerId: string) {
     RETURNING id
   `) as unknown as Array<{ id: string }>;
 	const deviceWorkerId = String(device.id);
-
-	const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
 	const { windowStart, windowEnd } = await computePendingWindow(sql as unknown as DbClient, automationId);
 	const queued = await createAutomationRun({
 		organizationId: workspace.org.id,

@@ -12,7 +12,6 @@
  *      schema and ACCEPTS data that conforms — with no inline Automation schema.
  */
 
-import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import { createAutomationRun } from '../../../runs/queue-service';
@@ -115,7 +114,6 @@ async function setupEntityTypedAutomation() {
 type Ctx = Awaited<ReturnType<typeof setupEntityTypedAutomation>>;
 
 async function queueRunningRun(ctx: Ctx) {
-  const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
   const { windowStart, windowEnd } = await computePendingWindow(ctx.dbClient, ctx.automationId);
   const queued = await createAutomationRun({
     organizationId: ctx.workspace.org.id,
@@ -132,9 +130,18 @@ async function queueRunningRun(ctx: Ctx) {
   return queued.runId;
 }
 
-async function readWindowToken(ctx: Ctx): Promise<string> {
+/**
+ * A window token for a queued run.
+ *
+ * Bound with `run_id`: on the arrival axis an unbound read recomputes
+ * `[mark, horizon)` against a clock that has moved since the run was queued, so
+ * its bounds would no longer match the run's snapshot and `complete_window`
+ * would reject them. Real callers bind the same way.
+ */
+async function readWindowToken(ctx: Ctx, runId: number): Promise<string> {
   const content = (await ctx.api.knowledge.read({
     automation_id: ctx.automationId,
+    run_id: runId,
   })) as { window_token: string };
   return content.window_token;
 }
@@ -242,7 +249,7 @@ describe('complete_window derives its schema from the entity type', () => {
       occurred_at: new Date(Date.now() - 60 * 60 * 1000),
     });
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
 
     // 'name' is required by topic's metadata_schema but missing here.
     await expect(
@@ -264,7 +271,7 @@ describe('complete_window derives its schema from the entity type', () => {
       occurred_at: new Date(Date.now() - 60 * 60 * 1000),
     });
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
 
     await expect(
       ctx.api.automations.completeWindow({
@@ -290,7 +297,7 @@ describe('complete_window derives its schema from the entity type', () => {
         occurred_at: new Date(Date.now() - 60 * 60 * 1000),
       });
       const runId = await queueRunningRun(ctx);
-      const token = await readWindowToken(ctx);
+      const token = await readWindowToken(ctx, runId);
 
       const error = await ctx.api.automations
         .completeWindow({
@@ -320,7 +327,7 @@ describe('complete_window derives its schema from the entity type', () => {
       occurred_at: new Date(Date.now() - 60 * 60 * 1000),
     });
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
 
     const completion = (await ctx.api.automations.completeWindow({
       automation_id: String(ctx.automationId),

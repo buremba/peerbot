@@ -15,7 +15,6 @@
  *      creates NO duplicate entities.
  */
 
-import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
 import { slugify } from '@lobu/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
@@ -190,7 +189,6 @@ async function setupKeyedAutomation() {
  * reusable for an idempotent replay).
  */
 async function queueRunningRun(ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>) {
-  const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
   const { windowStart, windowEnd } = await computePendingWindow(ctx.dbClient, ctx.automationId);
   const queued = await createAutomationRun({
     organizationId: ctx.workspace.org.id,
@@ -207,12 +205,21 @@ async function queueRunningRun(ctx: Awaited<ReturnType<typeof setupKeyedAutomati
   return queued.runId;
 }
 
-/** A read_knowledge window token to complete against (reused for replays). */
+/**
+ * A read_knowledge window token to complete against (reused for replays).
+ *
+ * Bound with `run_id`: on the arrival axis an unbound read recomputes
+ * `[mark, horizon)` against a clock that has moved since the run was queued, so
+ * its bounds would no longer match the run's snapshot and `complete_window`
+ * would reject them. Real callers bind the same way.
+ */
 async function readWindowToken(
-  ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>
+  ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>,
+  runId: number
 ): Promise<string> {
   const content = (await ctx.api.knowledge.read({
     automation_id: ctx.automationId,
+    run_id: runId,
   })) as {
     window_token: string;
   };
@@ -223,7 +230,7 @@ async function nextCompletion(
   ctx: Awaited<ReturnType<typeof setupKeyedAutomation>>
 ): Promise<{ runId: number; token: string }> {
   const runId = await queueRunningRun(ctx);
-  return { runId, token: await readWindowToken(ctx) };
+  return { runId, token: await readWindowToken(ctx, runId) };
 }
 
 async function completeWithToken(
@@ -259,7 +266,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     const resultRunId = await completeWithToken(ctx, token, runId);
 
     // Two child entities, one per stable key, hung under the parent.
@@ -347,7 +354,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
   it('rejects duplicate exact keys instead of silently dropping an output row', async () => {
     const ctx = await setupKeyedAutomation();
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
 
     await expect(
       ctx.api.automations.completeWindow({
@@ -386,7 +393,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       )
     `;
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     const extracted = {
       problems: [{ category: 'Stability', name: 'App Crashes', severity: 'high' }],
     };
@@ -397,7 +404,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       outputs: { problems: { entity: 'issue', key: ['category', 'name'] } },
     });
     const retargetedRunId = await queueRunningRun(ctx);
-    const retargetedToken = await readWindowToken(ctx);
+    const retargetedToken = await readWindowToken(ctx, retargetedRunId);
     await completeWithToken(ctx, retargetedToken, retargetedRunId, extracted);
 
     const promotedTypes = await ctx.sql<{ slug: string }>`
@@ -419,7 +426,6 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     // Place the in-window event inside the automation's pending daily window so
     // read_knowledge actually grants it in the token's content_ids.
-    const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
     const { windowStart } = await computePendingWindow(ctx.dbClient, ctx.automationId);
     const inWindow = await createTestEvent({
       entity_id: parentEntityId,
@@ -436,7 +442,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     await completeWithToken(ctx, token, runId, {
       problems: [
         { category: 'Stability', name: 'App Crashes', source_event_id: Number(inWindow.id) },
@@ -520,7 +526,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     await completeWithToken(ctx, token, runId);
 
     // No `topic` entities were promoted — the agent's deny bound the automation.
@@ -606,7 +612,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     await completeWithToken(ctx, token, runId);
 
     // Held, not written: no promotion claimed an identity.
@@ -657,7 +663,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
 
     const runId = await queueRunningRun(ctx);
     // Reuse the same token and run ID for an idempotent retry.
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     const firstResultRunId = await completeWithToken(ctx, token, runId);
 
     const entitiesAfterFirst = await sql`
@@ -792,7 +798,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
 
     // Run 1: a non-key `severity` field is synced into the promoted entity's metadata.
     await ctx.api.automations.completeWindow({
@@ -917,7 +923,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
 
     // Run 1 seeds the entity; human then owns `severity` at 'high'.
     await ctx.api.automations.completeWindow({
@@ -999,7 +1005,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       occurred_at: new Date(Date.now() - 60 * 60 * 1000),
     });
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     const completion = await ctx.api.automations.completeWindow({
       automation_id: String(automationId),
       window_token: token,
@@ -1069,7 +1075,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       occurred_at: new Date(Date.now() - 60 * 60 * 1000),
     });
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
 
     // Run 1 seeds `severity: 'low'` (automation-owned, no field_controls yet).
     await ctx.api.automations.completeWindow({
@@ -1174,7 +1180,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     `;
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     // MUST NOT throw — the window completes despite the slug collision.
     const resultRunId = await completeWithToken(ctx, token, runId);
 
@@ -1235,7 +1241,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     }
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     // MUST NOT throw — the window completes despite the slug collision.
     const resultRunId = await completeWithToken(ctx, token, runId);
 
@@ -1277,7 +1283,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
 
     // Run 1: create both entities with a `severity` field.
     await completeWithToken(ctx, token, runId, {
@@ -1373,7 +1379,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     });
 
     const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
+    const token = await readWindowToken(ctx, runId);
     await completeWithToken(ctx, token, runId, {
       problems: [{ category: 'Stability', name: 'App Crashes', severity: 'low' }],
     });
@@ -1487,7 +1493,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         occurred_at: new Date(Date.now() - 60 * 60 * 1000),
       });
       const runId = await queueRunningRun(ctx);
-      const token = await readWindowToken(ctx);
+      const token = await readWindowToken(ctx, runId);
 
       await ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
@@ -1557,7 +1563,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         occurred_at: new Date(Date.now() - 60 * 60 * 1000),
       });
       const runId = await queueRunningRun(ctx);
-      const token = await readWindowToken(ctx);
+      const token = await readWindowToken(ctx, runId);
 
       await ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
@@ -1630,7 +1636,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         occurred_at: new Date(Date.now() - 60 * 60 * 1000),
       });
       const runId = await queueRunningRun(ctx);
-      const token = await readWindowToken(ctx);
+      const token = await readWindowToken(ctx, runId);
 
       await ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
@@ -1711,7 +1717,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         occurred_at: new Date(Date.now() - 60 * 60 * 1000),
       });
       const runId = await queueRunningRun(ctx);
-      const token = await readWindowToken(ctx);
+      const token = await readWindowToken(ctx, runId);
 
       await ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
@@ -1795,7 +1801,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         occurred_at: new Date(Date.now() - 60 * 60 * 1000),
       });
       const runId = await queueRunningRun(ctx);
-      const token = await readWindowToken(ctx);
+      const token = await readWindowToken(ctx, runId);
 
       await ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
@@ -1862,11 +1868,12 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         content: 'Users report the app crashing.',
         occurred_at: new Date(Date.now() - 60 * 60 * 1000),
       });
-      const token = await readWindowToken(ctx);
+      const seedRunId = await queueRunningRun(ctx);
+      const token = await readWindowToken(ctx, seedRunId);
       await ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
         window_token: token,
-        run_id: await queueRunningRun(ctx),
+        run_id: seedRunId,
         extracted_data: {
           problems: [{ category: 'Stability', name: 'App Crashes', summary: 'first' }],
         },
@@ -1954,7 +1961,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
         occurred_at: new Date(Date.now() - 60 * 60 * 1000),
       });
       const runId = await queueRunningRun(ctx);
-      const token = await readWindowToken(ctx);
+      const token = await readWindowToken(ctx, runId);
 
       await ctx.api.automations.completeWindow({
         automation_id: String(ctx.automationId),
@@ -2069,7 +2076,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       try {
         await ctx.api.automations.completeWindow({
           automation_id: String(ctx.automationId),
-          window_token: await readWindowToken(ctx),
+          window_token: await readWindowToken(ctx, runId),
           run_id: runId,
           extracted_data: {
             problems: [{ category: 'Stability', name: 'App Crashes', severity: 'critical' }],
@@ -2137,7 +2144,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       try {
         await ctx.api.automations.completeWindow({
           automation_id: String(ctx.automationId),
-          window_token: await readWindowToken(ctx),
+          window_token: await readWindowToken(ctx, runId),
           run_id: runId,
           extracted_data: {
             problems: [{ category: 'Stability', name: 'App Crashes', severity: 'low' }],

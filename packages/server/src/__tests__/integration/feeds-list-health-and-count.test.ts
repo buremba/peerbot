@@ -59,7 +59,18 @@ describe("list_feeds health filter and true total", () => {
 					"scheduled-overdue",
 					"scheduled-active",
 					"no-schedule-old",
-				].map((feedKey) => [feedKey, {}]),
+				].map((feedKey) => [
+					feedKey,
+					// Everything here except `no-schedule-old` models an unattended
+					// EVENT-DRIVEN feed: no cron, but a webhook route that re-arms
+					// next_run_at (the github `issue_comments` shape). That keeps this
+					// suite's axis sync history + lifecycle, and keeps execution_mode
+					// `no_schedule`, without the rows tripping `attention='no_trigger'`
+					// — which is what `no-schedule-old` is here to cover.
+					feedKey === "no-schedule-old"
+						? {}
+						: { webhook: { events: ["item"] } },
+				]),
 			),
 		});
 
@@ -233,7 +244,9 @@ describe("list_feeds health filter and true total", () => {
 		const byKey = new Map(
 			res.feeds.map((f) => [f.feed_key, f as Record<string, unknown>]),
 		);
-		// h3 (never synced) carries no cron → no_schedule, never_run.
+		// h3 (never synced) carries no cron but IS webhook-driven → no_schedule,
+		// never_run. `no_trigger` must not fire for it: a webhook delivery can
+		// still make it due.
 		const h3 = byKey.get("h3");
 		expect(h3?.execution_mode).toBe("no_schedule");
 		expect(h3?.attention).toBe("never_run");
@@ -342,10 +355,17 @@ describe("list_feeds health filter and true total", () => {
 		const byKey = new Map(listed.feeds.map((feed) => [feed.feed_key, feed]));
 		expect(byKey.get("scheduled-overdue")?.attention).toBe("overdue");
 		expect(byKey.get("scheduled-active")?.attention).toBe("healthy");
-		expect(byKey.get("no-schedule-old")?.attention).toBe("healthy");
+		// 30 days since its last (successful) sync, no cron, no webhook — the
+		// exact shape that read as healthy while being unreachable.
+		expect(byKey.get("no-schedule-old")?.attention).toBe("no_trigger");
 		expect(byKey.get("pinned-read-only")?.operations).toEqual(["read"]);
 		expect(byKey.get("pinned-read-only")?.attention).toBe("healthy");
 
+		// `health` is a SYNC-health filter and deliberately narrower than
+		// `attention`: it mirrors only the paused / failing / overdue portions of
+		// deriveFeedHealthSemantics. `no_trigger` is not a sync failure — the feed
+		// is unconfigured, not broken — so like needs_auth and device_offline it
+		// is not excluded here, and `no-schedule-old` stays in this set.
 		const healthy = await runList({
 			connection_id: conn.id,
 			health: "healthy",

@@ -17,10 +17,10 @@
  * An ARCHIVED automation is not a binding: it can never execute again, so
  * counting it would let one soft-deleted row anchor a dead machine forever.
  * Its pin is released in the delete transaction, matching what the explicit
- * device-delete path already does (`worker-api/device-management.ts`). The no-binding predicate is re-checked
- * inside the DELETE so a binding created between the candidate scan and the
- * delete keeps the row alive. Child PATs bound to the reaped worker_ids are
- * revoked on the way out.
+ * device-delete path already does (`worker-api/device-management.ts`). The
+ * no-binding predicate is re-checked under a row lock inside that transaction,
+ * so a binding created between the candidate scan and the delete keeps the row
+ * alive. Child PATs bound to the reaped worker_ids are revoked on the way out.
  *
  * Single-claimant per tick via the runs-queue (like the other scheduled jobs);
  * pure Postgres, so it's correct under N>1 app replicas.
@@ -36,9 +36,10 @@ export async function reapStaleDeviceWorkers(): Promise<{
   const sql = getDb();
 
   // 1. Candidate scan: stale + no bindings. Read-only; the authoritative
-  //    no-binding check is repeated inside the DELETE below. 30 days is well
-  //    beyond the 7-day freshness window reconcileDeviceCapabilities uses, so a
-  //    temporarily offline device (laptop closed, vacation) is never reaped.
+  //    no-binding check is repeated under lock in the transaction below. 30
+  //    days is well beyond the 7-day freshness window
+  //    reconcileDeviceCapabilities uses, so a temporarily offline device
+  //    (laptop closed, vacation) is never reaped.
   const candidates = (await sql`
     SELECT id, worker_id FROM device_workers
     WHERE last_seen_at < now() - interval '30 days'
@@ -63,13 +64,14 @@ export async function reapStaleDeviceWorkers(): Promise<{
   const ids = candidates.map((c) => c.id);
 
   // 2-3. Authoritative delete + PAT revocation in ONE transaction. Re-check
-  //    every no-binding predicate inside the DELETE so a binding created since
-  //    the scan keeps its row; RETURNING the worker_ids actually deleted scopes
-  //    PAT revocation to exactly the rows we removed. Doing both inside a single
-  //    transaction avoids the inter-statement window where a concurrent poll
-  //    could re-create a just-deleted row (poll upserts device_workers) and then
-  //    have its token revoked afterward — here the row is gone and the PAT is
-  //    revoked at the same commit, so there's no post-delete/pre-revoke gap.
+  //    every no-binding predicate inside the transaction so a binding created
+  //    since the scan keeps its row; RETURNING the worker_ids actually deleted
+  //    scopes PAT revocation to exactly the rows we removed. Doing both inside
+  //    a single transaction avoids the inter-statement window where a
+  //    concurrent poll could re-create a just-deleted row (poll upserts
+  //    device_workers) and then have its token revoked afterward — here the
+  //    row is gone and the PAT is revoked at the same commit, so there's no
+  //    post-delete/pre-revoke gap.
   //
   //    A dangling PAT on a reaped worker_id CAN still poll if a device holding
   //    it comes back online — poll re-creates the device_workers row — so
@@ -82,23 +84,14 @@ export async function reapStaleDeviceWorkers(): Promise<{
   //    (see the note in worker-api/device-reconcile.ts). UUIDs are canonical
   //    lowercase, so text equality matches the uuid form 1:1.
   const deleted = await sql.begin(async (tx) => {
-    // `automations.device_worker_id` is a NO ACTION FK, so a pin held by an
-    // archived Automation would reject the DELETE even though the predicate
-    // above ignores it. Release those pins first — the same order, and the same
-    // reasoning, as the explicit device-delete path in
-    // `worker-api/device-management.ts`: archival is the supported soft-delete,
-    // and an archived row is retained for history but must not keep the
-    // restrictive FK alive. Scoped to the candidates and to `archived`, so a
-    // live pin still blocks its device in the re-check below rather than being
-    // silently cleared here.
-    await tx`
-      UPDATE automations
-      SET device_worker_id = NULL, updated_at = NOW()
-      WHERE device_worker_id::text = ANY(${pgTextArray(ids)}::text[])
-        AND status = 'archived'
-    `;
-    const rows = (await tx`
-      DELETE FROM device_workers
+    // Pick the doomed set FIRST, re-checking every predicate and taking a row
+    // lock, so the decision to delete is made once and nothing downstream can
+    // disagree with it. `FOR UPDATE` makes a concurrent poll (which upserts
+    // device_workers) block until this commits rather than refreshing
+    // last_seen_at underneath us; under READ COMMITTED the lock wait re-checks
+    // the predicate, so a device that genuinely came back is dropped here.
+    const doomed = (await tx`
+      SELECT id FROM device_workers
       WHERE id::text = ANY(${pgTextArray(ids)}::text[])
         AND last_seen_at < now() - interval '30 days'
         AND NOT EXISTS (
@@ -112,6 +105,39 @@ export async function reapStaleDeviceWorkers(): Promise<{
         AND NOT EXISTS (
           SELECT 1 FROM auth_profiles ap WHERE ap.device_worker_id = device_workers.id
         )
+      FOR UPDATE
+    `) as unknown as Array<{ id: string }>;
+
+    if (doomed.length === 0) return [];
+    const doomedIds = doomed.map((d) => d.id);
+
+    // `automations.device_worker_id` is a NO ACTION FK, so a pin held by an
+    // archived Automation would reject the DELETE even though the predicate
+    // above ignores it. Release those pins — the same order, and the same
+    // reasoning, as the explicit device-delete path in
+    // `worker-api/device-management.ts`: archival is the supported soft-delete,
+    // and an archived row is retained for history but must not keep the
+    // restrictive FK alive.
+    //
+    // Scoped to `doomed`, NOT to every candidate: a pin must be released if and
+    // only if its device is actually deleted. Releasing across all candidates
+    // and letting a second predicate re-check refuse some of them strips history
+    // from rows whose device then survives — the reaper's own 30-day window
+    // exists to spare a laptop that was merely closed, and that laptop must keep
+    // its Automations' pins.
+    await tx`
+      UPDATE automations
+      SET device_worker_id = NULL, updated_at = NOW()
+      WHERE device_worker_id::text = ANY(${pgTextArray(doomedIds)}::text[])
+        AND status = 'archived'
+    `;
+
+    // Addressed by id: `doomed` is the authoritative set, already predicate-
+    // checked and locked above, so re-stating the predicates here would only
+    // invite the two lists to drift apart.
+    const rows = (await tx`
+      DELETE FROM device_workers
+      WHERE id::text = ANY(${pgTextArray(doomedIds)}::text[])
       RETURNING worker_id
     `) as unknown as Array<{ worker_id: string }>;
 

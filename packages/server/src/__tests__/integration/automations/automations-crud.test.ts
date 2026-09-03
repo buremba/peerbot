@@ -79,6 +79,8 @@ describe('automation CRUD', () => {
     })) as { automation_id: string };
     const automationId = created.automation_id;
     expect(automationId).toBeDefined();
+    // A new Automation starts covering arrivals from its creation instant: the
+    // mark is seeded, nothing is booked, and no granularity interprets either.
     const [createdProjection] = await getTestDb()<{
       next_window_start: string | Date | null;
       completed_window_coverage: string;
@@ -91,7 +93,7 @@ describe('automation CRUD', () => {
     `;
     expect(createdProjection.next_window_start).not.toBeNull();
     expect(createdProjection.completed_window_coverage).toBe('{}');
-    expect(createdProjection.window_projection_granularity).toBe('daily');
+    expect(createdProjection.window_projection_granularity).toBeNull();
     expect(createdProjection.last_completed_window_start).toBeNull();
 
     const got = (await owner.automations.get({ automation_id: automationId })) as {
@@ -125,7 +127,13 @@ describe('automation CRUD', () => {
     expect(list.automations?.some((w) => w.automation_id === automationId)).toBe(false);
   });
 
-  it('resets compact scheduled coverage when an update changes granularity', async () => {
+  // The calendar cursor reset whenever a cadence change moved the granularity,
+  // because the stored coverage was expressed in periods that no longer existed.
+  // The arrival mark is schedule-independent — cadence decides how often a run
+  // fires, not what it covers — so a cadence change must leave it exactly where
+  // it is. Resetting would silently drop every row stored since the last
+  // completion, which is the failure this test now guards.
+  it('leaves the arrival mark alone when an update changes the cadence', async () => {
     const sql = getTestDb();
     const created = (await owner.automations.create({
       entity_id: entityId,
@@ -152,39 +160,39 @@ describe('automation CRUD', () => {
     const [projection] = await sql<{
       next_window_start: string | Date;
       completed_window_coverage: string;
-      window_projection_granularity: string;
       last_completed_window_start: string | Date | null;
     }[]>`
       SELECT next_window_start, completed_window_coverage::text AS completed_window_coverage,
-             window_projection_granularity, last_completed_window_start
+             last_completed_window_start
       FROM automations WHERE id = ${created.automation_id}
     `;
-    expect(new Date(projection.next_window_start).toISOString()).not.toBe(
+    expect(new Date(projection.next_window_start).toISOString()).toBe(
       '2025-01-01T00:00:00.000Z'
     );
-    expect(projection.completed_window_coverage).toBe('{}');
-    expect(projection.window_projection_granularity).toBe('weekly');
-    expect(projection.last_completed_window_start).toBeNull();
+    expect(projection.completed_window_coverage).not.toBe('{}');
+    expect(new Date(projection.last_completed_window_start as string).toISOString()).toBe(
+      '2025-01-08T00:00:00.000Z'
+    );
 
-    await sql`
-      UPDATE automations
-      SET last_completed_window_start = '2025-01-06T00:00:00.000Z'::timestamptz
-      WHERE id = ${created.automation_id}
-    `;
+    // A new version with yet another cadence leaves it alone too.
     await owner.automations.createVersion({
       automation_id: created.automation_id,
       prompt: 'Track each daily scheduled period.',
       triggers: [{ kind: 'schedule', cron: '0 10 * * *' }],
     });
-    const [versionReset] = await sql<{
-      window_projection_granularity: string;
+    const [afterVersion] = await sql<{
+      next_window_start: string | Date;
       last_completed_window_start: string | Date | null;
     }[]>`
-      SELECT window_projection_granularity, last_completed_window_start
+      SELECT next_window_start, last_completed_window_start
       FROM automations WHERE id = ${created.automation_id}
     `;
-    expect(versionReset.window_projection_granularity).toBe('daily');
-    expect(versionReset.last_completed_window_start).toBeNull();
+    expect(new Date(afterVersion.next_window_start).toISOString()).toBe(
+      '2025-01-01T00:00:00.000Z'
+    );
+    expect(new Date(afterVersion.last_completed_window_start as string).toISOString()).toBe(
+      '2025-01-08T00:00:00.000Z'
+    );
   });
 
   it('resets an auto-pause only for a real cadence change', async () => {
@@ -1310,7 +1318,7 @@ describe('automation CRUD', () => {
       expect(clone.agent_kind).toBe('codex');
       expect(clone.next_window_start).not.toBeNull();
       expect(clone.completed_window_coverage).toBe('{}');
-      expect(clone.window_projection_granularity).toBe('daily');
+      expect(clone.window_projection_granularity).toBeNull();
       expect(clone.last_completed_window_start).toBeNull();
       // The schedule trigger is preserved and still resolves via the device pin.
       expect(clone.triggers).toMatch(/schedule/);

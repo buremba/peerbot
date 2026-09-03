@@ -206,6 +206,7 @@ describe('Automation event outputs', () => {
       organization_id: workspace.org.id,
       content: 'A source event the Automation can reply to.',
       occurred_at: new Date(pending.windowStart.getTime() + 60 * 60 * 1000),
+      created_at: new Date(pending.windowStart.getTime() + 1),
     });
     const queued = await createAutomationRun({
       organizationId: workspace.org.id,
@@ -219,7 +220,10 @@ describe('Automation event outputs', () => {
       UPDATE runs SET status = 'running', claimed_at = NOW(), claimed_by = ${`lobu:${agent.agentId}`}
       WHERE id = ${queued.runId}
     `;
-    const knowledge = (await api.knowledge.read({ automation_id: automationId })) as {
+    const knowledge = (await api.knowledge.read({
+      automation_id: automationId,
+      run_id: queued.runId,
+    })) as {
       window_token: string;
     };
     const extracted = {

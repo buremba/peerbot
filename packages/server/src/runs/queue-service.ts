@@ -1316,7 +1316,7 @@ export async function createConnectorOperationRun(params: {
   });
 
   let targetDeviceWorkerId: string | null = null;
-  if (params.connectionId) {
+  if (params.connectionId && params.approvalMode !== 'inline') {
     const connRows = await sql<{ device_worker_id: string | null }>`
       SELECT device_worker_id FROM connections
       WHERE id = ${params.connectionId}

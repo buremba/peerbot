@@ -149,6 +149,7 @@ export async function handleListRuns(
       OR (
         r.executed_by_device_worker_id IS NULL
         AND r.target_device_worker_id IS NULL
+        AND (r.claimed_by IS NULL OR r.claimed_by NOT LIKE 'gateway-inline-%')
         AND r.connection_id IN (
           SELECT id FROM connections
           WHERE device_worker_id = ${args.device_worker_id}::uuid
@@ -196,7 +197,10 @@ export async function handleListRuns(
            c.display_name AS connection_display_name,
            r.target_device_worker_id,
            r.executed_by_device_worker_id,
-           COALESCE(r.executed_by_device_worker_id, r.target_device_worker_id, c.device_worker_id) AS device_worker_id
+           CASE
+             WHEN r.claimed_by LIKE 'gateway-inline-%' THEN NULL
+             ELSE COALESCE(r.executed_by_device_worker_id, r.target_device_worker_id, c.device_worker_id)
+           END AS device_worker_id
     FROM runs r
     LEFT JOIN feeds f ON f.id = r.feed_id
     LEFT JOIN connections c ON c.id = r.connection_id
@@ -246,7 +250,10 @@ export async function handleGetRun(
            r.exit_reason, r.exit_code, r.exit_signal, r.output_tail,
            r.target_device_worker_id,
            r.executed_by_device_worker_id,
-           COALESCE(r.executed_by_device_worker_id, r.target_device_worker_id, c.device_worker_id) AS device_worker_id,
+           CASE
+             WHEN r.claimed_by LIKE 'gateway-inline-%' THEN NULL
+             ELSE COALESCE(r.executed_by_device_worker_id, r.target_device_worker_id, c.device_worker_id)
+           END AS device_worker_id,
            c.display_name AS connection_display_name
     FROM runs r
     LEFT JOIN connections c ON c.id = r.connection_id

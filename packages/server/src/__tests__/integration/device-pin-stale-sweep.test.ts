@@ -227,6 +227,43 @@ describe('device pin stale sweep', () => {
     expect(await pinOf(connB)).toBe(deviceB);
   });
 
+  it('unpins a fresh device whose manifest hash is older than the selected active winner', async () => {
+    const olderDevice = await seedWorker(userId, orgId, true);
+    const newerDevice = await seedWorker(userId, orgId, true);
+    const olderManifest = { ...MANIFEST, version: '0.9.0' };
+    const newerManifest = { ...MANIFEST, version: '1.0.0' };
+    await sql`
+      UPDATE device_workers
+      SET connector_manifests = ${sql.json({
+        [CONNECTOR]: {
+          manifest: olderManifest,
+          manifest_hash: deviceManifestHash(olderManifest as DeviceConnectorManifest),
+          received_at: new Date(Date.now() - 60_000).toISOString(),
+        },
+      })}
+      WHERE id = ${olderDevice}::uuid
+    `;
+    await sql`
+      UPDATE device_workers
+      SET connector_manifests = ${sql.json({
+        [CONNECTOR]: {
+          manifest: newerManifest,
+          manifest_hash: deviceManifestHash(newerManifest as DeviceConnectorManifest),
+          received_at: new Date().toISOString(),
+        },
+      })}
+      WHERE id = ${newerDevice}::uuid
+    `;
+
+    const olderConn = await seedConn(orgId, userId, olderDevice);
+    const newerConn = await seedConn(orgId, userId, newerDevice);
+
+    await reconcileDeviceCapabilities(userId);
+
+    expect(await pinOf(newerConn)).toBe(newerDevice);
+    expect(await pinOf(olderConn)).toBeNull();
+  });
+
   it('unpins a device that is alive but no longer advertises the capability', async () => {
     // Freshness alone is not "still serving". A device can keep heartbeating
     // after an app update or a revoked permission drops the capability; polling

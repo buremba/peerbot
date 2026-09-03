@@ -24,7 +24,9 @@
 #   PROD_URL       base URL (default https://app.lobu.ai)
 #   EXPECT_SHA     if set, require this commit to be an ancestor of the
 #                  deployed revision — i.e. "the rollout actually landed"
-#   ROLLOUT_WAIT   seconds to wait for EXPECT_SHA to appear (default 0 = no wait)
+#   ROLLOUT_WAIT   total seconds to wait for the rollout to land, SHARED by the
+#                  liveness probe (the app sits at zero replicas while migrations
+#                  run) and the EXPECT_SHA gate (default 0 = no wait, one attempt)
 
 set -uo pipefail
 
@@ -57,10 +59,29 @@ echo "================================================================"
 #    /health returns {status, version, revision, build_time, environment};
 #    `revision` is APP_GIT_SHA baked into the image at build time.
 # ---------------------------------------------------------------------------
+# One wait budget for the whole rollout, spent here first and continued by the
+# EXPECT_SHA gate below. Liveness and revision are the same wait: a deploy that
+# is still quiescing has not landed, so each must not spend ROLLOUT_WAIT in full.
+waited=0
+
 note "health"
-health=$(curl -fsS --max-time 15 "${BASE}/health" 2>/dev/null)
+# Retried, because a `workflow_run` smoke fires while the rollout it verifies is
+# still in progress: migrations scale the app to zero, so /health returns
+# nothing for the gap between the old pod terminating and the new one serving.
+# A single attempt failed the entire gate before the caller's wait budget was
+# ever consulted — run 1539 asked for ROLLOUT_WAIT=1200, gave up 0.7s in at
+# 04:12:31, and the replacement pod was ready at 04:13:04.
+# ROLLOUT_WAIT=0 (the default) keeps the previous single-attempt path exactly.
+health=""
+while :; do
+  health=$(curl -fsS --max-time 15 "${BASE}/health" 2>/dev/null)
+  [ -n "$health" ] && break
+  [ "$waited" -ge "$ROLLOUT_WAIT" ] && break
+  sleep 30
+  waited=$((waited + 30))
+done
 if [ -z "$health" ]; then
-  bad "GET /health returned nothing — prod is down or unreachable"
+  bad "GET /health returned nothing after ${waited}s — prod is down or unreachable"
   echo ""
   echo "RESULT: prod smoke FAILED (unreachable)"
   exit 1
@@ -107,7 +128,7 @@ fi
 # ---------------------------------------------------------------------------
 if [ -n "$EXPECT_SHA" ]; then
   note "rollout"
-  waited=0
+  # Continues the budget the liveness probe may already have spent.
   landed=false
   while :; do
     cur=$(curl -fsS --max-time 15 "${BASE}/health" 2>/dev/null \

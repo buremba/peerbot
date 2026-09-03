@@ -5004,10 +5004,6 @@ export type GetAutomationData = {
      */
     content_until?: string;
     /**
-     * Filter by time granularity (daily / weekly / monthly / quarterly). If not provided, returns windows at all granularities; when a requested granularity has no windows the query falls back to the next-finer level.
-     */
-    granularity?: "daily" | "weekly" | "monthly" | "quarterly";
-    /**
      * Override template version *number* for viewing results. If not provided, uses the Automation's current pinned version. Useful for viewing results with a different renderer or schema. Prefer `template_version_id` when you need a stable reference (version numbers can change if a chain is reorganized).
      */
     template_version?: number;
@@ -5072,7 +5068,6 @@ export type GetAutomationResponses = {
       run_id: number;
       automation_id: string;
       automation_name: string;
-      granularity: string;
       window_start: string;
       window_end: string;
       content_analyzed: number;
@@ -5264,13 +5259,10 @@ export type GetAutomationResponses = {
       last_run_outcome?: string | null;
     };
     pending_analysis?: {
-      unprocessed_count: number;
-      pending_period_count: number;
       unprocessed_content_count: number;
       next_window: {
         start: string;
         end: string;
-        granularity: string;
       } | null;
       next_action: {
         tool: string;
@@ -5289,21 +5281,6 @@ export type GetAutomationResponses = {
         status: "unprocessed" | "partial" | "complete";
       }>;
     };
-    /**
-     * First 50 exact missing scheduled ranges from the durable coverage projection.
-     */
-    gaps?: Array<{
-      start: string;
-      end: string;
-    }>;
-    /**
-     * Exact number of missing scheduled range components.
-     */
-    gap_count?: number;
-    /**
-     * True when gap_count exceeds the returned gaps array.
-     */
-    gaps_truncated?: boolean;
     pagination: {
       page: number;
       page_size: number;
@@ -5315,9 +5292,6 @@ export type GetAutomationResponses = {
         content_since: string | null;
         content_until: string | null;
       };
-      granularity_filter: string | null;
-      granularity_actual: string | null;
-      granularity_fallback_used: boolean;
     };
     warnings?: Array<string>;
     view_url?: string;
@@ -5538,14 +5512,11 @@ export type ReadKnowledgeResponses = {
     window_token?: string;
     window_start?: string;
     window_end?: string;
+    window_axis?: "created_at";
     window_lag?: {
       last_window_start: string | null;
-      current_period_start: string;
-      periods_behind: number;
-      granularity: string;
-      periods_skipped: number;
-      skipped_from: string | null;
-      skipped_to: string | null;
+      unclaimed_from: string | null;
+      unclaimed_to: string | null;
       guidance?: string;
     };
     extraction_schema?: {

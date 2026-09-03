@@ -69,42 +69,42 @@ export const GetContentResultSchema = Type.Object({
   window_start: Type.Optional(Type.String()),
   window_end: Type.Optional(Type.String()),
   /**
-   * How the window above sits against the clock, including any gap caused by an
-   * explicitly requested later range.
+   * Which timestamp on an event the window bounds select.
+   *
+   * Always `created_at` — when Lobu stored the row, not when the content is
+   * dated. A run that assumes the calendar axis will mis-describe its own
+   * output ("yesterday's messages" for a 6-year-old archive row that arrived
+   * yesterday), so the axis travels with the bounds.
+   */
+  window_axis: Type.Optional(Type.Literal('created_at')),
+  /**
+   * What this read leaves unclaimed, and how far behind the Automation is.
    *
    * `window_start` alone cannot tell a run whether it is current: a stale window
    * and a fresh one look identical from inside the run. Prod Automation 2 drafted
    * replies to month-dead Hacker News threads for weeks because nothing said so.
    *
-   * Raw facts, deliberately — no staleness flag. Sequential dispatch advances
-   * one logical period at a time; `periods_skipped` is only non-zero for an
-   * explicit range that starts later than the next logical period.
+   * Raw facts, deliberately — no staleness flag. An ordinary read starts at the
+   * Automation's arrival mark and leaves nothing behind, so the `unclaimed_*`
+   * pair is null for it; only an explicitly requested later range sets them.
    */
   window_lag: Type.Optional(
     Type.Object({
-      /** Start of the newest window this Automation has actually completed. */
+      /** Start of the newest arrival range this Automation has actually completed. */
       last_window_start: Type.Union([Type.String(), Type.Null()]),
-      current_period_start: Type.String(),
       /**
-       * Age of the window above, in whole periods. One is the healthy resting
-       * value for an Automation that runs once per period (it analyses the period
-       * that just closed); zero for a cron that fires several times per period.
+       * The Automation's arrival mark, when this read starts after it. Rows
+       * stored in `[unclaimed_from, unclaimed_to)` are NOT in this response and
+       * stay unclaimed: completing this range does not move the mark past them,
+       * so an ordinary claim still returns them.
        */
-      periods_behind: Type.Integer(),
-      granularity: Type.String(),
+      unclaimed_from: Type.Union([Type.String(), Type.Null()]),
+      /** Exclusive end of that gap — this read's `window_start`. */
+      unclaimed_to: Type.Union([Type.String(), Type.Null()]),
       /**
-       * Periods omitted by an explicit range that starts after the next logical
-       * period. Sequential dispatch always reports zero.
-       */
-      periods_skipped: Type.Integer(),
-      skipped_from: Type.Union([Type.String(), Type.Null()]),
-      /** Inclusive — the last period actually skipped. */
-      skipped_to: Type.Union([Type.String(), Type.Null()]),
-      /**
-       * The explicit range gap in words, present only when `periods_skipped` is
-       * non-zero. Automation runs read this response as JSON through `run_sdk`,
-       * so the affordance to recover the next logical period has to travel in
-       * the payload.
+       * The gap in words, present only when there is one. Automation runs read
+       * this response as JSON through `run_sdk`, so the affordance to recover
+       * the skipped arrivals has to travel in the payload.
        */
       guidance: Type.Optional(Type.String()),
     })

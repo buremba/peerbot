@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import { AgentErrorCode } from "@lobu/core";
-import { classifyRunOutcome } from "../../../runs/run-outcome";
+import {
+	classifyRunOutcome,
+	SUPERSEDED_BY_ARRIVAL_MARK,
+} from "../../../runs/run-outcome";
 
 describe("classifyRunOutcome", () => {
 	it("marks completed runs scoreable", () => {
@@ -24,13 +27,24 @@ describe("classifyRunOutcome", () => {
 		}
 	});
 
-	it("classifies a pending attempt superseded by an older recoverable window as infra", () => {
+	it("classifies a run superseded by the arrival mark as infra", () => {
+		expect(
+			classifyRunOutcome({
+				status: "cancelled",
+				errorMessage: SUPERSEDED_BY_ARRIVAL_MARK,
+			}),
+		).toBe("infra_error");
+	});
+
+	// The retired wording must NOT keep working. Accepting both is how the
+	// classifier would go on passing while the producer emitted something else.
+	it("does not classify the retired superseded wording", () => {
 		expect(
 			classifyRunOutcome({
 				status: "cancelled",
 				errorMessage: "Superseded by the oldest recoverable Automation window",
 			}),
-		).toBe("infra_error");
+		).toBeNull();
 	});
 
 	it("maps every catalogued AgentErrorCode to infra_error", () => {

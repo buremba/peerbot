@@ -6,12 +6,7 @@
  * Omit `query` to list all content with filters.
  */
 
-import {
-  inferAutomationGranularityFromSchedule,
-  isAutomationTimeGranularity,
-  type AutomationTimeGranularity,
-  type ContentItem,
-} from '@lobu/connector-sdk';
+import type { ContentItem } from '@lobu/connector-sdk';
 import {
   evaluateEntityMutation,
   resolveActingPrincipal,
@@ -89,7 +84,6 @@ async function loadClaimedAutomationWindow(
       windowEnd: string;
       leaseExpiresAt?: string;
       templateVersionId: number | null;
-      granularity: AutomationTimeGranularity;
     }
   | undefined
 > {
@@ -98,8 +92,6 @@ async function loadClaimedAutomationWindow(
     window_end: string | null;
     expires_at: string | null;
     version_id: number | string | null;
-    granularity: string | null;
-    schedule: string | null;
   }>`
     SELECT approved_input->>'window_start' AS window_start,
            approved_input->>'window_end' AS window_end,
@@ -108,11 +100,8 @@ async function loadClaimedAutomationWindow(
                THEN (approved_input->>'version_id')::bigint
              ELSE NULL
            END AS version_id,
-           approved_input->>'granularity' AS granularity,
-           runs.expires_at,
-           automations.schedule
+           runs.expires_at
     FROM runs
-    JOIN automations ON automations.id = runs.automation_id
     WHERE runs.id = ${runId}
       AND runs.automation_id = ${automationId}
       AND runs.run_type IN ('automation', 'automation_eval')
@@ -125,9 +114,6 @@ async function loadClaimedAutomationWindow(
     windowStart: new Date(run.window_start).toISOString(),
     windowEnd: new Date(run.window_end).toISOString(),
     templateVersionId: run.version_id == null ? null : Number(run.version_id),
-    granularity: isAutomationTimeGranularity(run.granularity)
-      ? run.granularity
-      : inferAutomationGranularityFromSchedule(run.schedule),
     ...(run.expires_at ? { leaseExpiresAt: new Date(run.expires_at).toISOString() } : {}),
   };
 }

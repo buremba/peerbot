@@ -20,6 +20,9 @@ import { TestWorkspace } from '../../setup/test-mcp-client';
 const env = { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env;
 const since = '2026-07-30';
 const until = '2026-07-30';
+// Every fixture below is STORED at the instant it is dated: Automation windows
+// select on `created_at`, and this suite's subject is connection visibility, not
+// the axis. Pinning both keeps the fixed `since`/`until` range meaningful.
 const occurredAt = new Date('2026-07-30T12:00:00.000Z');
 
 function contentIds(result: unknown): number[] {
@@ -78,6 +81,7 @@ describe('Automation private-connection visibility', () => {
       connector_key: 'slack',
       content: 'Owner private content',
       occurred_at: occurredAt,
+      created_at: occurredAt,
     });
     // Fingerprint before the admin's private event exists, so the baseline can
     // only come from the Automation author's own private connection.
@@ -96,6 +100,7 @@ describe('Automation private-connection visibility', () => {
       connector_key: 'slack',
       content: 'Admin private content',
       occurred_at: occurredAt,
+      created_at: occurredAt,
     });
     // An admin-private event must be invisible to the author-principal
     // fingerprint, so the digest has to stay byte-identical.
@@ -120,6 +125,7 @@ describe('Automation private-connection visibility', () => {
       connector_key: 'slack',
       content: 'Organization-visible content',
       occurred_at: occurredAt,
+      created_at: occurredAt,
     });
 
     const ownerRead = await workspace.owner.knowledge.read({
@@ -228,6 +234,7 @@ describe('Automation private-connection visibility', () => {
       connector_key: 'slack',
       content: 'workspace audit lifecycle row',
       occurred_at: occurredAt,
+      created_at: occurredAt,
       semantic_type: 'change',
       metadata: { category: 'workspace', _lobu_workspace_audit: true },
     });
@@ -243,6 +250,7 @@ describe('Automation private-connection visibility', () => {
       connector_key: 'slack',
       content: 'Organization-visible content',
       occurred_at: occurredAt,
+      created_at: occurredAt,
     });
 
     // Ordinary member: automation read content excludes the audit row.

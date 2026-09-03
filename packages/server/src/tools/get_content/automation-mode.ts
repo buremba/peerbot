@@ -7,11 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { AutomationTimeGranularity, ContentItem } from '@lobu/connector-sdk';
-import {
-  inferAutomationGranularityFromSchedule,
-  isAutomationTimeGranularity,
-} from '@lobu/connector-sdk';
+import type { ContentItem } from '@lobu/connector-sdk';
 import {
   automationTriggerSignals,
   isWorkspaceEventTriggerSignal,
@@ -29,13 +25,15 @@ import { getRecentFeedbackSummary } from '../../utils/automation-feedback';
 import { getAvailableOperations, getPastReactionsSummary } from '../../utils/automation-reactions';
 import { deriveAutomationExtractionSchema } from '../../utils/automation-extraction-schema';
 import {
-  alignRequestedWindow,
+  automationArrivalSettleMs,
   computePendingWindow,
-  computeWindowLag,
-  describeWindowLag,
+  describeUnclaimedArrivals,
   foldUnprocessedRanges,
   parseAutomationWindowDate,
+  readDatabaseNow,
   readLastCompletedWindowStart,
+  readPendingWindow,
+  requestedArrivalWindow,
 } from '../../utils/window-utils';
 import {
   DEFAULT_AUTOMATION_SOURCE_QUERY,
@@ -487,7 +485,6 @@ interface BoundAutomationRun {
   versionId: number | null;
   windowStart: Date;
   windowEnd: Date;
-  granularity: AutomationTimeGranularity;
   triggerContentIds: number[];
 }
 
@@ -501,8 +498,7 @@ async function loadBoundAutomationRun(
   sql: DbClient,
   organizationId: string,
   automationId: number,
-  runId: number,
-  claimedGranularity?: AutomationTimeGranularity
+  runId: number
 ): Promise<BoundAutomationRun> {
   const rows = await sql<{ approved_input: unknown }>`
     SELECT approved_input
@@ -541,19 +537,6 @@ async function loadBoundAutomationRun(
       409
     );
   }
-  // claimedGranularity comes only from the server-resolved matching
-  // claimed/running run. Pending external runs must carry their own durable
-  // snapshot; do not infer a live schedule fallback here.
-  const granularity = isAutomationTimeGranularity(input.granularity)
-    ? input.granularity
-    : claimedGranularity;
-  if (!granularity) {
-    throw new ToolUserError(
-      `Automation run ${runId} is missing a valid queued granularity snapshot.`,
-      409
-    );
-  }
-
   const rawVersionId = input.version_id;
   const parsedVersionId =
     typeof rawVersionId === 'number'
@@ -570,7 +553,6 @@ async function loadBoundAutomationRun(
     versionId,
     windowStart,
     windowEnd,
-    granularity,
     triggerContentIds: automationTriggerSignals(input)
       .filter(isWorkspaceEventTriggerSignal)
       .map((signal) => signal.event_id),
@@ -593,7 +575,6 @@ export async function handleAutomationMode(
       windowEnd: string;
       leaseExpiresAt?: string;
       templateVersionId: number | null;
-      granularity: AutomationTimeGranularity;
     };
     throwOnSourceError?: boolean;
   }
@@ -617,8 +598,7 @@ export async function handleAutomationMode(
           sql,
           context.organizationId,
           automationId,
-          Number(args.run_id),
-          context.claimedWindow?.granularity
+          Number(args.run_id)
         )
       : null;
 
@@ -671,10 +651,6 @@ export async function handleAutomationMode(
   const versionSources = parseJson(automation.version_sources) || [];
   const automationSources =
     versionSources.length > 0 ? versionSources : parseJson(automation.sources) || [];
-  const timeGranularity =
-    context.claimedWindow?.granularity ??
-    boundRun?.granularity ??
-    inferAutomationGranularityFromSchedule(automation.schedule as string | null);
   // The extraction contract is composed from versioned outputs and the
   // optional reaction input contract.
   const templateExtractionSchema = await deriveAutomationExtractionSchema(
@@ -771,58 +747,56 @@ export async function handleAutomationMode(
   }));
 
   // A bound run owns its queued window. Interactive previews may still request
-  // an explicit range or fall back to the Automation's pending cursor.
+  // an explicit range or fall back to the Automation's arrival mark.
   let windowStart: Date, windowEnd: Date, lastCompletedWindowStart: Date | null;
+  // The mark, when the range handed out does not start at it. An explicitly
+  // selected later range books nothing before itself, so the rows stored
+  // between the mark and it stay unclaimed and the payload has to say so.
+  let arrivalMark: Date | null = null;
   if (context.claimedWindow) {
     windowStart = new Date(context.claimedWindow.windowStart);
     windowEnd = new Date(context.claimedWindow.windowEnd);
-    lastCompletedWindowStart = await readLastCompletedWindowStart(
-      sql,
-      automationId,
-      timeGranularity
-    );
+    lastCompletedWindowStart = await readLastCompletedWindowStart(sql, automationId);
   } else if (boundRun) {
     windowStart = boundRun.windowStart;
     windowEnd = boundRun.windowEnd;
-    lastCompletedWindowStart = await readLastCompletedWindowStart(
-      sql,
-      automationId,
-      timeGranularity
-    );
+    lastCompletedWindowStart = await readLastCompletedWindowStart(sql, automationId);
   } else if (args.since && args.until) {
-    // An agent-chosen range, aligned to the granularity so an agent-written
-    // window is indistinguishable in shape from a server-computed one.
-    ({ windowStart, windowEnd } = alignRequestedWindow(
+    // An agent-chosen arrival range. `until` is inclusive as the caller means
+    // it, and the end is clamped to the horizon: a completion may never book
+    // rows that are still settling.
+    const [pending, dbNow] = await Promise.all([
+      readPendingWindow(sql, automationId),
+      readDatabaseNow(sql),
+    ]);
+    if (!pending) {
+      throw new ToolUserError(`Automation ${automationId} not found`, 404);
+    }
+    arrivalMark = pending.windowStart;
+    lastCompletedWindowStart = pending.lastCompletedWindowStart;
+    ({ windowStart, windowEnd } = requestedArrivalWindow(
       parseAutomationWindowDate(args.since),
       parseAutomationWindowDate(args.until),
-      timeGranularity
+      dbNow
     ));
-    lastCompletedWindowStart = await readLastCompletedWindowStart(
-      sql,
-      automationId,
-      timeGranularity
-    );
+    if (windowEnd <= windowStart) {
+      throw new ToolUserError(
+        `Automation ${automationId} has no settled arrivals in the requested range: ` +
+          `everything at or after ${windowStart.toISOString()} was stored within the last ` +
+          `${automationArrivalSettleMs() / 1000}s and is still settling.`,
+        409
+      );
+    }
   } else {
-    ({ windowStart, windowEnd, lastCompletedWindowStart } =
-      await computePendingWindow(sql, automationId, timeGranularity));
+    ({ windowStart, windowEnd, lastCompletedWindowStart } = await computePendingWindow(
+      sql,
+      automationId
+    ));
   }
 
-  // How the window being handed out sits against the clock, and whether an
-  // explicit range omitted periods. Measured against the WINDOW, not the
-  // latest completed period: at the moment a run reads, the pending window is
-  // ordinarily one period after it for a healthy sequential Automation.
-  const windowLag = computeWindowLag(
-    lastCompletedWindowStart,
-    windowStart,
-    new Date(),
-    timeGranularity
-  );
-  const windowLagNote = describeWindowLag({
-    skippedFrom: windowLag.skippedFrom,
-    skippedTo: windowLag.skippedTo,
-    periodsSkipped: windowLag.periodsSkipped,
-    granularity: timeGranularity,
-  });
+  // What an explicitly selected later range leaves behind. Ordinary reads start
+  // at the mark and skip nothing, so this is null for them.
+  const unclaimedNote = arrivalMark ? describeUnclaimedArrivals(arrivalMark, windowStart) : null;
 
   // NOTE: Window creation is deferred to complete_window action
   // This allows batched processing where each batch creates its own window
@@ -896,7 +870,6 @@ export async function handleAutomationMode(
       ...(tokenRunId != null ? { run_id: tokenRunId } : {}),
       window_start: windowStartIso,
       window_end: windowEndIso,
-      granularity: timeGranularity,
       content_count: contentIds.length,
       content_ids: contentIds,
       ...(context.claimedWindow
@@ -1020,20 +993,17 @@ export async function handleAutomationMode(
     window_token: windowToken,
     window_start: windowStartIso,
     window_end: windowEndIso,
+    window_axis: 'created_at',
     window_lag: {
       last_window_start: lastCompletedWindowStart
         ? lastCompletedWindowStart.toISOString()
         : null,
-      current_period_start: windowLag.currentPeriodStart.toISOString(),
-      periods_behind: windowLag.periodsBehind,
-      granularity: timeGranularity,
-      periods_skipped: windowLag.periodsSkipped,
-      skipped_from: windowLag.skippedFrom ? windowLag.skippedFrom.toISOString() : null,
-      skipped_to: windowLag.skippedTo ? windowLag.skippedTo.toISOString() : null,
-      // The numbers alone did not change what a run did (see describeWindowLag).
-      // Automation runs read this through run_sdk as JSON, so the guidance has to
-      // be IN the payload, not only in the markdown a tool-call client renders.
-      ...(windowLagNote ? { guidance: windowLagNote } : {}),
+      unclaimed_from: arrivalMark && unclaimedNote ? arrivalMark.toISOString() : null,
+      unclaimed_to: unclaimedNote ? windowStartIso : null,
+      // The numbers alone did not change what a run did. Automation runs read
+      // this through run_sdk as JSON, so the guidance has to be IN the payload,
+      // not only in the markdown a tool-call client renders.
+      ...(unclaimedNote ? { guidance: unclaimedNote } : {}),
     },
     extraction_schema: templateExtractionSchema ?? undefined,
     sources: sourcesContent as Record<string, ContentItem[]>,

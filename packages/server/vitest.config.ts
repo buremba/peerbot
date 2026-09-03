@@ -11,6 +11,17 @@ export default defineConfig({
   root: PACKAGE_ROOT,
   test: {
     globalSetup: ["./src/__tests__/setup/global-setup.ts"],
+    // Automation windows select rows by `events.created_at` and stop one
+    // arrival settle window short of the database clock, so in production a row
+    // is claimable 60s after it lands. An integration test inserts a row and
+    // claims a window in the same breath, which that budget would hide
+    // entirely. Collapse it here; `arrival-axis-window.test.ts` restores the
+    // production value for the cases that exist to prove the settle window.
+    // Set through `test.env` rather than `globalSetup`, which runs in a
+    // separate process whose env does not reliably reach the forked workers.
+    env: {
+      AUTOMATION_ARRIVAL_SETTLE_MS: "0",
+    },
     // Integration tests need a DB ready before any test file starts. Unit tests
     // don't touch the DB, so they run fast regardless.
     include: ["src/**/*.test.ts"],

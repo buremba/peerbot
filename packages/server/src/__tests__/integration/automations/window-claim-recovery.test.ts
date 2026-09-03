@@ -16,6 +16,7 @@ import {
   seedOwnerContext,
 } from '../../setup/test-fixtures';
 import { TestApiClient } from '../../setup/test-mcp-client';
+import { SUPERSEDED_BY_ARRIVAL_MARK } from '../../../runs/run-outcome';
 
 const ENV = { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env;
 const DAY_MS = 86_400_000;
@@ -34,7 +35,12 @@ type ClaimContext = {
   window_start: string;
   window_end: string;
   window_token: string;
-  window_lag?: { granularity: string };
+  window_axis?: string;
+  window_lag?: {
+    last_window_start: string | null;
+    unclaimed_from: string | null;
+    unclaimed_to: string | null;
+  };
   page: {
     has_more: boolean;
     next_cursor?: { occurred_at: string; id: number };
@@ -148,30 +154,33 @@ describe('Automation window claim and recovery', () => {
     await sql`
       UPDATE automations
       SET next_window_start = ${failedStart.toISOString()}::timestamptz,
-          completed_window_coverage = '{}'::tstzmultirange,
-          window_projection_granularity = 'daily'
+          completed_window_coverage = '{}'::tstzmultirange
       WHERE id = ${automationId}
     `;
     const event = await createTestEvent({
       entity_id: entityId,
       organization_id: orgId,
-      content: 'Source content from the failed logical period.',
+      content: 'Source content from the failed range.',
       occurred_at: new Date(failedStart.getTime() + 3_600_000),
+      // Stored inside the unclaimed range, which is what the window selects.
+      created_at: new Date(failedStart.getTime() + 3_600_000),
     });
 
-    const pending = await computePendingWindow(sql, automationId, 'daily');
+    const pending = await computePendingWindow(sql, automationId);
     expect(pending.windowStart.toISOString()).toBe(failedStart.toISOString());
 
     const detail = (await api.automations.get({
       automation_id: String(automationId),
     })) as {
       pending_analysis?: {
-        unprocessed_count: number;
+        unprocessed_content_count: number;
         next_window: { start: string } | null;
       };
     };
-    expect(detail.pending_analysis?.unprocessed_count).toBe(4);
+    // A failed run books nothing, so the mark still sits at its start and the
+    // range a claim would hand out reaches from there to the horizon.
     expect(detail.pending_analysis?.next_window?.start).toBe(failedStart.toISOString());
+    expect(detail.pending_analysis?.unprocessed_content_count).toBeGreaterThan(0);
 
     const claimed = await claim();
     expect(claimed.run_id).not.toBe(failedRunId);
@@ -190,32 +199,36 @@ describe('Automation window claim and recovery', () => {
     expect(supersededRun).toMatchObject({
       status: 'cancelled',
       outcome: 'infra_error',
-      error_message: 'Superseded by the oldest recoverable Automation window',
+      error_message: SUPERSEDED_BY_ARRIVAL_MARK,
     });
   });
 
-  it('projects an old-replica completion without skipping an earlier failed period', async () => {
-    const failedStart = dayStart(4);
+  // The application is the SINGLE writer of the arrival mark. The two run-row
+  // triggers that used to re-derive calendar coverage are dropped, so a run row
+  // flipped to `completed` outside `complete_window` books nothing at all.
+  //
+  // This is the structural evidence for that claim, not a nicety: if a trigger
+  // ever comes back it will re-derive coverage from run history, which on this
+  // axis is exactly the wrong thing — a range a run merely RECORDED is not a
+  // range it read to the end.
+  it('does not move the mark for a run row completed outside the completion handler', async () => {
+    const staleMark = dayStart(4);
     await sql`
       UPDATE automations
-      SET next_window_start = NULL,
+      SET next_window_start = ${staleMark.toISOString()}::timestamptz,
           completed_window_coverage = '{}'::tstzmultirange,
-          window_projection_granularity = NULL
+          last_completed_window_start = NULL
       WHERE id = ${automationId}
     `;
-    await failRun(failedStart);
-    const laterStart = dayStart(2);
     const laterRun = await createAutomationRun({
       organizationId: orgId,
       automationId,
       agentId,
-      windowStart: laterStart.toISOString(),
+      windowStart: dayStart(2).toISOString(),
       windowEnd: dayStart(1).toISOString(),
       dispatchSource: 'scheduled',
     });
 
-    // A previous server build only completes the run row. The database trigger
-    // must maintain the new projection until every replica has rolled forward.
     await sql`
       UPDATE runs
       SET status = 'completed', outcome = 'scoreable', action_output = '{}'::jsonb,
@@ -225,22 +238,23 @@ describe('Automation window claim and recovery', () => {
 
     const [projection] = await sql<{
       next_window_start: string | Date;
-      covers_later: boolean;
-      window_projection_granularity: string;
+      completed_window_coverage: string;
       last_completed_window_start: string | Date | null;
     }>`
       SELECT next_window_start,
-             completed_window_coverage @> ${new Date(laterStart.getTime() + 3_600_000).toISOString()}::timestamptz AS covers_later,
-             window_projection_granularity, last_completed_window_start
+             completed_window_coverage::text AS completed_window_coverage,
+             last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
     expect(new Date(projection.next_window_start).toISOString()).toBe(
-      failedStart.toISOString()
+      staleMark.toISOString()
     );
-    expect(projection.covers_later).toBe(true);
-    expect(projection.window_projection_granularity).toBe('daily');
-    expect(new Date(projection.last_completed_window_start as string | Date).toISOString()).toBe(
-      laterStart.toISOString()
+    expect(projection.completed_window_coverage).toBe('{}');
+    expect(projection.last_completed_window_start).toBeNull();
+
+    // And the claim still hands out the whole unclaimed range.
+    expect((await computePendingWindow(sql, automationId)).windowStart.toISOString()).toBe(
+      staleMark.toISOString()
     );
   });
 
@@ -331,7 +345,19 @@ describe('Automation window claim and recovery', () => {
         ENV,
         ctx
       )) as ClaimResult;
-      expect(claimed.context.window_start).toBe(dayStart(1).toISOString());
+      // The point of this test is that the claim completes at all on a
+      // single-connection pool — the nested lock in `computePendingWindow` has
+      // deadlocked here before. The window starts at the live mark (a claim
+      // reads it, it does not move it) and reaches the horizon.
+      const [automation] = await sql`
+        SELECT next_window_start FROM automations WHERE id = ${automationId}
+      `;
+      expect(claimed.context.window_start).toBe(
+        new Date(automation.next_window_start as string).toISOString()
+      );
+      expect(
+        new Date(claimed.context.window_end).getTime()
+      ).toBeGreaterThan(new Date(claimed.context.window_start).getTime());
     } finally {
       await closeDbSingleton();
       clearAuthCacheForTests();
@@ -340,21 +366,24 @@ describe('Automation window claim and recovery', () => {
     }
   });
 
-  it('uses the pending run version and granularity snapshot after an Automation edit', async () => {
+  it('uses the pending run version snapshot after an Automation edit', async () => {
+    // Queued at the live mark, so the claim ADOPTS this pending run rather than
+    // cancelling it — that adoption is what carries the version snapshot
+    // forward past the edit below.
+    const [before] = await sql<{ next_window_start: string | Date }>`
+      SELECT next_window_start FROM automations WHERE id = ${automationId}
+    `;
+    const markBefore = new Date(before.next_window_start);
     const pending = await createAutomationRun({
       organizationId: orgId,
       automationId,
       agentId,
-      windowStart: dayStart(1).toISOString(),
-      windowEnd: dayStart(0).toISOString(),
+      windowStart: markBefore.toISOString(),
+      windowEnd: new Date(markBefore.getTime() + DAY_MS).toISOString(),
       dispatchSource: 'scheduled',
     });
-    const [snapshot] = await sql<{
-      version_id: number | string;
-      granularity: string;
-    }>`
-      SELECT (approved_input->>'version_id')::bigint AS version_id,
-             approved_input->>'granularity' AS granularity
+    const [snapshot] = await sql<{ version_id: number | string }>`
+      SELECT (approved_input->>'version_id')::bigint AS version_id
       FROM runs WHERE id = ${pending.runId}
     `;
 
@@ -371,8 +400,7 @@ describe('Automation window claim and recovery', () => {
 
     const claimed = await claim();
     expect(claimed.run_id).toBe(pending.runId);
-    expect(snapshot.granularity).toBe('daily');
-    expect(claimed.context.window_lag?.granularity).toBe('daily');
+    expect(claimed.context.window_axis).toBe('created_at');
     expect(claimed.context.extraction_schema?.properties).toHaveProperty('signals');
     expect(claimed.context.extraction_schema?.properties).not.toHaveProperty('findings');
     await expect(
@@ -385,26 +413,24 @@ describe('Automation window claim and recovery', () => {
     ).resolves.toMatchObject({ completed_now: true });
   });
 
-  it('does not let an old-cadence completion replace a reset projection', async () => {
+  // A cadence change used to reset the whole cursor, because the stored coverage
+  // was expressed in calendar periods the new cadence no longer had. The arrival
+  // mark is schedule-independent, so an in-flight claim survives the edit and its
+  // completion books exactly the range it read.
+  it('books an in-flight claim normally across a cadence change', async () => {
     const claimed = await claim();
-    expect(claimed.context.window_lag?.granularity).toBe('daily');
 
     await api.automations.update({
       automation_id: String(automationId),
       triggers: [{ kind: 'schedule', cron: '0 9 * * 1' }],
     });
-    const [resetProjection] = await sql<{
-      next_window_start: string | Date;
-      completed_window_coverage: string;
-      window_projection_granularity: string;
-      last_completed_window_start: string | Date | null;
-    }>`
-      SELECT next_window_start,
-             completed_window_coverage::text AS completed_window_coverage,
-             window_projection_granularity, last_completed_window_start
-      FROM automations WHERE id = ${automationId}
+    const [afterEdit] = await sql<{ next_window_start: string | Date }>`
+      SELECT next_window_start FROM automations WHERE id = ${automationId}
     `;
-    expect(resetProjection.window_projection_granularity).toBe('weekly');
+    // The edit left the mark exactly where the claim found it.
+    expect(new Date(afterEdit.next_window_start).toISOString()).toBe(
+      claimed.context.window_start
+    );
 
     await expect(
       api.automations.completeWindow({
@@ -417,16 +443,17 @@ describe('Automation window claim and recovery', () => {
 
     const [afterCompletion] = await sql<{
       next_window_start: string | Date;
-      completed_window_coverage: string;
-      window_projection_granularity: string;
       last_completed_window_start: string | Date | null;
     }>`
-      SELECT next_window_start,
-             completed_window_coverage::text AS completed_window_coverage,
-             window_projection_granularity, last_completed_window_start
+      SELECT next_window_start, last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
-    expect(afterCompletion).toEqual(resetProjection);
+    expect(new Date(afterCompletion.next_window_start).toISOString()).toBe(
+      claimed.context.window_end
+    );
+    expect(
+      new Date(afterCompletion.last_completed_window_start as string).toISOString()
+    ).toBe(claimed.context.window_start);
   });
 
   it('reclaims an expired lease, fences the stale run, and replays a committed completion', async () => {
@@ -640,25 +667,24 @@ describe('Automation window claim and recovery', () => {
     ).rejects.toThrow(/content.*cannot be completed safely/);
   });
 
-  it('recovers a legacy hole before a later out-of-order completion on every claim surface', async () => {
-    const completedStart = dayStart(5);
-    const completedEnd = dayStart(4);
+  // Coverage on the arrival axis is ONE contiguous range, so there are no holes
+  // to recover and no gap list to report. What replaces that machinery is the
+  // rule that keeps it contiguous: a completion whose range starts AFTER the
+  // mark books nothing, so it can never leave a hole behind it in the first
+  // place. The same answer has to come back whatever presentation filters the
+  // caller passes, since those page the window HISTORY, not the pending state.
+  it('never opens a hole, and reports the same pending state under every presentation filter', async () => {
+    const staleMark = dayStart(4);
     await sql`
-      INSERT INTO runs (
-        organization_id, run_type, automation_id, status, outcome,
-        approved_input, action_output, run_metadata, created_at, completed_at
-      ) VALUES (
-        ${orgId}, 'automation', ${automationId}, 'completed', 'scoreable',
-        ${sql.json({
-          granularity: 'daily',
-          window_start: completedStart.toISOString(),
-          window_end: new Date(completedEnd.getTime() - 1).toISOString(),
-        })},
-        ${sql.json({ signals: [] })}, ${sql.json({ content_analyzed: 0 })},
-        ${completedEnd}, ${completedEnd}
-      )
+      UPDATE automations
+      SET next_window_start = ${staleMark.toISOString()}::timestamptz,
+          completed_window_coverage = '{}'::tstzmultirange,
+          last_completed_window_start = NULL
+      WHERE id = ${automationId}
     `;
 
+    // A completed run for a LATER range, exactly as an out-of-order backfill
+    // leaves one behind.
     await sql`
       INSERT INTO runs (
         organization_id, run_type, automation_id, status, outcome,
@@ -666,7 +692,6 @@ describe('Automation window claim and recovery', () => {
       ) VALUES (
         ${orgId}, 'automation', ${automationId}, 'completed', 'scoreable',
         ${sql.json({
-          granularity: 'daily',
           window_start: dayStart(2).toISOString(),
           window_end: dayStart(1).toISOString(),
         })},
@@ -675,54 +700,23 @@ describe('Automation window claim and recovery', () => {
       )
     `;
 
-    await sql`
-      UPDATE automations
-      SET next_window_start = ${completedEnd.toISOString()}::timestamptz,
-          completed_window_coverage = tstzmultirange(tstzrange(
-            ${dayStart(2).toISOString()}::timestamptz,
-            ${dayStart(1).toISOString()}::timestamptz,
-            '[)'
-          )),
-          window_projection_granularity = 'daily'
-      WHERE id = ${automationId}
-    `;
-
-    const pending = await computePendingWindow(sql, automationId, 'daily');
-    expect(pending.windowStart.toISOString()).toBe(completedEnd.toISOString());
+    const pending = await computePendingWindow(sql, automationId);
+    expect(pending.windowStart.toISOString()).toBe(staleMark.toISOString());
 
     type PendingDetail = {
       pending_analysis?: {
-        unprocessed_count: number;
-        pending_period_count: number;
         unprocessed_content_count: number;
-        next_window: { start: string } | null;
+        next_window: { start: string; end: string } | null;
       };
-      gaps?: Array<{ start: string; end: string }>;
     };
     const detail = (await api.automations.get({
       automation_id: String(automationId),
     })) as PendingDetail;
-    expect(detail.pending_analysis?.unprocessed_count).toBe(3);
-    expect(detail.pending_analysis?.pending_period_count).toBe(3);
-    expect(detail.pending_analysis?.next_window?.start).toBe(completedEnd.toISOString());
-    expect(detail.gaps).toContainEqual({
-      start: completedEnd.toISOString(),
-      end: dayStart(2).toISOString(),
-    });
-    expect(detail.gaps).toContainEqual({
-      start: dayStart(1).toISOString(),
-      end: dayStart(0).toISOString(),
-    });
-    expect(detail.gaps).not.toContainEqual({
-      start: new Date(completedEnd.getTime() - 1).toISOString(),
-      end: completedEnd.toISOString(),
-    });
+    expect(detail.pending_analysis?.next_window?.start).toBe(staleMark.toISOString());
 
     const expectedGlobalDiagnostics = {
-      unprocessed_count: detail.pending_analysis?.unprocessed_count,
-      pending_period_count: detail.pending_analysis?.pending_period_count,
-      next_window: detail.pending_analysis?.next_window,
-      gaps: detail.gaps,
+      unprocessed_content_count: detail.pending_analysis?.unprocessed_content_count,
+      next_window_start: detail.pending_analysis?.next_window?.start,
     };
     for (const presentationFilters of [
       { page: 2, page_size: 1 },
@@ -739,19 +733,19 @@ describe('Automation window claim and recovery', () => {
         ...presentationFilters,
       })) as PendingDetail;
       expect({
-        unprocessed_count: filtered.pending_analysis?.unprocessed_count,
-        pending_period_count: filtered.pending_analysis?.pending_period_count,
-        next_window: filtered.pending_analysis?.next_window,
-        gaps: filtered.gaps,
+        unprocessed_content_count: filtered.pending_analysis?.unprocessed_content_count,
+        next_window_start: filtered.pending_analysis?.next_window?.start,
       }).toEqual(expectedGlobalDiagnostics);
     }
 
     const claimed = await claim();
-    expect(claimed.context.window_start).toBe(completedEnd.toISOString());
+    expect(claimed.context.window_start).toBe(staleMark.toISOString());
     const [automation] = await sql`
       SELECT next_window_start FROM automations WHERE id = ${automationId}
     `;
-    expect(new Date(automation.next_window_start).toISOString()).toBe(completedEnd.toISOString());
+    expect(new Date(automation.next_window_start).toISOString()).toBe(
+      staleMark.toISOString()
+    );
   });
 
   it('completes empty source windows and keeps output/reaction execution idempotent', async () => {

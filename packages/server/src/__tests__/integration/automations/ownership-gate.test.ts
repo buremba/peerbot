@@ -107,7 +107,6 @@ async function seedAutomationAndRun(workspace: TestWorkspace, suffix: string) {
   const runId = await createAutomationResultRun({
     automationId: Number(automation.automation_id),
     organizationId: workspace.org.id,
-    granularity: 'weekly',
     windowStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
     windowEnd: new Date(),
     extractedData: { problems: [] },

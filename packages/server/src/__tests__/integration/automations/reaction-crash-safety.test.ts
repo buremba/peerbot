@@ -10,7 +10,6 @@
  * window — plus the rehydration and retry classification the inline loop used to own.
  */
 
-import { inferAutomationGranularityFromSchedule } from "@lobu/connector-sdk";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	automationReactionIdempotencyKey,
@@ -77,13 +76,7 @@ async function seedRunnableWindow(reactionScript: string) {
 		automation_id: String(automationId),
 		reaction_script: reactionScript,
 	});
-
-	const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-	const { windowStart, windowEnd } = await computePendingWindow(
-		sql as never,
-		automationId,
-		granularity,
-	);
+	const { windowStart, windowEnd } = await computePendingWindow(sql as never, automationId);
 	const queued = await createAutomationRun({
 		organizationId: workspace.org.id,
 		automationId,
@@ -103,11 +96,23 @@ async function seedRunnableWindow(reactionScript: string) {
 	return { sql, workspace, api, automationId, runId: queued.runId };
 }
 
+/**
+ * A window token for a queued run.
+ *
+ * Bound with `run_id`: on the arrival axis an unbound read recomputes
+ * `[mark, horizon)` against a clock that has moved since the run was queued, so
+ * its bounds would no longer match the run's snapshot and `complete_window`
+ * would reject them. Real callers bind the same way.
+ */
 async function issueWindowToken(
 	api: Awaited<ReturnType<typeof seedRunnableWindow>>["api"],
 	automationId: number,
+	runId: number,
 ) {
-	const content = (await api.knowledge.read({ automation_id: automationId })) as {
+	const content = (await api.knowledge.read({
+		automation_id: automationId,
+		run_id: runId,
+	})) as {
 		window_token: string;
 	};
 	return content.window_token;
@@ -120,7 +125,7 @@ async function completeWindow(
 	extracted: Record<string, unknown> = { summary: "Reaction durability run." },
 	windowToken?: string,
 ) {
-	const token = windowToken ?? (await issueWindowToken(api, automationId));
+	const token = windowToken ?? (await issueWindowToken(api, automationId, runId));
 	return (await api.automations.completeWindow({
 		automation_id: String(automationId),
 		run_id: runId,
@@ -199,7 +204,8 @@ describe("automation reaction crash safety", () => {
           content: JSON.stringify({
             run_id: ctx.window.run_id,
             automation_id: ctx.window.automation_id,
-            granularity: ctx.window.granularity,
+            window_start: ctx.window.window_start,
+            window_end: ctx.window.window_end,
             summary: ctx.extracted_data.summary,
             automation_slug: ctx.automation.slug,
           }),
@@ -237,7 +243,12 @@ describe("automation reaction crash safety", () => {
 		expect(seen.automation_id).toBe(automationId);
 		expect(seen.summary).toBe("Churn rose 4%.");
 		expect(seen.automation_slug).toBe("reaction-automation");
-		expect(seen.granularity).toBeTruthy();
+		// Arrival-axis windows have no granularity, and the SDK field is gone with
+		// it. The BOUNDS are what a reaction reads; asserting the key is absent
+		// keeps a reintroduced field from going unnoticed.
+		expect(seen).not.toHaveProperty("granularity");
+		expect(seen.window_start).toBeTruthy();
+		expect(seen.window_end).toBeTruthy();
 
 		// The run is logged where get_automation already surfaces it.
 		const logged = await sql`
@@ -254,7 +265,7 @@ describe("automation reaction crash safety", () => {
 			"export default async function reaction() { return; }",
 		);
 
-		const token = await issueWindowToken(api, automationId);
+		const token = await issueWindowToken(api, automationId, runId);
 		await completeWindow(api, automationId, runId, undefined, token);
 		const first = await reactionTasks(sql, runId);
 		expect(first.length).toBe(1);

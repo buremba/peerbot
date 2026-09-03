@@ -8,6 +8,7 @@ import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import { nextRunAt } from '../../../utils/cron';
+import { intervals } from '../../../config/intervals';
 import { recordChangeEvent, recordLifecycleEvent } from '../../../utils/insert-event';
 import { recordToolConfigChange } from '../helpers/config-audit';
 import logger from '../../../utils/logger';
@@ -70,8 +71,6 @@ import {
   syncAutomationChannelFeedsBestEffort,
 } from '../../../automations/channel-subscriptions';
 import { assertAutomationDeliveryTarget } from '../../../automations/delivery-target';
-import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
-import { nextAutomationWindowStart } from '../../../utils/window-utils';
 
 /**
  * Drop chat-link style triggers when cloning an Automation onto an entity.
@@ -320,12 +319,6 @@ export async function handleCreate(
       const entityIdsArray = entityId ? [entityId] : [];
 
       const projectionNow = new Date();
-      const projectionGranularity = inferAutomationGranularityFromSchedule(triggerWrite.schedule);
-      const nextWindowStart = nextAutomationWindowStart(
-        null,
-        projectionNow,
-        projectionGranularity
-      );
       const nextRunAtVal = triggerWrite.schedule
         ? nextRunAt(triggerWrite.schedule, projectionNow, triggerWrite.timezone)
         : null;
@@ -341,7 +334,7 @@ export async function handleCreate(
         min_cooldown_seconds,
         delivery_target, execution_config,
         reaction_script, reaction_script_compiled, reaction_input_schema,
-        next_window_start, completed_window_coverage, window_projection_granularity
+        next_window_start, completed_window_coverage
       ) VALUES (
         ${automationId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
@@ -357,8 +350,9 @@ export async function handleCreate(
         ${toJsonParam(tx, args.execution_config)},
         ${reactionScript}, ${reactionScriptCompiled},
         ${reactionInputSchema ? tx.json(reactionInputSchema) : null},
-        ${nextWindowStart.toISOString()}::timestamptz,
-        '{}'::tstzmultirange, ${projectionGranularity}
+        date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
+          - make_interval(secs => ${intervals.automationFirstWindowLookbackMs / 1000}),
+        '{}'::tstzmultirange
       )
     `;
 
@@ -675,10 +669,6 @@ export async function handleUpdate(
     (effectiveSchedule !== currentRow.schedule ||
       effectiveTimezone !== currentRow.timezone);
   const projectionNow = new Date();
-  const currentGranularity = inferAutomationGranularityFromSchedule(currentRow.schedule);
-  const effectiveGranularity = inferAutomationGranularityFromSchedule(effectiveSchedule);
-  const resetsWindowProjection = touchesCadence && currentGranularity !== effectiveGranularity;
-  const resetWindowStart = nextAutomationWindowStart(null, projectionNow, effectiveGranularity);
   const nextRunAtVal =
     touchesCadence && effectiveSchedule
       ? nextRunAt(effectiveSchedule, projectionNow, effectiveTimezone)
@@ -695,10 +685,6 @@ export async function handleUpdate(
       next_run_at = CASE WHEN ${touchesCadence} THEN ${nextRunAtVal}::timestamptz ELSE next_run_at END,
       consecutive_scheduled_failures = CASE WHEN ${cadenceChanged} THEN 0 ELSE consecutive_scheduled_failures END,
       schedule_auto_paused_at = CASE WHEN ${cadenceChanged} THEN NULL ELSE schedule_auto_paused_at END,
-      next_window_start = CASE WHEN ${resetsWindowProjection} THEN ${resetWindowStart.toISOString()}::timestamptz ELSE next_window_start END,
-      completed_window_coverage = CASE WHEN ${resetsWindowProjection} THEN '{}'::tstzmultirange ELSE completed_window_coverage END,
-      window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END,
-      last_completed_window_start = CASE WHEN ${resetsWindowProjection} THEN NULL ELSE last_completed_window_start END,
       managed_agent_id = CASE WHEN ${has('managed_agent_id')} THEN ${patch.managed_agent_id ?? null} ELSE managed_agent_id END,
       tags = CASE WHEN ${has('tags')} THEN ${toTextArrayParam(patch.tags ?? [])}::text[] ELSE tags END,
       device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,
@@ -1033,16 +1019,6 @@ export async function handleCreateFromVersion(
         const cloneTags = parsePgTextArray(
           version.tags as string | string[] | null,
         ).filter((tag) => tag !== 'system:chat-link');
-        const projectionNow = new Date();
-        const projectionGranularity = inferAutomationGranularityFromSchedule(
-          (version.schedule as string | null) ?? null
-        );
-        const nextWindowStart = nextAutomationWindowStart(
-          null,
-          projectionNow,
-          projectionGranularity
-        );
-
         await tx`
           INSERT INTO automations (
             id, name, slug, organization_id, entity_ids,
@@ -1050,7 +1026,7 @@ export async function handleCreateFromVersion(
             current_version_id, tags, status, created_by, created_at, updated_at,
             automation_group_id, source_automation_id,
             reaction_script, reaction_script_compiled, reaction_input_schema,
-            next_window_start, completed_window_coverage, window_projection_granularity
+            next_window_start, completed_window_coverage
           ) VALUES (
             ${automationId}, ${automationName}, ${automationSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
@@ -1065,8 +1041,9 @@ export async function handleCreateFromVersion(
             ${(version.reaction_script as string | null) ?? null},
             ${(version.reaction_script_compiled as string | null) ?? null},
             ${toJsonParam(tx, version.reaction_input_schema)},
-            ${nextWindowStart.toISOString()}::timestamptz,
-            '{}'::tstzmultirange, ${projectionGranularity}
+            date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
+              - make_interval(secs => ${intervals.automationFirstWindowLookbackMs / 1000}),
+            '{}'::tstzmultirange
           )
         `;
 

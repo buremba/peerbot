@@ -1,16 +1,10 @@
 /**
  * Tool: get_automation (Incremental Time Windows)
  *
- * Query a single automation's analysis windows by date range and granularity.
+ * Query a single automation's analysis windows by arrival date range.
  * Returns time-windowed Automation results sourced directly from runs.
  */
 
-import {
-  addAutomationPeriod,
-  getFinerAutomationGranularities,
-  inferAutomationGranularityFromSchedule,
-  type AutomationTimeGranularity,
-} from '@lobu/connector-sdk';
 import { type Static, Type } from '@sinclair/typebox';
 import { createDbClientFromEnv, type DbClient, getDb } from '../db/client';
 import type { Env } from '../index';
@@ -54,8 +48,8 @@ import {
   ensureIsoString,
   ensureNumber,
   foldUnprocessedRanges,
-  readAutomationPendingProjection,
   parseBigintArray,
+  readPendingWindow,
 } from '../utils/window-utils';
 import { buildLatestAutomationRunJoinSql } from '../automations/automation';
 import { computeAutomationHealth } from '../automations/automation-health';
@@ -85,20 +79,6 @@ export const GetAutomationSchema = Type.Object({
       description:
         'Filter windows until this date. Supports: ISO 8601 ("2025-01-31"), named aliases ("today", "yesterday"), or relative ("7d", "30d", "1m", "1y")',
     })
-  ),
-  granularity: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal('daily'),
-        Type.Literal('weekly'),
-        Type.Literal('monthly'),
-        Type.Literal('quarterly'),
-      ],
-      {
-        description:
-          'Filter by time granularity (daily / weekly / monthly / quarterly). If not provided, returns windows at all granularities; when a requested granularity has no windows the query falls back to the next-finer level.',
-      }
-    )
   ),
   template_version: Type.Optional(
     Type.Number({
@@ -151,12 +131,6 @@ export const GetAutomationSchema = Type.Object({
 
 type GetAutomationArgs = Static<typeof GetAutomationSchema>;
 
-const WindowGapSchema = Type.Object({
-  start: Type.String(),
-  end: Type.String(),
-});
-type WindowGap = Static<typeof WindowGapSchema>;
-
 /**
  * Result of `get_automation`. TypeBox-first (single source of truth): the handler's
  * return type is `Static<>`-derived, and the same schema is the tool's
@@ -166,17 +140,6 @@ export const GetAutomationResultSchema = Type.Object({
   windows: Type.Array(AutomationWindowSchema),
   automation: Type.Optional(AutomationMetadataSchema),
   pending_analysis: Type.Optional(PendingAnalysisSchema),
-  gaps: Type.Optional(
-    Type.Array(WindowGapSchema, {
-      description: 'First 50 exact missing scheduled ranges from the durable coverage projection.',
-    })
-  ),
-  gap_count: Type.Optional(
-    Type.Integer({ description: 'Exact number of missing scheduled range components.' })
-  ),
-  gaps_truncated: Type.Optional(
-    Type.Boolean({ description: 'True when gap_count exceeds the returned gaps array.' })
-  ),
   pagination: Type.Object({
     page: Type.Integer(),
     page_size: Type.Integer(),
@@ -188,9 +151,6 @@ export const GetAutomationResultSchema = Type.Object({
       content_since: Type.Union([Type.String(), Type.Null()]),
       content_until: Type.Union([Type.String(), Type.Null()]),
     }),
-    granularity_filter: Type.Union([Type.String(), Type.Null()]),
-    granularity_actual: Type.Union([Type.String(), Type.Null()]),
-    granularity_fallback_used: Type.Boolean(),
   }),
   warnings: Type.Optional(Type.Array(Type.String())),
   view_url: Type.Optional(Type.String()),
@@ -206,7 +166,6 @@ interface WindowRow {
   run_id: number;
   automation_id: string;
   automation_name: string;
-  granularity: string;
   window_start: string;
   window_end: string;
   content_analyzed: number;
@@ -391,8 +350,6 @@ async function getAutomationImpl(
     parsedUntil = endOfDay.toISOString();
   }
 
-  const finalGranularity = args.granularity;
-
   const whereClauses: string[] = [
     `iw.run_type = 'automation'`,
     `iw.status = 'completed'`,
@@ -420,52 +377,17 @@ async function getAutomationImpl(
     whereClauses.push(`(iw.approved_input->>'window_start')::timestamptz <= ${addParam(parsedUntil)}`);
   }
 
-  if (finalGranularity) {
-    whereClauses.push(`iw.approved_input->>'granularity' = ${addParam(finalGranularity)}`);
-  }
-
   const whereClause = whereClauses.length > 0 ? whereClauses.join(' AND ') : '1=1';
 
   const windowsQuery = `
     ${buildWindowsSelectClause()}
     WHERE ${whereClause}
-    ORDER BY (iw.approved_input->>'window_start')::timestamptz DESC,
-             iw.approved_input->>'granularity' ASC
+    ORDER BY (iw.approved_input->>'window_start')::timestamptz DESC
     LIMIT ${addParam(pageSize)}
     OFFSET ${addParam(offset)}
   `;
 
-  let windows = await sql.unsafe(windowsQuery, params);
-
-  // ============================================
-  // Step 3.5: Fallback to finer granularity if no windows found
-  // ============================================
-
-  let actualGranularity = finalGranularity;
-  let usedFallback = false;
-
-  if (windows.length === 0 && finalGranularity) {
-    const granularityParamIndex = params.length - 2; // index of granularity param (before pageSize, offset)
-
-    for (const fallbackGranularity of getFinerAutomationGranularities(
-      finalGranularity as AutomationTimeGranularity
-    )) {
-      const fallbackParams = [...params];
-      fallbackParams[granularityParamIndex - 1] = fallbackGranularity;
-
-      const fallbackWindows = await sql.unsafe(windowsQuery, fallbackParams);
-
-      if (fallbackWindows.length > 0) {
-        logger.info(
-          `[get_automation] Fallback: No ${finalGranularity} windows found, showing ${fallbackWindows.length} ${fallbackGranularity} windows instead`
-        );
-        windows = fallbackWindows;
-        actualGranularity = fallbackGranularity;
-        usedFallback = true;
-        break;
-      }
-    }
-  }
+  const windows = await sql.unsafe(windowsQuery, params);
 
   // ============================================
   // Step 4: Total window count for pagination
@@ -726,7 +648,6 @@ async function getAutomationImpl(
       run_id: ensureNumber(w.run_id),
       automation_id: String(w.automation_id),
       automation_name: w.automation_name,
-      granularity: w.granularity,
       // window_start/end and created_at come back from postgres.js as Date
       // objects (raw timestamp columns, no ::text cast), while the outputSchema
       // declares Type.String(). Coerce to ISO so structuredContent validates;
@@ -895,14 +816,10 @@ async function getAutomationImpl(
   // Generate processing instructions for client-driven Automation generation
 
   let pendingAnalysis: PendingAnalysis | undefined;
-  let projectedWindowGaps: WindowGap[] | undefined;
-  let projectedGapCount: number | undefined;
-  let projectedGapsTruncated: boolean | undefined;
 
   if (args.automation_id && automationRow) {
     const automationEntityIds = parseBigintArray(automationRow.entity_ids);
     const automationEntityId = automationEntityIds[0] ?? 0;
-    const timeGranularity = inferAutomationGranularityFromSchedule(automationRow.schedule);
 
     // Identity scopes + latest window end were folded into the automation
     // metadata query above. Read both off automationRow — no extra round-trip.
@@ -958,7 +875,7 @@ async function getAutomationImpl(
         WHERE iwc.event_id = f.id AND iwc.automation_id = $1
       )`;
 
-    // unprocessed_count drives the badge ("N pending analysis"). Cap the
+    // unprocessed_content_count drives the badge ("N pending analysis"). Cap the
     // scan at 1000 rows: the badge shows "1000+" semantics above that, and
     // the cap keeps the page query under the 10s frontend timeout even on
     // entities with 100K+ events in the lookback window. The 90-day bound
@@ -1013,33 +930,16 @@ async function getAutomationImpl(
 
     const unprocessedContentCount = Number(unprocessedCountResult[0]?.count ?? 0);
 
-    // Calculate next window bounds based on granularity using the
-    // already-fetched latestEnd (no extra round-trip).
-    let nextWindow: PendingAnalysis['next_window'] = null;
-
-    const projection = await readAutomationPendingProjection(
-      sql,
-      Number(args.automation_id),
-      timeGranularity,
-      new Date()
-    );
-    const pendingWindowCount = projection.pendingPeriodCount;
-    projectedWindowGaps = projection.missingRanges.map((range) => ({
-      start: range.start.toISOString(),
-      end: range.end.toISOString(),
-    }));
-    projectedGapCount = projection.missingRangeCount;
-    projectedGapsTruncated = projection.gapsTruncated;
-
-    if (pendingWindowCount > 0) {
-      const oldestMissingStart = projection.missingRanges[0]?.start ?? projection.nextWindowStart;
-      const windowEnd = addAutomationPeriod(oldestMissingStart, timeGranularity);
-      nextWindow = {
-        start: oldestMissingStart.toISOString(),
-        end: windowEnd.toISOString(),
-        granularity: timeGranularity,
-      };
-    }
+    // The arrival range a claim would hand out. Read without a lock or a seed:
+    // a status surface must not move the mark it is reporting.
+    const pending = await readPendingWindow(sql, Number(args.automation_id));
+    const nextWindow: PendingAnalysis['next_window'] =
+      pending && pending.windowEnd > pending.windowStart
+        ? {
+            start: pending.windowStart.toISOString(),
+            end: pending.windowEnd.toISOString(),
+          }
+        : null;
 
     const unprocessedRanges = args.include_pending_ranges
       ? foldUnprocessedRanges(
@@ -1062,19 +962,12 @@ async function getAutomationImpl(
       : null;
 
     pendingAnalysis = {
-      unprocessed_count: pendingWindowCount,
-      pending_period_count: pendingWindowCount,
       unprocessed_content_count: unprocessedContentCount,
       next_window: nextWindow,
       next_action: nextAction,
       unprocessed_ranges: unprocessedRanges.length > 0 ? unprocessedRanges : undefined,
     };
 
-    if (pendingWindowCount > 0) {
-      logger.info(
-        `[get_automation] Found ${pendingWindowCount} missing completed periods for Automation ${args.automation_id}`
-      );
-    }
   }
 
   // ============================================
@@ -1101,12 +994,6 @@ async function getAutomationImpl(
   // Step 8: Return results with diagnostic info
   // ============================================
 
-  if (usedFallback && finalGranularity && actualGranularity) {
-    warnings.push(
-      `No ${finalGranularity} windows available yet. Showing ${actualGranularity} windows instead.`
-    );
-  }
-
   const organizationSlug = automationRow?.organization_id
     ? await getOrganizationSlug(automationRow.organization_id)
     : null;
@@ -1120,9 +1007,6 @@ async function getAutomationImpl(
     windows: formattedWindows,
     ...(automationMetadata && { automation: automationMetadata }),
     ...(pendingAnalysis && { pending_analysis: pendingAnalysis }),
-    ...(projectedWindowGaps?.length ? { gaps: projectedWindowGaps } : {}),
-    ...(projectedGapCount !== undefined ? { gap_count: projectedGapCount } : {}),
-    ...(projectedGapsTruncated ? { gaps_truncated: true } : {}),
     pagination: {
       page,
       page_size: pageSize,
@@ -1134,9 +1018,6 @@ async function getAutomationImpl(
         content_since: parsedSince || null,
         content_until: parsedUntil || null,
       },
-      granularity_filter: finalGranularity || null,
-      granularity_actual: actualGranularity || null,
-      granularity_fallback_used: usedFallback,
     },
     ...(warnings.length > 0 && { warnings }),
     ...(viewUrl && { view_url: viewUrl }),

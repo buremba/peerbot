@@ -1,6 +1,5 @@
 /** Eval replays record proposed output on the eval run without mutating live runs. */
 
-import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import type { Env } from '../../../index';
@@ -80,13 +79,7 @@ async function setup() {
     content: 'Something happened worth summarizing.',
     occurred_at: new Date(Date.now() - 60 * 60 * 1000),
   });
-
-  const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
-  const { windowStart, windowEnd } = await computePendingWindow(
-    sql as unknown as DbClient,
-    automationId,
-    granularity
-  );
+  const { windowStart, windowEnd } = await computePendingWindow(sql as unknown as DbClient, automationId);
   const sourceRun = await createAutomationRun({
     organizationId: workspace.org.id,
     automationId,
@@ -99,7 +92,14 @@ async function setup() {
     UPDATE runs SET status = 'running', claimed_at = NOW(), claimed_by = ${`lobu:${agent.agentId}`}
     WHERE id = ${sourceRun.runId}
   `;
-  const knowledge = (await api.knowledge.read({ automation_id: automationId })) as {
+  // Bind every read to the run that will complete it, the way a real Automation
+  // run does. An unbound read recomputes the arrival window against the clock,
+  // so its bounds land milliseconds after the ones the run was queued with and
+  // the completion is rejected for a period the run does not own.
+  const liveKnowledge = (await api.knowledge.read({
+    automation_id: automationId,
+    run_id: sourceRun.runId,
+  })) as {
     window_token: string;
   };
   const liveContext = toolCtx(workspace.org.id, ownerUserId, 'live');
@@ -107,7 +107,7 @@ async function setup() {
     {
       action: 'complete_window',
       automation_id: String(automationId),
-      window_token: knowledge.window_token,
+      window_token: liveKnowledge.window_token,
       extracted_data: LIVE_EXTRACTION,
       run_id: sourceRun.runId,
     } as never,
@@ -119,6 +119,12 @@ async function setup() {
     sql as unknown as DbClient
   );
   if (!evalRun) throw new Error('eval run was not created');
+  const evalKnowledge = (await api.knowledge.read({
+    automation_id: automationId,
+    run_id: evalRun.runId,
+  })) as {
+    window_token: string;
+  };
 
   return {
     sql,
@@ -127,7 +133,7 @@ async function setup() {
     automationId,
     sourceRunId: sourceRun.runId,
     evalRunId: evalRun.runId,
-    windowToken: knowledge.window_token,
+    windowToken: evalKnowledge.window_token,
     liveContext,
     captureContext: toolCtx(workspace.org.id, ownerUserId, 'capture'),
   };

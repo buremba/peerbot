@@ -300,7 +300,6 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
       'scheduler_client_id',
       'next_window_start',
       'completed_window_coverage',
-      'window_projection_granularity',
       'last_completed_window_start',
     ]),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),

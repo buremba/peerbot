@@ -15,11 +15,7 @@ import {
   type AutomationEventTrigger,
   type AutomationWorkspaceEventTrigger,
 } from '@lobu/core/contracts/tools/manage-automations';
-import {
-  inferAutomationGranularityFromSchedule,
-  type AutomationTimeGranularity,
-  type ConnectorTriggerSignal,
-} from '@lobu/connector-sdk';
+import type { ConnectorTriggerSignal } from '@lobu/connector-sdk';
 import {
   claimAutomationCooldown,
   lockAutomationForActivation,
@@ -68,11 +64,6 @@ export interface AutomationRunPayload {
   window_start: string;
   window_end: string;
   dispatch_source: AutomationDispatchSource;
-  /**
-   * Snapshot of the logical period shape at run creation. Optional only for
-   * persisted runs created before this field existed.
-   */
-  granularity?: AutomationTimeGranularity;
   /**
    * Snapshot of the automation's `current_version_id` at run-creation time.
    * The agent and `complete_window` use this fixed version for the entire
@@ -677,7 +668,7 @@ async function createAutomationRunWithClient(
   // Snapshot the automation's current_version_id at run-creation time so the
   // entire run uses a fixed version even if the group is edited mid-run.
   const versionRows = await sql`
-    SELECT current_version_id, schedule
+    SELECT current_version_id
     FROM automations
     WHERE id = ${params.automationId}
     LIMIT 1
@@ -686,9 +677,6 @@ async function createAutomationRunWithClient(
     versionRows.length > 0 && versionRows[0].current_version_id != null
       ? Number(versionRows[0].current_version_id)
       : null;
-  const snapshotGranularity = inferAutomationGranularityFromSchedule(
-    versionRows[0]?.schedule as string | null | undefined
-  );
 
   // device_worker_id + agent_kind get persisted into approved_input so the
   // server-side dispatcher (#802) can skip device-pinned rows from the SQL
@@ -710,7 +698,6 @@ async function createAutomationRunWithClient(
     window_start: params.windowStart,
     window_end: params.windowEnd,
     dispatch_source: params.dispatchSource,
-    granularity: snapshotGranularity,
     version_id: snapshotVersionId,
     device_worker_id: normalizedDeviceWorkerId,
     agent_kind: normalizedAgentKind,
@@ -1036,7 +1023,7 @@ export async function createAutomationEventRun(
     }
 
     const versionRows = await tx`
-      SELECT current_version_id, schedule
+      SELECT current_version_id
       FROM automations
       WHERE id = ${params.automationId}
       LIMIT 1
@@ -1050,9 +1037,6 @@ export async function createAutomationEventRun(
       window_start: signalWindowStart,
       window_end: signalWindowEnd,
       dispatch_source: 'event',
-      granularity: inferAutomationGranularityFromSchedule(
-        versionRows[0]?.schedule as string | null | undefined
-      ),
       version_id: versionId,
       device_worker_id: params.deviceWorkerId ?? null,
       agent_kind: params.agentKind ?? null,

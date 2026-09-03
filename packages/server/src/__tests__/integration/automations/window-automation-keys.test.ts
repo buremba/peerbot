@@ -2,7 +2,6 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import { getAutomation } from "../../../tools/get_automation";
 import { manageAutomations } from "../../../tools/admin/manage_automations";
-import { nextAutomationWindowStart } from "../../../utils/window-utils";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -80,18 +79,13 @@ describe("Automation window vocabulary", () => {
 			SET approved_input = approved_input - 'window_start' - 'window_end'
 			WHERE id = ${turnRunId}
 		`;
-		const expectedNextWindow = nextAutomationWindowStart(
-			new Date(windowStart),
-			new Date(),
-			"daily",
-		);
 		// The fixture inserts completed history directly, bypassing the completion
-		// handler. Seed the durable state that migration backfill would derive.
+		// handler, so plant the arrival mark the handler would have left behind.
+		const expectedMark = new Date("2026-08-01T00:00:00.000Z");
 		await sql`
 			UPDATE automations
-			SET next_window_start = ${expectedNextWindow.toISOString()}::timestamptz,
-				completed_window_coverage = '{}'::tstzmultirange,
-				window_projection_granularity = 'daily'
+			SET next_window_start = ${expectedMark.toISOString()}::timestamptz,
+				completed_window_coverage = '{}'::tstzmultirange
 			WHERE id = ${automationId}
 		`;
 		await createTestEvent({
@@ -111,7 +105,17 @@ describe("Automation window vocabulary", () => {
 		expect(String(window.automation_id)).toBe(String(automationId));
 		expect(window.automation_name).toBe("Window vocab");
 		expect(detail.automation?.slug).toBe("window-vocab");
-		expect(detail.pending_analysis?.next_window?.start).toBe(expectedNextWindow.toISOString());
+		// The pending window a claim would hand out starts at the mark and runs to
+		// the arrival horizon — no period, no granularity.
+		expect(detail.pending_analysis?.next_window?.start).toBe(expectedMark.toISOString());
+		// Ends at the arrival horizon: behind the clock by the settle budget, give
+		// or take the millisecond the database clock is rounded up by.
+		expect(
+			new Date(detail.pending_analysis?.next_window?.end as string).getTime(),
+		).toBeLessThanOrEqual(Date.now() + 1);
+		expect(
+			new Date(detail.pending_analysis?.next_window?.end as string).getTime(),
+		).toBeGreaterThan(expectedMark.getTime());
 	});
 
 });

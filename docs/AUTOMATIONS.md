@@ -44,12 +44,25 @@ queue without removing any existing mechanism.
 
 ## Window recovery and external processors
 
-Scheduled windows have a durable expected-period cursor. It advances by exactly
-one period only after that logical window completes, including a legitimate
-zero-source result. Failed, timed-out, abandoned, and lease-expired attempts do
-not advance it, so the same period remains visible in `pending_analysis` and can
-be attempted again. Backlog counts and `gaps` therefore include completed periods
-that have not yet materialized as run results.
+Windows select rows by `events.created_at` — when Lobu STORED the row, not when
+the content is dated. A connector routinely stores rows long after the fact: in
+production 56.3% of first-seen rows arrived more than an hour after their
+`occurred_at` and 37.8% more than seven days after, so a calendar window closed
+before its content ever landed and no run saw it.
+
+Each Automation therefore carries one durable arrival mark,
+`automations.next_window_start`, and a run covers `[mark, now - settle)`. The
+mark advances only when a window completes, including a legitimate zero-source
+result; failed, timed-out, abandoned, and lease-expired attempts leave it where
+it is, so the same arrivals stay claimable. There is no backlog of periods to
+walk: one run covers a whole outage, however long, and the next one starts
+caught up.
+
+The cadence still decides WHEN a run fires; it no longer shapes what the run
+covers. `settle` is `AUTOMATION_ARRIVAL_SETTLE_MS` (default 60s): `created_at` is
+stamped at the writer's transaction start while the row only becomes visible at
+commit, so a window stops one writer-transaction short of the clock. A row stored
+inside the settle window belongs to the next run, never to none.
 
 Repeated execution failures are bounded by a schedule circuit breaker. After
 `AUTOMATION_PAUSE_AFTER_CONSECUTIVE_FAILURES` consecutive scheduled runs fail or
@@ -60,14 +73,19 @@ A successful scheduled or manual window, or a real schedule/timezone change,
 clears the failure state and resumes the cursor. A scheduled notification sweep
 durably notifies workspace admins and owners once per pause generation.
 
-`pending_analysis.pending_period_count` is the explicit logical-window backlog;
-`unprocessed_count` carries the same missing-period value for existing clients.
+`pending_analysis.next_window` is the arrival range a claim would hand out, or
+null while the mark is younger than the settle budget (a just-created or
+just-seeded Automation).
 `unprocessed_content_count` separately counts source items not linked to a
 completed Automation run. Presentation pagination and date filters affect only
-the returned completed-window list, never these global backlog diagnostics.
-Missing scheduled ranges come from the same durable compact coverage projection.
-`gap_count` is exact; `gaps` returns at most the first 50 components and
-`gaps_truncated` is true when more components exist.
+the returned completed-window list, never these global diagnostics.
+
+An agent may still ask for an explicit `since`/`until` range. A range that starts
+AFTER the mark books nothing when it completes: the arrivals it stepped over stay
+claimable, and `window_lag.unclaimed_from` / `unclaimed_to` plus a `guidance`
+sentence say so in the payload the run actually reads. A range entirely behind
+the mark is a re-read and books nothing either. Coverage therefore stays one
+contiguous span and can never develop a hole.
 
 An external processor starts with an atomic claim instead of a separate read and
 run creation:
@@ -105,8 +123,8 @@ The database serializes claims per Automation. The signed tokens bind the exact
 window, run attempt, lease, source IDs, and page chain. A stale attempt cannot
 complete after a newer claim, while retrying an already committed completion is
 idempotent even after its lease expires. If a non-pageable source exceeds its
-bound, completion fails closed and the Automation source or granularity must be
-narrowed. An assigned `managed_agent_id` does not exclude external claiming; ordinary
+bound, completion fails closed and the Automation source must be narrowed. An
+assigned `managed_agent_id` does not exclude external claiming; ordinary
 internal dispatch through that agent continues to use the same run lifecycle.
 
 ## Activation types

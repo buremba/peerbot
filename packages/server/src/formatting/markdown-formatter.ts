@@ -811,7 +811,6 @@ function formatGetAutomationResult(result: any, _options: FormatterOptions): str
     md += `## ${idx + 1}. ${window.automation_name}\n\n`;
 
     md += `**Window**: ${new Date(window.window_start).toLocaleDateString()} - ${new Date(window.window_end).toLocaleDateString()}  \n`;
-    md += `**Granularity**: ${window.granularity}  \n`;
     md += `**Content Analyzed**: ${window.content_analyzed}  \n`;
     md += `**Model**: ${window.model_used}  \n`;
     md += `**Execution Time**: ${window.execution_time_ms}ms\n\n`;
@@ -834,24 +833,20 @@ function formatGetAutomationResult(result: any, _options: FormatterOptions): str
 }
 
 /**
- * Explain a gap created by an explicitly requested later range.
+ * Explain the arrivals an explicitly requested later range leaves unclaimed.
  *
- * Silent unless something actually was skipped, which never happens on a healthy
- * run — `window_lag.guidance` is absent whenever `periods_skipped` is zero, so
- * the threshold lives in `describeWindowLag` and there is none to tune here.
- *
- * Normal Automation dispatch is sequential and never emits this notice. What is
- * left is the caller's decision about whether an explicitly omitted span is
- * worth reading back.
+ * Silent unless something actually was skipped, which never happens on an
+ * ordinary read — that one starts at the Automation's arrival mark, so
+ * `window_lag.guidance` is absent and there is no threshold to tune here.
  */
 function formatWindowLag(lag: any): string {
-  // The prose is `describeWindowLag`'s string, the SAME one the JSON payload
-  // carries as `guidance` — Automation runs read this response as JSON through
-  // run_sdk and never render markdown, so the payload is the surface that
-  // matters; this render is for clients that do read markdown.
+  // The prose is `describeUnclaimedArrivals`'s string, the SAME one the JSON
+  // payload carries as `guidance` — Automation runs read this response as JSON
+  // through run_sdk and never render markdown, so the payload is the surface
+  // that matters; this render is for clients that do read markdown.
   const guidance = typeof lag?.guidance === 'string' ? lag.guidance : '';
   if (!guidance) return '';
-  return `## \u23F3 Skipped Periods\n\n${guidance}\n\n`;
+  return `## \u23F3 Unclaimed Arrivals\n\n${guidance}\n\n`;
 }
 
 /**

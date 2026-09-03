@@ -277,6 +277,14 @@ TS
   # spawn fails. Disable it here — the worker only talks to the loopback mock,
   # and this gate isn't testing the prod network sandbox. No-op on macOS.
   echo "LOBU_DISABLE_SYSTEMD_RUN=1"
+  # Automation windows select `events.created_at` and stop one settle window
+  # short of the database clock, so in production a row is claimable 60s after
+  # it lands. This gate syncs a connector and triggers the Automation over it in
+  # the same breath, which that budget would hide entirely — the trigger would
+  # fail with an empty arrival window. Collapse it here; the settle window has
+  # its own coverage in `arrival-axis-window.test.ts`, which runs it at the
+  # production value.
+  echo "AUTOMATION_ARRIVAL_SETTLE_MS=0"
   [ -n "${DATABASE_URL:-}" ] && echo "DATABASE_URL=$DATABASE_URL"
 } >> "$PROJ/.env"
 
@@ -644,14 +652,6 @@ VT_V1="$(vt_version)"
 [ -n "$VT_V1" ] || fail "company view template was not applied (no default version — declarative viewTemplate broken)"
 echo "✓ apply set entity-type view template (company default v$VT_V1)"
 
-# Read the pending period before dispatch so the instant fixed mock reply cannot
-# requeue the run between trigger and this deterministic completion.
-RK="$RUN_DIR/read-knowledge.json"
-api read_knowledge "{\"automation_id\":$AUTOMATION_ID}" > "$RK" 2>/dev/null \
-  || { cat "$RK" >&2; fail "read_knowledge (automation mode) failed"; }
-WINDOW_TOKEN="$(jget window_token < "$RK")"
-[ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
-
 # Trigger the automation — exercise the FULL dispatch path. This mints an internal
 # service token (needs the `lobu-internal` oauth_client, ensured by
 # getLobuServiceToken) and dispatches an automation run to a spawned worker.
@@ -660,6 +660,21 @@ api manage_automations "{\"action\":\"trigger\",\"automation_id\":\"$AUTOMATION_
   || { cat "$TW" >&2; fail "automation trigger failed"; }
 TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
 [ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "automation trigger did not dispatch a run (no run_id)"; }
+
+# Read the period AFTER dispatch, bound to the run that will complete it — the
+# way a real Automation run reads. This used to read before the trigger so the
+# instant fixed mock reply could not requeue the run underneath it, which worked
+# while windows were calendar periods: the same period came back either way.
+# Arrival windows are `[mark, now - settle)`, so an UNBOUND read resolves against
+# the clock and lands a few milliseconds off the bounds the trigger just queued,
+# and the completion is rejected for a period the run does not own. Binding to
+# `run_id` reproduces the run's own bounds exactly, and is immune to a requeue
+# for a better reason than reading early was: it names the run.
+RK="$RUN_DIR/read-knowledge.json"
+api read_knowledge "{\"automation_id\":$AUTOMATION_ID,\"run_id\":$TRIG_RUN_ID}" > "$RK" 2>/dev/null \
+  || { cat "$RK" >&2; fail "read_knowledge (automation mode) failed"; }
+WINDOW_TOKEN="$(jget window_token < "$RK")"
+[ -n "$WINDOW_TOKEN" ] || { cat "$RK" >&2; fail "read_knowledge returned no window_token (no content in window — connector events missing?)"; }
 
 CW="$RUN_DIR/complete-window.json"
 api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2],r=Number(process.argv[3]);process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,run_id:r,window_token:t,extracted_data:{s:"SDKE2E_REACTION_OK"},run_metadata:{executor:"sdk-e2e"}}))' "$WINDOW_TOKEN" "$AUTOMATION_ID" "$TRIG_RUN_ID")" > "$CW" 2>/dev/null \
@@ -706,17 +721,20 @@ grep -q '"companies"' "$PUB" && grep -q '"observations"' "$PUB" \
   || { cat "$PUB" >&2; fail "publisher API response omitted its named outputs"; }
 grep -q 'keying_config' "$PUB" && { cat "$PUB" >&2; fail "retired keying_config leaked through the public Automation API"; }
 
-PUB_RK="$RUN_DIR/publisher-read-knowledge.json"
-api read_knowledge "{\"automation_id\":$PUBLISHER_ID}" > "$PUB_RK" 2>/dev/null \
-  || { cat "$PUB_RK" >&2; fail "publisher read_knowledge failed"; }
-PUB_WINDOW_TOKEN="$(jget window_token < "$PUB_RK")"
-[ -n "$PUB_WINDOW_TOKEN" ] || { cat "$PUB_RK" >&2; fail "publisher read_knowledge returned no window_token"; }
-
 PUB_TRIGGER="$RUN_DIR/publisher-trigger.json"
 api manage_automations "{\"action\":\"trigger\",\"automation_id\":\"$PUBLISHER_ID\"}" > "$PUB_TRIGGER" 2>/dev/null \
   || { cat "$PUB_TRIGGER" >&2; fail "publisher trigger failed"; }
 PUB_RUN_ID="$(jget run_id < "$PUB_TRIGGER" 2>/dev/null || echo)"
 [ -n "$PUB_RUN_ID" ] || { cat "$PUB_TRIGGER" >&2; fail "publisher trigger did not dispatch a run (no run_id)"; }
+
+# Bound to the run, for the same reason as the digest Automation above: an
+# unbound read resolves the arrival window against the clock and cannot
+# reproduce the bounds the trigger just queued.
+PUB_RK="$RUN_DIR/publisher-read-knowledge.json"
+api read_knowledge "{\"automation_id\":$PUBLISHER_ID,\"run_id\":$PUB_RUN_ID}" > "$PUB_RK" 2>/dev/null \
+  || { cat "$PUB_RK" >&2; fail "publisher read_knowledge failed"; }
+PUB_WINDOW_TOKEN="$(jget window_token < "$PUB_RK")"
+[ -n "$PUB_WINDOW_TOKEN" ] || { cat "$PUB_RK" >&2; fail "publisher read_knowledge returned no window_token"; }
 
 PUB_CW="$RUN_DIR/publisher-complete-window.json"
 api manage_automations "$(node -e 'const t=process.argv[1],w=process.argv[2],r=Number(process.argv[3]);process.stdout.write(JSON.stringify({action:"complete_window",automation_id:w,run_id:r,window_token:t,extracted_data:{companies:[{name:"SDK E2E Output Co",domain:"sdk-output.example"}],observations:[{title:"SDK E2E observation",content:"SDKE2E_OUTPUT_EVENT",metadata:{amount:42},idempotency_key:"sdk-e2e-output-observation"}]},run_metadata:{executor:"sdk-e2e"}}))' "$PUB_WINDOW_TOKEN" "$PUBLISHER_ID" "$PUB_RUN_ID")" > "$PUB_CW" 2>/dev/null \

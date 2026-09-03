@@ -2,11 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
 	resolveAutomationExecutor,
 } from "../tools/admin/manage_automations/executors";
-import {
-	inferAutomationGranularityFromSchedule,
-	isAutomationTimeGranularity,
-	type AutomationTimeGranularity,
-} from "@lobu/connector-sdk";
 import { generateWorkerToken, getErrorMessage } from "@lobu/core";
 import {
 	automationTriggerSignals,
@@ -37,7 +32,8 @@ import { ToolUserError } from "../utils/errors";
 import { classifyRunOutcome } from "../runs/run-outcome";
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from "../utils/run-statuses";
 import {
-	advanceExpectedAutomationWindow,
+	automationArrivalSettleMs,
+	advanceAutomationArrivalMark,
 	computePendingWindow,
 } from "../utils/window-utils";
 import {
@@ -120,6 +116,16 @@ interface QueueAutomationRunResult {
 	runId: number;
 	status: string;
 	created: boolean;
+	/**
+	 * The arrival range the run actually recorded.
+	 *
+	 * Returned rather than recomputed by the caller: the horizon moves between
+	 * two `computePendingWindow` calls, so a caller that books its own earlier
+	 * reading would leave the milliseconds in between claimed by the run but
+	 * never covered by the mark.
+	 */
+	windowStart: Date;
+	windowEnd: Date;
 }
 
 export function buildLatestAutomationRunJoinSql(
@@ -198,9 +204,6 @@ export function parseAutomationRunPayload(
 		window_start: windowStart,
 		window_end: windowEnd,
 		dispatch_source: dispatchSource,
-		granularity: isAutomationTimeGranularity(payload.granularity)
-			? payload.granularity
-			: undefined,
 		version_id: Number.isFinite(versionId as number)
 			? (versionId as number)
 			: null,
@@ -274,12 +277,19 @@ async function enqueueAutomationRunForRecord(
 		);
 	}
 
-	const granularity = inferAutomationGranularityFromSchedule(automation.schedule);
-	const { windowStart, windowEnd } = await computePendingWindow(
-		sql,
-		automation.id,
-		granularity
-	);
+	// The arrival window [mark, horizon). It is empty only while the mark is
+	// younger than the settle budget — a just-created Automation, or one whose
+	// mark was seeded at cutover. The scheduled path checks for that before it
+	// gets here and waits a tick; a manual trigger gets a clear answer instead
+	// of a run that reads nothing.
+	const { windowStart, windowEnd } = await computePendingWindow(sql, automation.id);
+	if (windowEnd <= windowStart) {
+		throw new ToolUserError(
+			`Automation ${automation.id} has nothing new to run yet: rows stored after ` +
+				`${windowStart.toISOString()} become claimable ${automationArrivalSettleMs() / 1000}s after they land.`,
+			409,
+		);
+	}
 
 	const runParams = {
 			organizationId: automation.organization_id,
@@ -298,15 +308,15 @@ async function enqueueAutomationRunForRecord(
 		? await createAutomationRunInTransaction(runParams, tx)
 		: await createAutomationRun(runParams, sql);
 
-	return queued;
+	return { ...queued, windowStart, windowEnd };
 }
 
 async function completeSkippedAutomationRun(
 	sql: DbClient,
 	automationId: number,
-	runId: number,
 	windowStart: Date,
-	granularity: AutomationTimeGranularity,
+	windowEnd: Date,
+	runId: number,
 ): Promise<void> {
 	// A server-side skip has no child stdout. Preserve the historical `{}`
 	// action_output for consumers, while output_tail makes the terminal no-op
@@ -319,8 +329,6 @@ async function completeSkippedAutomationRun(
 			    outcome = ${classifyRunOutcome({ status: "completed" })},
 			    action_output = '{}'::jsonb,
 			    output_tail = 'No-op: scheduled source content is unchanged.',
-			    approved_input = COALESCE(approved_input, '{}'::jsonb)
-			      || jsonb_build_object('granularity', ${granularity}::text),
 			    run_metadata = COALESCE(run_metadata, '{}'::jsonb)
 			      || '{"content_analyzed":0,"skipped_unchanged":true}'::jsonb,
 			    completed_at = current_timestamp
@@ -330,12 +338,9 @@ async function completeSkippedAutomationRun(
 			RETURNING id
 		`;
 		if (!completed) return;
-		await advanceExpectedAutomationWindow(
-			tx,
-			automationId,
-			windowStart,
-			granularity,
-		);
+		// An unchanged window is still arrival progress: the mark moves so the
+		// next tick fingerprints what arrives next instead of the same range.
+		await advanceAutomationArrivalMark(tx, automationId, windowStart, windowEnd);
 	});
 }
 
@@ -871,16 +876,16 @@ export async function materializeDueAutomationRuns(
 			const scheduleTrigger = automation.triggers?.find(
 				(trigger) => trigger.kind === "schedule"
 			);
+			// Nothing to hand out while the mark is younger than the settle budget
+			// (a just-created or just-seeded Automation). Leave next_run_at where
+			// it is: the horizon passes the mark within one settle window, so the
+			// next tick materializes the run instead of erroring and skipping a
+			// whole cron period.
+			const pending = await computePendingWindow(sql, automation.id);
+			if (pending.windowEnd <= pending.windowStart) return "skipped";
 			let sourceFingerprint: string | undefined;
 			if (scheduleTrigger?.skip_if_unchanged === true) {
-				const granularity = inferAutomationGranularityFromSchedule(
-					automation.schedule
-				);
-				const { windowStart, windowEnd } = await computePendingWindow(
-					sql,
-					automation.id,
-					granularity
-				);
+				const { windowStart, windowEnd } = pending;
 				const sourceState = await fingerprintAutomationSources({
 					sql,
 					automationId: automation.id,
@@ -912,20 +917,17 @@ export async function materializeDueAutomationRuns(
 					// concurrent replica materialized for real work. Completing that
 					// row as "skipped" would silently kill a live dispatch.
 					if (skippedRun.created) {
+						// Book the range the RUN recorded, not the one fingerprinted a
+						// moment earlier: the horizon moved in between.
 						await completeSkippedAutomationRun(
 							sql,
 							automation.id,
+							skippedRun.windowStart,
+							skippedRun.windowEnd,
 							skippedRun.runId,
-							windowStart,
-							granularity,
 						);
 					}
-					await advanceAutomationScheduleAfterSuccessfulWindow(
-						sql,
-						automation.id,
-						Boolean(automation.device_worker_id),
-						granularity
-					);
+					await advanceAutomationScheduleAfterSuccessfulWindow(sql, automation.id);
 					logger.info(
 						{ automationId: automation.id, empty: sourceState.empty },
 						"[automation] Skipped unchanged Automation sources before agent dispatch"

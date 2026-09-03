@@ -343,14 +343,17 @@ describe("channel feed as an automation @feed source", () => {
       channelKey: FEED_KEY,
     });
     const sql = getTestDb();
-    // One message inside the window, one well before it.
+    // One message stored inside the window, one stored well before it. The
+    // window selects on `created_at` — when Lobu stored the row — so the
+    // out-of-window row is backdated on THAT column; a message merely dated two
+    // days ago but stored now belongs to this window and is meant to be read.
     await sql`
       INSERT INTO channel_messages (
         organization_id, connection_id, platform, channel_id,
-        platform_message_id, author_name, is_bot, text, occurred_at
+        platform_message_id, author_name, is_bot, text, occurred_at, created_at
       ) VALUES
-        (${orgId}, ${conn.runtimeId}, 'slack', ${CHANNEL}, 'w-in', 'A', false, 'inside window', NOW()),
-        (${orgId}, ${conn.runtimeId}, 'slack', ${CHANNEL}, 'w-out', 'B', false, 'before window', NOW() - interval '2 days')
+        (${orgId}, ${conn.runtimeId}, 'slack', ${CHANNEL}, 'w-in', 'A', false, 'inside window', NOW(), NOW()),
+        (${orgId}, ${conn.runtimeId}, 'slack', ${CHANNEL}, 'w-out', 'B', false, 'before window', NOW() - interval '2 days', NOW() - interval '2 days')
     `;
 
     const windowStart = new Date(Date.now() - 60 * 60 * 1000).toISOString();

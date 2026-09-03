@@ -54,7 +54,14 @@ export interface DataSourceContext {
   /** When set, events CTE filters to events belonging to any of these entities */
   entityIds?: number[];
   query?: Record<string, string>;
-  /** When set, events CTE is filtered to this time window (incremental mode) */
+  /**
+   * When set, the events and channel_messages CTEs are filtered to rows STORED
+   * in `[windowStart, windowEnd)` — `created_at`, the arrival axis, never
+   * `occurred_at`. An Automation window is "what arrived since the last run":
+   * a resynced or backfilled row with an old `occurred_at` lands in the window
+   * of the run that follows its arrival instead of vanishing inside a period
+   * that already completed.
+   */
   windowStart?: string;
   windowEnd?: string;
   /** Drop rows this Automation produced during its own source execution. */
@@ -663,7 +670,7 @@ export function buildScopedQuery(
         eventsCte += ` AND ev.entity_ids && ARRAY[${placeholders.join(',')}]::bigint[]`;
       }
 
-      // Time window scoping (incremental mode)
+      // Arrival-window scoping (Automation mode): rows stored in the window.
       if (context.windowStart && context.windowEnd) {
         idx++;
         params.push(context.windowStart);
@@ -671,7 +678,7 @@ export function buildScopedQuery(
         idx++;
         params.push(context.windowEnd);
         const windowEndP = `$${idx}`;
-        eventsCte += ` AND ev.occurred_at >= ${windowStartP}::timestamptz AND ev.occurred_at < ${windowEndP}::timestamptz`;
+        eventsCte += ` AND ev.created_at >= ${windowStartP}::timestamptz AND ev.created_at < ${windowEndP}::timestamptz`;
       }
 
       // An Automation never reads what it wrote itself. This used to be bought by
@@ -854,7 +861,7 @@ export function buildScopedQuery(
         idx++;
         params.push(context.windowEnd);
         const cmWindowEnd = `$${idx}`;
-        cmCte += ` AND cm.occurred_at >= ${cmWindowStart}::timestamptz AND cm.occurred_at < ${cmWindowEnd}::timestamptz`;
+        cmCte += ` AND cm.created_at >= ${cmWindowStart}::timestamptz AND cm.created_at < ${cmWindowEnd}::timestamptz`;
       }
       cmCte += channelMessagesVisibility('cm');
       cmCte += ')';

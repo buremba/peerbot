@@ -1,4 +1,3 @@
-import { inferAutomationGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { activateWorkspaceEventTask } from '../../../automations/workspace-event';
 import { enqueueWorkspaceEventActivations } from '../../../automations/workspace-event-enqueue';
@@ -201,14 +200,13 @@ describe('Automation event outputs', () => {
     })) as { automation_id: string };
     const unrelatedConsumerId = Number(unrelatedConsumer.automation_id);
     await sql`UPDATE automations SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${automationId}`;
-
-    const granularity = inferAutomationGranularityFromSchedule('0 9 * * *');
-    const pending = await computePendingWindow(sql as unknown as DbClient, automationId, granularity);
+    const pending = await computePendingWindow(sql as unknown as DbClient, automationId);
     const source = await createTestEvent({
       entity_id: parent.id,
       organization_id: workspace.org.id,
       content: 'A source event the Automation can reply to.',
       occurred_at: new Date(pending.windowStart.getTime() + 60 * 60 * 1000),
+      created_at: new Date(pending.windowStart.getTime() + 1),
     });
     const queued = await createAutomationRun({
       organizationId: workspace.org.id,
@@ -222,7 +220,10 @@ describe('Automation event outputs', () => {
       UPDATE runs SET status = 'running', claimed_at = NOW(), claimed_by = ${`lobu:${agent.agentId}`}
       WHERE id = ${queued.runId}
     `;
-    const knowledge = (await api.knowledge.read({ automation_id: automationId })) as {
+    const knowledge = (await api.knowledge.read({
+      automation_id: automationId,
+      run_id: queued.runId,
+    })) as {
       window_token: string;
     };
     const extracted = {

@@ -60,7 +60,7 @@ caught up.
 
 The cadence still decides WHEN a run fires; it no longer shapes what the run
 covers. `settle` is `AUTOMATION_ARRIVAL_SETTLE_MS` (default 60s): `created_at` is
-stamped when the inserting statement runs while the row only becomes visible at
+stamped at the writer's transaction start while the row only becomes visible at
 commit, so a window stops one writer-transaction short of the clock. A row stored
 inside the settle window belongs to the next run, never to none.
 
@@ -123,7 +123,8 @@ The database serializes claims per Automation. The signed tokens bind the exact
 window, run attempt, lease, source IDs, and page chain. A stale attempt cannot
 complete after a newer claim, while retrying an already committed completion is
 idempotent even after its lease expires. If a non-pageable source exceeds its
-bound, completion fails closed and the Automation source must be narrowed. An assigned `managed_agent_id` does not exclude external claiming; ordinary
+bound, completion fails closed and the Automation source must be narrowed. An
+assigned `managed_agent_id` does not exclude external claiming; ordinary
 internal dispatch through that agent continues to use the same run lifecycle.
 
 ## Activation types

@@ -387,7 +387,6 @@ describe('automation CRUD', () => {
           automation_id: automationId,
           window_start: new Date('2026-01-01').toISOString(),
           window_end: new Date('2026-01-02').toISOString(),
-          granularity: 'day',
           content_analyzed: 1,
         },
         automation: {

@@ -3,7 +3,7 @@
  *
  * Automation windows select rows by `events.created_at`, and stop one settle
  * window short of the database clock. That offset is a bet about the WRITER:
- * `created_at` is stamped when the inserting statement runs, while the row only
+ * `created_at` is stamped at the writer's transaction start, while the row only
  * becomes visible at commit, so any window whose horizon passes a row's
  * `created_at` before that row commits completes without it — silently, and
  * forever, because nothing ever re-offers it.
@@ -41,12 +41,14 @@ const SERVER_SRC = path.resolve(
  * The sanctioned `INSERT INTO events` sites. Paths are relative to
  * `packages/server/src`.
  *
- * `insert-event.ts` is a single statement on the pooled autocommit connection,
- * so its transaction IS the statement. `feedback.ts` wraps its inserts in an
- * explicit `sql.begin` alongside a `SELECT ... FOR UPDATE` and an `UPDATE runs`
- * — three local statements, no network call, so it still commits in single-digit
- * milliseconds. Neither reaches outside the database while its transaction is
- * open, which is the property the budget actually depends on.
+ * `insert-event.ts` wraps its INSERT in a short local `getDb().begin(...)`
+ * together with the activation enqueue, or runs inside the transaction a caller
+ * hands it through `options.sql`. `feedback.ts` wraps its inserts in an explicit
+ * `sql.begin` alongside a `SELECT ... FOR UPDATE` and an `UPDATE runs`. Both are
+ * a handful of local statements with no network call, so they commit in
+ * single-digit milliseconds. Neither reaches outside the database while its
+ * transaction is open, which is the property the budget actually depends on;
+ * a caller that passes its own transaction inherits that caller's length.
  */
 const SANCTIONED_INSERT_SITES = [
 	// The one ingestion writer. Every connector row, every agent-written note,

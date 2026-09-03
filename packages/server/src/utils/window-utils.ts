@@ -26,15 +26,6 @@ import { ToolUserError } from './errors';
 /**
  * How long a stored row must have settled before a window may include it.
  *
- * `created_at` is the writer's transaction start. A row whose transaction is
- * still open when a claim reads the clock is invisible to that read, yet its
- * `created_at` already lies behind the horizon — so with a bare `now()` it
- * would fall inside a range that completes without it. The horizon is therefore
- * `now() − settle`, and the exposure is exactly one writer's transaction length.
- * Bound the writer, not the reader: `events-insert-sites.test.ts` enumerates the
- * two `INSERT INTO events` sites and asserts their transactions stay far inside
- * this budget, and prod's `idle_in_transaction_session_timeout` is one minute.
- *
  * Read through the lazy getter, never cached: an operator widens it during an
  * incident without a deploy, and an integration test collapses it to see a row
  * it just inserted. Default and rationale live in `config/intervals.ts`.
@@ -46,16 +37,6 @@ export function automationArrivalSettleMs(): number {
 /** The newest instant a window may reach, given the database clock. */
 export function automationArrivalHorizon(dbNow: Date): Date {
   return new Date(dbNow.getTime() - automationArrivalSettleMs());
-}
-
-/**
- * The arrival mark a newly created Automation starts from: one bounded lookback
- * behind the creation instant, so its first run can see content that was
- * already ingested. See `intervals.automationFirstWindowLookbackMs` for why the
- * creation path differs from the repair path and from the cutover seed.
- */
-export function automationFirstWindowStart(dbNow: Date): Date {
-  return new Date(dbNow.getTime() - intervals.automationFirstWindowLookbackMs);
 }
 
 /**
@@ -140,7 +121,8 @@ export async function computePendingWindow(
     }
     // A NULL mark is a repair, not a creation: we do not know what this
     // Automation has already processed, so we start at the clock rather than
-    // reaching back. `automationFirstWindowStart` is the creation path only.
+    // reaching back. Only the creation INSERTs in `manage_automations/crud.ts`
+    // reach back, by `intervals.automationFirstWindowLookbackMs`.
     const seeded = new Date(row.db_now);
     await tx`
       UPDATE automations

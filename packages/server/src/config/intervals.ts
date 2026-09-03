@@ -143,13 +143,13 @@ export const intervals = {
   /**
    * How far behind the database clock an Automation's arrival window may reach.
    *
-   * Automation windows select rows by `events.created_at`, and `created_at` is
-   * stamped when the inserting statement runs while the row becomes VISIBLE
-   * only at commit. Between the two, a concurrent reader can compute a horizon
-   * that already sits past a row it cannot see — and that row would fall inside
-   * a window which completes without it. The horizon is therefore
-   * `now() - this`, and the exposure is exactly one writer's transaction
-   * length.
+   * Automation windows select rows by `events.created_at`, and `created_at`
+   * (`DEFAULT now()`) is stamped at the writer's transaction START while the
+   * row becomes VISIBLE only at commit. Between the two, a concurrent reader
+   * can compute a horizon that already sits past a row it cannot see — and
+   * that row would fall inside a window which completes without it. The
+   * horizon is therefore `now() - this`, and the exposure is exactly one
+   * writer's transaction length.
    *
    * Bound the WRITER, not the reader: `events-insert-sites.test.ts` enumerates
    * the two `INSERT INTO events` sites and asserts their transactions stay far

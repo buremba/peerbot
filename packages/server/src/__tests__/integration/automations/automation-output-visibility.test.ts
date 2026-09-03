@@ -11,8 +11,9 @@
  * it was produced. Of 163 automation-output events written in 30 days, 153 were
  * stamped in the future and 45 were still invisible at the time of measurement.
  *
- * The future stamp was not decoration: window membership is
- * `occurred_at >= window_start AND occurred_at < window_end`, so pushing the
+ * The future stamp was not decoration: window membership was then
+ * `occurred_at >= window_start AND occurred_at < window_end` (it is
+ * `created_at` today), so pushing the
  * output to the window's exclusive end is the ONLY thing that kept an Automation
  * from re-reading its own output as input on its next run inside the same
  * window. Nothing else excluded it — there is no self-exclusion predicate in

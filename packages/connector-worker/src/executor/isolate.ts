@@ -18,7 +18,7 @@ import dns from 'node:dns';
 import net from 'node:net';
 import tls from 'node:tls';
 import type { EventEnvelope } from '@lobu/connector-sdk';
-import { isReservedIp, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
+import { ipFamily, isReservedIp, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
 import { IsolateHost, IsolateHostError, type IsolateTerminalState } from '../isolate/bridge.js';
 import { assertIsolateEligible } from '../isolate/eligibility.js';
 import type { IsolatedVm } from '../isolate/ivm-types.js';
@@ -293,14 +293,40 @@ function normalizeDomain(domain: string): string {
   return domain.trim().toLowerCase().replace(/^\*\./, '').replace(/\.$/, '');
 }
 
-/** IPv4 dotted quads and bracketed IPv6 literals never match as "subdomains". */
-function isIpLiteral(host: string): boolean {
-  return host.startsWith('[') || /^\d+(\.\d+){3}$/.test(host);
+/**
+ * Names that never denote a public endpoint. This is defence in depth only:
+ * any name can point at a private address, so the ENFORCING control is the
+ * resolve-and-check in `hostFetch` / `socketOpen`, which runs on the resolved
+ * addresses before a socket opens. Denying these by name just fails faster,
+ * and without a DNS round trip.
+ */
+const INTERNAL_HOST_SUFFIXES = ['.local', '.localhost', '.internal', '.intranet', '.corp', '.lan', '.home'];
+
+function isInternalHostname(host: string): boolean {
+  return host === 'localhost' || INTERNAL_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
 }
 
+/**
+ * Whether a run may reach `hostname`.
+ *
+ * An EMPTY `allowedDomains` means the public internet, not "closed". The
+ * process lane this replaced had no allowlist at all, so closing egress by
+ * default would take every connector offline rather than preserve a boundary
+ * that never existed; reserved address space stays denied either way. A
+ * NON-EMPTY list is a genuine restriction: only those domains and their
+ * subdomains, and still never reserved space.
+ */
 export function hostAllowed(hostname: string, allowedDomains: readonly string[]): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/, '');
-  if (isIpLiteral(host)) return allowedDomains.includes(host);
+  const host = stripIpv6Brackets(hostname.toLowerCase().replace(/\.$/, ''));
+  // An EXACT entry is always honoured, reserved or not: naming `127.0.0.1` or
+  // an internal hostname is how a self-hosted install reaches its own database
+  // and how the fixture suites reach their loopback servers. Reserved space is
+  // denied only when nothing named it — so an empty list can never reach the
+  // metadata endpoint, and `['spotify.com']` cannot either.
+  if (allowedDomains.includes(host)) return true;
+  if (ipFamily(host) !== 0) return !isReservedIp(host) && allowedDomains.length === 0;
+  if (isInternalHostname(host)) return false;
+  if (allowedDomains.length === 0) return true;
   return allowedDomains.some((domain) => host === domain || host.endsWith(`.${domain}`));
 }
 
@@ -857,26 +883,39 @@ export class IsolateExecutor implements SyncExecutor {
 
     for (let hop = 0; ; hop++) {
       if (!hostAllowed(url.hostname, this.options.allowedDomains)) {
-        const closed =
-          this.options.allowedDomains.length === 0 ? ' (egress is closed: no domains were supplied for this run)' : '';
-        const denied = new Error(`fetch to ${url.hostname} is not in the connector's allowed domains${closed}`);
+        const scope =
+          this.options.allowedDomains.length === 0
+            ? ' (reserved and internal hosts are never reachable)'
+            : ` (this run may reach: ${this.options.allowedDomains.join(', ')})`;
+        const denied = new Error(`fetch to ${url.hostname} is not permitted${scope}`);
         denied.name = 'EgressDenied';
         throw denied;
       }
-      if (!net.isIP(url.hostname)) {
+      // The ENFORCING half of the check: a public-looking name may resolve
+      // into reserved space, and with an empty allowlist `hostAllowed` admits
+      // every name, so this is the only thing standing between a connector and
+      // the metadata endpoint. A lookup that FAILS must deny rather than fall
+      // through — swallowing it handed the decision to `fetch`'s own resolver,
+      // which resolves independently and may answer differently.
+      if (ipFamily(stripIpv6Brackets(url.hostname)) === 0) {
+        let addresses: Array<{ address: string }>;
         try {
-          const addresses = await dns.promises.lookup(url.hostname, { all: true });
-          for (const a of addresses) {
-            if (isReservedIp(a.address) && !this.options.allowedDomains.includes(a.address)) {
-              const denied = new Error(
-                `fetch to ${url.hostname} (${a.address}) is blocked: resolved to a private or reserved IP address`
-              );
-              denied.name = 'EgressDenied';
-              throw denied;
-            }
-          }
+          addresses = await dns.promises.lookup(url.hostname, { all: true });
         } catch (err) {
-          if ((err as Error).name === 'EgressDenied') throw err;
+          const denied = new Error(
+            `fetch to ${url.hostname} is blocked: its address could not be resolved (${(err as Error).message})`
+          );
+          denied.name = 'EgressDenied';
+          throw denied;
+        }
+        for (const a of addresses) {
+          if (isReservedIp(a.address) && !this.options.allowedDomains.includes(a.address)) {
+            const denied = new Error(
+              `fetch to ${url.hostname} (${a.address}) is blocked: resolved to a private or reserved IP address`
+            );
+            denied.name = 'EgressDenied';
+            throw denied;
+          }
         }
       }
       let response: Response;

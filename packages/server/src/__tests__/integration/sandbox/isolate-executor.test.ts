@@ -479,7 +479,8 @@ describe("isolate lane: fixture connector", () => {
 		const direct = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
 			allowedDomains: ["example.com"],
 		});
-		expect(direct.message).toContain("127.0.0.1 is not in the connector's allowed domains");
+		expect(direct.message).toContain("fetch to 127.0.0.1 is not permitted");
+		expect(direct.message).toContain("this run may reach: example.com");
 		expect(direct.exitReason).toBe("error_message");
 
 		const hop = await failIsolate(
@@ -487,26 +488,41 @@ describe("isolate lane: fixture connector", () => {
 			syncJob({ scenario: "fetch", url: `${baseUrl}/redirect-elsewhere` }),
 			{ allowedDomains: ["127.0.0.1"] },
 		);
-		expect(hop.message).toContain("localhost is not in the connector's allowed domains");
+		expect(hop.message).toContain("fetch to localhost is not permitted");
 
-		// An IP literal never matches as a "subdomain" of a shorter suffix.
+		// An IP literal never matches as a "subdomain" of a shorter suffix. The
+		// hermetic form of this rule, over public literals the fixture server
+		// cannot host, is in isolate-executor-options.test.ts.
 		const sub = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
 			allowedDomains: ["0.0.1"],
 		});
-		expect(sub.message).toContain("127.0.0.1 is not in the connector's allowed domains");
+		expect(sub.message).toContain("fetch to 127.0.0.1 is not permitted");
 	});
 
-	it("closes egress when no allowed domains are supplied: the default and an empty list both deny before a request leaves", async () => {
+	it("denies reserved address space whether or not an allowlist is supplied, before a request leaves", async () => {
+		// An empty allowlist opens the PUBLIC internet (the process lane this
+		// replaced had no allowlist at all), but never reserved space — and the
+		// fixture server is on loopback, so both shapes still deny here. The
+		// public-open half is asserted exhaustively over `hostAllowed` in
+		// packages/connector-worker/src/__tests__/isolate-executor-options.test.ts,
+		// which needs no network.
 		const before = hits;
 		const byDefault = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }));
-		expect(byDefault.message).toContain("127.0.0.1 is not in the connector's allowed domains");
-		expect(byDefault.message).toContain("egress is closed");
+		expect(byDefault.message).toContain("fetch to 127.0.0.1 is not permitted");
+		expect(byDefault.message).toContain("reserved and internal hosts are never reachable");
 		expect(byDefault.exitReason).toBe("error_message");
 
 		const explicit = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
 			allowedDomains: [],
 		});
-		expect(explicit.message).toContain("egress is closed");
+		expect(explicit.message).toContain("reserved and internal hosts are never reachable");
+
+		// A non-empty allowlist that does not name the host denies for the other
+		// reason, and names what the run may reach.
+		const restricted = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
+			allowedDomains: ["example.com"],
+		});
+		expect(restricted.message).toContain("this run may reach: example.com");
 		expect(hits).toBe(before);
 	});
 

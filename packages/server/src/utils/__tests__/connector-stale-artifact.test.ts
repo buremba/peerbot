@@ -133,9 +133,15 @@ describe('resolveConnectorCode compile-config staleness', () => {
   test('normalizing a PRE-COMPILED upload is idempotent — no duplicate __createRequire shim (sdk-e2e regression)', async () => {
     // A `compiled: true` upload (lobu apply, device reconcile) stores the
     // artifact itself in source_code with a NULL fingerprint, so first
-    // resolution recompiles THAT artifact. The compile must strip its own CJS
-    // shim banner before re-adding it — the double declaration is exactly the
-    // "Identifier '__createRequire' has already been declared" sdk-e2e failure.
+    // resolution recompiles THAT artifact. Re-compiling an artifact that already
+    // carries a CJS shim banner is how "Identifier '__createRequire' has already
+    // been declared" reached sdk-e2e.
+    //
+    // The isolate lane emits NO banner — its prelude defines `require` in the
+    // guest — so a recompiled artifact must carry ZERO declarations, not the one
+    // the process lane's banner used to add. Asserting the exact count keeps the
+    // original guard's strength: a banner reappearing here is the first step
+    // back toward the duplicate declaration, and it fails immediately.
     const { compileConnectorSource } = await import('../connector-compiler');
     const precompiled = await compileConnectorSource(STORED_SOURCE);
     storedSourceCode = precompiled.compiledCode;
@@ -150,7 +156,7 @@ describe('resolveConnectorCode compile-config staleness', () => {
     });
 
     const shimDeclarations = code.match(/createRequire as __createRequire/g) ?? [];
-    expect(shimDeclarations).toHaveLength(1);
+    expect(shimDeclarations).toHaveLength(0);
     expect(code).toContain('RECOMPILED_FROM_SOURCE_MARKER');
   });
 

@@ -69,6 +69,17 @@ describe('IsolateExecutor options', () => {
     expect(hostAllowed('my-service.local', [])).toBe(false);
     expect(hostAllowed('internal.corp', [])).toBe(false);
 
+    // An IP literal never matches as a "subdomain" of a shorter suffix.
+    expect(hostAllowed('8.8.8.8', ['8.8'])).toBe(false);
+    expect(hostAllowed('8.8.8.8', ['8.8.8.8'])).toBe(true);
+
+    // An EXACT entry is honoured even for reserved space: that is how a
+    // self-hosted install reaches its own database and how the fixture suites
+    // reach a loopback server. Nothing weaker admits reserved space.
+    expect(hostAllowed('127.0.0.1', ['127.0.0.1'])).toBe(true);
+    expect(hostAllowed('localhost', ['localhost'])).toBe(true);
+    expect(hostAllowed('127.0.0.1', ['0.0.1'])).toBe(false);
+
     // When an explicit domain allowlist is supplied, restrict to it
     expect(hostAllowed('api.spotify.com', ['spotify.com'])).toBe(true);
     expect(hostAllowed('spotify.com', ['spotify.com'])).toBe(true);

@@ -1111,6 +1111,20 @@ var exports = module.exports;
     new DataView(this.buffer, this.byteOffset, this.byteLength).setBigInt64(offset || 0, BigInt(val), false);
     return (offset || 0) + 8;
   };
+  // Node's Buffer.prototype.copy. Missing it failed the postgres connector at
+  // the first wire read with "prev.copy is not a function" -- postgres.js grows
+  // its read buffer with it. Node clamps to the destination's remaining room
+  // rather than throwing, and returns the number of bytes written.
+  Uint8Array.prototype.copy = function (target, targetStart, sourceStart, sourceEnd) {
+    var start = targetStart || 0;
+    var from = sourceStart || 0;
+    var to = sourceEnd === undefined ? this.length : sourceEnd;
+    var slice = this.subarray(from, to);
+    var room = target.length - start;
+    if (slice.length > room) slice = slice.subarray(0, room < 0 ? 0 : room);
+    target.set(slice, start);
+    return slice.length;
+  };
   global.Buffer = Buffer;
 
   // ---------------------------------------------------------------------------

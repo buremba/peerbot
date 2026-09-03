@@ -97,9 +97,13 @@ jobs:
           # jobs are completed-success, which an unfinished producer cannot
           # fake, and none of the six is the job doing the dispatching.
 
-          jobs=$(gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}/jobs?filter=all&per_page=100")
-          jq -n --argjson pages "$jobs" --arg required "$REQUIRED_IMAGE_JOBS" \
-            '{pages: $pages, required: ($required | split(" "))}' \
+          # Piped, never --argjson: filter=all returns the jobs of every rerun
+          # attempt, so this payload grows without bound and dies with "jq:
+          # Argument list too long" past ARG_MAX. macOS has no per-argument cap,
+          # so the failure cannot be reproduced locally.
+          gh api --paginate --slurp "repos/${REPOSITORY}/actions/runs/${IMAGE_RUN_ID}/jobs?filter=all&per_page=100" \
+            | jq --arg required "$REQUIRED_IMAGE_JOBS" \
+              '{pages: ., required: ($required | split(" "))}' \
             | node scripts/release-provenance.mjs attest-jobs >/dev/null
 
           ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id' | tr -d '\n')

@@ -217,6 +217,19 @@ describe("the release is created bound to the attested commit", () => {
     expect(body()).toContain("main advanced after attestation");
   });
 
+  it("pipes paginated API payloads into jq instead of passing them as arguments", () => {
+    // A paginated payload handed to jq via --argjson dies with "jq: Argument
+    // list too long" once it outgrows the runner's per-argument cap (Linux
+    // MAX_ARG_STRLEN is 128KB; the release list was already 808KB at 106
+    // releases). macOS has no equivalent per-arg cap, so this cannot be caught
+    // locally -- it only ever fails in CI, and the release-decision step runs
+    // on every main push, so it blocked all releases.
+    const yml = read("release-please.yml");
+    expect(yml).not.toContain("--argjson pages");
+    const piped = yml.match(/gh api --paginate --slurp [^\n]*\\\n\s*\| jq /g);
+    expect(piped).toHaveLength(3);
+  });
+
   it("lets release-please open the PR and creates the release itself", () => {
     const action = steps("release-please.yml", id).find((step) =>
       step.uses?.includes("release-please-action")

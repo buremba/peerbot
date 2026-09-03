@@ -26,10 +26,11 @@
 -- called inside the same transaction as the completion it books.
 --
 -- Safe as an app-only writer: the only completion paths that store
--- `action_output` — and so the only ones these triggers ever fired for — are
--- `complete-window.ts` and `completeSkippedAutomationRun` in
--- `automations/automation.ts`. `run-completion.ts`, `runs-queue.ts` and the
--- device exit report in `run-lifecycle.ts` never set it.
+-- `action_output` are `complete-window.ts` and `completeSkippedAutomationRun`
+-- in `automations/automation.ts`. `feedback.ts` also rewrites `action_output`,
+-- but on a run that already completed, so the trigger it fired re-derived the
+-- same coverage and booked nothing new. `run-completion.ts`, `runs-queue.ts`
+-- and the device exit report in `run-lifecycle.ts` never set it.
 DROP TRIGGER IF EXISTS advance_automation_window_projection_from_run ON public.runs;
 DROP FUNCTION IF EXISTS public.advance_automation_window_projection_from_run();
 
@@ -52,20 +53,21 @@ DROP FUNCTION IF EXISTS public.record_automation_last_completed_window_from_run(
 UPDATE automations
 SET next_window_start = date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
     completed_window_coverage = '{}'::tstzmultirange,
-    last_completed_window_start = NULL,
-    window_projection_granularity = NULL;
+    last_completed_window_start = NULL;
 
--- 3. Retell the columns on the new axis.
+-- 3. Drop the calendar granularity outright.
 --
--- `window_projection_granularity` keeps its NULL values and no longer has a
--- writer; the follow-up that retypes `completed_window_coverage` to a plain
--- timestamptz drops it.
+-- It held the period that interpreted the pre-arrival-axis cursor. Nothing
+-- reads it — the only remaining references are tests asserting it is NULL — and
+-- step 2 would blank every row anyway, so keeping the column buys no rollback
+-- material, just a dead column. One irreversible cutover, not two.
+ALTER TABLE automations DROP COLUMN IF EXISTS window_projection_granularity;
+
+-- 4. Retell the surviving columns on the new axis.
 COMMENT ON COLUMN automations.next_window_start IS
   'Arrival mark: the oldest events.created_at not yet covered by a completed run. Advanced only by advanceAutomationArrivalMark, inside the completion transaction.';
 COMMENT ON COLUMN automations.completed_window_coverage IS
   'Completed arrival coverage as one contiguous range [first booked, next_window_start). Kept as a multirange for one release; it carries no information the mark does not.';
-COMMENT ON COLUMN automations.window_projection_granularity IS
-  'Unused. Held the calendar granularity that interpreted the pre-arrival-axis window cursor; dropped once completed_window_coverage is retyped.';
 
 -- migrate:down
 

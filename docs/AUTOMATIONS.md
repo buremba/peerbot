@@ -74,7 +74,8 @@ clears the failure state and resumes the cursor. A scheduled notification sweep
 durably notifies workspace admins and owners once per pause generation.
 
 `pending_analysis.next_window` is the arrival range a claim would hand out, or
-null when nothing has settled since the last completion.
+null while the mark is younger than the settle budget (a just-created or
+just-seeded Automation).
 `unprocessed_content_count` separately counts source items not linked to a
 completed Automation run. Presentation pagination and date filters affect only
 the returned completed-window list, never these global diagnostics.

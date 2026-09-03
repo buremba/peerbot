@@ -204,7 +204,6 @@ describe("automation reaction crash safety", () => {
           content: JSON.stringify({
             run_id: ctx.window.run_id,
             automation_id: ctx.window.automation_id,
-            granularity: ctx.window.granularity,
             window_start: ctx.window.window_start,
             window_end: ctx.window.window_end,
             summary: ctx.extracted_data.summary,
@@ -244,9 +243,10 @@ describe("automation reaction crash safety", () => {
 		expect(seen.automation_id).toBe(automationId);
 		expect(seen.summary).toBe("Churn rose 4%.");
 		expect(seen.automation_slug).toBe("reaction-automation");
-		// Arrival-axis windows have no granularity; the SDK field survives as ''
-		// until the queued major drops it. The BOUNDS are what a reaction reads.
-		expect(seen.granularity).toBe("");
+		// Arrival-axis windows have no granularity, and the SDK field is gone with
+		// it. The BOUNDS are what a reaction reads; asserting the key is absent
+		// keeps a reintroduced field from going unnoticed.
+		expect(seen).not.toHaveProperty("granularity");
 		expect(seen.window_start).toBeTruthy();
 		expect(seen.window_end).toBeTruthy();
 

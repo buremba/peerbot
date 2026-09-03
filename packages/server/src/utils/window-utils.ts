@@ -49,6 +49,16 @@ export function automationArrivalHorizon(dbNow: Date): Date {
 }
 
 /**
+ * The arrival mark a newly created Automation starts from: one bounded lookback
+ * behind the creation instant, so its first run can see content that was
+ * already ingested. See `intervals.automationFirstWindowLookbackMs` for why the
+ * creation path differs from the repair path and from the cutover seed.
+ */
+export function automationFirstWindowStart(dbNow: Date): Date {
+  return new Date(dbNow.getTime() - intervals.automationFirstWindowLookbackMs);
+}
+
+/**
  * The database clock, rounded UP to the next whole millisecond.
  *
  * Truncating DOWN put the reading up to a millisecond behind the real clock, so
@@ -128,6 +138,9 @@ export async function computePendingWindow(
     if (row.next_window_start) {
       return arrivalWindowFromRow(row, new Date(row.next_window_start));
     }
+    // A NULL mark is a repair, not a creation: we do not know what this
+    // Automation has already processed, so we start at the clock rather than
+    // reaching back. `automationFirstWindowStart` is the creation path only.
     const seeded = new Date(row.db_now);
     await tx`
       UPDATE automations
@@ -337,17 +350,17 @@ export function foldUnprocessedRanges(
 /**
  * Resolve an agent-supplied `since`/`until` to a UTC instant.
  *
- * Window boundaries are UTC everywhere in this file (`alignToAutomationWindowStart`
- * is all `setUTCHours`), but `parseDateAlias` normalizes every result to midnight
- * in the SERVER's LOCAL zone — and the two disagree by a full day in BOTH
- * directions:
+ * Window boundaries are UTC everywhere in this file (`requestedArrivalWindow`
+ * builds its day edge with `Date.UTC`), but `parseDateAlias` normalizes every
+ * result to midnight in the SERVER's LOCAL zone — and the two disagree by a
+ * full day in BOTH directions:
  *
  *   UTC-5  `new Date('2026-08-06')` is UTC midnight = local Aug 5 19:00, so
  *          `.setHours(0,0,0,0)` lands on Aug 5. The agent asked for the 6th and
  *          would have written the 5th.
- *   UTC+3  the same call lands on local Aug 6 = `2026-08-05T21:00Z`, which
- *          `alignToAutomationWindowStart` then snaps back to Aug 5. Same wrong day,
- *          reached by a different route.
+ *   UTC+3  the same call lands on local Aug 6 = `2026-08-05T21:00Z`, which a
+ *          UTC day boundary then reads as Aug 5. Same wrong day, reached by a
+ *          different route.
  *
  * `get_automation.next_action` hands MCP clients exactly such a `YYYY-MM-DD` string,
  * so the server's own suggested call did not round-trip on any non-UTC

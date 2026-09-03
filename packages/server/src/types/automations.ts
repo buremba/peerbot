@@ -209,9 +209,10 @@ export const PendingAnalysisSchema = Type.Object({
    */
   unprocessed_content_count: Type.Integer(),
   /**
-   * The arrival range a claim would hand out: `[mark, now - settle)`. Null when
-   * nothing has settled since the last completion — the only state in which an
-   * Automation has no window to claim.
+   * The arrival range a claim would hand out: `[mark, now - settle)`. Null only
+   * while the mark is younger than the settle budget (a just-created or
+   * just-seeded Automation) — the only state in which an Automation has no
+   * window to claim.
    */
   next_window: Type.Union([
     Type.Object({

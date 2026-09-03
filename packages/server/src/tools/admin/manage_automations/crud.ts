@@ -8,6 +8,7 @@ import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { isUniqueViolation } from '../../../utils/pg-errors';
 import { nextRunAt } from '../../../utils/cron';
+import { intervals } from '../../../config/intervals';
 import { recordChangeEvent, recordLifecycleEvent } from '../../../utils/insert-event';
 import { recordToolConfigChange } from '../helpers/config-audit';
 import logger from '../../../utils/logger';
@@ -349,7 +350,8 @@ export async function handleCreate(
         ${toJsonParam(tx, args.execution_config)},
         ${reactionScript}, ${reactionScriptCompiled},
         ${reactionInputSchema ? tx.json(reactionInputSchema) : null},
-        date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
+        date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
+          - make_interval(secs => ${intervals.automationFirstWindowLookbackMs / 1000}),
         '{}'::tstzmultirange
       )
     `;
@@ -1039,7 +1041,8 @@ export async function handleCreateFromVersion(
             ${(version.reaction_script as string | null) ?? null},
             ${(version.reaction_script_compiled as string | null) ?? null},
             ${toJsonParam(tx, version.reaction_input_schema)},
-            date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
+            date_trunc('milliseconds', current_timestamp) + interval '1 millisecond'
+              - make_interval(secs => ${intervals.automationFirstWindowLookbackMs / 1000}),
             '{}'::tstzmultirange
           )
         `;

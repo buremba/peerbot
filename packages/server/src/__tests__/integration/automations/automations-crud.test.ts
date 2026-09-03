@@ -84,16 +84,14 @@ describe('automation CRUD', () => {
     const [createdProjection] = await getTestDb()<{
       next_window_start: string | Date | null;
       completed_window_coverage: string;
-      window_projection_granularity: string | null;
       last_completed_window_start: string | Date | null;
     }[]>`
       SELECT next_window_start, completed_window_coverage::text AS completed_window_coverage,
-             window_projection_granularity, last_completed_window_start
+             last_completed_window_start
       FROM automations WHERE id = ${automationId}
     `;
     expect(createdProjection.next_window_start).not.toBeNull();
     expect(createdProjection.completed_window_coverage).toBe('{}');
-    expect(createdProjection.window_projection_granularity).toBeNull();
     expect(createdProjection.last_completed_window_start).toBeNull();
 
     const got = (await owner.automations.get({ automation_id: automationId })) as {
@@ -1310,7 +1308,7 @@ describe('automation CRUD', () => {
         SELECT managed_agent_id, device_worker_id, agent_kind,
                triggers::text AS triggers, next_window_start,
                completed_window_coverage::text AS completed_window_coverage,
-               window_projection_granularity, last_completed_window_start
+               last_completed_window_start
         FROM automations WHERE id = ${cloneId}
       `;
       expect(clone.managed_agent_id).toBe(agentId);
@@ -1318,7 +1316,6 @@ describe('automation CRUD', () => {
       expect(clone.agent_kind).toBe('codex');
       expect(clone.next_window_start).not.toBeNull();
       expect(clone.completed_window_coverage).toBe('{}');
-      expect(clone.window_projection_granularity).toBeNull();
       expect(clone.last_completed_window_start).toBeNull();
       // The schedule trigger is preserved and still resolves via the device pin.
       expect(clone.triggers).toMatch(/schedule/);

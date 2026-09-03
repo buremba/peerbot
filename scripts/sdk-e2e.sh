@@ -277,6 +277,14 @@ TS
   # spawn fails. Disable it here — the worker only talks to the loopback mock,
   # and this gate isn't testing the prod network sandbox. No-op on macOS.
   echo "LOBU_DISABLE_SYSTEMD_RUN=1"
+  # Automation windows select `events.created_at` and stop one settle window
+  # short of the database clock, so in production a row is claimable 60s after
+  # it lands. This gate syncs a connector and triggers the Automation over it in
+  # the same breath, which that budget would hide entirely — the trigger would
+  # fail with an empty arrival window. Collapse it here; the settle window has
+  # its own coverage in `arrival-axis-window.test.ts`, which runs it at the
+  # production value.
+  echo "AUTOMATION_ARRIVAL_SETTLE_MS=0"
   [ -n "${DATABASE_URL:-}" ] && echo "DATABASE_URL=$DATABASE_URL"
 } >> "$PROJ/.env"
 

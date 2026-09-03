@@ -87,6 +87,20 @@ const INFRA_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
+ * The `error_message` a run carries when `claim_next_window` cancels it because
+ * the Automation's arrival mark moved past the range it was queued for.
+ *
+ * Exported because three places have to agree on it: the producer in
+ * `claim-next-window.ts`, the `cancelled` branch below, and the test that pins
+ * the mapping. They each held their own copy of the string until the arrival
+ * cutover changed it, at which point the classifier silently started returning
+ * `null` for every superseded run — neither infra nor agent evidence, just
+ * absent from the taxonomy. One constant, compared by equality, removes the
+ * class rather than the instance.
+ */
+export const SUPERSEDED_BY_ARRIVAL_MARK = "Superseded by the Automation arrival mark";
+
+/**
  * Classify a terminal run. Returns null for non-terminal statuses and for
  * `cancelled` (a human choice — neither infra nor agent evidence).
  */
@@ -101,9 +115,7 @@ export function classifyRunOutcome(input: {
 		case "timeout":
 			return "infra_error";
 		case "cancelled":
-			return /superseded by the automation arrival mark/i.test(
-				input.errorMessage ?? "",
-			)
+			return input.errorMessage === SUPERSEDED_BY_ARRIVAL_MARK
 				? "infra_error"
 				: null;
 		case "failed":

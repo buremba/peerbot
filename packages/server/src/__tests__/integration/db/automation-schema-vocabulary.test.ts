@@ -132,6 +132,13 @@ describe('Automation schema vocabulary', () => {
               ${org.id}, '{}'::bigint[], ${params.slug}, 'json_template', ${tx.json(params.payload)},
               ${tx.json({
                 [params.metadataIdKey]: automation.id,
+                // Historical shape, deliberately kept. This fixture replays the
+                // Canvas cutover against production data written BEFORE the
+                // arrival axis, and that migration only synthesizes a run for a
+                // head whose `metadata->>'granularity'` is non-null. The arrival
+                // cutover retires the field going forward; it cannot retroactively
+                // remove it from rows the migration still has to read.
+                granularity: 'daily',
                 window_start: windowStart,
                 window_end: windowEnd,
                 content_analyzed: params.contentAnalyzed,

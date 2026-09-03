@@ -23,13 +23,17 @@ export interface ReactionContext {
   extracted_data: Record<string, unknown>;
   /** All entities the Automation is attached to */
   entities: ReactionEntity[];
-  /** The completed run and its analyzed period */
+  /**
+   * The completed run and the arrival range it analyzed. `window_start` and
+   * `window_end` bound `events.created_at`, not `occurred_at` — the range is
+   * "what reached Lobu between these two instants", not a calendar period, so
+   * it has no granularity to report.
+   */
   window: {
     run_id: number;
     automation_id: number;
     window_start: string;
     window_end: string;
-    granularity: string;
     content_analyzed: number;
   };
   /** Automation identity */

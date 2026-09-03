@@ -16,6 +16,7 @@ import {
   seedOwnerContext,
 } from '../../setup/test-fixtures';
 import { TestApiClient } from '../../setup/test-mcp-client';
+import { SUPERSEDED_BY_ARRIVAL_MARK } from '../../../runs/run-outcome';
 
 const ENV = { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env;
 const DAY_MS = 86_400_000;
@@ -198,7 +199,7 @@ describe('Automation window claim and recovery', () => {
     expect(supersededRun).toMatchObject({
       status: 'cancelled',
       outcome: 'infra_error',
-      error_message: 'Superseded by the Automation arrival mark',
+      error_message: SUPERSEDED_BY_ARRIVAL_MARK,
     });
   });
 

@@ -6,7 +6,7 @@ import {
   claimPendingAutomationRun,
   createAutomationRunInTransaction,
 } from '../../../runs/queue-service';
-import { classifyRunOutcome } from '../../../runs/run-outcome';
+import { classifyRunOutcome, SUPERSEDED_BY_ARRIVAL_MARK } from '../../../runs/run-outcome';
 import { ToolUserError } from '../../../utils/errors';
 import {
   automationArrivalSettleMs,
@@ -155,8 +155,9 @@ export async function handleClaimNextWindow(
         WHERE id = ${runId}
       `;
     } else {
-      // The arrival window [mark, horizon). Empty only within the settle
-      // budget of the previous completion: nothing stored since has settled.
+      // The arrival window [mark, horizon). Empty only while the mark is
+      // younger than the settle budget (a just-created or just-seeded
+      // Automation): nothing stored since it has settled yet.
       const pending = await computePendingWindow(tx, automationId);
       windowStart = pending.windowStart;
       windowEnd = pending.windowEnd;
@@ -178,16 +179,15 @@ export async function handleClaimNextWindow(
       if (active.length > 0) {
         throw new ToolUserError(`Automation ${automationId} already has an active window claim.`, 409);
       }
-      const supersededMessage = 'Superseded by the Automation arrival mark';
       await tx`
         UPDATE runs
         SET status = 'cancelled',
             outcome = ${classifyRunOutcome({
               status: 'cancelled',
-              errorMessage: supersededMessage,
+              errorMessage: SUPERSEDED_BY_ARRIVAL_MARK,
             })},
             completed_at = current_timestamp,
-            error_message = ${supersededMessage}
+            error_message = ${SUPERSEDED_BY_ARRIVAL_MARK}
         WHERE automation_id = ${automationId}
           AND run_type = 'automation'
           AND status = 'pending'

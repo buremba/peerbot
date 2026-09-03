@@ -71,8 +71,7 @@ describe("Automation trigger execution contract", () => {
 		await sql`
       UPDATE automations
       SET next_window_start = ${windowStart.toISOString()}::timestamptz,
-          completed_window_coverage = '{}'::tstzmultirange,
-          window_projection_granularity = 'daily'
+          completed_window_coverage = '{}'::tstzmultirange
       WHERE id = ${Number(automation.automation_id)}
     `;
 		const claim = (await workspace.owner.automations.claimNextWindow({

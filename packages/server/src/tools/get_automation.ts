@@ -875,7 +875,7 @@ async function getAutomationImpl(
         WHERE iwc.event_id = f.id AND iwc.automation_id = $1
       )`;
 
-    // unprocessed_count drives the badge ("N pending analysis"). Cap the
+    // unprocessed_content_count drives the badge ("N pending analysis"). Cap the
     // scan at 1000 rows: the badge shows "1000+" semantics above that, and
     // the cap keeps the page query under the 10s frontend timeout even on
     // entities with 100K+ events in the lookback window. The 90-day bound

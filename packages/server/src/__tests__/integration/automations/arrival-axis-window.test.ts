@@ -18,7 +18,9 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { materializeDueAutomationRuns } from '../../../automations/automation';
 import type { DbClient } from '../../../db/client';
+import type { Env } from '../../../index';
 import { automationArrivalSettleMs } from '../../../utils/window-utils';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -56,6 +58,8 @@ describe('Automation windows on the arrival axis', () => {
   // production budget — every row below is stamped relative to it.
   const suiteSettleMs = process.env.AUTOMATION_ARRIVAL_SETTLE_MS;
 
+  let agentId: string;
+
   beforeAll(async () => {
     process.env.AUTOMATION_ARRIVAL_SETTLE_MS = String(MINUTE_MS);
     await initWorkspaceProvider();
@@ -76,6 +80,7 @@ describe('Automation windows on the arrival axis', () => {
       ownerUserId: seeded.user.id,
       agentId: 'arrival-axis-agent',
     });
+    agentId = agent.agentId;
     const entity = await createTestEntity({
       name: 'Arrival axis subject',
       organization_id: orgId,
@@ -276,5 +281,96 @@ describe('Automation windows on the arrival axis', () => {
       ranges: 1,
     });
   });
-});
 
+  it('lets a scheduled tick inside a fresh mark\'s settle budget wait instead of erroring', async () => {
+    // A mark younger than the settle budget: the horizon has not passed it yet,
+    // so there is nothing to hand out. Creation no longer produces this state —
+    // it reaches a lookback back — but the CUTOVER migration does, seeding every
+    // existing Automation at the clock, so the first tick after that deploy hits
+    // this for every due Automation at once. `computePendingWindow`'s NULL-mark
+    // repair lands here too.
+    await setMark(new Date());
+    const dueAt = new Date(Date.now() - MINUTE_MS);
+    await sql`
+      UPDATE automations
+      SET next_run_at = ${dueAt.toISOString()}::timestamptz
+      WHERE id = ${automationId}
+    `;
+
+    const waited = await materializeDueAutomationRuns({} as Env);
+    expect(waited.runsCreated).toBe(0);
+    expect(waited.skipped).toBe(1);
+    // No run, and the schedule was NOT advanced: the next tick retries.
+    const runs = await sql<{ id: number }>`
+      SELECT id FROM runs WHERE automation_id = ${automationId}
+    `;
+    expect(runs).toHaveLength(0);
+    const [row] = await sql<{ next_run_at: Date | string }>`
+      SELECT next_run_at FROM automations WHERE id = ${automationId}
+    `;
+    expect(new Date(row.next_run_at).toISOString()).toBe(dueAt.toISOString());
+
+    // Once the horizon is past the mark, the same tick hands the range out
+    // (here as a skip-completed run, since nothing arrived in it) and only then
+    // moves the schedule on.
+    await setMark(new Date(Date.now() - 10 * MINUTE_MS));
+    const ready = await materializeDueAutomationRuns({} as Env);
+    expect(ready.dueAutomations).toBe(1);
+    const materialized = await sql<{ id: number }>`
+      SELECT id FROM runs WHERE automation_id = ${automationId}
+    `;
+    expect(materialized).toHaveLength(1);
+    const [advanced] = await sql<{ next_run_at: Date | string }>`
+      SELECT next_run_at FROM automations WHERE id = ${automationId}
+    `;
+    expect(new Date(advanced.next_run_at).getTime()).toBeGreaterThan(dueAt.getTime());
+  });
+  // A new Automation is created OVER a source that already has content. Seeding
+  // its mark at the creation instant would make every one of those rows
+  // permanently unreachable: they arrived before the mark and no window ever
+  // reaches back. The old calendar axis never had this problem, because a first
+  // window was a calendar period that already contained them.
+  //
+  // So creation — and only creation — starts one bounded lookback behind.
+  it('lets a newly created Automation reach content that arrived before it', async () => {
+    const arrivedBefore = await storedRow({
+      occurredAt: new Date(Date.now() - 2 * DAY_MS),
+      createdAt: new Date(Date.now() - 2 * DAY_MS),
+      text: 'ingested two days before the Automation existed',
+    });
+
+    // `automationId` was created in beforeEach, after nothing; create a second
+    // one now, with the row already in place, and claim its very first window.
+    const created = (await api.automations.create({
+      slug: 'reaches-back',
+      name: 'Reaches back',
+      prompt: 'Summarise what is already here.',
+      entity_ids: [entityId],
+      sources: [
+        {
+          name: 'content',
+          query:
+            "SELECT id, occurred_at, created_at, payload_text FROM events WHERE semantic_type = 'content' ORDER BY occurred_at DESC, id DESC",
+        },
+      ],
+      triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
+      managed_agent_id: agentId,
+    })) as { automation_id: string };
+    const freshId = Number(created.automation_id);
+
+    const [row] = await sql<{ next_window_start: Date | string }>`
+      SELECT next_window_start FROM automations WHERE id = ${freshId}
+    `;
+    const mark = new Date(row.next_window_start).getTime();
+    // Behind creation by the lookback, not at it.
+    expect(mark).toBeLessThan(Date.now() - DAY_MS);
+    expect(mark).toBeLessThan(new Date(arrivedBefore.created_at ?? Date.now()).getTime());
+
+    const claimed = (await api.automations.claimNextWindow({
+      automation_id: String(freshId),
+    })) as ClaimResult;
+    const ids = claimed.context.content.map((c) => Number(c.id));
+    expect(ids).toContain(Number(arrivedBefore.id));
+  });
+
+});

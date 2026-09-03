@@ -165,4 +165,30 @@ export const intervals = {
     const raw = Number(process.env.AUTOMATION_ARRIVAL_SETTLE_MS);
     return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 60_000;
   },
+
+  /**
+   * How far back a BRAND-NEW Automation's first arrival window reaches.
+   *
+   * The mark for an existing Automation is a fact — the end of the last range a
+   * run actually completed. A new Automation has no such fact, and seeding the
+   * mark at the creation instant makes it permanently blind to everything
+   * already ingested: connect a source, build an Automation over it, and the
+   * first run reads nothing, with no way to ever reach back. The old calendar
+   * axis did not have this problem because a first window was a calendar
+   * period, which already contained earlier content.
+   *
+   * So the first window starts one bounded lookback behind creation. Seven days
+   * is long enough to cover a source connected in the same sitting and short
+   * enough that a new Automation cannot stall on a year of history.
+   *
+   * This applies ONLY at creation. It is not a repair for a NULL mark
+   * (`computePendingWindow` seeds that at the clock — an unseeded mark means
+   * unknown, and re-reading history on a repair would double-process), and it
+   * is not the cutover seed (the migration deliberately starts every existing
+   * Automation at the clock, since their history was already processed).
+   */
+  get automationFirstWindowLookbackMs(): number {
+    const raw = Number(process.env.AUTOMATION_FIRST_WINDOW_LOOKBACK_MS);
+    return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 7 * 24 * 60 * 60 * 1000;
+  },
 };

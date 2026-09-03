@@ -277,10 +277,11 @@ async function enqueueAutomationRunForRecord(
 		);
 	}
 
-	// The arrival window [mark, horizon). It is empty only inside the settle
-	// budget of the previous completion, which a scheduled tick cannot reach
-	// (ticks are at least a minute apart); a manual re-trigger can, and gets a
-	// clear answer instead of a run that reads nothing.
+	// The arrival window [mark, horizon). It is empty only while the mark is
+	// younger than the settle budget — a just-created Automation, or one whose
+	// mark was seeded at cutover. The scheduled path checks for that before it
+	// gets here and waits a tick; a manual trigger gets a clear answer instead
+	// of a run that reads nothing.
 	const { windowStart, windowEnd } = await computePendingWindow(sql, automation.id);
 	if (windowEnd <= windowStart) {
 		throw new ToolUserError(
@@ -875,12 +876,16 @@ export async function materializeDueAutomationRuns(
 			const scheduleTrigger = automation.triggers?.find(
 				(trigger) => trigger.kind === "schedule"
 			);
+			// Nothing to hand out while the mark is younger than the settle budget
+			// (a just-created or just-seeded Automation). Leave next_run_at where
+			// it is: the horizon passes the mark within one settle window, so the
+			// next tick materializes the run instead of erroring and skipping a
+			// whole cron period.
+			const pending = await computePendingWindow(sql, automation.id);
+			if (pending.windowEnd <= pending.windowStart) return "skipped";
 			let sourceFingerprint: string | undefined;
 			if (scheduleTrigger?.skip_if_unchanged === true) {
-				const { windowStart, windowEnd } = await computePendingWindow(
-					sql,
-					automation.id
-				);
+				const { windowStart, windowEnd } = pending;
 				const sourceState = await fingerprintAutomationSources({
 					sql,
 					automationId: automation.id,

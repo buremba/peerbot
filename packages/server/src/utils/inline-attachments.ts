@@ -538,8 +538,10 @@ export async function transcribeOne(
     // would stay `error` forever once credits were restored.
     //
     // Best-effort for the same reason the proxy's is: `status` is a display
-    // signal, and failing to clear a label must not fail a transcript that is
-    // already written.
+    // signal plus a routing PREFERENCE (`resolveDispatchModel` prefers a
+    // healthy sibling among the refs an agent already lists), never a gate —
+    // so failing to clear a label can only cost that preference, and must not
+    // fail a transcript that is already written.
     try {
       await clearInferenceProviderError(organizationId, result.providerSlug);
     } catch (err) {

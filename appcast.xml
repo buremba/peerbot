@@ -6,6 +6,15 @@
         <description>In-app updates for Lobu for Mac, signed with EdDSA.</description>
         <language>en</language>
         <item>
+            <title>Version 18.0.0</title>
+            <pubDate>Thu, 03 Sep 2026 12:10:18 GMT</pubDate>
+            <sparkle:version>18.0.0</sparkle:version>
+            <sparkle:shortVersionString>18.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://github.com/lobu-ai/lobu/releases/tag/lobu-v18.0.0</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/lobu-ai/lobu/releases/download/lobu-v18.0.0/Owletto.dmg" sparkle:edSignature="y8WCBacKvEPMv55yveBCpCup+faUrvhucM5JI/Y7ThHgCyXzZvQMTxAtB+/SaFuMZ5byi7wL61/smmkrwVZ7CA==" length="51699173" type="application/octet-stream" />
+        </item>
+        <item>
             <title>Version 17.2.0</title>
             <pubDate>Sat, 29 Aug 2026 15:01:22 GMT</pubDate>
             <sparkle:version>17.2.0</sparkle:version>

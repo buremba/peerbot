@@ -52,9 +52,13 @@ export function versionForReleaseTag(tag) {
  * list and `npm view @lobu/cli versions` -- reduce to the same question, so
  * they ask it here instead of each spelling out its own comparison.
  */
+function normalizeVersionList(versions) {
+  return Array.isArray(versions) ? versions : [versions];
+}
+
 export function assertNoNewerStable({ current, versions }) {
   parseStableVersion(current);
-  const listed = Array.isArray(versions) ? versions : [versions];
+  const listed = normalizeVersionList(versions);
   // Fail closed on a shape we do not understand. `npm view --json` prints its
   // error object to stdout, so a failed probe can reach here looking like data;
   // silently filtering it out would turn "the registry is unreadable" into
@@ -90,7 +94,7 @@ export function assertNoNewerStable({ current, versions }) {
  */
 export function releaseNeeded({ current, versions }) {
   assertNoNewerStable({ current, versions });
-  const listed = Array.isArray(versions) ? versions : [versions];
+  const listed = normalizeVersionList(versions);
   // Exact match, so a prerelease such as 18.0.0-rc.1 is never mistaken for the
   // stable 18.0.0 it precedes -- no stable-only filter needed here. Non-string
   // entries were already rejected by assertNoNewerStable, which fails closed on

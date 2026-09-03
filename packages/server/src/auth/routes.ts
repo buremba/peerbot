@@ -572,10 +572,11 @@ credentialRoutes.get('/sse-ticket', async (c) => {
 credentialRoutes.get('/extension-bootstrap', (c) => {
   c.header('Referrer-Policy', 'no-referrer');
   c.header('Cache-Control', 'no-store');
-  // Inline script is allowed: the app's CSP sets only frame-ancestors, no
-  // script-src. The page carries no markup an injection could target.
+  // Inline script and style are allowed: the app's CSP sets only
+  // frame-ancestors, no script-src or style-src. The page carries no markup an
+  // injection could target.
   return c.html(
-    `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Connecting…</title><style>html,body{background:#0a0a0a;color:#a8a29e;color-scheme:dark;margin:0;font:13px/1.45 system-ui,sans-serif}</style><body><script>
+    `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Connecting…</title><style>html,body{background:#0a0a0a;color:#a8a29e;margin:0;font:13px/1.45 system-ui,sans-serif}</style><body><script>
 (function () {
   var h = new URLSearchParams(location.hash.slice(1));
   var token = h.get("token") || "";

@@ -27,12 +27,14 @@ describe("isReservedEntityTypeSlug", () => {
   });
 
   it("blocks live routes missing from OWNER_ROUTE_SEGMENTS and deleted legacy segments", () => {
-    // /$owner/entity-types is a live route absent from OWNER_ROUTE_SEGMENTS —
-    // an entity type with that slug would get its list page permanently
-    // shadowed by the static route.
+    // Live routes absent from OWNER_ROUTE_SEGMENTS. `entity-types` and `chat`
+    // have no index route, so an entity type with either slug would still
+    // list, but /$owner/entity-types/$slug and /$owner/chat/$agentId outrank
+    // the `/$owner/$` splat on every one of its detail pages.
     expect(isReservedEntityTypeSlug("entity-types")).toBe(true);
-    // /$owner/recent is the dedicated Recent page, also absent from
-    // OWNER_ROUTE_SEGMENTS for the same splat-guard reason.
+    expect(isReservedEntityTypeSlug("chat")).toBe(true);
+    // /$owner/recent is the dedicated Recent page and IS an index route, so it
+    // shadows the list page itself.
     expect(isReservedEntityTypeSlug("recent")).toBe(true);
     // Deleted legacy routes stay reserved via REMOVED_OWNER_SEGMENTS so old
     // bookmarks and chat links can never resolve as an unrelated entity type.

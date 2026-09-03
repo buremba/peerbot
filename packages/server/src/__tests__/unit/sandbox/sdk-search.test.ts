@@ -533,4 +533,33 @@ describe("sdkSearch", () => {
 		expect(result.match_count).toBe(1);
 		expect(result.results[0]).toContain("authProfiles.get");
 	});
+	// A miss that filtered NOTHING must not be explained as an access problem —
+	// that sends the caller after elevation when the fix is rephrasing. The
+	// `client.` prefix keeps this on the SDK-only path so connector discovery
+	// (which needs a live env) stays out of this unit test.
+	it("blames wording, not access tier, when nothing was hidden", async () => {
+		const result = await sdkSearch(
+			{ query: "client.zzznosuchmethod" },
+			stubEnv,
+			adminCtx,
+		);
+
+		expect(result.match_count).toBe(0);
+		expect(result.notes).toContain("No method or runtime-helper name matches");
+		expect(result.notes).not.toContain("No matches at your access tier");
+		// An admin in mode='full' has nothing left to widen to.
+		expect(result.notes).not.toContain("mode='full'");
+	});
+
+	it("points a read-mode miss at mode='full', never back at mode='read'", async () => {
+		const result = await sdkSearch(
+			{ query: "client.zzznosuchmethod", mode: "read" },
+			stubEnv,
+			readCtx,
+		);
+
+		expect(result.match_count).toBe(0);
+		expect(result.notes).toContain("pass mode='full'");
+		expect(result.notes).not.toContain("mode='read' for query_sdk");
+	});
 });

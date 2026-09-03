@@ -204,6 +204,21 @@ function hiddenMethodNote(
 	return `${path} is not available at your access tier (access: ${formatSdkRequiredTier(meta.access)}). ${guidance.instruction ?? ""}`.trim();
 }
 
+/**
+ * Zero-match note for a query nothing matched BY NAME. Access is deliberately
+ * not asserted as the cause: both call sites are reached only after every
+ * hidden-method explanation (`hiddenMethodNote`, `hiddenNamespaceNote`) came
+ * back empty, so the likely cause is wording, not tier. Widening means
+ * mode='full' — mode='read' NARROWS the catalog, so it is no help on a miss.
+ */
+function noNameMatchNote(mode: SdkDiscoveryMode): string {
+	const readHint =
+		mode === "read"
+			? " Only query_sdk-safe methods were searched; pass mode='full' for write and admin methods."
+			: "";
+	return `No method or runtime-helper name matches that wording. Try a namespace (${NAMESPACES.join(", ")}) or a verb (create, list, search).${readHint} A method above your access tier is also not listed.`;
+}
+
 function renderListLine(path: string, meta: MethodMetadata): string {
 	return `${path} — ${meta.summary}`;
 }
@@ -417,7 +432,7 @@ async function sdkMethodSearch(
 			results: [],
 			notes:
 				hidden.join(" ") ||
-				`No matches at your access tier. Try a namespace (${NAMESPACES.join(", ")}), mode='read' for query_sdk, or a verb (create, list, search).`,
+				noNameMatchNote(mode),
 		};
 	}
 
@@ -543,7 +558,7 @@ async function sdkMethodSearch(
 			notes:
 				hiddenNamespaceNote ??
 				existsButHidden ??
-				`No matches at your access tier. Try a namespace (${NAMESPACES.join(", ")}), mode='read' for query_sdk, or a verb (create, list, search).`,
+				noNameMatchNote(mode),
 		};
 	}
 

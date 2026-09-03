@@ -33,9 +33,9 @@
  *     unattended event-driven feed from a human-triggered one" — and that
  *     signal now exists: `feeds_schema[key].webhook`, the declaration the
  *     app-webhook router dispatches on. So the classification below is not
- *     "no cron, therefore manual"; it enumerates the three things that can
- *     re-arm `next_run_at` and fires only when a syncable feed has none of
- *     them. github's no-cron feeds declare a webhook and stay `healthy`.
+ *     "no cron, therefore manual"; it enumerates what can REPEATEDLY re-arm
+ *     `next_run_at` and fires only when a syncable feed has neither. github's
+ *     no-cron feeds declare a webhook and stay `healthy`.
  * - `attention` — what a human/UI should be told about the feed right now,
  *   ordered so the most actionable state wins:
  *   - `needs_auth` — the connection/auth profile is not usable (pending_auth,
@@ -52,11 +52,18 @@
  *     past `next_run_at`.
  *   - `no_trigger` — a syncable feed with no way to be dispatched: no cron, no
  *     webhook route, not a channel. `CheckDueFeeds` selects on
- *     `next_run_at <= now`, and the only writers of that column are the cron
- *     (stamped at run completion), an app-webhook delivery, and device
- *     auto-wire. With none of them the row can never become due again, so it
- *     runs only if a human triggers it by hand. Ranked above `never_run`
- *     because that one states the symptom while this states the cause.
+ *     `next_run_at <= now`. Two writers of that column are REPEATING and can
+ *     sustain a cadence: the cron (re-stamped at every run completion) and an
+ *     app-webhook delivery. The rest are one-shot episodic re-arms tied to a
+ *     lifecycle moment — device auto-wire's first stamp, auth-completion and
+ *     browser-reauth resume (`run-lifecycle`), connect (`connect/routes`), and
+ *     auth-profile activation (`manage_auth_profiles`). Each fires once and
+ *     `run-lifecycle` nulls the column again when that run completes, because
+ *     there is no cron to compute the next one from. So a feed with neither
+ *     repeating writer cannot hold a cadence however many episodic re-arms it
+ *     sees, and runs only when something triggers it by hand. Ranked above
+ *     `never_run` because that one states the symptom while this states the
+ *     cause.
  *   - `never_run` — never synced.
  *   - `healthy` — everything else.
  *
@@ -106,11 +113,18 @@ interface FeedHealthSemanticsInput {
   /** `feeds.next_run_at` — only meaningful when schedule is present. */
   next_run_at?: Date | string | null;
   /**
-   * The connector declares `feeds_schema[feed_key].webhook` for this feed, so
-   * an inbound app-webhook delivery re-arms `next_run_at` (see
-   * `gateway/routes/public/app-webhooks.ts`). This is the stored signal that
-   * separates an unattended event-driven feed from one with no dispatch path
-   * at all; without it, "no cron" is not classifiable (see the header).
+   * The connector declares a DISPATCHABLE webhook route for this feed, so an
+   * inbound delivery re-arms `next_run_at`. Callers must mirror what
+   * `buildWebhookRoutes` (`gateway/routes/public/app-webhooks.ts`) actually
+   * routes on — `webhook.events` being an array with at least one non-empty
+   * string — not merely that a `webhook` key is present: `{}`,
+   * `{mode:'store'}`, `{events: []}` and a JSON-null all declare nothing the
+   * router will dispatch, and treating them as event-driven would hide exactly
+   * the feed this classification exists to surface.
+   *
+   * This is the stored signal that separates an unattended event-driven feed
+   * from one with no dispatch path at all; without it, "no cron" is not
+   * classifiable (see the header).
    */
   webhook_driven?: boolean | null;
   /** Number of pending/claimed/running sync runs selected by list_feeds. */

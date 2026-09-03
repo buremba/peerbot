@@ -80,7 +80,8 @@
  * `feeds_schema[key].webhook` positively identifies the event-driven half, so
  * `attention='no_trigger'` can name a feed with no dispatch path at all
  * without inferring intent from a missing cron — see the semantics module's
- * header. Such a feed is excluded from `expected` below.
+ * header. It is deliberately NOT excluded from `expected` below; see the note
+ * at `classifyFeed` for why that stays a separate, evidence-backed decision.
  *
  * Two of the 2026-08-12 examples are worth re-reading in that light: github
  * `issue_comments` is genuinely webhook-driven and stays healthy, but linkedin
@@ -379,8 +380,23 @@ async function loadConnectionHealthRows(
       SELECT
         COALESCE(definition.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
           AS feed_operations,
-        (definition.feeds_schema -> f.feed_key -> 'webhook') IS NOT NULL
-          AS feed_webhook_driven,
+        -- Match what the router actually dispatches on. buildWebhookRoutes
+        -- (app-webhooks.ts) skips a feed unless webhook.events is an ARRAY
+        -- holding at least one non-empty string, so an empty object, a
+        -- mode-only object, an empty events array and a JSON-null webhook are
+        -- all undispatchable. A bare IS NOT NULL on the webhook key would call
+        -- every one of them webhook-driven and hide exactly the feed this
+        -- classification exists to surface (jsonb null is not SQL NULL).
+        jsonb_typeof(definition.feeds_schema -> f.feed_key -> 'webhook' -> 'events')
+            = 'array'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(
+              definition.feeds_schema -> f.feed_key -> 'webhook' -> 'events'
+            ) AS declared_event
+            WHERE jsonb_typeof(declared_event) = 'string'
+              AND declared_event #>> '{}' <> ''
+          ) AS feed_webhook_driven,
         EXISTS (
           SELECT 1
           FROM jsonb_each(COALESCE(definition.feeds_schema, '{}'::jsonb)) AS declared(feed_key, config)

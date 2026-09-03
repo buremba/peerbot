@@ -277,6 +277,62 @@ describe("list_feeds health filter and true total", () => {
 		}
 	});
 
+	it("only a dispatchable webhook route counts as a dispatch path", async () => {
+		// buildWebhookRoutes (app-webhooks.ts) routes a delivery only when
+		// `webhook.events` is an array holding at least one non-empty string.
+		// Anything looser declares nothing the router will ever dispatch, so it
+		// must NOT suppress `no_trigger` — otherwise a malformed declaration
+		// hides the feed this classification exists to surface. Note `null`:
+		// jsonb null is not SQL NULL, so a bare IS NOT NULL check passes it.
+		const conn = await createTestConnection({
+			organization_id: orgId,
+			connector_key: "webhook-shapes",
+			createDefaultFeed: false,
+		});
+		const sql = getTestDb();
+		const shapes: Array<[string, unknown, string]> = [
+			["wh-real", { events: ["item"] }, "healthy"],
+			["wh-empty-object", {}, "no_trigger"],
+			["wh-mode-only", { mode: "store" }, "no_trigger"],
+			["wh-empty-events", { events: [] }, "no_trigger"],
+			["wh-blank-event", { events: [""] }, "no_trigger"],
+			["wh-non-string-event", { events: [7] }, "no_trigger"],
+			["wh-json-null", null, "no_trigger"],
+		];
+		await createTestConnectorDefinition({
+			key: "webhook-shapes",
+			name: "Webhook Shapes",
+			organization_id: orgId,
+			feeds_schema: Object.fromEntries(
+				shapes.map(([feedKey, webhook]) => [
+					feedKey,
+					{ operations: ["sync"], webhook },
+				]),
+			),
+		});
+		for (const [feedKey] of shapes) {
+			await sql`
+				INSERT INTO feeds (
+					organization_id, connection_id, feed_key, status, schedule,
+					last_sync_status, last_sync_at, consecutive_failures, entity_ids,
+					created_at, updated_at
+				) VALUES (
+					${orgId}, ${conn.id}, ${feedKey}, 'active', NULL,
+					'success', current_timestamp - interval '30 days', 0,
+					ARRAY[]::bigint[], NOW(), NOW()
+				)
+			`;
+		}
+
+		const listed = await runList({ connection_id: conn.id, limit: 20 });
+		const byKey = new Map(listed.feeds.map((feed) => [feed.feed_key, feed]));
+		for (const [feedKey, , expected] of shapes) {
+			expect(`${feedKey}=${byKey.get(feedKey)?.attention}`).toBe(
+				`${feedKey}=${expected}`,
+			);
+		}
+	});
+
 	it("keeps health filters aligned for overdue, active-run, and manual feeds", async () => {
 		const conn = await createTestConnection({
 			organization_id: orgId,

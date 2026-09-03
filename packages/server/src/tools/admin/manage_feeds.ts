@@ -346,7 +346,21 @@ async function handleListFeeds(
            -- actually run, or a pinned feed is classified against a newer
            -- contract than the one that would execute.
            COALESCE((
-             SELECT (definition.feeds_schema -> f.feed_key -> 'webhook') IS NOT NULL
+             -- Same predicate as connector-health's lateral, and for the same
+             -- reason: only a non-empty array of non-empty string events is
+             -- something buildWebhookRoutes will dispatch. The two must agree,
+             -- or list_feeds and the health scan disagree about one feed.
+             SELECT jsonb_typeof(
+                      definition.feeds_schema -> f.feed_key -> 'webhook' -> 'events'
+                    ) = 'array'
+                    AND EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(
+                        definition.feeds_schema -> f.feed_key -> 'webhook' -> 'events'
+                      ) AS declared_event
+                      WHERE jsonb_typeof(declared_event) = 'string'
+                        AND declared_event #>> '{}' <> ''
+                    )
              FROM connector_definitions definition
              WHERE definition.key = c.connector_key
                AND definition.organization_id = f.organization_id

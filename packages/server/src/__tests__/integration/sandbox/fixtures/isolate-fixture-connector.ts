@@ -3,8 +3,8 @@
  *
  * Each `scenario` config value exercises one boundary of the connector isolate
  * lane: chunked emit and checkpoint hooks, host-mediated fetch, timers, console
- * redaction, runaway CPU and heap, thrown errors, auth artifacts and chrome
- * dispatch. The suite compiles it for BOTH lanes so what each lane observably does
+ * redaction, runaway CPU and heap, thrown errors, a throwing timer callback,
+ * an oversized bridge message, auth artifacts and chrome dispatch. The suite compiles it for BOTH lanes so what each lane observably does
  * can be compared. It is never registered as a real connector.
  */
 import {
@@ -144,6 +144,20 @@ export default class IsolateFixtureConnector extends ConnectorRuntime<Record<str
 				const error = new Error("fixture exploded");
 				Object.assign(error, { status: 418 });
 				throw error;
+			}
+			case "timer_throw": {
+				// Nothing awaits the timer, so only the host can end this run.
+				await new Promise<void>((resolve) => {
+					setTimeout(() => {
+						throw new RangeError("fixture timer exploded");
+					}, 1);
+					setTimeout(resolve, 20_000);
+				});
+				return { events: [], checkpoint: null };
+			}
+			case "big_message": {
+				await ctx.updateCheckpoint?.({ blob: "x".repeat(Number(ctx.config.count ?? 65_536)) });
+				return { events: [], checkpoint: null };
 			}
 			case "console": {
 				console.log(`Authorization: Bearer ${String(ctx.config.secret)}`);

@@ -1,9 +1,10 @@
 /**
  * Connector isolate lane: `IsolateExecutor` end to end.
  *
- *  1. every isolate-eligible bundled connector loads through the executor's
- *     init path (`probe`), and the process-lane connectors are rejected at init
- *     with the offending Node builtin named;
+ *  1. every isolate-eligible bundled connector passes the executor's init path
+ *     (the eligibility check, then module init and construction in the host
+ *     bridge), and the process-lane connectors are rejected at init with the
+ *     offending Node builtin named;
  *  2. hackernews syncs against the live Algolia API through the isolate lane,
  *     producing events and a checkpoint via the hooks, and agrees with the
  *     process lane on the same config;
@@ -31,6 +32,7 @@ import {
 } from "@lobu/connector-worker/executor/isolate";
 import { executeCompiledConnector } from "@lobu/connector-worker/executor/runtime";
 import {
+	assertIsolateEligible,
 	IsolateHost,
 	IsolateLaneIneligibleError,
 	type IsolatedVm,
@@ -234,10 +236,49 @@ afterAll(async () => {
 	await new Promise<void>((resolveClose) => server?.close(() => resolveClose()));
 });
 
+/**
+ * The executor's init path without a job: find the exported runtime class the
+ * way the guest runner does, construct it and report `definition.key`.
+ */
+const LOAD_PROBE = String.raw`
+(function () {
+  var mod = module.exports;
+  var def = mod && typeof mod === 'object' ? mod.default : undefined;
+  var values = mod && typeof mod === 'object' ? Object.values(mod) : [];
+  var RuntimeClass = null;
+  for (var i = 0; i < values.length; i++) {
+    var v = values[i];
+    if (typeof v === 'function' && v.prototype && v.prototype.sync && v.prototype.execute) { RuntimeClass = v; break; }
+  }
+  if (!RuntimeClass && typeof def === 'function' && def.prototype && def.prototype.sync && def.prototype.execute) RuntimeClass = def;
+  if (!RuntimeClass) throw new Error('No ConnectorRuntime class found');
+  var instance = new RuntimeClass();
+  return instance && instance.definition && typeof instance.definition.key === 'string' ? instance.definition.key : null;
+})()
+`;
+
+/** Eligibility check, then module init plus construction in a bare host. Rejects as the executor would. */
+async function loadInIsolate(code: string): Promise<string | null> {
+	assertIsolateEligible(code);
+	const host = await IsolateHost.create({
+		ivm,
+		memoryMb: 512,
+		messageBytes: 1 << 20,
+		env: {},
+		sync: { log: () => undefined, fatal: () => undefined, fetchAbort: () => undefined },
+		async: {},
+	});
+	try {
+		const key = await host.run(`${code}\n${LOAD_PROBE}`, { timeoutMs: 30_000 });
+		return typeof key === "string" ? key : null;
+	} finally {
+		host.dispose();
+	}
+}
+
 describe("isolate lane: bundled connectors", () => {
-	it("loads every isolate-eligible connector via probe and rejects the process-lane ones at init", async () => {
+	it("loads every isolate-eligible connector and rejects the process-lane ones at init", async () => {
 		const compiler = createIsolateConnectorCompiler();
-		const executor = new IsolateExecutor({ timeoutMs: 30_000, logSink: () => undefined });
 		const files = listBundledConnectors();
 		expect(files.length).toBeGreaterThan(20);
 
@@ -248,7 +289,7 @@ describe("isolate lane: bundled connectors", () => {
 			const bundle = await compiler.bundleConnectorForIsolate(join(CONNECTORS_DIR, file));
 			if (bundle.builtins.length > 0) {
 				ineligible[stem] = bundle.builtins;
-				const failure = await executor.probe(bundle.code).then(
+				const failure = await loadInIsolate(bundle.code).then(
 					() => null,
 					(error: unknown) => error,
 				);
@@ -261,14 +302,13 @@ describe("isolate lane: bundled connectors", () => {
 				);
 				continue;
 			}
-			let probe: Awaited<ReturnType<IsolateExecutor["probe"]>>;
+			let key: string | null;
 			try {
-				probe = await executor.probe(bundle.code);
+				key = await loadInIsolate(bundle.code);
 			} catch (error) {
-				throw new Error(`${stem} failed to load in the isolate executor: ${(error as Error).message}`);
+				throw new Error(`${stem} failed to load in the isolate: ${(error as Error).message}`);
 			}
-			expect(probe.connectorKey, `${stem} definition.key`).toEqual(expect.any(String));
-			expect(probe.heapUsedBytes ?? 0).toBeGreaterThan(0);
+			expect(key, `${stem} definition.key`).toEqual(expect.any(String));
 			loaded.push(stem);
 		}
 		expect(ineligible).toEqual(PROCESS_LANE_CONNECTORS);
@@ -535,6 +575,46 @@ describe("isolate lane: fixture connector", () => {
 		expect(failure.exitReason).toBe("oom");
 		expect(failure.message).toMatch(/out of memory/i);
 		expect(failure.message).toContain("32 MB");
+	});
+
+	it("ends the run when a timer callback throws: the guest error arrives through `fatal` and keeps its name", async () => {
+		const started = Date.now();
+		const failure = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "timer_throw" }), { timeoutMs: 30_000 });
+		expect(Date.now() - started).toBeLessThan(10_000);
+		expect(failure.exitReason).toBe("error_message");
+		expect(failure.name).toBe("RangeError");
+		expect(failure.message).toContain("fixture timer exploded");
+	});
+
+	it("ends the run when an event hook rejects and surfaces the hook's own error", async () => {
+		const executor = new IsolateExecutor({ timeoutMs: 30_000, logSink: () => undefined });
+		const hooks: ExecutionHooks = {
+			onEventChunk: async () => {
+				throw new Error("event sink is down");
+			},
+		};
+		const started = Date.now();
+		const failure = await executor.execute(fixtureIsolateCode, syncJob({ scenario: "emit", count: 10 }), hooks).then(
+			() => null,
+			(error: unknown) => error as LaneError,
+		);
+		expect(Date.now() - started).toBeLessThan(10_000);
+		expect(failure?.message).toBe("event sink is down");
+		expect(failure?.exitReason).toBeUndefined();
+	});
+
+	it("terminates when one bridge message exceeds the cap and reports it as a crash", async () => {
+		const failure = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "big_message", count: 65_536 }), {
+			messageBytes: 4096,
+			timeoutMs: 30_000,
+		});
+		expect(failure.exitReason).toBe("crash");
+		expect(failure.message).toContain("a single bridge message exceeded 4096 bytes");
+
+		const fits = await runIsolate(fixtureIsolateCode, syncJob({ scenario: "big_message", count: 1024 }), {
+			messageBytes: 4096,
+		});
+		expect(fits.checkpoints).toEqual([{ blob: "x".repeat(1024) }]);
 	});
 
 	it("reports a thrown connector error in the same shape as the process lane", async () => {

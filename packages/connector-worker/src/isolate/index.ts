@@ -17,6 +17,6 @@ export {
   type IsolateRunOptions,
   type IsolateTerminalState,
 } from './bridge.js';
-export type { IsolatedVm, IvmHeapStatistics } from './ivm-types.js';
+export type { IsolatedVm } from './ivm-types.js';
 export { isolatedVmUnavailableReason, loadIsolatedVm } from './load.js';
 export { GUEST_PRELUDE, PRELUDE_GLOBALS } from './prelude.js';

@@ -34,24 +34,10 @@ export interface IvmScript {
   run(context: IvmContext, options?: IvmScriptRunOptions): Promise<unknown>;
 }
 
-export interface IvmHeapStatistics {
-  total_heap_size: number;
-  total_heap_size_executable: number;
-  total_physical_size: number;
-  total_available_size: number;
-  used_heap_size: number;
-  heap_size_limit: number;
-  malloced_memory: number;
-  peak_malloced_memory: number;
-  does_zap_garbage: number;
-  externally_allocated_size: number;
-}
-
 export interface IvmIsolate {
   readonly isDisposed: boolean;
   createContext(): Promise<IvmContext>;
   compileScript(source: string, options?: { filename?: string }): Promise<IvmScript>;
-  getHeapStatisticsSync(): IvmHeapStatistics;
   dispose(): void;
 }
 

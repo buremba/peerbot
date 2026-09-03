@@ -25,7 +25,7 @@
  */
 
 import { GUEST_PRELUDE, PRELUDE_HOST_SYNC } from './prelude.js';
-import type { IsolatedVm, IvmHeapStatistics, IvmIsolate, IvmReference } from './ivm-types.js';
+import type { IsolatedVm, IvmIsolate, IvmReference } from './ivm-types.js';
 
 export type HostSyncCapability = (...args: unknown[]) => unknown;
 export type HostAsyncCapability = (...args: unknown[]) => Promise<unknown>;
@@ -259,16 +259,6 @@ export class IsolateHost {
       return new IsolateHostError('crash', `isolate ended unexpectedly: ${message}`, null, { cause: error });
     }
     return error;
-  }
-
-  /** V8 heap statistics, or null once the isolate is disposed. */
-  heapStatistics(): IvmHeapStatistics | null {
-    if (this.isolate.isDisposed) return null;
-    try {
-      return this.isolate.getHeapStatisticsSync();
-    } catch {
-      return null;
-    }
   }
 
   dispose(): void {

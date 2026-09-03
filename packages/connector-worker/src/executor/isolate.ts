@@ -115,15 +115,6 @@ interface HostFetchReply {
   body: Uint8Array;
 }
 
-/** What `probe()` learns from loading a bundle without running a job. */
-export interface IsolateProbeResult {
-  /** `definition.key` of the exported ConnectorRuntime, when it exposes one. */
-  connectorKey: string | null;
-  /** Peak heap after module init and construction, in bytes. */
-  heapUsedBytes: number | null;
-  loadMs: number;
-}
-
 /**
  * Guest-side port of `child-runner.ts`'s `executeConnectorRuntime`: same
  * mode dispatch, same context shapes, same result and error envelopes. Runs
@@ -280,30 +271,6 @@ const GUEST_RUNNER = String.raw`
 })()
 `;
 
-/** Loads the bundle, constructs the runtime and reports its definition key. */
-const GUEST_PROBE = String.raw`
-(function () {
-  var H = globalThis.__lobuHost;
-  try {
-    var mod = module.exports;
-    var def = mod && typeof mod === 'object' ? mod.default : undefined;
-    var values = mod && typeof mod === 'object' ? Object.values(mod) : [];
-    var RuntimeClass = null;
-    for (var i = 0; i < values.length; i++) {
-      var v = values[i];
-      if (typeof v === 'function' && v.prototype && v.prototype.sync && v.prototype.execute) { RuntimeClass = v; break; }
-    }
-    if (!RuntimeClass && typeof def === 'function' && def.prototype && def.prototype.sync && def.prototype.execute) RuntimeClass = def;
-    if (!RuntimeClass) throw new Error('No ConnectorRuntime class found. Expected a class with sync() and execute() methods.');
-    var instance = new RuntimeClass();
-    var key = instance && instance.definition && typeof instance.definition.key === 'string' ? instance.definition.key : null;
-    return JSON.stringify({ ok: true, connectorKey: key });
-  } catch (error) {
-    return JSON.stringify({ ok: false, error: H.describeError(error) });
-  }
-})()
-`;
-
 function jsonLiteral(value: unknown): string {
   // A JSON string literal is a valid JS string literal once U+2028/U+2029 are escaped.
   return JSON.stringify(JSON.stringify(value)).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
@@ -374,38 +341,6 @@ export class IsolateExecutor implements SyncExecutor {
     const ivm = await loadIsolatedVm();
     if (!ivm) throw new IsolateRuntimeUnavailableError(isolatedVmUnavailableReason());
     return ivm;
-  }
-
-  /**
-   * Load the bundle in an isolate without running a job: module init plus
-   * `new RuntimeClass()`. Rejects with `IsolateLaneIneligibleError` before any
-   * isolate work when the bundle still requires a Node builtin.
-   */
-  async probe(compiledCode: string): Promise<IsolateProbeResult> {
-    assertIsolateEligible(compiledCode);
-    const ivm = await this.requireIsolatedVm();
-    const started = Date.now();
-    const host = await IsolateHost.create({
-      ivm,
-      memoryMb: this.options.memoryMb,
-      messageBytes: this.options.messageBytes,
-      env: {},
-      sync: { log: () => undefined, fatal: () => undefined, fetchAbort: () => undefined },
-      async: {},
-    });
-    try {
-      const raw = await host.run(`${compiledCode}\n${GUEST_PROBE}`, { timeoutMs: this.options.timeoutMs || 60_000 });
-      const outcome = parseGuestJson(raw, 'probe') as { ok: boolean; connectorKey?: string | null; error?: GuestErrorDescription };
-      if (!outcome.ok) {
-        const error = new Error(redactOutput(outcome.error?.message ?? 'connector bundle failed to load'));
-        error.name = outcome.error?.name ? redactOutput(String(outcome.error.name)) : 'Error';
-        throw error;
-      }
-      const heap = host.heapStatistics();
-      return { connectorKey: outcome.connectorKey ?? null, heapUsedBytes: heap?.used_heap_size ?? null, loadMs: Date.now() - started };
-    } finally {
-      host.dispose();
-    }
   }
 
   async execute(

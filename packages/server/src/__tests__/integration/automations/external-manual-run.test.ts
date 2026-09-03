@@ -109,7 +109,10 @@ describe('external manual Automation execution', () => {
     const queuedWindowStart = String(queued.approved_input.window_start);
     const queuedWindowEnd = String(queued.approved_input.window_end);
     expect(queuedVersionId).toBeGreaterThan(0);
-    expect(queued.approved_input.granularity).toBe('weekly');
+    // The run snapshot carries the arrival BOUNDS and nothing that interprets
+    // them: there is no period shape to record any more.
+    expect(queued.approved_input.granularity).toBeUndefined();
+    expect(Date.parse(queuedWindowEnd)).toBeGreaterThan(Date.parse(queuedWindowStart));
 
     // A workspace event-window run stores exact durable pointers in its run
     // snapshot. The caller should not have to repeat content_ids when reading
@@ -122,6 +125,9 @@ describe('external manual Automation execution', () => {
       organization_id: workspace.org.id,
       content: 'A durable workspace signal for the task builder.',
       occurred_at: triggerOccurredAt,
+      // The window selects `created_at`, so the row has to have been STORED
+      // inside the queued range, not merely dated inside it.
+      created_at: triggerOccurredAt,
     });
     const workspaceSignal = {
       kind: 'event',
@@ -188,8 +194,14 @@ describe('external manual Automation execution', () => {
     expect(read.extraction_schema?.properties?.findings).toBeUndefined();
     expect(read.content.map((item) => Number(item.id))).toContain(triggerEvent.id);
     if (!read.window_token) throw new Error('run-bound read returned no window token');
-    expect(read.window_lag?.granularity).toBe('weekly');
-    expect((await verifyWindowToken(read.window_token, TEST_ENV)).granularity).toBe('weekly');
+    // An ordinary run-bound read starts at the mark, so it leaves nothing
+    // unclaimed behind it, and the axis travels with the bounds.
+    expect(read.window_axis).toBe('created_at');
+    expect(read.window_lag?.unclaimed_from).toBeNull();
+    expect(read.window_lag?.unclaimed_to).toBeNull();
+    expect(
+      (await verifyWindowToken(read.window_token, TEST_ENV)).granularity
+    ).toBeUndefined();
 
     const unrelatedEvent = await createTestEvent({
       entity_id: parent.id,
@@ -307,7 +319,7 @@ describe('external manual Automation execution', () => {
       claimed_by: `user:${workspace.users.owner.id}`,
       model_used: 'chatgpt/test',
     });
-    expect(completed.approved_input.granularity).toBe('weekly');
+    expect(completed.approved_input.granularity).toBeUndefined();
     const completedReplay = (await workspace.owner.automations.completeWindow({
       automation_id: created.automation_id,
       run_id: triggered.run_id,
@@ -345,7 +357,6 @@ describe('external manual Automation execution', () => {
             windowStart: queuedWindowStart,
             windowEnd: queuedWindowEnd,
             templateVersionId: queuedVersionId,
-            granularity: 'weekly',
           },
         }
       )
@@ -371,7 +382,6 @@ describe('external manual Automation execution', () => {
         automation_id: automationId,
         window_start: queuedWindowStart,
         window_end: queuedWindowEnd,
-        granularity: 'weekly',
         content_count: 0,
         content_ids: [],
       },
@@ -420,7 +430,6 @@ describe('external manual Automation execution', () => {
         run_id: secondTokenPayload.run_id,
         window_start: secondTokenPayload.window_start,
         window_end: secondTokenPayload.window_end,
-        granularity: secondTokenPayload.granularity,
         content_count: 0,
         content_ids: [],
         page_next_occurred_at: pageCursor.occurred_at,
@@ -434,7 +443,6 @@ describe('external manual Automation execution', () => {
         automation_id: secondTokenPayload.automation_id,
         window_start: secondTokenPayload.window_start,
         window_end: secondTokenPayload.window_end,
-        granularity: secondTokenPayload.granularity,
         content_count: 0,
         content_ids: [],
         page_before_occurred_at: pageCursor.occurred_at,
@@ -559,12 +567,14 @@ describe('external manual Automation execution', () => {
     });
     await sql`
       UPDATE runs
-      SET approved_input = approved_input - 'granularity'
+      SET approved_input = approved_input - 'window_start' - 'window_end'
       WHERE id = ${inProcessRun.runId}
     `;
 
     // An external pending read has no authoritative claim context and must not
-    // reconstruct a missing durable snapshot from the live schedule.
+    // reconstruct a missing durable snapshot from the live arrival mark. The
+    // mark always yields SOME window, so a fallback here would silently hand a
+    // caller a range the run never recorded.
     await expect(
       handleAutomationMode(
         { automation_id: automationId, run_id: inProcessRun.runId },
@@ -575,21 +585,27 @@ describe('external manual Automation execution', () => {
           userId: workspace.users.owner.id,
         }
       )
-    ).rejects.toThrow(/missing a valid queued granularity snapshot/);
-    const [pendingWithoutGranularity] = await sql<{
+    ).rejects.toThrow(/missing a valid queued window snapshot/);
+    const [pendingWithoutSnapshot] = await sql<{
       status: string;
       claimed_by: string | null;
     }>`
       SELECT status, claimed_by FROM runs WHERE id = ${inProcessRun.runId}
     `;
-    expect(pendingWithoutGranularity).toEqual({ status: 'pending', claimed_by: null });
+    expect(pendingWithoutSnapshot).toEqual({ status: 'pending', claimed_by: null });
 
     // origin/main already resolves trusted claimedWindow context for the
     // matching claimed/running in-process run. Preserve that established lane
-    // without adding a general schedule-based fallback for external callers.
+    // without adding a general mark-based fallback for external callers. Put
+    // the snapshot back first: the bound-run load requires it whoever is
+    // calling, and the assertion above has had its answer.
     await sql`
       UPDATE runs
-      SET status = 'running'
+      SET status = 'running',
+          approved_input = approved_input || ${sql.json({
+            window_start: legacyWindowStart,
+            window_end: legacyWindowEnd,
+          })}::jsonb
       WHERE id = ${inProcessRun.runId}
     `;
     const inProcessRead = await handleAutomationMode(
@@ -604,15 +620,13 @@ describe('external manual Automation execution', () => {
           windowStart: legacyWindowStart,
           windowEnd: legacyWindowEnd,
           templateVersionId: queuedVersionId,
-          granularity: 'weekly',
         },
       }
     );
-    expect(inProcessRead.window_lag?.granularity).toBe('weekly');
+    expect(inProcessRead.window_axis).toBe('created_at');
     const inProcessToken = await verifyWindowToken(inProcessRead.window_token, TEST_ENV);
     expect(inProcessToken).toMatchObject({
       run_id: inProcessRun.runId,
-      granularity: 'weekly',
     });
 
     const promoted = await sql<{

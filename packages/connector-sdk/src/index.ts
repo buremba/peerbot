@@ -194,21 +194,6 @@ export type {
   ConnectorTriggerSignal,
   SubscriptionCandidate,
 } from './automation-triggers.js';
-export type { AutomationTimeGranularity } from './automation-time.js';
-export {
-  addAutomationPeriod,
-  alignToAutomationWindowStart,
-  getAvailableAutomationGranularities,
-  getFinerAutomationGranularities,
-  getNextAutomationGranularity,
-  getAutomationDateTruncUnit,
-  inferAutomationGranularityFromDays,
-  inferAutomationGranularityFromSchedule,
-  isAutomationTimeGranularity,
-  shiftAutomationPeriod,
-  subtractAutomationPeriod,
-  AUTOMATION_TIME_GRANULARITIES,
-} from './automation-time.js';
 
 // =============================================================================
 // Browser automation lives behind `@lobu/connector-sdk/browser` (Playwright,

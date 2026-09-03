@@ -4,7 +4,7 @@
  *
  * Rehydrates the reaction context from the source run rather than from a
  * serialized bundle: `runs.action_output` holds the cleaned `extracted_data`,
- * `runs.approved_input` the window bounds and granularity, and
+ * `runs.approved_input` the arrival window bounds, and
  * `runs.run_metadata.content_analyzed` the linked-content count — all written
  * by the same transaction that queued this task, so the context the script sees
  * is exactly the one the inline path built.
@@ -176,7 +176,6 @@ export async function runAutomationReactionTask(
       automation_id: automationId,
       window_start: String(approvedInput.window_start ?? ''),
       window_end: String(approvedInput.window_end ?? ''),
-      granularity: String(approvedInput.granularity ?? ''),
       content_analyzed: Number(runMetadata.content_analyzed ?? 0),
     },
     automation: {

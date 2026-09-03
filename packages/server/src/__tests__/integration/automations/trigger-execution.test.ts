@@ -1,4 +1,3 @@
-import { inferAutomationGranularityFromSchedule } from "@lobu/connector-sdk";
 import type {
 	AutomationClaimNextWindowResult,
 	AutomationTriggerResult,
@@ -72,8 +71,7 @@ describe("Automation trigger execution contract", () => {
 		await sql`
       UPDATE automations
       SET next_window_start = ${windowStart.toISOString()}::timestamptz,
-          completed_window_coverage = '{}'::tstzmultirange,
-          window_projection_granularity = 'daily'
+          completed_window_coverage = '{}'::tstzmultirange
       WHERE id = ${Number(automation.automation_id)}
     `;
 		const claim = (await workspace.owner.automations.claimNextWindow({
@@ -291,7 +289,6 @@ describe("Automation trigger execution contract", () => {
 		const pending = await computePendingWindow(
 			sql as unknown as DbClient,
 			Number(automation.automation_id),
-			inferAutomationGranularityFromSchedule(null),
 		);
 		const queued = await createAutomationRun({
 			organizationId: workspace.org.id,

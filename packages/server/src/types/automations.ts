@@ -56,7 +56,6 @@ export const AutomationWindowSchema = Type.Object({
   run_id: Type.Integer(),
   automation_id: Type.String(),
   automation_name: Type.String(),
-  granularity: Type.String(),
   window_start: Type.String(),
   window_end: Type.String(),
   content_analyzed: Type.Integer(),
@@ -201,16 +200,24 @@ export const UnprocessedRangeSchema = Type.Object({
 export type UnprocessedRange = Static<typeof UnprocessedRangeSchema>;
 
 export const PendingAnalysisSchema = Type.Object({
-  /** Missing completed logical periods. Retained under unprocessed_count for existing clients. */
-  unprocessed_count: Type.Integer(),
-  pending_period_count: Type.Integer(),
-  /** Source items not yet linked to any completed Automation run. */
+  /**
+   * Source items not yet linked to any completed Automation run.
+   *
+   * Bounded by `occurred_at` for cost, not as an axis claim: the count is
+   * capped and 90-day-scoped so the page query stays inside the frontend
+   * timeout. The window bounds below are the arrival axis.
+   */
   unprocessed_content_count: Type.Integer(),
+  /**
+   * The arrival range a claim would hand out: `[mark, now - settle)`. Null only
+   * while the mark is younger than the settle budget (a just-created or
+   * just-seeded Automation) — the only state in which an Automation has no
+   * window to claim.
+   */
   next_window: Type.Union([
     Type.Object({
       start: Type.String(),
       end: Type.String(),
-      granularity: Type.String(),
     }),
     Type.Null(),
   ]),

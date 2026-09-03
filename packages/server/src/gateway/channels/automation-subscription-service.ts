@@ -1,6 +1,5 @@
 import { createLogger } from "@lobu/core";
 import type { AutomationEventTrigger } from "@lobu/core/contracts/tools/manage-automations";
-import { inferAutomationGranularityFromSchedule } from "@lobu/connector-sdk";
 import {
 	type DbClient,
 	getDb,
@@ -10,7 +9,6 @@ import {
 import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
 import { requireOrgId } from "../../lobu/stores/org-context.js";
 import { getNextNumericId } from "../../tools/admin/helpers/db-helpers.js";
-import { nextAutomationWindowStart } from "../../utils/window-utils.js";
 import {
 	resolveChannelFeedId,
 	softDeleteChannelFeed,
@@ -506,19 +504,13 @@ export class AutomationSubscriptionService {
 			);
 			const automationId = await getNextNumericId(tx, "automations");
 			const versionId = await getNextNumericId(tx, "automation_versions");
-			const projectionGranularity = inferAutomationGranularityFromSchedule(null);
-			const nextWindowStart = nextAutomationWindowStart(
-				null,
-				new Date(),
-				projectionGranularity,
-			);
 			await tx`
 				INSERT INTO automations (
 					id, name, slug, description, organization_id, entity_ids,
 					schedule, next_run_at, triggers, managed_agent_id, model_config,
 					execution_config, sources, version, current_version_id, tags,
 					status, created_by, created_at, updated_at, automation_group_id,
-					next_window_start, completed_window_coverage, window_projection_granularity
+					next_window_start, completed_window_coverage
 				) VALUES (
 					${automationId}, ${`Messages in ${channelId}`}, ${`chat-${platform}-${automationId}`},
 					'Chat subscription', ${organizationId}, '{}'::bigint[],
@@ -526,8 +518,8 @@ export class AutomationSubscriptionService {
 					${model ? tx.json({ model }) : null}, '[]'::jsonb, 1, NULL,
 					ARRAY[${CHAT_LINK_TAG}]::text[], 'active', ${createdBy},
 					current_timestamp, current_timestamp, ${automationId},
-					${nextWindowStart.toISOString()}::timestamptz,
-					'{}'::tstzmultirange, ${projectionGranularity}
+					date_trunc('milliseconds', current_timestamp) + interval '1 millisecond',
+					'{}'::tstzmultirange
 				)
 			`;
 			await tx`

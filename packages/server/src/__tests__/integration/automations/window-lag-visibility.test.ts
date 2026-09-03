@@ -1,6 +1,6 @@
 /**
- * End-to-end: an Automation whose window cursor has fallen behind can see that it
- * has, and can act on it — through the real handlers against a real database.
+ * End-to-end: an Automation that has fallen behind can see that it has, and can
+ * act on it — through the real handlers against a real database.
  *
  * The prod failure this closes (Automation 2, measured 2026-08-06): a daily
  * Automation whose device stopped claiming runs fell fifty days behind. Its
@@ -8,12 +8,13 @@
  * while the calendar advanced one day too, so the gap froze rather than closed.
  * Those runs were not failing — the late windows carry `content_analyzed = 40`.
  * It read forty real Hacker News stories and drafted replies to threads a month
- * dead, and reported success. Nothing in the dispatch ever said the window was
- * stale, and from inside a run a stale window is indistinguishable from a fresh
- * one.
+ * dead, and reported success.
  *
- * Recovery is sequential: every missing logical period remains visible and a
- * successful completion advances exactly one period.
+ * The arrival axis removes the freeze rather than reporting it: there is no
+ * backlog of periods to walk, so ONE run covers the whole outage and the next
+ * one starts caught up. What is left to make visible is the other half — an
+ * agent that deliberately reads a LATER range leaves the arrivals between the
+ * mark and it unclaimed, and has to be told so in the payload it actually reads.
  */
 
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -26,7 +27,6 @@ import { createAutomationRun } from "../../../runs/queue-service";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
-	createAutomationResultRun,
 	createTestAgent,
 	createTestEvent,
 	seedOwnerContext,
@@ -35,6 +35,7 @@ import {
 const ENV = { JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env;
 const DAY_MS = 86_400_000;
 
+/** Start of the UTC day `offsetDays` back from now. */
 const dayStart = (offsetDays: number): Date => {
 	const d = new Date(Date.now() - offsetDays * DAY_MS);
 	d.setUTCHours(0, 0, 0, 0);
@@ -45,19 +46,16 @@ type AutomationContent = {
 	window_token: string;
 	window_start: string;
 	window_end: string;
+	window_axis?: string;
 	window_lag?: {
 		last_window_start: string | null;
-		current_period_start: string;
-		periods_behind: number;
-		granularity: string;
-		periods_skipped: number;
-		skipped_from: string | null;
-		skipped_to: string | null;
+		unclaimed_from: string | null;
+		unclaimed_to: string | null;
 		guidance?: string;
 	};
 };
 
-describe("Automation window lag is visible and actionable", () => {
+describe("Automation arrival lag is visible and actionable", () => {
 	let orgId: string;
 	let userId: string;
 	let ctx: Awaited<ReturnType<typeof seedOwnerContext>>["ctx"];
@@ -104,42 +102,32 @@ describe("Automation window lag is visible and actionable", () => {
 		}
 		automationId = Number(created.automation_id);
 
-		// Content in both the stale period and the current one, so a window that
-		// resolves to either has something real to read. This is what made the
-		// prod case so quiet: the stale run DID return content.
+		// Content stored fifty days ago and content stored just now, so a window
+		// that reaches either end has something real to read. This is what made
+		// the prod case so quiet: the stale run DID return content.
 		for (const offset of [50, 0]) {
+			const at = new Date(dayStart(offset).getTime() + 3600_000);
 			await createTestEvent({
 				organization_id: orgId,
 				semantic_type: "message",
-				content: `story from ${offset} days ago`,
-				occurred_at: new Date(dayStart(offset).getTime() + 3600_000),
+				content: `story stored ${offset} days ago`,
+				occurred_at: at,
+				created_at: offset === 0 ? undefined : at,
 			});
 		}
 	});
 
-	/** Freeze the cursor `daysBack` days in the past, as an outage would. */
-	const seedStaleCursor = async (daysBack: number) => {
-		const windowStart = dayStart(daysBack);
-		await createAutomationResultRun({
-			automationId: automationId,
-			organizationId: orgId,
-			granularity: "daily",
-			windowStart,
-			windowEnd: new Date(windowStart.getTime() + DAY_MS),
-			contentAnalyzed: 40,
-			createdBy: userId,
-		});
-		// This fixture writes completed history directly, bypassing the completion
-		// handler that maintains the durable projection. Seed the state that the
-		// migration would derive from that one sequential completion.
+	/** Freeze the arrival mark `daysBack` days in the past, as an outage would. */
+	const seedStaleMark = async (daysBack: number): Promise<Date> => {
+		const mark = dayStart(daysBack);
 		await sql`
 			UPDATE automations
-			SET next_window_start = ${new Date(windowStart.getTime() + DAY_MS).toISOString()}::timestamptz,
+			SET next_window_start = ${mark.toISOString()}::timestamptz,
 				completed_window_coverage = '{}'::tstzmultirange,
-				window_projection_granularity = 'daily'
+				last_completed_window_start = NULL
 			WHERE id = ${automationId}
 		`;
-		return windowStart;
+		return mark;
 	};
 
 	const read = async (args: Record<string, unknown> = {}) =>
@@ -148,14 +136,13 @@ describe("Automation window lag is visible and actionable", () => {
 			userId,
 		})) as AutomationContent;
 
-	const completeSelectedDay = async (day: Date) => {
-		const date = day.toISOString().slice(0, 10);
-		const selected = await read({ since: date, until: date });
+	/** Run one whole window end to end: queue it, read it bound, complete it. */
+	const completeWindow = async (dispatched: AutomationContent, summary: string) => {
 		const run = await createAutomationRun({
 			organizationId: orgId,
 			automationId,
-			windowStart: selected.window_start,
-			windowEnd: selected.window_end,
+			windowStart: dispatched.window_start,
+			windowEnd: dispatched.window_end,
 			dispatchSource: "manual",
 		});
 		await sql`
@@ -163,211 +150,134 @@ describe("Automation window lag is visible and actionable", () => {
 			SET status = 'running', claimed_at = NOW(), claimed_by = ${`user:${userId}`}
 			WHERE id = ${run.runId}
 		`;
-		await manageAutomations(
-			{
-				action: "complete_window",
-				automation_id: String(automationId),
-				window_token: selected.window_token,
-				run_id: run.runId,
-				extracted_data: { summary: `completed ${date}` },
-			},
-			ENV,
-			ctx,
-		);
-	};
-
-	it("reports no last completed window for a fresh Automation", async () => {
-		expect((await read()).window_lag?.last_window_start).toBeNull();
-	});
-
-	it("reports the latest non-event period when windows finish out of order", async () => {
-		const later = dayStart(3);
-		await completeSelectedDay(later);
-		await completeSelectedDay(dayStart(5));
-
-		expect((await read()).window_lag?.last_window_start).toBe(later.toISOString());
-	});
-
-	it("dispatches the oldest missing window when fifty periods behind", async () => {
-		const staleStart = await seedStaleCursor(50);
-		const content = await read();
-
-		expect(content.window_start).toBe(
-			new Date(staleStart.getTime() + DAY_MS).toISOString(),
-		);
-		expect(content.window_lag).toBeDefined();
-		expect(content.window_lag?.periods_behind).toBe(49);
-		expect(content.window_lag?.last_window_start).toBe(staleStart.toISOString());
-		expect(content.window_lag?.granularity).toBe("daily");
-		expect(content.window_lag?.periods_skipped).toBe(0);
-		expect(content.window_lag?.skipped_from).toBeNull();
-		expect(content.window_lag?.skipped_to).toBeNull();
-	});
-
-	it("advances exactly one period after an ordinary completion", async () => {
-		await seedStaleCursor(50);
-
-		const dispatched = await read();
-		const createdRun = await createAutomationRun({
-			organizationId: orgId,
-			automationId,
-			windowStart: dispatched.window_start,
-			windowEnd: dispatched.window_end,
-			dispatchSource: "manual",
-		});
-		const runBound = await read({ run_id: createdRun.runId });
+		const bound = await read({ run_id: run.runId });
 		const completion = await manageAutomations(
 			{
 				action: "complete_window",
 				automation_id: String(automationId),
-				window_token: runBound.window_token,
-				run_id: createdRun.runId,
-				extracted_data: { summary: "Analysed the dispatched window." },
+				window_token: bound.window_token,
+				run_id: run.runId,
+				extracted_data: { summary },
 			},
 			ENV,
 			ctx,
 		);
 		expect(completion.action).toBe("complete_window");
+	};
 
-		const afterCursor = await sql`
-			SELECT approved_input->>'window_start' AS window_start FROM runs
-			WHERE automation_id = ${automationId}
-			  AND run_type = 'automation' AND status = 'completed'
-			ORDER BY (approved_input->>'window_start')::timestamptz DESC LIMIT 1
+	const mark = async (): Promise<string> => {
+		const [row] = await sql`
+			SELECT next_window_start FROM automations WHERE id = ${automationId}
 		`;
-		expect(new Date(afterCursor[0].window_start as string).toISOString()).toBe(
-			dayStart(49).toISOString(),
-		);
+		return new Date(row.next_window_start as string).toISOString();
+	};
 
-		const next = await read();
-		expect(next.window_start).toBe(dayStart(48).toISOString());
-		expect(next.window_lag?.periods_skipped).toBe(0);
-		expect(formatToolResult("read_knowledge", next)).not.toContain("Skipped Periods");
+	it("reports no last completed window for a fresh Automation", async () => {
+		const content = await read();
+		expect(content.window_lag?.last_window_start).toBeNull();
+		// The axis travels with the bounds so a run cannot misread them as dates.
+		expect(content.window_axis).toBe("created_at");
 	});
 
-	it("does not describe sequential backlog as skipped periods", async () => {
-		await seedStaleCursor(50);
-		const md = formatToolResult("read_knowledge", await read());
-
-		expect(md).not.toContain("Skipped Periods");
-		expect(md).toContain("Automation Window");
-	});
-
-	// The false positive this measurement was rewritten to kill. A daily Automation
-	// that ran yesterday has a cursor TWO periods back at the moment its next run
-	// reads — the cursor is the period the previous run completed. Prod Automation 79
-	// (`0 4 * * *`) sits exactly here every day; a cursor-based threshold would
-	// have warned it on every healthy run.
-	it("stays silent for an Automation that is keeping up", async () => {
-		await seedStaleCursor(2);
+	// THE FIX FOR THE PROD FAILURE. Fifty days behind used to mean fifty runs to
+	// drain, one per completion, while the calendar kept moving — the gap froze.
+	// One arrival window spans the entire outage.
+	it("covers fifty days of backlog in a single window", async () => {
+		const staleMark = await seedStaleMark(50);
 		const content = await read();
 
-		expect(content.window_start).toBe(dayStart(1).toISOString());
-		expect(content.window_lag?.periods_behind).toBe(1);
-		expect(content.window_lag?.periods_skipped).toBe(0);
-		expect(content.window_lag?.guidance).toBeUndefined();
-		expect(formatToolResult("read_knowledge", content)).not.toContain("Skipped Periods");
+		expect(content.window_start).toBe(staleMark.toISOString());
+		// Reaches all the way to the horizon, not to the end of one period.
+		expect(new Date(content.window_end).getTime()).toBeGreaterThan(
+			Date.now() - 60_000,
+		);
+		expect(content.window_lag?.last_window_start).toBeNull();
+		// Nothing was skipped: an ordinary read starts exactly at the mark.
+		expect(content.window_lag?.unclaimed_from).toBeNull();
+		expect(content.window_lag?.unclaimed_to).toBeNull();
+		expect(formatToolResult("read_knowledge", content)).not.toContain(
+			"Unclaimed Arrivals",
+		);
 	});
 
-	it("aligns an agent-chosen range instead of storing an inclusive end", async () => {
-		await seedStaleCursor(50);
+	it("lands caught up after one completion, not one period further on", async () => {
+		const staleMark = await seedStaleMark(50);
+		const dispatched = await read();
+		await completeWindow(dispatched, "Analysed fifty days of arrivals.");
+
+		// The mark moved to the end of the range that was actually read.
+		expect(await mark()).toBe(dispatched.window_end);
+		expect(await mark()).not.toBe(staleMark.toISOString());
+
+		const next = await read();
+		expect(next.window_start).toBe(dispatched.window_end);
+		expect(next.window_lag?.last_window_start).toBe(staleMark.toISOString());
+		expect(next.window_lag?.unclaimed_from).toBeNull();
+	});
+
+	// An agent that deliberately reads a LATER range is not being skipped past —
+	// it chose that window. But the arrivals it stepped over stay unclaimed, and
+	// the run has to be told so IN the payload: Automation runs read this through
+	// run_sdk as JSON and never render the markdown.
+	it("names the arrivals an explicitly later range leaves behind", async () => {
+		await seedStaleMark(50);
 		const target = dayStart(3);
-		const content = await read({
-			since: target.toISOString().slice(0, 10),
-			until: target.toISOString().slice(0, 10),
-		});
+		const date = target.toISOString().slice(0, 10);
+		const content = await read({ since: date, until: date });
 
 		expect(content.window_start).toBe(target.toISOString());
-		// Exclusive, period-aligned — not `23:59:59.999`, the second boundary
-		// convention that produced prod's five zero-length windows.
+		// `until` is inclusive as the caller means it, so the exclusive end is the
+		// start of the following day — never `23:59:59.999`, the convention that
+		// produced prod's five zero-length windows.
 		expect(content.window_end).toBe(new Date(target.getTime() + DAY_MS).toISOString());
 		expect(content.window_end).not.toContain("23:59:59");
+
+		expect(content.window_lag?.unclaimed_from).toBe(dayStart(50).toISOString());
+		expect(content.window_lag?.unclaimed_to).toBe(target.toISOString());
+		expect(content.window_lag?.guidance).toContain("The mark stays where it is");
+		expect(formatToolResult("read_knowledge", content)).toContain(
+			"Unclaimed Arrivals",
+		);
 	});
 
-	// An agent that deliberately reads an OLD span is not being skipped past —
-	// it chose that window. Reporting a skip there would be a lie, and the notice
-	// would fire on every page of a deliberate backfill.
-	it("reports age but no skip for a deliberate backfill read", async () => {
-		const staleStart = await seedStaleCursor(50);
+	// The safety property the guidance states outright, so it has to hold:
+	// completing an explicitly selected later range must not book the arrivals
+	// before it. Otherwise a backfill would silently discard the backlog.
+	it("keeps the mark where it is when a later range is completed", async () => {
+		const staleMark = await seedStaleMark(50);
+		const date = dayStart(3).toISOString().slice(0, 10);
+		const selected = await read({ since: date, until: date });
+		await completeWindow(selected, "A deliberately selected later day.");
+
+		expect(await mark()).toBe(staleMark.toISOString());
+		// And the ordinary claim still returns the whole backlog.
+		expect((await read()).window_start).toBe(staleMark.toISOString());
+	});
+
+	// The mirror case: a range entirely BEHIND the mark is a re-read. It books
+	// nothing either, and reports no gap, because it skipped nothing.
+	it("reports no gap for a deliberate backfill behind the mark", async () => {
+		const staleMark = await seedStaleMark(50);
 		const old = dayStart(60).toISOString().slice(0, 10);
 		const content = await read({ since: old, until: old });
 
-		expect(content.window_lag?.periods_behind).toBe(60);
-		expect(content.window_lag?.periods_skipped).toBe(0);
+		expect(content.window_lag?.unclaimed_from).toBeNull();
+		expect(content.window_lag?.unclaimed_to).toBeNull();
 		expect(content.window_lag?.guidance).toBeUndefined();
-		expect(content.window_lag?.last_window_start).toBe(staleStart.toISOString());
+
+		await completeWindow(content, "Re-read an old span.");
+		expect(await mark()).toBe(staleMark.toISOString());
 	});
 
-	// Backfilling an older period must never drag the cursor backwards, or
-	// draining a backlog would undo the catch-up. This is the safety property the
-	// guidance states outright, so it has to actually hold.
-	it("keeps the cursor when an older period is backfilled afterwards", async () => {
-		await seedStaleCursor(50);
-		const dispatched = await read();
-		const currentRun = await createAutomationRun({
-			organizationId: orgId,
-			automationId,
-			windowStart: dispatched.window_start,
-			windowEnd: dispatched.window_end,
-			dispatchSource: "manual",
-		});
-		const currentRunBound = await read({ run_id: currentRun.runId });
-		await manageAutomations(
-			{
-				action: "complete_window",
-				automation_id: String(automationId),
-				window_token: currentRunBound.window_token,
-				run_id: currentRun.runId,
-				extracted_data: { summary: "current" },
-			},
-			ENV,
-			ctx,
-		);
-
-		const old = dayStart(20).toISOString().slice(0, 10);
-		const backfill = await read({ since: old, until: old });
-		const backfillRun = await createAutomationRun({
-			organizationId: orgId,
-			automationId,
-			windowStart: backfill.window_start,
-			windowEnd: backfill.window_end,
-			dispatchSource: "manual",
-		});
-		const backfillRunBound = await read({ run_id: backfillRun.runId });
-		await manageAutomations(
-			{
-				action: "complete_window",
-				automation_id: String(automationId),
-				window_token: backfillRunBound.window_token,
-				run_id: backfillRun.runId,
-				extracted_data: { summary: "backfilled" },
-			},
-			ENV,
-			ctx,
-		);
-
-		const next = await read();
-		expect(next.window_start).toBe(dayStart(48).toISOString());
-		expect(next.window_lag?.periods_skipped).toBe(0);
-	});
-
-	// Reads alone never advance the durable cursor. An Automation whose runs all
-	// fail keeps reporting its oldest missing period.
-	it("does not advance the cursor without a completed run", async () => {
-		const staleStart = await seedStaleCursor(50);
+	// Reads alone never advance the durable mark. An Automation whose runs all
+	// fail keeps being handed the same backlog.
+	it("does not advance the mark without a completed run", async () => {
+		const staleMark = await seedStaleMark(50);
 
 		await read();
 		await read();
 
-		const cursor = await sql`
-			SELECT approved_input->>'window_start' AS window_start FROM runs
-			WHERE automation_id = ${automationId}
-			  AND run_type = 'automation' AND status = 'completed'
-			ORDER BY (approved_input->>'window_start')::timestamptz DESC LIMIT 1
-		`;
-		expect(new Date(cursor[0].window_start as string).toISOString()).toBe(
-			staleStart.toISOString(),
-		);
-		expect((await read()).window_lag?.last_window_start).toBe(staleStart.toISOString());
+		expect(await mark()).toBe(staleMark.toISOString());
+		expect((await read()).window_lag?.last_window_start).toBeNull();
 	});
 });

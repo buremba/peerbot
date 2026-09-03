@@ -20,6 +20,23 @@ function parseEnvInt(name: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : fallback;
 }
 
+/**
+ * Like `parseEnvInt`, but ZERO is a legal value.
+ *
+ * That difference is why this cannot reuse `parseEnvInt`, and why it must check
+ * for an empty string explicitly: `Number('')` is `0`, which `>= 0` accepts. A
+ * bare `AUTOMATION_ARRIVAL_SETTLE_MS=` in a .env — a shape people write all the
+ * time meaning "unset" — would otherwise collapse the setting to zero instead of
+ * falling back, silently and with no error. `parseEnvInt` is immune only because
+ * `> 0` happens to reject the same value.
+ */
+function parseEnvIntAllowingZero(name: string, fallback: number): number {
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  const raw = Number(value);
+  return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : fallback;
+}
+
 /** Strict `<n> <unit>` Postgres interval literals only — these values are
  *  inlined into SQL by the stale-run sweeper, so anything fancier (or
  *  malformed) falls back to the default instead of reaching the database. */
@@ -138,5 +155,56 @@ export const intervals = {
   /** Max retained SSE backlog entries per agent (most-recent wins). */
   get sseBacklogLimit(): number {
     return parseEnvInt('SSE_BACKLOG_LIMIT', 100);
+  },
+
+  /**
+   * How far behind the database clock an Automation's arrival window may reach.
+   *
+   * Automation windows select rows by `events.created_at`, and `created_at`
+   * (`DEFAULT now()`) is stamped at the writer's transaction START while the
+   * row becomes VISIBLE only at commit. Between the two, a concurrent reader
+   * can compute a horizon that already sits past a row it cannot see — and
+   * that row would fall inside a window which completes without it. The
+   * horizon is therefore `now() - this`, and the exposure is exactly one
+   * writer's transaction length.
+   *
+   * Bound the WRITER, not the reader: `events-insert-sites.test.ts` enumerates
+   * the two `INSERT INTO events` sites and asserts their transactions stay far
+   * inside this budget, and production's `idle_in_transaction_session_timeout`
+   * is one minute. The knob exists so an operator can widen the budget during
+   * an incident without a deploy, and so integration tests can collapse it to
+   * see a row they just inserted; widening costs only freshness, since a row
+   * stored inside the settle window belongs to the next run, never to none.
+   *
+   * Zero is a legal value (tests), so this reads through `parseEnvIntAllowingZero`
+   * rather than `parseEnvInt`, which rejects it.
+   */
+  get automationArrivalSettleMs(): number {
+    return parseEnvIntAllowingZero('AUTOMATION_ARRIVAL_SETTLE_MS', 60_000);
+  },
+
+  /**
+   * How far back a BRAND-NEW Automation's first arrival window reaches.
+   *
+   * The mark for an existing Automation is a fact — the end of the last range a
+   * run actually completed. A new Automation has no such fact, and seeding the
+   * mark at the creation instant makes it permanently blind to everything
+   * already ingested: connect a source, build an Automation over it, and the
+   * first run reads nothing, with no way to ever reach back. The old calendar
+   * axis did not have this problem because a first window was a calendar
+   * period, which already contained earlier content.
+   *
+   * So the first window starts one bounded lookback behind creation. Seven days
+   * is long enough to cover a source connected in the same sitting and short
+   * enough that a new Automation cannot stall on a year of history.
+   *
+   * This applies ONLY at creation. It is not a repair for a NULL mark
+   * (`computePendingWindow` seeds that at the clock — an unseeded mark means
+   * unknown, and re-reading history on a repair would double-process), and it
+   * is not the cutover seed (the migration deliberately starts every existing
+   * Automation at the clock, since their history was already processed).
+   */
+  get automationFirstWindowLookbackMs(): number {
+    return parseEnvIntAllowingZero('AUTOMATION_FIRST_WINDOW_LOOKBACK_MS', 7 * 24 * 60 * 60 * 1000);
   },
 };

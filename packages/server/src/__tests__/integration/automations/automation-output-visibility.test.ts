@@ -11,8 +11,9 @@
  * it was produced. Of 163 automation-output events written in 30 days, 153 were
  * stamped in the future and 45 were still invisible at the time of measurement.
  *
- * The future stamp was not decoration: window membership is
- * `occurred_at >= window_start AND occurred_at < window_end`, so pushing the
+ * The future stamp was not decoration: window membership was then
+ * `occurred_at >= window_start AND occurred_at < window_end` (it is
+ * `created_at` today), so pushing the
  * output to the window's exclusive end is the ONLY thing that kept an Automation
  * from re-reading its own output as input on its next run inside the same
  * window. Nothing else excluded it — there is no self-exclusion predicate in
@@ -97,9 +98,8 @@ describe("An Automation's output is visible when written and still not its own i
 				managed_agent_id: agent.agentId,
 				sources: [{ name: "stories", query: OPEN_SOURCE }],
 				entity_id: boundEntityId,
-				// Hourly cron. `AUTOMATION_TIME_GRANULARITIES` has no 'hourly', so this
-				// resolves to a DAILY window whose end is midnight tomorrow — the exact
-				// prod shape that stamped every output into the future.
+				// The cadence no longer shapes the window: on the arrival axis a run
+				// covers everything stored since the last completion, whatever the cron.
 				triggers: [{ kind: "schedule", cron: "25 * * * *" }],
 				outputs: { signals: { event: "observation" } },
 			},
@@ -131,12 +131,6 @@ describe("An Automation's output is visible when written and still not its own i
 		producerId = await createAutomation("signal-producer");
 		bystanderId = await createAutomation("signal-bystander");
 
-		const now = new Date();
-		const currentWindowStart = new Date(now);
-		currentWindowStart.setUTCHours(0, 0, 0, 0);
-		const insideCurrentWindow = new Date(
-			(currentWindowStart.getTime() + now.getTime()) / 2,
-		);
 
 		// One ordinary source row inside today's window, so a dispatch that reads
 		// nothing is distinguishable from a dispatch that reads only the source.
@@ -151,7 +145,7 @@ describe("An Automation's output is visible when written and still not its own i
 			entity_ids: [boundEntityId],
 			semantic_type: "message",
 			content: "a story from earlier today",
-			occurred_at: insideCurrentWindow,
+			occurred_at: new Date(),
 		});
 	});
 
@@ -209,28 +203,31 @@ describe("An Automation's output is visible when written and still not its own i
 	};
 
 	/**
-	 * Advance the Automation to the steady state that produced the prod bug.
+	 * Put the Automation in its steady state: one completion behind it, so the
+	 * next dispatch starts at a mark this test moved rather than at the
+	 * Automation's creation instant.
 	 *
-	 * An Automation with no cursor is handed the PREVIOUS period, whose end is
-	 * already in the past — the one dispatch that never future-stamps. The bug
-	 * lives in the steady state: once a completion has set the cursor to
-	 * yesterday, every later dispatch that day resolves to the CURRENT, still-open
-	 * period, and its `window_end` stays in the future until midnight. Prod
-	 * Automation 71 sat here all day, re-completing one open window per hour.
+	 * The prod bug this suite was written for lived in the calendar axis, where
+	 * the second dispatch of the day resolved to the still-open CURRENT period
+	 * and stamped its output at `window_end` — midnight tomorrow. The arrival
+	 * axis has no open period: a window always ends at the horizon, already in
+	 * the past. The steady state still matters, because it is the state in which
+	 * an Automation's own output lands INSIDE the range the next run claims.
 	 */
-	const advanceToOpenWindow = async (
+	const advanceToSteadyState = async (
 		automationId: number,
 	): Promise<AutomationContent> => {
 		const warmup = await dispatch(automationId);
 		await complete(automationId, warmup, []);
-		const open = await dispatch(automationId);
-		expect(open.window_start).not.toBe(warmup.window_start);
-		return open;
+		const next = await dispatch(automationId);
+		// The completion moved the mark to the warmup's end.
+		expect(next.window_start).toBe(warmup.window_end);
+		return next;
 	};
 
 	/** Run one whole window: dispatch it, then complete it with one event output. */
 	const produceSignal = async (automationId: number, content: string) => {
-		const dispatched = await advanceToOpenWindow(automationId);
+		const dispatched = await advanceToSteadyState(automationId);
 		await complete(automationId, dispatched, [{ content, title: content }]);
 		return dispatched;
 	};
@@ -247,16 +244,18 @@ describe("An Automation's output is visible when written and still not its own i
 			ORDER BY e.id
 		`;
 
-	// (1) THE STAMP. `window_end` is midnight tomorrow while the window is the
-	// one still in progress, so the old code wrote a timestamp that had not
-	// happened yet. An event's `occurred_at` is a claim about the past.
+	// (1) THE STAMP. A calendar `window_end` was midnight tomorrow while the
+	// window was still in progress, so the old code wrote a timestamp that had
+	// not happened yet. An event's `occurred_at` is a claim about the past.
+	//
+	// The arrival axis removes the hazard at the source rather than clamping it:
+	// a window ends at the horizon, which is behind the clock by construction.
+	// Pinned here so a future change that lets `window_end` run ahead of `now()`
+	// fails loudly instead of quietly reintroducing the future stamp.
 	it("stamps an output when it was produced, never in the future", async () => {
 		const dispatched = await produceSignal(producerId, "Seth Rosen / X");
 
-		// Precondition, not decoration: if the dispatched window no longer ends in
-		// the future then this test has stopped exercising the prod shape and its
-		// green means nothing.
-		expect(new Date(dispatched.window_end).getTime()).toBeGreaterThan(
+		expect(new Date(dispatched.window_end).getTime()).toBeLessThanOrEqual(
 			Date.now(),
 		);
 
@@ -296,33 +295,45 @@ describe("An Automation's output is visible when written and still not its own i
 		expect(outputs).toHaveLength(1);
 		const outputId = outputs[0].id;
 
-		// Same day, so the same window — this is the next hourly run, not a new period.
+		// An ordinary row stored AFTER that completion, so the next window is not
+		// empty for a reason unrelated to the exclusion.
+		const ordinary = await createTestEvent({
+			organization_id: orgId,
+			entity_ids: [boundEntityId],
+			semantic_type: "message",
+			content: "a story that landed after the completion",
+			occurred_at: new Date(),
+		});
+
+		// The completion moved the mark to the window it booked, so the next run
+		// covers exactly the span the output landed in — the hardest case for the
+		// exclusion, not the easiest.
 		const second = await dispatch(producerId);
-		expect(second.window_start).toBe(first.window_start);
+		expect(second.window_start).toBe(first.window_end);
 
 		const seenIds = second.sources.stories.map((row) => row.id);
 		expect(seenIds).not.toContain(outputId);
 		// It still reads the ordinary source row, so the exclusion is a filter and
 		// not an empty window.
-		expect(seenIds.length).toBeGreaterThan(0);
+		expect(seenIds).toContain(Number(ordinary.id));
 	});
 
-	// (3b) THE EXCLUSION IS BY PROVENANCE, NOT BY POSITION — and this is a real
-	// semantic change, not just a refactor. Under the old stamp an output landed
-	// at `window_end`, which is exactly the NEXT window's `window_start`, so the
-	// Automation did read its own prior-window output on the following period.
-	// Keying on `automation_id` excludes it from EVERY window, not only the one
-	// that wrote it. Pinned explicitly because test (3) alone would still pass if
-	// the exclusion were somehow scoped to the producing window.
+	// (3b) THE EXCLUSION IS BY PROVENANCE, NOT BY POSITION. Keying on
+	// `automation_id` excludes an Automation's output from EVERY window, not only
+	// the one that wrote it. Pinned explicitly because test (3) alone would still
+	// pass if the exclusion were somehow scoped to the producing window.
+	//
+	// On the arrival axis the hazard is sharper than it was on the calendar one:
+	// an output is STORED after the window that produced it, so it always lands
+	// inside the range the next run claims. Position can never save this — only
+	// provenance can.
 	it("keeps excluding its own output in a later window, not just the one that wrote it", async () => {
-		const dispatched = await advanceToOpenWindow(producerId);
+		await advanceToSteadyState(producerId);
 
-		// Written through the real writer with an `occurred_at` well inside the
-		// open window but before this run — i.e. what a PREVIOUS period's output
-		// looks like once it is no longer the current window's own work.
-		const priorOccurredAt = new Date(
-			new Date(dispatched.window_start).getTime() + 60_000,
-		);
+		// Written through the real writer, attributed to this Automation, and
+		// dated well in the past — a prior period's output as it looks once it is
+		// no longer the current window's own work.
+		const priorOccurredAt = new Date(Date.now() - 60 * 60 * 1000);
 		const priorPeriodOutput = await insertEvent({
 			entityIds: [boundEntityId],
 			organizationId: orgId,
@@ -333,26 +344,35 @@ describe("An Automation's output is visible when written and still not its own i
 			occurredAt: priorOccurredAt,
 			automationId: producerId,
 		});
+		// An ordinary row stored alongside it, so an empty window cannot be
+		// mistaken for a working exclusion.
+		const ordinary = await createTestEvent({
+			organization_id: orgId,
+			entity_ids: [boundEntityId],
+			semantic_type: "message",
+			content: "an ordinary story stored in the same span",
+			occurred_at: priorOccurredAt,
+		});
 
 		// Precondition, read back from the row rather than assumed: it really is
-		// inside the window about to be dispatched and really is attributed to this
-		// Automation. Otherwise a pass would mean the window missed it, not that the
-		// predicate excluded it.
-		const [stored] = await sql<{ occurred_at: string; automation_id: number }[]>`
-			SELECT occurred_at, automation_id FROM events WHERE id = ${Number(priorPeriodOutput.id)}
+		// attributed to this Automation, and it really was STORED inside the range
+		// about to be dispatched. Otherwise a pass would mean the window missed it,
+		// not that the predicate excluded it.
+		const next = await dispatch(producerId);
+		const [stored] = await sql<{ created_at: string; automation_id: number }[]>`
+			SELECT created_at, automation_id FROM events WHERE id = ${Number(priorPeriodOutput.id)}
 		`;
 		expect(Number(stored.automation_id)).toBe(producerId);
-		expect(new Date(stored.occurred_at).getTime()).toBeGreaterThanOrEqual(
-			new Date(dispatched.window_start).getTime(),
+		expect(new Date(stored.created_at).getTime()).toBeGreaterThanOrEqual(
+			new Date(next.window_start).getTime(),
 		);
-		expect(new Date(stored.occurred_at).getTime()).toBeLessThan(
-			new Date(dispatched.window_end).getTime(),
+		expect(new Date(stored.created_at).getTime()).toBeLessThan(
+			new Date(next.window_end).getTime(),
 		);
 
-		const next = await dispatch(producerId);
 		const seenIds = next.sources.stories.map((row) => row.id);
 		expect(seenIds).not.toContain(Number(priorPeriodOutput.id));
-		expect(seenIds.length).toBeGreaterThan(0);
+		expect(seenIds).toContain(Number(ordinary.id));
 	});
 
 	// (4) SCOPE OF THE EXCLUSION. Self-exclusion, not a blanket ban: one
@@ -363,9 +383,11 @@ describe("An Automation's output is visible when written and still not its own i
 		const outputs = await readOutputRows(producerId);
 		const outputId = outputs[0].id;
 
-		// The bystander needs the same open window, not its own cold first
-		// dispatch — that one is yesterday, which cannot contain today's output.
-		const observer = await advanceToOpenWindow(bystanderId);
+		// The bystander's own first dispatch is the one that covers the producer's
+		// output: its mark sits at its creation, before the producer ever ran, so
+		// [mark, horizon) spans everything stored since. Warming it up first would
+		// book that span away and leave nothing to observe.
+		const observer = await dispatch(bystanderId);
 		expect(observer.sources.stories.map((row) => row.id)).toContain(outputId);
 	});
 

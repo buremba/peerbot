@@ -8,7 +8,6 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { inferAutomationGranularityFromSchedule } from "@lobu/connector-sdk";
 import { beforeEach, describe, expect, it } from "vitest";
 import { generateSecureToken, hashToken } from "../../../auth/oauth/utils";
 import type { DbClient } from "../../../db/client";
@@ -174,13 +173,7 @@ describe("automation contract", () => {
 			content: "Customer feedback that should be summarized.",
 			occurred_at: new Date(Date.now() - 60 * 60 * 1000),
 		});
-
-		const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-		const { windowStart, windowEnd } = await computePendingWindow(
-			dbClient,
-			automationId,
-			granularity
-		);
+		const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 		const queued = await createAutomationRun({
 			organizationId: workspace.org.id,
 			automationId,
@@ -199,8 +192,11 @@ describe("automation contract", () => {
       WHERE id = ${queued.runId}
     `;
 
+		// Bound to the queued run: on the arrival axis an unbound read recomputes
+		// [mark, horizon) against a clock that has moved since the run was
+		// queued, so its bounds would no longer match the run's snapshot.
 		const content = (await handleAutomationMode(
-			{ automation_id: automationId },
+			{ automation_id: automationId, run_id: queued.runId },
 			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
 			dbClient,
 			{
@@ -275,13 +271,7 @@ describe("automation contract", () => {
 	it("skips automation runs pinned to a device worker (#802)", async () => {
 		const { sql, dbClient, workspace, automationId, agent } =
 			await createAutomatedAutomation();
-
-		const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-		const { windowStart, windowEnd } = await computePendingWindow(
-			dbClient,
-			automationId,
-			granularity
-		);
+		const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 		const queued = await createAutomationRun({
 			organizationId: workspace.org.id,
 			automationId,
@@ -345,6 +335,9 @@ describe("automation contract", () => {
 					title: `Paginated event ${i}`,
 					content: `Paginated automation content ${i}`,
 					occurred_at: new Date(base - i * 60_000),
+					// Stored when they are dated: the requested range below selects
+					// `created_at`, and this test is about cursor paging, not the axis.
+					created_at: new Date(base - i * 60_000),
 				})
 			);
 		}
@@ -473,7 +466,6 @@ describe("automation contract", () => {
 				run_id: run.runId,
 				window_start: windowStart,
 				window_end: windowEnd,
-				granularity: "daily",
 				content_count: 1,
 				content_ids: [event.id],
 			},
@@ -558,12 +550,7 @@ describe("automation contract", () => {
 		it("exit report acks an MCP-completed run and stamps device provenance", async () => {
 			const { sql, dbClient, workspace, api, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
@@ -589,7 +576,11 @@ describe("automation contract", () => {
 
 			// The spawned CLI agent completes over MCP, exactly like a server
 			// agent: query_sdk → window_token → run_sdk (completeWindow).
-			const content = (await api.knowledge.read({ automation_id: automationId })) as {
+			// Bound to the queued run — see the note on the provenance test above.
+			const content = (await api.knowledge.read({
+				automation_id: automationId,
+				run_id: queued.runId,
+			})) as {
 				window_token: string;
 			};
 			const completion = (await api.automations.completeWindow({
@@ -688,12 +679,7 @@ describe("automation contract", () => {
 			// run_metadata that complete_window already wrote.
 			const { sql, dbClient, workspace, api, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,
@@ -710,7 +696,11 @@ describe("automation contract", () => {
         SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
         WHERE id = ${queued.runId}
       `;
-			const content = (await api.knowledge.read({ automation_id: automationId })) as {
+			// Bound to the queued run — see the note on the provenance test above.
+			const content = (await api.knowledge.read({
+				automation_id: automationId,
+				run_id: queued.runId,
+			})) as {
 				window_token: string;
 			};
 			await api.automations.completeWindow({
@@ -759,13 +749,7 @@ describe("automation contract", () => {
 				automation_id: String(automationId),
 				reaction_script: "export default async function reaction() { return; }",
 			});
-
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,
@@ -782,7 +766,11 @@ describe("automation contract", () => {
         WHERE id = ${queued.runId}
       `;
 
-			const content = (await api.knowledge.read({ automation_id: automationId })) as {
+			// Bound to the queued run — see the note on the provenance test above.
+			const content = (await api.knowledge.read({
+				automation_id: automationId,
+				run_id: queued.runId,
+			})) as {
 				window_token: string;
 			};
 			const completion = (await api.automations.completeWindow({
@@ -851,12 +839,7 @@ describe("automation contract", () => {
 		it("fails the run when the agent exits without calling complete_window", async () => {
 			const { sql, dbClient, workspace, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,
@@ -968,12 +951,7 @@ describe("automation contract", () => {
 		it("replays the granted resume instead of consuming a second finalize attempt", async () => {
 			const { sql, dbClient, workspace, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,
@@ -1062,12 +1040,7 @@ describe("automation contract", () => {
 		it("completes an event-turn Automation on a clean device exit", async () => {
 			const { sql, dbClient, workspace, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,
@@ -1185,12 +1158,7 @@ describe("automation contract", () => {
 		it("complete-automation endpoint parks a failed run until provider quota resets", async () => {
 			const { sql, dbClient, workspace, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
@@ -1293,12 +1261,7 @@ describe("automation contract", () => {
 		it("advances automations.next_run_at on a terminal exit report", async () => {
 			const { sql, dbClient, workspace, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 
 			const [before] = await sql`
         SELECT next_run_at FROM automations WHERE id = ${automationId}
@@ -1379,12 +1342,7 @@ describe("automation contract", () => {
 		it("treats a duplicate exit report as idempotent (no double schedule advance)", async () => {
 			const { sql, dbClient, workspace, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
@@ -1495,12 +1453,7 @@ describe("automation contract", () => {
 			);
 
 			// Automation run pinned to worker B (via approved_input.device_worker_id).
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,
@@ -1566,12 +1519,7 @@ describe("automation contract", () => {
 		async function makeRunningAutomationRun(messageId: string) {
 			const { sql, dbClient, workspace, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,
@@ -1732,12 +1680,7 @@ describe("automation contract", () => {
 	it("reconciles without crashing when an active run carries a dispatched_message_id", async () => {
 		const { sql, dbClient, workspace, automationId, agent } =
 			await createAutomatedAutomation();
-		const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-		const { windowStart, windowEnd } = await computePendingWindow(
-			dbClient,
-			automationId,
-			granularity
-		);
+		const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 		const queued = await createAutomationRun({
 			organizationId: workspace.org.id,
 			automationId,
@@ -1947,12 +1890,7 @@ describe("automation contract", () => {
 
 			// Automation A: a stuck active run with a dispatched_message_id and no window —
 			// the exact shape of prod run 146501 that wedged reconcile.
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const stuck = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,
@@ -2166,12 +2104,7 @@ describe("automation contract", () => {
 		}) {
 			const { sql, dbClient, workspace, automationId, agent } =
 				await createAutomatedAutomation();
-			const granularity = inferAutomationGranularityFromSchedule("0 9 * * *");
-			const { windowStart, windowEnd } = await computePendingWindow(
-				dbClient,
-				automationId,
-				granularity
-			);
+			const { windowStart, windowEnd } = await computePendingWindow(dbClient, automationId);
 			const queued = await createAutomationRun({
 				organizationId: workspace.org.id,
 				automationId,

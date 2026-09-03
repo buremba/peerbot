@@ -55,7 +55,6 @@ async function seedAutomation(
   const runId = await createAutomationResultRun({
     automationId: Number(automation.automation_id),
     organizationId: workspace.org.id,
-    granularity: 'weekly',
     windowStart: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
     windowEnd,
     extractedData: { problems: [{ name: 'A', severity: 'low' }] },
@@ -192,7 +191,6 @@ describe('automation feedback contract', () => {
     const otherRunId = await createAutomationResultRun({
       automationId: Number(automationId),
       organizationId: workspace.org.id,
-      granularity: 'weekly',
       windowStart: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
       windowEnd: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
       extractedData: { problems: [] },

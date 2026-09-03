@@ -213,7 +213,6 @@ describe('formatToolResult', () => {
             automation_name: 'Sentiment',
             window_start: '2025-01-01T00:00:00Z',
             window_end: '2025-01-07T00:00:00Z',
-            granularity: 'weekly',
             content_analyzed: 50,
             model_used: 'test-model',
             execution_time_ms: 100,
@@ -224,7 +223,9 @@ describe('formatToolResult', () => {
       const md = formatToolResult('get_automation', result);
       expect(md).toContain('Automation Windows');
       expect(md).toContain('Sentiment');
-      expect(md).toContain('weekly');
+      // Arrival windows have no period shape, so the render names the BOUNDS.
+      expect(md).not.toContain('Granularity');
+      expect(md).toContain('Content Analyzed');
     });
 
     it('should format no Automation windows available', () => {

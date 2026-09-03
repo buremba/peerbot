@@ -40,7 +40,6 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
     const runId = await createAutomationResultRun({
       automationId,
       organizationId: org.id,
-      granularity: 'daily',
       windowStart: new Date(),
       windowEnd: new Date(),
       createdBy: user.id,

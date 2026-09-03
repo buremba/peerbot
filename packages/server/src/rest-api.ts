@@ -202,7 +202,6 @@ export async function restGetAutomations(c: Context<{ Bindings: Env }>) {
 			entity_id: entityId,
 			content_since: c.req.query("content_since"),
 			content_until: c.req.query("content_until"),
-			granularity: c.req.query("granularity") as GetAutomationArgs["granularity"],
 			template_version: safeParseInt(c.req.query("template_version"), {
 				min: 1,
 			}),
@@ -232,7 +231,6 @@ export async function publicRestGetAutomations(c: Context<{ Bindings: Env }>) {
 			[
 				"content_since",
 				"content_until",
-				"granularity",
 				"template_version",
 				"page",
 				"page_size",
@@ -259,7 +257,6 @@ export async function publicRestGetAutomations(c: Context<{ Bindings: Env }>) {
 			entity_id: entityId,
 			content_since: c.req.query("content_since"),
 			content_until: c.req.query("content_until"),
-			granularity: c.req.query("granularity") as GetAutomationArgs["granularity"],
 			template_version: safeParseInt(c.req.query("template_version"), {
 				min: 1,
 			}),

@@ -43,6 +43,21 @@ export function automationArrivalHorizon(dbNow: Date): Date {
   return new Date(dbNow.getTime() - AUTOMATION_ARRIVAL_SETTLE_MS);
 }
 
+/**
+ * The database clock, millisecond-truncated.
+ *
+ * Every arrival instant is read from the clock that stamps `events.created_at`,
+ * never from the application's, so application/database skew cannot move the
+ * frontier. The window readers below take it from the row they already lock;
+ * this is for the one caller that computes a range without reading one.
+ */
+export async function readDatabaseNow(sql: DbClient): Promise<Date> {
+  const [row] = await sql<{ db_now: string | Date }>`
+    SELECT date_trunc('milliseconds', current_timestamp) AS db_now
+  `;
+  return new Date(row.db_now);
+}
+
 interface WindowDates {
   windowStart: Date;
   windowEnd: Date;
@@ -359,15 +374,9 @@ export function automationOutputOccurredAt(windowEnd: string | Date): string {
 }
 
 /**
- * Build the SELECT clause for automation windows queries.
- *
- * This is used by the get_automation tool for both the main query and fallback granularity queries.
- * Extracts common SQL to avoid duplication.
- *
- * @returns SQL SELECT ... FROM ... JOIN fragment (without WHERE clause)
- */
-/**
- * Results read directly from completed Automation runs.
+ * SQL fragments for the completed-window history `get_automation` reads
+ * directly off `runs`. Extracted so the SELECT and its COUNT(*) pagination
+ * fallback cannot drift apart.
  */
 /** FROM fragment for callers that need `iw` joined to versions (the SELECT clause). */
 export function buildWindowsFromWithVersions(): string {
@@ -394,7 +403,6 @@ export function buildWindowsSelectClause(): string {
       iw.id as run_id,
       iw.automation_id,
       COALESCE(window_v.name, automation_v.name, i.name) as automation_name,
-      iw.approved_input->>'granularity' as granularity,
       (iw.approved_input->>'window_start')::timestamptz as window_start,
       (iw.approved_input->>'window_end')::timestamptz as window_end,
       COALESCE(

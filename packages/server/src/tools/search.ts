@@ -681,8 +681,9 @@ function buildEmptySearchSuggestion(
   lines.push('- To save facts or notes: call `save_memory` with content and semantic_type.');
   // Only a single-workspace text search names one entity worth pre-filling:
   // federated results span workspaces, and an embedding-only call has no query
-  // text at all. Both fall back to a placeholder.
-  const newEntityName = !isFederated && query ? query : '...';
+  // text at all. Both fall back to a placeholder in the SAME angle-bracket
+  // shape as `<entity_type>` below — a bare `...` reads as copyable literal.
+  const newEntityName = !isFederated && query ? query : '<entity_name>';
   lines.push(
     `- To create a new entity: its type must exist first (\`client.entitySchema.listTypes()\` to check, \`client.entitySchema.createType(...)\` for a type new to this workspace), then call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${newEntityName}' })\`.`
   );

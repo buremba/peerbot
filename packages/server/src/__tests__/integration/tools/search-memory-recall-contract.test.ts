@@ -412,19 +412,22 @@ describe('search_memory > recall contract', () => {
     expect(result.suggestion).not.toContain('entities.create');
   });
 
-  // Runs LAST: it gives the org its first read-capable source feed, which
-  // changes `coverage` for every search after it. The step-1 wording above is
-  // the no-feeds variant precisely because the fixture connector declares no
-  // feeds_schema, so its `default` feed is not read-capable.
+  // Its own org, so a read-capable feed cannot leak into `coverage` for the
+  // cases above and test order stays irrelevant. The step-1 wording asserted
+  // earlier is the no-feeds variant because THIS suite's main fixture
+  // connector declares no feeds_schema, not because this case runs last.
   it('names the discovered source feeds and their feed_id when the org has read-capable feeds', async () => {
+    const feedOrg = await createTestOrganization({ name: 'Recall Feed Coverage Org' });
+    const feedUser = await createTestUser({ email: 'recall-feed-coverage@example.com' });
+    await addUserToOrganization(feedUser.id, feedOrg.id, 'owner');
     await createTestConnectorDefinition({
       key: 'readable-feed-connector',
       name: 'Readable Feed',
-      organization_id: org.id,
+      organization_id: feedOrg.id,
       feeds_schema: { default: { operations: ['read', 'sync'] } },
     });
     await createTestConnection({
-      organization_id: org.id,
+      organization_id: feedOrg.id,
       connector_key: 'readable-feed-connector',
       slug: 'readable-feed',
     });
@@ -432,7 +435,11 @@ describe('search_memory > recall contract', () => {
     const result = await search(
       { query: 'zzzz-no-such-thing-with-feeds-present' },
       env,
-      ctx
+      {
+        organizationId: feedOrg.id,
+        userId: feedUser.id,
+        tokenType: 'session',
+      } as ToolContext
     );
 
     const discovered = result.coverage?.source_feeds ?? [];

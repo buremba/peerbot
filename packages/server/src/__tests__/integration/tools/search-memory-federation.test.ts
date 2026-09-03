@@ -237,6 +237,47 @@ describe('search_memory direct OAuth workspace federation', () => {
     expectValidSearchResult(partialHit);
   });
 
+  // The federated arm of the empty-result guidance. `partialEmpty` above covers
+  // the degraded case, which deliberately says "partial results" instead — this
+  // is the HEALTHY all-granted miss, the one branch of the read guidance that
+  // had no test.
+  it('gives federated misses the read guidance without naming a single workspace query', async () => {
+    const targets = [
+      { id: orgA.id, slug: orgA.slug, name: orgA.name, role: 'owner', personal: false },
+      { id: orgB.id, slug: orgB.slug, name: orgB.name, role: 'admin', personal: false },
+    ];
+    // Nonsense token AND fuzzy off. `definitely absent synthetic entity` is NOT
+    // empty here — trigram admits "Other Alpha Entity" — which the partial case
+    // above never notices because status='partial' short-circuits its
+    // suggestion before the match check.
+    const args = {
+      query: 'zzzz-absent-federated-needle-qqqq',
+      fuzzy: false,
+      include_content: false,
+    };
+    const shard = async (slug: string) =>
+      await search({ ...args, workspace: slug, include_public_catalogs: false }, {} as Env, context());
+
+    const merged = mergeFederatedSearchResults(args, targets, [
+      { status: 'fulfilled', value: await shard(orgA.slug) },
+      { status: 'fulfilled', value: await shard(orgB.slug) },
+    ]);
+
+    expect(merged.coverage).toMatchObject({ scope: 'all_granted', status: 'complete' });
+    expect(merged.discovery_status).toBe('not_found');
+    const suggestion = merged.suggestion ?? '';
+    // Scope-accurate: a federated miss spans workspaces, so it must NOT echo
+    // the query as if one workspace had been searched, and must not pre-fill
+    // that query as an entity name to create.
+    expect(suggestion).toContain('in the currently accessible workspaces granted to this connection');
+    expect(suggestion).not.toContain(`for "${args.query}"`);
+    expect(suggestion).toContain("name: '<entity_name>'");
+    // …while still carrying the same read-first steps as a local miss.
+    expect(suggestion).toContain('client.feeds.readMany');
+    expect(suggestion).toContain('query_sql');
+    expectValidSearchResult(merged);
+  });
+
   it('narrows through the grant resolver and makes unknown, ungranted, and revoked identical', async () => {
     const narrowed = await search(
       {

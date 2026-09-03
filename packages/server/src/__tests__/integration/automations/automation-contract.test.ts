@@ -192,8 +192,11 @@ describe("automation contract", () => {
       WHERE id = ${queued.runId}
     `;
 
+		// Bound to the queued run: on the arrival axis an unbound read recomputes
+		// [mark, horizon) against a clock that has moved since the run was
+		// queued, so its bounds would no longer match the run's snapshot.
 		const content = (await handleAutomationMode(
-			{ automation_id: automationId },
+			{ automation_id: automationId, run_id: queued.runId },
 			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
 			dbClient,
 			{
@@ -332,6 +335,9 @@ describe("automation contract", () => {
 					title: `Paginated event ${i}`,
 					content: `Paginated automation content ${i}`,
 					occurred_at: new Date(base - i * 60_000),
+					// Stored when they are dated: the requested range below selects
+					// `created_at`, and this test is about cursor paging, not the axis.
+					created_at: new Date(base - i * 60_000),
 				})
 			);
 		}
@@ -570,7 +576,11 @@ describe("automation contract", () => {
 
 			// The spawned CLI agent completes over MCP, exactly like a server
 			// agent: query_sdk → window_token → run_sdk (completeWindow).
-			const content = (await api.knowledge.read({ automation_id: automationId })) as {
+			// Bound to the queued run — see the note on the provenance test above.
+			const content = (await api.knowledge.read({
+				automation_id: automationId,
+				run_id: queued.runId,
+			})) as {
 				window_token: string;
 			};
 			const completion = (await api.automations.completeWindow({
@@ -686,7 +696,11 @@ describe("automation contract", () => {
         SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
         WHERE id = ${queued.runId}
       `;
-			const content = (await api.knowledge.read({ automation_id: automationId })) as {
+			// Bound to the queued run — see the note on the provenance test above.
+			const content = (await api.knowledge.read({
+				automation_id: automationId,
+				run_id: queued.runId,
+			})) as {
 				window_token: string;
 			};
 			await api.automations.completeWindow({
@@ -752,7 +766,11 @@ describe("automation contract", () => {
         WHERE id = ${queued.runId}
       `;
 
-			const content = (await api.knowledge.read({ automation_id: automationId })) as {
+			// Bound to the queued run — see the note on the provenance test above.
+			const content = (await api.knowledge.read({
+				automation_id: automationId,
+				run_id: queued.runId,
+			})) as {
 				window_token: string;
 			};
 			const completion = (await api.automations.completeWindow({

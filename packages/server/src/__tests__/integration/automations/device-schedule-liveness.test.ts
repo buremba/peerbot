@@ -1,8 +1,3 @@
-import {
-	addAutomationPeriod,
-	alignToAutomationWindowStart,
-	subtractAutomationPeriod,
-} from "@lobu/connector-sdk";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	materializeDueAutomationRuns,
@@ -276,88 +271,86 @@ describe("device-pinned scheduled Automation liveness (#2538)", () => {
 		expect(automation.schedule_auto_paused_at).not.toBeNull();
 	});
 
-	it("completes every missed period oldest-first, then advances to the next cron", async () => {
+	it("covers a whole outage in ONE run, then advances to the next cron", async () => {
 		const { sql, api, automationId, deviceId } = await setupDeviceAutomation();
 		await sql`
 			UPDATE device_workers SET last_seen_at = current_timestamp
 			WHERE id = ${deviceId}::uuid
 		`;
-		const closedBoundary = alignToAutomationWindowStart(new Date(), "daily");
-		let oldest = closedBoundary;
-		for (let count = 0; count < 3; count += 1) {
-			oldest = subtractAutomationPeriod(oldest, "daily");
-		}
+
+		// Three days offline. On the calendar axis this Automation owed three
+		// separate daily periods and the dispatcher had to walk them oldest-first,
+		// staying due until it caught up. An arrival window has no periods to walk:
+		// [mark, horizon) spans the entire outage, so ONE run covers it and the
+		// schedule goes straight back to its next cron firing.
+		const mark = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
 		await sql`
 			UPDATE automations
-			SET next_window_start = ${oldest.toISOString()}::timestamptz,
+			SET next_window_start = ${mark.toISOString()}::timestamptz,
 				completed_window_coverage = '{}'::tstzmultirange,
-				window_projection_granularity = 'daily',
 				next_run_at = current_timestamp - interval '2 hours'
 			WHERE id = ${automationId}
 		`;
 
-		for (let period = 0; period < 3; period += 1) {
-			const materialized = await Promise.all([
-				materializeDueAutomationRuns({} as Env),
-				materializeDueAutomationRuns({} as Env),
-			]);
-			expect(
-				materialized.reduce((sum, result) => sum + result.runsCreated, 0),
-			).toBe(1);
-			const [run] = await sql<{
-				id: number;
-				approved_input: Record<string, unknown>;
-			}>`
-				SELECT id, approved_input FROM runs
-				WHERE automation_id = ${automationId} AND status = 'pending'
-			`;
-			const windowStart = new Date(
-				String(run.approved_input.window_start),
-			).toISOString();
-			const windowEnd = new Date(
-				String(run.approved_input.window_end),
-			).toISOString();
-			expect(windowStart).toBe(oldest.toISOString());
-			expect(run.approved_input.device_worker_id).toBe(deviceId);
+		const materialized = await Promise.all([
+			materializeDueAutomationRuns({} as Env),
+			materializeDueAutomationRuns({} as Env),
+		]);
+		expect(
+			materialized.reduce((sum, result) => sum + result.runsCreated, 0),
+		).toBe(1);
 
-			await sql`
-				UPDATE runs SET status = 'running', claimed_at = current_timestamp,
-					claimed_by = 'device-schedule-mac'
-				WHERE id = ${run.id}
-			`;
-			const windowToken = await generateWindowToken(
-				{
-					automation_id: automationId,
-					run_id: run.id,
-					window_start: windowStart,
-					window_end: windowEnd,
-					content_count: 0,
-					content_ids: [],
-				},
-				{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
-			);
-			await api.automations.completeWindow({
-				automation_id: String(automationId),
+		const [run] = await sql<{
+			id: number;
+			approved_input: Record<string, unknown>;
+		}>`
+			SELECT id, approved_input FROM runs
+			WHERE automation_id = ${automationId} AND status = 'pending'
+		`;
+		const windowStart = new Date(
+			String(run.approved_input.window_start),
+		).toISOString();
+		const windowEnd = new Date(
+			String(run.approved_input.window_end),
+		).toISOString();
+		// The single run reaches from the stale mark all the way to the horizon.
+		expect(windowStart).toBe(mark.toISOString());
+		expect(new Date(windowEnd).getTime()).toBeGreaterThan(
+			Date.now() - 60 * 1000,
+		);
+		expect(run.approved_input.device_worker_id).toBe(deviceId);
+
+		await sql`
+			UPDATE runs SET status = 'running', claimed_at = current_timestamp,
+				claimed_by = 'device-schedule-mac'
+			WHERE id = ${run.id}
+		`;
+		const windowToken = await generateWindowToken(
+			{
+				automation_id: automationId,
 				run_id: run.id,
-				window_token: windowToken,
-				extracted_data: { summary: `period ${period + 1}` },
-			});
+				window_start: windowStart,
+				window_end: windowEnd,
+				content_count: 0,
+				content_ids: [],
+			},
+			{ JWT_SECRET: "test-jwt-secret-for-testing-only" } as Env,
+		);
+		await api.automations.completeWindow({
+			automation_id: String(automationId),
+			run_id: run.id,
+			window_token: windowToken,
+			extracted_data: { summary: "the whole outage" },
+		});
 
-			oldest = addAutomationPeriod(oldest, "daily");
-			const after = await cursor(sql, automationId);
-			expect(after.nextWindowStart).toBe(oldest.toISOString());
-			if (period < 2) {
-				expect(new Date(after.nextRunAt).getTime()).toBeLessThanOrEqual(
-					Date.now(),
-				);
-			} else {
-				expect(new Date(after.nextRunAt).getTime()).toBeGreaterThan(Date.now());
-			}
-		}
+		const after = await cursor(sql, automationId);
+		expect(after.nextWindowStart).toBe(windowEnd);
+		// No catch-up loop: the Automation is not immediately due again.
+		expect(new Date(after.nextRunAt).getTime()).toBeGreaterThan(Date.now());
 
-		expect(oldest.toISOString()).toBe(closedBoundary.toISOString());
+		await materializeDueAutomationRuns({} as Env);
 		expect(
 			await sql`SELECT id FROM runs WHERE automation_id = ${automationId}`,
-		).toHaveLength(3);
+		).toHaveLength(1);
 	});
 });

@@ -217,19 +217,6 @@ describe("the release is created bound to the attested commit", () => {
     expect(body()).toContain("main advanced after attestation");
   });
 
-  it("pipes paginated API payloads into jq instead of passing them as arguments", () => {
-    // A paginated payload handed to jq via --argjson dies with "jq: Argument
-    // list too long" once it outgrows the runner's per-argument cap (Linux
-    // MAX_ARG_STRLEN is 128KB; the release list was already 808KB at 106
-    // releases). macOS has no equivalent per-arg cap, so this cannot be caught
-    // locally -- it only ever fails in CI, and the release-decision step runs
-    // on every main push, so it blocked all releases.
-    const yml = read("release-please.yml");
-    expect(yml).not.toContain("--argjson pages");
-    const piped = yml.match(/gh api --paginate --slurp [^\n]*\\\n\s*\| jq /g);
-    expect(piped).toHaveLength(3);
-  });
-
   it("lets release-please open the PR and creates the release itself", () => {
     const action = steps("release-please.yml", id).find((step) =>
       step.uses?.includes("release-please-action")
@@ -690,5 +677,35 @@ describe("the attestation policy itself", () => {
         release: { ...stable.release, target_commitish: "b".repeat(40) },
       })
     ).toThrow("does not match peeled tag");
+  });
+});
+
+// A paginated payload handed to jq via --argjson dies with "jq: Argument list
+// too long" once it outgrows the runner's per-argument cap (Linux
+// MAX_ARG_STRLEN is 128KB; the release list was already 808KB at 106
+// releases). macOS has no equivalent per-arg cap, so this only ever fails in
+// CI. It is asserted across every workflow rather than the one file that broke:
+// the first fix missed publish-packages.yml, whose jobs read is 20KB today but
+// grows with each rerun attempt because filter=all returns all of them.
+describe("paginated API payloads are piped into jq, never passed as arguments", () => {
+  const paginated = names.filter((name) =>
+    read(name).includes("gh api --paginate")
+  );
+
+  it("still guards the two workflows known to read paginated APIs", () => {
+    expect(paginated).toEqual(
+      expect.arrayContaining(["publish-packages.yml", "release-please.yml"])
+    );
+  });
+
+  it.each(
+    paginated
+  )("%s pipes every slurped payload straight into jq", (name) => {
+    const yml = read(name);
+    expect(yml).not.toContain("--argjson pages");
+    const slurped = yml.match(/gh api --paginate --slurp /g) ?? [];
+    const piped =
+      yml.match(/gh api --paginate --slurp [^\n]*\\\n\s*\| jq /g) ?? [];
+    expect(piped).toHaveLength(slurped.length);
   });
 });

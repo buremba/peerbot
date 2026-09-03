@@ -229,6 +229,18 @@ describe("the release is created bound to the attested commit", () => {
     expect(read("release-please.yml")).not.toContain("release_created");
     expect(body()).toContain("release-provenance.mjs release-needed");
     expect(body()).toContain("release-provenance.mjs assert-newer");
+    // Both release-list filters must drop drafts, not just prereleases. The
+    // list endpoint returns drafts to a write-scoped token, and a draft
+    // lobu-v<version> counted as released would make the decision step skip
+    // creation AND the verify step, replacing a loud "release is a draft"
+    // failure with silence.
+    const draftFilters = read("release-please.yml").match(
+      /select\(\(\.draft or \.prerelease\) \| not\)/g
+    );
+    expect(draftFilters).toHaveLength(2);
+    expect(read("release-please.yml")).not.toContain(
+      "select(.prerelease | not)"
+    );
     // make_latest is a string enum in the REST API; a boolean is dropped.
     expect(body()).toContain('make_latest: "true"');
   });

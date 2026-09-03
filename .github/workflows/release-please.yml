@@ -186,8 +186,12 @@ jobs:
           current_version=$(git show "${ATTESTED_SHA}:package.json" \
             | node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
           releases=$(gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100")
+          # Drafts are excluded as well as prereleases: the list endpoint returns
+          # drafts to a write-scoped token, and a draft lobu-v<version> counted
+          # as released would make this step skip creation AND the verify step
+          # below, turning a loud "release is a draft" failure into silence.
           decision=$(jq -n --argjson pages "$releases" --arg current "$current_version" \
-            '{current: $current, versions: [$pages[][] | select(.prerelease | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
+            '{current: $current, versions: [$pages[][] | select((.draft or .prerelease) | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
             | node scripts/release-provenance.mjs release-needed)
           if [ "$(jq -r '.needed' <<<"$decision")" != true ]; then
             echo "Manifest version ${current_version} is already released; nothing to cut."
@@ -212,7 +216,7 @@ jobs:
           set -euo pipefail
           releases=$(gh api --paginate --slurp "repos/${REPOSITORY}/releases?per_page=100")
           jq -n --argjson pages "$releases" --arg current "$VERSION" \
-            '{current: $current, versions: [$pages[][] | select(.prerelease | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
+            '{current: $current, versions: [$pages[][] | select((.draft or .prerelease) | not) | .tag_name | select(startswith("lobu-v")) | ltrimstr("lobu-v")]}' \
             | node scripts/release-provenance.mjs assert-newer >/dev/null
 
           if gh api "repos/${REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1; then

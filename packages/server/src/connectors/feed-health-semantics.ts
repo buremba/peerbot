@@ -84,8 +84,9 @@
  * SQL for the `webhook_driven` input below — the single definition of what
  * counts as a dispatchable webhook route.
  *
- * It mirrors `buildWebhookRoutes` (`app-webhooks.ts`), which skips a feed
- * unless `webhook.events` is an ARRAY holding at least one non-empty string.
+ * It mirrors `loadGithubWebhookRoutes`
+ * (`gateway/routes/public/app-webhooks.ts`), which skips a feed unless
+ * `webhook.events` is an ARRAY holding at least one non-empty string.
  * A bare `IS NOT NULL` on the `webhook` key is NOT equivalent: jsonb null is
  * not SQL NULL, so `{}`, `{mode:'store'}`, `{events: []}`, `{events: ['']}`
  * and a JSON-null webhook would all read as event-driven and hide exactly the
@@ -103,7 +104,9 @@ export function feedWebhookDrivenSql(
   definitionAlias: string,
   feedAlias: string
 ): string {
-  const events = `${definitionAlias}.feeds_schema -> ${feedAlias}.feed_key -> 'webhook' -> 'events'`;
+  const events =
+    `${definitionAlias}.feeds_schema -> ${feedAlias}.feed_key` +
+    ` -> 'webhook' -> 'events'`;
   return `jsonb_typeof(${events}) = 'array'
           AND EXISTS (
             SELECT 1
@@ -148,7 +151,7 @@ interface FeedHealthSemanticsInput {
   /**
    * The connector declares a DISPATCHABLE webhook route for this feed, so an
    * inbound delivery re-arms `next_run_at`. Callers must mirror what
-   * `buildWebhookRoutes` (`gateway/routes/public/app-webhooks.ts`) actually
+   * `loadGithubWebhookRoutes` (`gateway/routes/public/app-webhooks.ts`) actually
    * routes on — `webhook.events` being an array with at least one non-empty
    * string — not merely that a `webhook` key is present: `{}`,
    * `{mode:'store'}`, `{events: []}` and a JSON-null all declare nothing the

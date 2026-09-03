@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateSecureToken } from '../../auth/oauth/utils';
 import { parsePgTextArray } from '../../db/client';
+import { isChromeNamespaceConnectorKey } from '../../utils/connector-execution-placement';
 import { reconcileDeviceCapabilities } from '../../worker-api/device-reconcile';
 import { TestApiClient } from '../setup/test-mcp-client';
 import {
@@ -49,6 +50,9 @@ async function seedDeviceOwner(platform = 'macos') {
   return { userId, orgId, workerId };
 }
 
+const CHROME_MANIFEST_KEY = 'chrome.messages';
+const CHROME_MANIFEST_CAPABILITY = 'browser.history';
+
 function manifest(overrides: Record<string, unknown> = {}) {
   return {
     key: CONNECTOR_KEY,
@@ -82,20 +86,38 @@ function manifest(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function whatsappManifest(
-  platform: 'macos' | 'chrome-extension',
-  overrides: Record<string, unknown> = {}
-) {
+/**
+ * A Chrome-extension device manifest, used below wherever a case needs a
+ * concrete manifest rather than a specific product.
+ *
+ * This used to be `whatsapp.local`, advertised by BOTH the Mac and the
+ * extension — the one connector key that lived outside the reserved `chrome.*`
+ * namespace while the extension implemented it natively. That exception is
+ * retired, and with it the cross-platform cases that only made sense while a
+ * single key had two competing device implementations.
+ */
+function chromeConnectorManifest(overrides: Record<string, unknown> = {}) {
   return {
-    key: 'whatsapp.local',
-    version: platform === 'macos' ? '1.9.0' : '2.0.0',
-    name: platform === 'macos' ? 'WhatsApp (this Mac)' : 'WhatsApp Personal',
-    description: `WhatsApp implementation for ${platform}`,
-    required_capability: platform === 'macos' ? 'whatsapp_local' : 'browser.whatsapp',
-    runtime: { platforms: [platform] },
+    key: CHROME_MANIFEST_KEY,
+    version: '2.0.0',
+    name: 'Browser Messages',
+    description: 'Chrome-extension implementation',
+    required_capability: CHROME_MANIFEST_CAPABILITY,
+    runtime: { platforms: ['chrome-extension'] },
     auth_schema: { methods: [{ type: 'none' }] },
     feeds_schema: {
-      messages: { key: 'messages', name: 'Messages', operations: ['sync', 'read'] },
+      messages: {
+        key: 'messages',
+        name: 'Messages',
+        operations: ['sync', 'read'],
+        eventKinds: {
+          message: {
+            attributions: [
+              { role: 'authored_by', autoCreate: true, target: { entityType: 'person' } },
+            ],
+          },
+        },
+      },
     },
     ...overrides,
   };
@@ -120,13 +142,13 @@ async function seedAdditionalDevice(params: {
   return row.id;
 }
 
-async function readWhatsAppRows(orgId: string) {
+async function readChromeConnectorRows(orgId: string) {
   const sql = getTestDb();
   const connections = (await sql`
     SELECT id, device_worker_id
     FROM connections
     WHERE organization_id = ${orgId}
-      AND connector_key = 'whatsapp.local'
+      AND connector_key = ${CHROME_MANIFEST_KEY}
       AND deleted_at IS NULL
     ORDER BY id
   `) as unknown as Array<{ id: number; device_worker_id: string | null }>;
@@ -135,7 +157,7 @@ async function readWhatsAppRows(orgId: string) {
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     WHERE c.organization_id = ${orgId}
-      AND c.connector_key = 'whatsapp.local'
+      AND c.connector_key = ${CHROME_MANIFEST_KEY}
       AND f.deleted_at IS NULL
     ORDER BY f.id
   `) as unknown as Array<{
@@ -271,7 +293,7 @@ async function settleRunsAndFeeds(orgId: string) {
   `;
 }
 
-async function insertPendingWhatsAppRun(params: {
+async function insertPendingManifestRun(params: {
   orgId: string;
   connectionId: number;
   feedId: number;
@@ -284,7 +306,7 @@ async function insertPendingWhatsAppRun(params: {
       connector_version, approval_status, status, created_at
     ) VALUES (
       ${params.orgId}, 'sync', ${params.feedId}, ${params.connectionId},
-      'whatsapp.local', ${params.version}, 'auto', 'pending', NOW()
+      ${CHROME_MANIFEST_KEY}, ${params.version}, 'auto', 'pending', NOW()
     )
     RETURNING id
   `) as unknown as Array<{ id: number }>;
@@ -769,11 +791,11 @@ describe('device connector manifests', () => {
   it('reconciles a same-version compiled artifact back to manifest-only poll payload', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
-    const chromeManifest = whatsappManifest('chrome-extension');
+    const chromeManifest = chromeConnectorManifest();
     expect(
       (
         await poll(workerId, [chromeManifest], 'chrome-extension', {
-          'browser.whatsapp': true,
+          [CHROME_MANIFEST_CAPABILITY]: true,
         })
       ).status
     ).toBe(200);
@@ -785,15 +807,15 @@ describe('device connector manifests', () => {
           compiled_code_hash = ${deviceManifestHash(chromeManifest as DeviceConnectorManifest)},
           compile_config_hash = ${COMPILE_CONFIG_HASH},
           source_code = 'export const stale = true',
-          source_path = 'device-manifest://chrome-extension/whatsapp.local@2.0.0'
+          source_path = ${`device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0`}
       WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
+        AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '2.0.0'
     `;
-    const rows = await readWhatsAppRows(orgId);
+    const rows = await readChromeConnectorRows(orgId);
     const messagesFeed = rows.feeds.find((feed) => feed.feed_key === 'messages');
     expect(messagesFeed).toBeDefined();
-    const runId = await insertPendingWhatsAppRun({
+    const runId = await insertPendingManifestRun({
       orgId,
       connectionId: Number(rows.connections[0].id),
       feedId: Number(messagesFeed!.id),
@@ -801,7 +823,7 @@ describe('device connector manifests', () => {
     });
 
     const response = await poll(workerId, [chromeManifest], 'chrome-extension', {
-      'browser.whatsapp': true,
+      [CHROME_MANIFEST_CAPABILITY]: true,
     });
     expect(response.status).toBe(200);
     const body = (await response.json()) as { run_id?: number; compiled_code?: string };
@@ -811,7 +833,7 @@ describe('device connector manifests', () => {
       SELECT compiled_code, compiled_code_hash, compile_config_hash, source_code, source_path
       FROM connector_versions
       WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
+        AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '2.0.0'
     `) as unknown as Array<{
       compiled_code: string | null;
@@ -825,15 +847,15 @@ describe('device connector manifests', () => {
       compiled_code_hash: deviceManifestHash(chromeManifest as DeviceConnectorManifest),
       compile_config_hash: null,
       source_code: null,
-      source_path: 'device-manifest://chrome-extension/whatsapp.local@2.0.0',
+      source_path: `device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0`,
     });
   });
 
   it('repairs stale same-hash device-manifest provenance on the fast path', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
-    const chromeManifest = whatsappManifest('chrome-extension');
-    const pollOptions = { 'browser.whatsapp': true };
+    const chromeManifest = chromeConnectorManifest();
+    const pollOptions = { [CHROME_MANIFEST_CAPABILITY]: true };
 
     expect((await poll(workerId, [chromeManifest], 'chrome-extension', pollOptions)).status).toBe(
       200,
@@ -842,15 +864,15 @@ describe('device connector manifests', () => {
 
     await sql`
       UPDATE connector_versions
-      SET source_path = 'device-manifest://macos/whatsapp.local@2.0.0'
+      SET source_path = ${`device-manifest://macos/${CHROME_MANIFEST_KEY}@2.0.0`}
       WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
+        AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '2.0.0'
     `;
-    const rows = await readWhatsAppRows(orgId);
+    const rows = await readChromeConnectorRows(orgId);
     const messagesFeed = rows.feeds.find((feed) => feed.feed_key === 'messages');
     expect(messagesFeed).toBeDefined();
-    const runId = await insertPendingWhatsAppRun({
+    const runId = await insertPendingManifestRun({
       orgId,
       connectionId: Number(rows.connections[0].id),
       feedId: Number(messagesFeed!.id),
@@ -864,11 +886,11 @@ describe('device connector manifests', () => {
       SELECT source_path
       FROM connector_versions
       WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
+        AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '2.0.0'
     `) as unknown as Array<{ source_path: string | null }>;
     expect(artifact.source_path).toBe(
-      'device-manifest://chrome-extension/whatsapp.local@2.0.0',
+      `device-manifest://chrome-extension/${CHROME_MANIFEST_KEY}@2.0.0`,
     );
   });
 
@@ -1613,21 +1635,21 @@ describe('device connector manifests', () => {
     expect(afterRun).toEqual(beforeRun);
   });
 
-  it('keeps WhatsApp inventory while permission is revoked and reuses rows when granted again', async () => {
+  it('keeps device inventory while permission is revoked and reuses rows when granted again', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
-    const connectorManifest = whatsappManifest('chrome-extension');
+    const connectorManifest = chromeConnectorManifest();
 
     const first = await poll(workerId, [connectorManifest], 'chrome-extension', {
-      'browser.whatsapp': true,
+      [CHROME_MANIFEST_CAPABILITY]: true,
     });
     expect(first.status).toBe(200);
-    const before = await readWhatsAppRows(orgId);
+    const before = await readChromeConnectorRows(orgId);
     expect(before.feeds).toHaveLength(1);
     expect(before.feeds[0]?.status).toBe('active');
 
     const second = await poll(workerId, [connectorManifest], 'chrome-extension', {});
     expect(second.status).toBe(200);
-    const revoked = await readWhatsAppRows(orgId);
+    const revoked = await readChromeConnectorRows(orgId);
     expect(revoked.feeds[0]?.status).toBe('paused');
     expect(revoked.connections.map((row) => Number(row.id))).toEqual(
       before.connections.map((row) => Number(row.id))
@@ -1637,10 +1659,10 @@ describe('device connector manifests', () => {
     );
 
     const third = await poll(workerId, [connectorManifest], 'chrome-extension', {
-      'browser.whatsapp': true,
+      [CHROME_MANIFEST_CAPABILITY]: true,
     });
     expect(third.status).toBe(200);
-    const restored = await readWhatsAppRows(orgId);
+    const restored = await readChromeConnectorRows(orgId);
     expect(restored.feeds[0]?.status).toBe('active');
     expect(restored.connections).toEqual(before.connections);
     expect(restored.feeds.map((row) => Number(row.id))).toEqual(
@@ -1648,162 +1670,27 @@ describe('device connector manifests', () => {
     );
   });
 
-  it('cuts an existing WhatsApp connection over to its sole Chrome advertiser without replacing rows', async () => {
-    const { userId, orgId, workerId: macWorkerId } = await seedDeviceOwner('macos');
-    const sql = getTestDb();
-    const chromeManifest = whatsappManifest('chrome-extension', {
-      runtime: { platforms: ['macos', 'chrome-extension'] },
-    });
-
-    expect(
-      (await poll(macWorkerId, [whatsappManifest('macos')], 'macos', { whatsapp_local: true }))
-        .status
-    ).toBe(200);
-    const before = await readWhatsAppRows(orgId);
-    expect(before.connections).toHaveLength(1);
-    expect(before.feeds.map((feed) => feed.feed_key)).toEqual(['messages']);
-    const existingMessagesFeed = before.feeds.find((feed) => feed.feed_key === 'messages');
-    expect(existingMessagesFeed).toBeDefined();
-    const durableEvent = await createTestEvent({
-      organization_id: orgId,
-      connection_id: Number(before.connections[0].id),
-      feed_id: Number(existingMessagesFeed!.id),
-      feed_key: 'messages',
-      connector_key: 'whatsapp.local',
-      origin_id: 'wa-existing-message',
-      content: 'Existing durable WhatsApp history',
-      occurred_at: new Date('2014-01-01T00:00:00Z'),
-    });
-
-    await sql`
-      UPDATE runs
-      SET status = 'completed', completed_at = NOW()
-      WHERE organization_id = ${orgId} AND status IN ('pending', 'claimed', 'running')
-    `;
-    await sql`
-      UPDATE feeds SET next_run_at = '2099-01-01T00:00:00Z'
-      WHERE organization_id = ${orgId} AND feed_key = 'messages'
-    `;
-
-    const genericWorkerId = `chrome-generic-${generateSecureToken(4)}`;
-    await seedAdditionalDevice({
-      userId,
-      orgId,
-      workerId: genericWorkerId,
-      platform: 'chrome-extension',
-    });
-    expect(
-      (await poll(genericWorkerId, [], 'chrome-extension', { 'browser.scripting': true })).status
-    ).toBe(200);
-
-    const advertiserWorkerId = `chrome-wa-${generateSecureToken(4)}`;
-    const advertiserDeviceId = await seedAdditionalDevice({
-      userId,
-      orgId,
-      workerId: advertiserWorkerId,
-      platform: 'chrome-extension',
-    });
-    expect(
-      (
-        await poll(advertiserWorkerId, [chromeManifest], 'chrome-extension', {
-          'browser.whatsapp': true,
-        })
-      ).status
-    ).toBe(200);
-
-    const after = await readWhatsAppRows(orgId);
-    expect(after.connections).toHaveLength(1);
-    expect(Number(after.connections[0].id)).toBe(Number(before.connections[0].id));
-    expect(after.connections[0].device_worker_id).toBe(advertiserDeviceId);
-    expect(after.feeds.map((feed) => Number(feed.id))).toEqual(
-      before.feeds.map((feed) => Number(feed.id))
-    );
-    expect(after.feeds.map((feed) => feed.feed_key)).toEqual(['messages']);
-    const [preservedEvent] = (await sql`
-      SELECT id, connection_id, feed_id, origin_id
-      FROM events
-      WHERE id = ${durableEvent.id}
-    `) as unknown as Array<{
-      id: number;
-      connection_id: number;
-      feed_id: number;
-      origin_id: string;
-    }>;
-    expect(Number(preservedEvent.id)).toBe(Number(durableEvent.id));
-    expect(Number(preservedEvent.connection_id)).toBe(Number(before.connections[0].id));
-    expect(Number(preservedEvent.feed_id)).toBe(Number(existingMessagesFeed!.id));
-    expect(preservedEvent.origin_id).toBe('wa-existing-message');
-
-    const definition = await readDefinition(orgId, 'whatsapp.local');
-    expect(definition?.name).toBe('WhatsApp Personal');
-    expect(definition?.version).toBe('2.0.0');
-    expect(definition?.required_capability).toBe('browser.whatsapp');
-    expect(definition?.runtime).toEqual({ platforms: ['macos', 'chrome-extension'] });
-    const [artifact] = (await sql`
-      SELECT source_path
-      FROM connector_versions
-      WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
-        AND version = '2.0.0'
-    `) as unknown as Array<{ source_path: string | null }>;
-    expect(artifact.source_path).toBe(
-      'device-manifest://chrome-extension/whatsapp.local@2.0.0'
-    );
-
-    const messagesFeed = after.feeds.find((feed) => feed.feed_key === 'messages');
-    expect(messagesFeed).toBeDefined();
-    const [run] = (await sql`
-      INSERT INTO runs (
-        organization_id, run_type, feed_id, connection_id, connector_key,
-        connector_version, approval_status, status, created_at
-      ) VALUES (
-        ${orgId}, 'sync', ${messagesFeed!.id}, ${after.connections[0].id},
-        'whatsapp.local', '2.0.0', 'auto', 'pending', NOW()
-      )
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
-
-    const wrongWorkerPoll = await poll(genericWorkerId, [], 'chrome-extension', {
-      'browser.scripting': true,
-    });
-    expect(wrongWorkerPoll.status).toBe(200);
-    expect((await wrongWorkerPoll.json()).run_id).toBeUndefined();
-    const [stillPending] = (await sql`
-      SELECT status, claimed_by FROM runs WHERE id = ${run.id}
-    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
-    expect(stillPending).toEqual({ status: 'pending', claimed_by: null });
-
-    const advertiserPoll = await poll(
-      advertiserWorkerId,
-      [chromeManifest],
-      'chrome-extension',
-      { 'browser.whatsapp': true }
-    );
-    expect(advertiserPoll.status).toBe(200);
-    expect((await advertiserPoll.json()).run_id).toBe(Number(run.id));
-  });
-
   it('keeps an online capable v1 feed active while a newer v2 manifest awaits setup', async () => {
     const { userId, orgId, workerId: v1WorkerId } =
       await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
-    const v1Manifest = whatsappManifest('chrome-extension', {
+    const v1Manifest = chromeConnectorManifest({
       version: '1.0.0',
-      name: 'WhatsApp Chrome v1',
+      name: 'Browser Messages v1',
     });
     expect(
       (
         await poll(v1WorkerId, [v1Manifest], 'chrome-extension', {
-          'browser.whatsapp': true,
+          [CHROME_MANIFEST_CAPABILITY]: true,
         })
       ).status
     ).toBe(200);
     await settleRunsAndFeeds(orgId);
 
-    const before = await readWhatsAppRows(orgId);
+    const before = await readChromeConnectorRows(orgId);
     expect(before.feeds).toHaveLength(1);
     expect(before.feeds[0]?.status).toBe('active');
-    expect((await readDefinition(orgId, 'whatsapp.local'))?.version).toBe('1.0.0');
+    expect((await readDefinition(orgId, CHROME_MANIFEST_KEY))?.version).toBe('1.0.0');
 
     const v2WorkerId = `chrome-wa-v2-setup-${generateSecureToken(4)}`;
     const v2DeviceId = await seedAdditionalDevice({
@@ -1812,9 +1699,9 @@ describe('device connector manifests', () => {
       workerId: v2WorkerId,
       platform: 'chrome-extension',
     });
-    const v2Manifest = whatsappManifest('chrome-extension', {
+    const v2Manifest = chromeConnectorManifest({
       version: '2.0.0',
-      name: 'WhatsApp Chrome v2',
+      name: 'Browser Messages v2',
     });
     expect(
       (
@@ -1824,12 +1711,12 @@ describe('device connector manifests', () => {
       ).status
     ).toBe(200);
 
-    const awaitingSetup = await readWhatsAppRows(orgId);
+    const awaitingSetup = await readChromeConnectorRows(orgId);
     expect(awaitingSetup.feeds[0]?.status).toBe('active');
     expect(awaitingSetup.connections[0]?.device_worker_id).toBe(
       before.connections[0]?.device_worker_id
     );
-    expect((await readDefinition(orgId, 'whatsapp.local'))?.version).toBe('1.0.0');
+    expect((await readDefinition(orgId, CHROME_MANIFEST_KEY))?.version).toBe('1.0.0');
 
     await sql`
       UPDATE device_workers
@@ -1843,30 +1730,30 @@ describe('device connector manifests', () => {
         })
       ).status
     ).toBe(200);
-    const noRunnableVersion = await readWhatsAppRows(orgId);
+    const noRunnableVersion = await readChromeConnectorRows(orgId);
     expect(noRunnableVersion.feeds[0]?.status).toBe('paused');
-    expect((await readDefinition(orgId, 'whatsapp.local'))?.version).toBe('1.0.0');
+    expect((await readDefinition(orgId, CHROME_MANIFEST_KEY))?.version).toBe('1.0.0');
 
     expect(
       (
         await poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
-          'browser.whatsapp': true,
+          [CHROME_MANIFEST_CAPABILITY]: true,
         })
       ).status
     ).toBe(200);
-    const upgraded = await readWhatsAppRows(orgId);
+    const upgraded = await readChromeConnectorRows(orgId);
     expect(upgraded.feeds[0]?.status).toBe('active');
     expect(upgraded.connections[0]?.device_worker_id).toBe(v2DeviceId);
-    expect((await readDefinition(orgId, 'whatsapp.local'))?.version).toBe('2.0.0');
+    expect((await readDefinition(orgId, CHROME_MANIFEST_KEY))?.version).toBe('2.0.0');
   });
 
   it('uses only identical winning advertisers for multi-device pinning and unpinned claims', async () => {
     const { userId, orgId, workerId: workerA } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
-    const chromeManifest = whatsappManifest('chrome-extension');
+    const chromeManifest = chromeConnectorManifest();
 
     expect(
-      (await poll(workerA, [chromeManifest], 'chrome-extension', { 'browser.whatsapp': true }))
+      (await poll(workerA, [chromeManifest], 'chrome-extension', { [CHROME_MANIFEST_CAPABILITY]: true }))
         .status
     ).toBe(200);
     const [deviceA] = (await sql`
@@ -1881,11 +1768,11 @@ describe('device connector manifests', () => {
       platform: 'chrome-extension',
     });
     expect(
-      (await poll(workerB, [chromeManifest], 'chrome-extension', { 'browser.whatsapp': true }))
+      (await poll(workerB, [chromeManifest], 'chrome-extension', { [CHROME_MANIFEST_CAPABILITY]: true }))
         .status
     ).toBe(200);
 
-    const initial = await readWhatsAppRows(orgId);
+    const initial = await readChromeConnectorRows(orgId);
     expect(initial.connections).toHaveLength(1);
     const connectionId = Number(initial.connections[0].id);
     expect(initial.connections[0].device_worker_id).toBe(deviceA.id);
@@ -1896,19 +1783,19 @@ describe('device connector manifests', () => {
       UPDATE connections SET device_worker_id = ${deviceB}::uuid WHERE id = ${connectionId}
     `;
     expect(
-      (await poll(workerA, [chromeManifest], 'chrome-extension', { 'browser.whatsapp': true }))
+      (await poll(workerA, [chromeManifest], 'chrome-extension', { [CHROME_MANIFEST_CAPABILITY]: true }))
         .status
     ).toBe(200);
-    expect((await readWhatsAppRows(orgId)).connections[0].device_worker_id).toBe(deviceB);
+    expect((await readChromeConnectorRows(orgId)).connections[0].device_worker_id).toBe(deviceB);
 
     // With several identical advertisers and no explicit pin there is no
     // principled winner, so leave the connection unpinned.
     await sql`UPDATE connections SET device_worker_id = NULL WHERE id = ${connectionId}`;
     expect(
-      (await poll(workerB, [chromeManifest], 'chrome-extension', { 'browser.whatsapp': true }))
+      (await poll(workerB, [chromeManifest], 'chrome-extension', { [CHROME_MANIFEST_CAPABILITY]: true }))
         .status
     ).toBe(200);
-    expect((await readWhatsAppRows(orgId)).connections[0].device_worker_id).toBeNull();
+    expect((await readChromeConnectorRows(orgId)).connections[0].device_worker_id).toBeNull();
 
     await sql`
       UPDATE runs
@@ -1926,7 +1813,7 @@ describe('device connector manifests', () => {
         organization_id, run_type, feed_id, connection_id, connector_key,
         connector_version, approval_status, status, created_at
       ) VALUES (
-        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, 'whatsapp.local',
+        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, ${CHROME_MANIFEST_KEY},
         '2.0.0', 'auto', 'pending', NOW()
       )
       RETURNING id
@@ -1946,22 +1833,22 @@ describe('device connector manifests', () => {
     expect((await genericPoll.json()).run_id).toBeUndefined();
 
     const advertiserPoll = await poll(workerA, [chromeManifest], 'chrome-extension', {
-      'browser.whatsapp': true,
+      [CHROME_MANIFEST_CAPABILITY]: true,
     });
     expect(advertiserPoll.status).toBe(200);
     expect((await advertiserPoll.json()).run_id).toBe(Number(run.id));
-    expect((await readWhatsAppRows(orgId)).connections[0].device_worker_id).toBeNull();
+    expect((await readChromeConnectorRows(orgId)).connections[0].device_worker_id).toBeNull();
   });
 
   it('authorizes a retained v1 manifest only from its advertiser after v2 wins, including hashless attestation', async () => {
     const { userId, orgId, workerId: v1WorkerId } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
-    const v1Manifest = whatsappManifest('chrome-extension', {
+    const v1Manifest = chromeConnectorManifest({
       version: '1.0.0',
-      name: 'WhatsApp Chrome v1',
+      name: 'Browser Messages v1',
     });
     expect(
-      (await poll(v1WorkerId, [v1Manifest], 'chrome-extension', { 'browser.whatsapp': true }))
+      (await poll(v1WorkerId, [v1Manifest], 'chrome-extension', { [CHROME_MANIFEST_CAPABILITY]: true }))
         .status
     ).toBe(200);
     await settleRunsAndFeeds(orgId);
@@ -1973,12 +1860,12 @@ describe('device connector manifests', () => {
       workerId: v2WorkerId,
       platform: 'chrome-extension',
     });
-    const v2Manifest = whatsappManifest('chrome-extension', {
+    const v2Manifest = chromeConnectorManifest({
       version: '2.0.0',
-      name: 'WhatsApp Chrome v2',
+      name: 'Browser Messages v2',
     });
     expect(
-      (await poll(v2WorkerId, [v2Manifest], 'chrome-extension', { 'browser.whatsapp': true }))
+      (await poll(v2WorkerId, [v2Manifest], 'chrome-extension', { [CHROME_MANIFEST_CAPABILITY]: true }))
         .status
     ).toBe(200);
     await settleRunsAndFeeds(orgId);
@@ -1993,13 +1880,13 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(v2SecondWorkerId, [v2Manifest], 'chrome-extension', {
-          'browser.whatsapp': true,
+          [CHROME_MANIFEST_CAPABILITY]: true,
         })
       ).status
     ).toBe(200);
     await settleRunsAndFeeds(orgId);
 
-    const rows = await readWhatsAppRows(orgId);
+    const rows = await readChromeConnectorRows(orgId);
     const connectionId = Number(rows.connections[0].id);
     const messagesFeed = rows.feeds.find((feed) => feed.feed_key === 'messages');
     expect(messagesFeed).toBeDefined();
@@ -2012,7 +1899,7 @@ describe('device connector manifests', () => {
       UPDATE connector_versions
       SET compiled_code_hash = NULL
       WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
+        AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '1.0.0'
     `;
     const [run] = (await sql`
@@ -2020,14 +1907,14 @@ describe('device connector manifests', () => {
         organization_id, run_type, feed_id, connection_id, connector_key,
         connector_version, approval_status, status, created_at
       ) VALUES (
-        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, 'whatsapp.local',
+        ${orgId}, 'sync', ${messagesFeed!.id}, ${connectionId}, ${CHROME_MANIFEST_KEY},
         '1.0.0', 'auto', 'pending', NOW()
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;
 
     const v2Poll = await poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
-      'browser.whatsapp': true,
+      [CHROME_MANIFEST_CAPABILITY]: true,
     });
     expect(v2Poll.status).toBe(200);
     expect(((await v2Poll.json()) as { run_id?: number }).run_id).toBeUndefined();
@@ -2037,7 +1924,7 @@ describe('device connector manifests', () => {
     expect(stillPending).toEqual({ status: 'pending', claimed_by: null });
 
     const v1Poll = await poll(v1WorkerId, [v1Manifest], 'chrome-extension', {
-      'browser.whatsapp': true,
+      [CHROME_MANIFEST_CAPABILITY]: true,
     });
     expect(v1Poll.status).toBe(200);
     expect(((await v1Poll.json()) as { run_id?: number }).run_id).toBe(Number(run.id));
@@ -2045,237 +1932,21 @@ describe('device connector manifests', () => {
       SELECT compiled_code_hash
       FROM connector_versions
       WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
+        AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '1.0.0'
     `) as unknown as Array<{ compiled_code_hash: string | null }>;
     expect(attested.compiled_code_hash).toBe(deviceManifestHash(v1Manifest));
-  });
-
-  it('does not authorize a Chrome v2 advertiser for an old v1 run or v1-pinned feed', async () => {
-    const { userId, orgId, workerId: macWorkerId } = await seedDeviceOwner('macos');
-    const sql = getTestDb();
-    const macManifest = whatsappManifest('macos');
-    expect(
-      (await poll(macWorkerId, [macManifest], 'macos', { whatsapp_local: true })).status
-    ).toBe(200);
-    await settleRunsAndFeeds(orgId);
-
-    const before = await readWhatsAppRows(orgId);
-    const connectionId = Number(before.connections[0].id);
-    const messagesFeed = before.feeds.find((feed) => feed.feed_key === 'messages');
-    expect(messagesFeed).toBeDefined();
-    const oldRunId = await insertPendingWhatsAppRun({
-      orgId,
-      connectionId,
-      feedId: Number(messagesFeed!.id),
-      version: '1.9.0',
-    });
-
-    const chromeWorkerId = `chrome-wa-${generateSecureToken(4)}`;
-    await seedAdditionalDevice({
-      userId,
-      orgId,
-      workerId: chromeWorkerId,
-      platform: 'chrome-extension',
-    });
-    const chromeManifest = whatsappManifest('chrome-extension');
-    const oldRunPoll = await poll(
-      chromeWorkerId,
-      [chromeManifest],
-      'chrome-extension',
-      { 'browser.whatsapp': true }
-    );
-    expect(oldRunPoll.status).toBe(200);
-    const oldRunBody = (await oldRunPoll.json()) as { run_id?: number; skipped_run_id?: number };
-    expect(oldRunBody.run_id).toBeUndefined();
-    expect(oldRunBody.skipped_run_id).toBeUndefined();
-    const [oldRun] = (await sql`
-      SELECT status, claimed_by FROM runs WHERE id = ${oldRunId}
-    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
-    expect(oldRun).toEqual({ status: 'pending', claimed_by: null });
-
-    await sql`
-      UPDATE runs SET status = 'completed', completed_at = NOW()
-      WHERE id = ${oldRunId}
-    `;
-    await sql`
-      UPDATE feeds
-      SET pinned_version = '1.9.0', next_run_at = NOW() - INTERVAL '1 minute'
-      WHERE id = ${messagesFeed!.id}
-    `;
-
-    const pinnedFeedPoll = await poll(
-      chromeWorkerId,
-      [chromeManifest],
-      'chrome-extension',
-      { 'browser.whatsapp': true }
-    );
-    expect(pinnedFeedPoll.status).toBe(200);
-    const pinnedFeedBody = (await pinnedFeedPoll.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(pinnedFeedBody.run_id).toBeUndefined();
-    expect(pinnedFeedBody.skipped_run_id).toBeUndefined();
-    const pendingPinnedRuns = await sql`
-      SELECT id FROM runs
-      WHERE feed_id = ${messagesFeed!.id} AND status = 'pending'
-    `;
-    expect(pendingPinnedRuns).toHaveLength(0);
-  });
-
-  it('keeps a historical compiled v1 run and pinned feed off Chrome after manifest v2 wins', async () => {
-    const { userId, orgId, workerId: macWorkerId } = await seedDeviceOwner('macos');
-    const sql = getTestDb();
-    expect(
-      (
-        await poll(macWorkerId, [whatsappManifest('macos')], 'macos', {
-          whatsapp_local: true,
-        })
-      ).status
-    ).toBe(200);
-    await settleRunsAndFeeds(orgId);
-
-    await sql`
-      UPDATE connector_versions
-      SET compiled_code = 'module.exports = { sync: async () => ({ items: [] }) }',
-          compiled_code_hash = 'compiled-v1-hash',
-          compile_config_hash = ${COMPILE_CONFIG_HASH},
-          source_code = 'export const compiledV1 = true',
-          source_path = 'org-overrides/whatsapp-v1.ts'
-      WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
-        AND version = '1.9.0'
-    `;
-    const before = await readWhatsAppRows(orgId);
-    const connectionId = Number(before.connections[0].id);
-    const messagesFeed = before.feeds.find((feed) => feed.feed_key === 'messages');
-    expect(messagesFeed).toBeDefined();
-    const oldRunId = await insertPendingWhatsAppRun({
-      orgId,
-      connectionId,
-      feedId: Number(messagesFeed!.id),
-      version: '1.9.0',
-    });
-
-    const chromeWorkerId = `chrome-wa-${generateSecureToken(4)}`;
-    await seedAdditionalDevice({
-      userId,
-      orgId,
-      workerId: chromeWorkerId,
-      platform: 'chrome-extension',
-    });
-    const chromeManifest = whatsappManifest('chrome-extension');
-    const chromeRunPoll = await poll(
-      chromeWorkerId,
-      [chromeManifest],
-      'chrome-extension',
-      { 'browser.whatsapp': true }
-    );
-    expect(chromeRunPoll.status).toBe(200);
-    const chromeRunBody = (await chromeRunPoll.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(chromeRunBody.run_id).toBeUndefined();
-    expect(chromeRunBody.skipped_run_id).toBeUndefined();
-    const [pendingOldRun] = (await sql`
-      SELECT status, claimed_by FROM runs WHERE id = ${oldRunId}
-    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
-    expect(pendingOldRun).toEqual({ status: 'pending', claimed_by: null });
-
-    const fleetRunPoll = await pollFleet(`fleet-whatsapp-v1-${generateSecureToken(4)}`);
-    expect(fleetRunPoll.status).toBe(200);
-    const fleetRunBody = (await fleetRunPoll.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(Number(fleetRunBody.run_id ?? fleetRunBody.skipped_run_id)).toBe(oldRunId);
-
-    await settleRunsAndFeeds(orgId);
-    const [oldAction] = (await sql`
-      INSERT INTO runs (
-        organization_id, run_type, connection_id, connector_key, connector_version,
-        action_key, action_input, approval_status, status, created_at
-      ) VALUES (
-        ${orgId}, 'action', ${connectionId}, 'whatsapp.local', '1.9.0',
-        'historical_action', ${sql.json({})}, 'auto', 'pending', NOW()
-      )
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
-    const chromeActionPoll = await poll(
-      chromeWorkerId,
-      [chromeManifest],
-      'chrome-extension',
-      { 'browser.whatsapp': true }
-    );
-    expect(chromeActionPoll.status).toBe(200);
-    expect(((await chromeActionPoll.json()) as { run_id?: number }).run_id).toBeUndefined();
-    const [pendingOldAction] = (await sql`
-      SELECT status, claimed_by FROM runs WHERE id = ${oldAction.id}
-    `) as unknown as Array<{ status: string; claimed_by: string | null }>;
-    expect(pendingOldAction).toEqual({ status: 'pending', claimed_by: null });
-    const fleetActionPoll = await pollFleet(`fleet-whatsapp-action-v1-${generateSecureToken(4)}`);
-    expect(fleetActionPoll.status).toBe(200);
-    const fleetActionBody = (await fleetActionPoll.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(Number(fleetActionBody.run_id ?? fleetActionBody.skipped_run_id)).toBe(
-      Number(oldAction.id)
-    );
-
-    await settleRunsAndFeeds(orgId);
-    await sql`
-      UPDATE feeds
-      SET pinned_version = '1.9.0', next_run_at = NOW() - INTERVAL '1 minute'
-      WHERE id = ${messagesFeed!.id}
-    `;
-    const chromePinnedPoll = await poll(
-      chromeWorkerId,
-      [chromeManifest],
-      'chrome-extension',
-      { 'browser.whatsapp': true }
-    );
-    expect(chromePinnedPoll.status).toBe(200);
-    const chromePinnedBody = (await chromePinnedPoll.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(chromePinnedBody.run_id).toBeUndefined();
-    expect(chromePinnedBody.skipped_run_id).toBeUndefined();
-    expect(
-      await sql`
-        SELECT id FROM runs
-        WHERE feed_id = ${messagesFeed!.id} AND status = 'pending'
-      `
-    ).toHaveLength(0);
-
-    const fleetPinnedPoll = await pollFleet(`fleet-whatsapp-pinned-v1-${generateSecureToken(4)}`);
-    expect(fleetPinnedPoll.status).toBe(200);
-    const fleetPinnedBody = (await fleetPinnedPoll.json()) as {
-      run_id?: number;
-      skipped_run_id?: number;
-    };
-    expect(Number(fleetPinnedBody.run_id ?? fleetPinnedBody.skipped_run_id)).toBeGreaterThan(0);
-    const [fleetPinnedRun] = (await sql`
-      SELECT connector_version, claimed_by
-      FROM runs
-      WHERE id = ${Number(fleetPinnedBody.run_id ?? fleetPinnedBody.skipped_run_id)}
-    `) as unknown as Array<{ connector_version: string | null; claimed_by: string | null }>;
-    expect(fleetPinnedRun.connector_version).toBe('1.9.0');
-    expect(fleetPinnedRun.claimed_by).toContain('fleet-whatsapp-pinned-v1-');
   });
 
   it('authorizes only the advertiser of the selected hash when versions are equal', async () => {
     const { userId, orgId, workerId: losingWorkerId } =
       await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
-    const candidateA = whatsappManifest('chrome-extension', {
-      name: 'WhatsApp Personal candidate A',
+    const candidateA = chromeConnectorManifest({
+      name: 'Browser Messages candidate A',
     }) as DeviceConnectorManifest;
-    const candidateB = whatsappManifest('chrome-extension', {
-      name: 'WhatsApp Personal candidate B',
+    const candidateB = chromeConnectorManifest({
+      name: 'Browser Messages candidate B',
     }) as DeviceConnectorManifest;
     const ordered = [candidateA, candidateB].sort((left, right) =>
       deviceManifestHash(left).localeCompare(deviceManifestHash(right))
@@ -2286,7 +1957,7 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(losingWorkerId, [losingManifest], 'chrome-extension', {
-          'browser.whatsapp': true,
+          [CHROME_MANIFEST_CAPABILITY]: true,
         })
       ).status
     ).toBe(200);
@@ -2300,20 +1971,20 @@ describe('device connector manifests', () => {
     expect(
       (
         await poll(winningWorkerId, [winningManifest], 'chrome-extension', {
-          'browser.whatsapp': true,
+          [CHROME_MANIFEST_CAPABILITY]: true,
         })
       ).status
     ).toBe(200);
     await settleRunsAndFeeds(orgId);
 
-    const rows = await readWhatsAppRows(orgId);
+    const rows = await readChromeConnectorRows(orgId);
     const messagesFeed = rows.feeds.find((feed) => feed.feed_key === 'messages');
     expect(messagesFeed).toBeDefined();
     await sql`
       UPDATE connections SET device_worker_id = NULL
       WHERE id = ${rows.connections[0].id}
     `;
-    const runId = await insertPendingWhatsAppRun({
+    const runId = await insertPendingManifestRun({
       orgId,
       connectionId: Number(rows.connections[0].id),
       feedId: Number(messagesFeed!.id),
@@ -2324,7 +1995,7 @@ describe('device connector manifests', () => {
       losingWorkerId,
       [losingManifest],
       'chrome-extension',
-      { 'browser.whatsapp': true }
+      { [CHROME_MANIFEST_CAPABILITY]: true }
     );
     expect(losingPoll.status).toBe(200);
     expect(((await losingPoll.json()) as { run_id?: number }).run_id).toBeUndefined();
@@ -2337,7 +2008,7 @@ describe('device connector manifests', () => {
       winningWorkerId,
       [winningManifest],
       'chrome-extension',
-      { 'browser.whatsapp': true }
+      { [CHROME_MANIFEST_CAPABILITY]: true }
     );
     expect(winningPoll.status).toBe(200);
     expect(((await winningPoll.json()) as { run_id?: number }).run_id).toBe(runId);
@@ -2345,7 +2016,7 @@ describe('device connector manifests', () => {
       SELECT compiled_code_hash
       FROM connector_versions
       WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
+        AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '2.0.0'
     `) as unknown as Array<{ compiled_code_hash: string | null }>;
     expect(artifact.compiled_code_hash).toBe(deviceManifestHash(winningManifest));
@@ -2355,13 +2026,13 @@ describe('device connector manifests', () => {
     const { userId, orgId, workerId: v1WorkerId } =
       await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
-    const v1Manifest = whatsappManifest('chrome-extension', {
+    const v1Manifest = chromeConnectorManifest({
       version: '1.0.0',
-      name: 'WhatsApp Chrome v1',
+      name: 'Browser Messages v1',
     });
-    const v2Manifest = whatsappManifest('chrome-extension', {
+    const v2Manifest = chromeConnectorManifest({
       version: '2.0.0',
-      name: 'WhatsApp Chrome v2',
+      name: 'Browser Messages v2',
     });
     const v2WorkerId = `chrome-wa-v2-${generateSecureToken(4)}`;
     const v2DeviceId = await seedAdditionalDevice({
@@ -2376,19 +2047,19 @@ describe('device connector manifests', () => {
     await sql.begin(async (tx) => {
       await tx`
         SELECT pg_advisory_xact_lock(
-          hashtext('lobu:autowire'), hashtext(${`${userId}:whatsapp.local`})
+          hashtext('lobu:autowire'), hashtext(${`${userId}:${CHROME_MANIFEST_KEY}`})
         )
       `;
       v1PollPromise = poll(v1WorkerId, [v1Manifest], 'chrome-extension', {
-        'browser.whatsapp': true,
+        [CHROME_MANIFEST_CAPABILITY]: true,
       });
       v1PollPromise.catch(() => undefined);
-      await waitForAutowireWaiters(userId, 'whatsapp.local', 1);
+      await waitForAutowireWaiters(userId, CHROME_MANIFEST_KEY, 1);
       v2PollPromise = poll(v2WorkerId, [v2Manifest], 'chrome-extension', {
-        'browser.whatsapp': true,
+        [CHROME_MANIFEST_CAPABILITY]: true,
       });
       v2PollPromise.catch(() => undefined);
-      await waitForAutowireWaiters(userId, 'whatsapp.local', 2);
+      await waitForAutowireWaiters(userId, CHROME_MANIFEST_KEY, 2);
     });
 
     const [v1Response, v2Response] = await Promise.all([v1PollPromise!, v2PollPromise!]);
@@ -2396,17 +2067,17 @@ describe('device connector manifests', () => {
     expect(v2Response.status).toBe(200);
     expect(((await v1Response.json()) as { run_id?: number }).run_id).toBeUndefined();
 
-    const definition = await readDefinition(orgId, 'whatsapp.local');
+    const definition = await readDefinition(orgId, CHROME_MANIFEST_KEY);
     expect(definition?.version).toBe('2.0.0');
-    expect(definition?.name).toBe('WhatsApp Chrome v2');
-    const rows = await readWhatsAppRows(orgId);
+    expect(definition?.name).toBe('Browser Messages v2');
+    const rows = await readChromeConnectorRows(orgId);
     expect(rows.connections).toHaveLength(1);
     expect(rows.connections[0].device_worker_id).toBe(v2DeviceId);
     const [artifact] = (await sql`
       SELECT compiled_code_hash
       FROM connector_versions
       WHERE organization_id = ${orgId}
-        AND connector_key = 'whatsapp.local'
+        AND connector_key = ${CHROME_MANIFEST_KEY}
         AND version = '2.0.0'
     `) as unknown as Array<{ compiled_code_hash: string | null }>;
     expect(artifact.compiled_code_hash).toBe(
@@ -2417,20 +2088,20 @@ describe('device connector manifests', () => {
   it('fails claim authorization closed when under-lock reconciliation fails', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
     const sql = getTestDb();
-    const chromeManifest = whatsappManifest('chrome-extension');
+    const chromeManifest = chromeConnectorManifest();
     expect(
       (
         await poll(workerId, [chromeManifest], 'chrome-extension', {
-          'browser.whatsapp': true,
+          [CHROME_MANIFEST_CAPABILITY]: true,
         })
       ).status
     ).toBe(200);
     await settleRunsAndFeeds(orgId);
 
-    const rows = await readWhatsAppRows(orgId);
+    const rows = await readChromeConnectorRows(orgId);
     const messagesFeed = rows.feeds.find((feed) => feed.feed_key === 'messages');
     expect(messagesFeed).toBeDefined();
-    const runId = await insertPendingWhatsAppRun({
+    const runId = await insertPendingManifestRun({
       orgId,
       connectionId: Number(rows.connections[0].id),
       feedId: Number(messagesFeed!.id),
@@ -2438,17 +2109,17 @@ describe('device connector manifests', () => {
     });
     await sql`
       UPDATE connector_definitions SET name = 'stale metadata'
-      WHERE organization_id = ${orgId} AND key = 'whatsapp.local' AND status = 'active'
+      WHERE organization_id = ${orgId} AND key = ${CHROME_MANIFEST_KEY} AND status = 'active'
     `;
 
     const triggerSuffix = generateSecureToken(6).replace(/[^a-zA-Z0-9]/g, '');
-    const triggerFunction = `test_fail_whatsapp_manifest_reconcile_${triggerSuffix}`;
+    const triggerFunction = `test_fail_manifest_reconcile_${triggerSuffix}`;
     const triggerName = `${triggerFunction}_trigger`;
     await sql.unsafe(`
       CREATE OR REPLACE FUNCTION ${triggerFunction}()
       RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
-        IF NEW.key = 'whatsapp.local' THEN
+        IF NEW.key = '${CHROME_MANIFEST_KEY}' THEN
           RAISE EXCEPTION 'forced manifest reconciliation failure';
         END IF;
         RETURN NEW;
@@ -2462,7 +2133,7 @@ describe('device connector manifests', () => {
     `);
     try {
       const response = await poll(workerId, [chromeManifest], 'chrome-extension', {
-        'browser.whatsapp': true,
+        [CHROME_MANIFEST_CAPABILITY]: true,
       });
       expect(response.status).toBe(200);
       const body = (await response.json()) as { run_id?: number; skipped_run_id?: number };
@@ -2480,41 +2151,17 @@ describe('device connector manifests', () => {
     }
   });
 
-  itWithOwlettoManifests('mac')('accepts the actual Owletto Mac manifests and installs their connector definitions', async () => {
-    const { orgId, workerId } = await seedDeviceOwner('macos');
-    const manifests = loadOwlettoManifests('mac');
-
-    const res = await poll(workerId, manifests, 'macos', capabilitiesFor(manifests));
-    expect(res.status).toBe(200);
-
-    expect(await readDefinition(orgId, 'apple.screen_time')).not.toBeNull();
-    expect(await readDefinition(orgId, 'apple.computer_use')).not.toBeNull();
-    expect(await readDefinition(orgId, 'local.directory')).not.toBeNull();
-    expect(await readDefinition(orgId, 'os.shell')).not.toBeNull();
-    expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
-
-    expect(await readDefinition(orgId, 'whatsapp.local')).toBeNull();
-  });
-
-  itWithOwlettoManifests('chrome')('accepts the actual Owletto Chrome manifests and installs their connector definitions', async () => {
+  it('installs declared event-kind attributions from a manifest feeds_schema', async () => {
     const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
-    const manifests = loadOwlettoManifests('chrome');
+    const manifest = chromeConnectorManifest();
 
-    const res = await poll(
-      workerId,
-      manifests,
-      'chrome-extension',
-      capabilitiesFor(manifests),
-    );
+    const res = await poll(workerId, [manifest], 'chrome-extension', {
+      [CHROME_MANIFEST_CAPABILITY]: true,
+    });
     expect(res.status).toBe(200);
 
-    expect(await readDefinition(orgId, 'chrome')).not.toBeNull();
-    expect(await readDefinition(orgId, 'chrome.history')).not.toBeNull();
-    expect(await readDefinition(orgId, 'chrome.bookmarks')).not.toBeNull();
-    expect(await readDefinition(orgId, 'apple.screen_time')).toBeNull();
-
-    const whatsapp = await readDefinition(orgId, 'whatsapp.local');
-    const feedsSchema = whatsapp?.feeds_schema as
+    const definitionRow = await readDefinition(orgId, CHROME_MANIFEST_KEY);
+    const feedsSchema = definitionRow?.feeds_schema as
       | {
           messages?: {
             eventKinds?: {
@@ -2532,5 +2179,71 @@ describe('device connector manifests', () => {
         target: expect.objectContaining({ entityType: 'person' }),
       }),
     ]);
+  });
+
+  it('refuses a macos manifest for a key outside the Mac allowlist', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('macos');
+    // `local_directory` is an allowed macOS capability, so the capability check
+    // admits this manifest and the KEY allowlist is the only thing that can
+    // reject it. Without that, a retired key could still install itself.
+    const manifest = {
+      key: 'whatsapp.local',
+      version: '1.0.0',
+      name: 'Retired native WhatsApp',
+      description: 'A key the Mac app no longer implements',
+      required_capability: 'local_directory',
+      runtime: { platforms: ['macos'] },
+      auth_schema: { methods: [{ type: 'none' }] },
+      feeds_schema: {
+        messages: { key: 'messages', name: 'Messages', operations: ['sync'] },
+      },
+    };
+
+    const res = await poll(workerId, [manifest], 'macos', { local_directory: true });
+    expect(res.status).toBe(200);
+    expect(await readDefinition(orgId, 'whatsapp.local')).toBeNull();
+  });
+
+  itWithOwlettoManifests('mac')('accepts the actual Owletto Mac manifests and installs their connector definitions', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('macos');
+    const manifests = loadOwlettoManifests('mac');
+
+    const res = await poll(workerId, manifests, 'macos', capabilitiesFor(manifests));
+    expect(res.status).toBe(200);
+
+    expect(await readDefinition(orgId, 'apple.screen_time')).not.toBeNull();
+    expect(await readDefinition(orgId, 'apple.computer_use')).not.toBeNull();
+    expect(await readDefinition(orgId, 'local.directory')).not.toBeNull();
+    expect(await readDefinition(orgId, 'os.shell')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.history')).toBeNull();
+
+    expect(await readDefinition(orgId, CHROME_MANIFEST_KEY)).toBeNull();
+  });
+
+  itWithOwlettoManifests('chrome')('accepts the actual Owletto Chrome manifests and installs their connector definitions', async () => {
+    const { orgId, workerId } = await seedDeviceOwner('chrome-extension');
+    const manifests = loadOwlettoManifests('chrome');
+
+    const res = await poll(
+      workerId,
+      manifests,
+      'chrome-extension',
+      capabilitiesFor(manifests),
+    );
+    expect(res.status).toBe(200);
+
+    expect(await readDefinition(orgId, 'chrome')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.history')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.bookmarks')).not.toBeNull();
+    expect(await readDefinition(orgId, 'chrome.downloads')).not.toBeNull();
+    expect(await readDefinition(orgId, 'apple.screen_time')).toBeNull();
+
+    // The extension ships manifests only for the connectors it implements
+    // itself, all of which live in the reserved namespace. Anything the
+    // extension merely drives the page for is an ordinary connector that ships
+    // its own code, so it has no manifest here.
+    for (const manifest of manifests) {
+      expect(isChromeNamespaceConnectorKey(String(manifest.key))).toBe(true);
+    }
   });
 });

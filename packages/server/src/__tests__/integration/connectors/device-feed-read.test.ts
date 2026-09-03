@@ -1,10 +1,10 @@
 /**
  * Device-backed source read — end to end.
  *
- * `whatsapp.local` is a metadata-only device manifest: there is no compiled
- * connector on the server, so the compiled feed-read path cannot serve it.
- * The read is dispatched to the
- * paired Mac over the existing device action queue and awaited there.
+ * `local.directory` is a metadata-only device manifest: there is no compiled
+ * connector on the server, so the compiled feed-read path cannot serve it. The
+ * read is dispatched to the paired Mac over the existing device action queue
+ * and awaited there.
  *
  * What each case pins:
  *
@@ -51,17 +51,17 @@ const { addUserToOrganization, createTestOrganization, createTestUser } = await 
 );
 const { post } = await import('../../setup/test-helpers');
 
-const CONNECTOR_KEY = 'whatsapp.local';
+const CONNECTOR_KEY = 'local.directory';
 const CONNECTOR_VERSION = '0.3.0';
-const FEED_KEY = 'messages';
-const WORKER_ID = 'wk-wa-source-read';
+const FEED_KEY = 'files';
+const WORKER_ID = 'wk-dir-source-read';
 
 const DEVICE_ROWS = [
   {
-    id: 'wa-1',
+    id: 'row-1',
     occurred_at: '2026-08-18T09:00:00.000Z',
     text: 'invoice 4471 is overdue',
-    chat_jid: '15551230000@s.whatsapp.net',
+    chat_jid: 'folder-a',
     chat_name: 'Dana Ruiz',
     is_group: false,
     from_me: false,
@@ -145,7 +145,7 @@ async function respondAsDevice(
         platform: 'macos',
         app_version: '9.9.0',
         label: 'Test Mac',
-        capabilities: { whatsapp_local: true },
+        capabilities: { local_directory: true },
       },
     });
     expect(response.status).toBe(200);
@@ -167,7 +167,7 @@ describe('device-backed source feed read', () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({ name: 'WA Live' });
     orgId = org.id;
-    const user = await createTestUser({ email: 'wa-live@test.com' });
+    const user = await createTestUser({ email: 'dir-live@test.com' });
     userId = user.id;
     await addUserToOrganization(user.id, org.id, 'owner');
 
@@ -183,7 +183,7 @@ describe('device-backed source feed read', () => {
       INSERT INTO device_workers
         (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
       VALUES (${userId}, ${WORKER_ID}, 'macos', '9.9.0',
-              ${sql.json(['whatsapp_local'])}, 'Test Mac', ${orgId})
+              ${sql.json(['local_directory'])}, 'Test Mac', ${orgId})
       RETURNING id
     `) as Array<{ id: string }>;
     deviceWorkerId = device[0].id;
@@ -194,8 +194,8 @@ describe('device-backed source feed read', () => {
       INSERT INTO connector_definitions
         (key, name, version, organization_id, status, runtime, required_capability,
          feeds_schema, auth_schema, created_at, updated_at)
-      VALUES (${CONNECTOR_KEY}, 'WhatsApp (this Mac)', ${CONNECTOR_VERSION}, ${orgId}, 'active',
-              ${sql.json({ platforms: ['macos'] })}, 'whatsapp_local',
+      VALUES (${CONNECTOR_KEY}, 'Local Folder (this Mac)', ${CONNECTOR_VERSION}, ${orgId}, 'active',
+              ${sql.json({ platforms: ['macos'] })}, 'local_directory',
               ${sql.json({ [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } })},
               ${sql.json({ methods: [{ type: 'none' }] })}, NOW(), NOW())
     `;
@@ -208,7 +208,7 @@ describe('device-backed source feed read', () => {
       INSERT INTO connections
         (organization_id, connector_key, slug, display_name, status, visibility,
          device_worker_id, created_by, created_at, updated_at)
-      VALUES (${orgId}, ${CONNECTOR_KEY}, 'whatsapp-local', 'WhatsApp (this Mac)', 'active', 'private',
+      VALUES (${orgId}, ${CONNECTOR_KEY}, 'local-directory', 'Local Folder (this Mac)', 'active', 'private',
               ${deviceWorkerId}::uuid, ${userId}, NOW(), NOW())
       RETURNING id
     `) as Array<{ id: number }>;
@@ -231,7 +231,7 @@ describe('device-backed source feed read', () => {
   beforeEach(async () => {
     __setDeviceActionWaiterForTest(null);
     await setDeviceLastSeen('5 seconds');
-    await setDeviceCapabilities(['whatsapp_local']);
+    await setDeviceCapabilities(['local_directory']);
     await getTestDb()`UPDATE device_workers SET connector_manifests = '{}'::jsonb WHERE id = ${deviceWorkerId}::uuid`;
     await getTestDb()`UPDATE feeds SET status = 'active' WHERE id = ${feedId}`;
     await getTestDb()`DELETE FROM runs WHERE organization_id = ${orgId}`;
@@ -286,7 +286,7 @@ describe('device-backed source feed read', () => {
       import { defineConnector } from '@lobu/connector-sdk';
       export default defineConnector({
         key: '${CONNECTOR_KEY}',
-        name: 'Historical WhatsApp',
+        name: 'Historical Folder',
         version: '${historicalVersion}',
         authSchema: { methods: [{ type: 'none' }] },
         feeds: {
@@ -390,7 +390,7 @@ describe('device-backed source feed read', () => {
         platform: 'macos',
         app_version: '9.9.0',
         label: 'Test Mac',
-        capabilities: { whatsapp_local: true },
+        capabilities: { local_directory: true },
       },
     });
     expect(claim.status).toBe(200);
@@ -426,7 +426,7 @@ describe('device-backed source feed read', () => {
       INSERT INTO device_workers
         (user_id, worker_id, platform, app_version, capabilities, label, organization_id, last_seen_at)
       VALUES (${userId}, ${'wk-other-tenant'}, 'macos', '9.9.0',
-              ${sql.json(['whatsapp_local'])}, 'Acme Corp Mac', ${'org-someone-else'}, now())
+              ${sql.json(['local_directory'])}, 'Acme Corp Mac', ${'org-someone-else'}, now())
       RETURNING id
     `) as Array<{ id: string }>;
 
@@ -444,7 +444,7 @@ describe('device-backed source feed read', () => {
       deviceOwnerUserId: userId,
       deviceWorkerId: foreign[0].id,
       feedStatus: 'active',
-      requiredCapability: 'whatsapp_local',
+      requiredCapability: 'local_directory',
     }).then(
       () => new Error('expected the read to be refused'),
       (err: unknown) => err as Error
@@ -472,8 +472,8 @@ describe('device-backed source feed read', () => {
     const manifest = {
       key: CONNECTOR_KEY,
       version: CONNECTOR_VERSION,
-      name: 'WhatsApp Personal',
-      required_capability: 'whatsapp_local',
+      name: 'Local Folder',
+      required_capability: 'local_directory',
       runtime: { platforms: ['macos'] },
       auth_schema: { methods: [{ type: 'none' }] },
       feeds_schema: { [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } },
@@ -483,7 +483,7 @@ describe('device-backed source feed read', () => {
       INSERT INTO device_workers
         (user_id, worker_id, platform, app_version, capabilities, label,
          organization_id, last_seen_at, connector_manifests)
-      VALUES (${userId}, ${'wk-wa-setup-incomplete'}, 'macos', '9.9.0',
+      VALUES (${userId}, ${'wk-dir-setup-incomplete'}, 'macos', '9.9.0',
               ${sql.json([])}, 'Other Mac', ${orgId}, now(),
               ${sql.json({
                 [CONNECTOR_KEY]: {
@@ -514,8 +514,8 @@ describe('device-backed source feed read', () => {
     const manifest = {
       key: CONNECTOR_KEY,
       version: CONNECTOR_VERSION,
-      name: 'WhatsApp Personal',
-      required_capability: 'whatsapp_local',
+      name: 'Local Folder',
+      required_capability: 'local_directory',
       runtime: { platforms: ['macos'] },
       auth_schema: { methods: [{ type: 'none' }] },
       feeds_schema: { [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } },
@@ -541,7 +541,7 @@ describe('device-backed source feed read', () => {
       (err: unknown) => err as { code?: string; retryable?: boolean; message: string }
     );
     expect(error).toMatchObject({ code: 'PERMISSION', retryable: false });
-    expect(error?.message).toMatch(/requires setup.*whatsapp_local.*finish setup.*retry/i);
+    expect(error?.message).toMatch(/requires setup.*local_directory.*finish setup.*retry/i);
     expect(await readRunRows()).toHaveLength(0);
   });
 });
@@ -566,10 +566,10 @@ describe('device-backed source feed read', () => {
  *   (3) That same TEAM connection, once PINNED, is served — the pinned branch
  *       already reaches through the connection and allows a foreign home org.
  */
-const PERSONAL_WORKER_ID = 'wk-wa-personal';
-const CAPABILITY = 'whatsapp_local';
+const PERSONAL_WORKER_ID = 'wk-dir-personal';
+const CAPABILITY = 'local_directory';
 
-const PERSONAL_ROWS = [{ id: 'wa-90', occurred_at: '2026-08-18T09:00:00.000Z', text: 'live row' }];
+const PERSONAL_ROWS = [{ id: 'row-90', occurred_at: '2026-08-18T09:00:00.000Z', text: 'live row' }];
 const PERSONAL_COLUMNS = [
   { name: 'id', type: 'text' },
   { name: 'occurred_at', type: 'timestamptz' },
@@ -689,7 +689,7 @@ async function seedPersonalLaneConnection(
     INSERT INTO connector_definitions
       (key, name, version, organization_id, status, runtime, required_capability,
        feeds_schema, auth_schema, created_at, updated_at)
-    VALUES (${CONNECTOR_KEY}, 'WhatsApp (this Mac)', ${CONNECTOR_VERSION}, ${organizationId}, 'active',
+    VALUES (${CONNECTOR_KEY}, 'Local Folder (this Mac)', ${CONNECTOR_VERSION}, ${organizationId}, 'active',
             ${sql.json({ platforms: ['macos'] })}, ${CAPABILITY},
             ${sql.json({ [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } })},
             ${sql.json({ methods: [{ type: 'none' }] })}, NOW(), NOW())
@@ -698,7 +698,7 @@ async function seedPersonalLaneConnection(
     INSERT INTO connections
       (organization_id, connector_key, slug, display_name, status, visibility,
        device_worker_id, created_by, created_at, updated_at)
-    VALUES (${organizationId}, ${CONNECTOR_KEY}, ${slug}, 'WhatsApp (this Mac)',
+    VALUES (${organizationId}, ${CONNECTOR_KEY}, ${slug}, 'Local Folder (this Mac)',
             'active', 'organization', NULL, ${personalUserId}, NOW(), NOW())
     RETURNING id
   `) as Array<{ id: number }>;
@@ -716,7 +716,7 @@ async function seedPersonalLaneConnection(
 describe('unpinned device source-feed reads are a personal-org lane', () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
-    const user = await createTestUser({ email: 'wa-personal@test.com' });
+    const user = await createTestUser({ email: 'dir-personal@test.com' });
     personalUserId = user.id;
 
     const personal = await createTestOrganization({ name: 'Personal' });
@@ -752,8 +752,8 @@ describe('unpinned device source-feed reads are a personal-org lane', () => {
       VALUES (${CONNECTOR_KEY}, ${CONNECTOR_VERSION}, NULL,
               ${`device-manifest://macos/${CONNECTOR_KEY}@${CONNECTOR_VERSION}`}, NOW())
     `;
-    personalFeedId = (await seedPersonalLaneConnection(personalOrgId, 'whatsapp-personal')).feedId;
-    const teamSeed = await seedPersonalLaneConnection(teamOrgId, 'whatsapp-team');
+    personalFeedId = (await seedPersonalLaneConnection(personalOrgId, 'folder-personal')).feedId;
+    const teamSeed = await seedPersonalLaneConnection(teamOrgId, 'folder-team');
     teamConnectionId = teamSeed.connectionId;
     teamFeedId = teamSeed.feedId;
   });
@@ -844,7 +844,7 @@ describe('unpinned device source-feed reads are a personal-org lane', () => {
  *       promise cannot rest on a process staying alive, so the reaper
  *       re-asserts it set-wise from whichever replica is up.
  */
-const LIFECYCLE_WORKER_ID = 'wk-wa-lifecycle';
+const LIFECYCLE_WORKER_ID = 'wk-dir-lifecycle';
 
 const { sweepAbandonedDeviceFeedReadRuns } = await import(
   '../../../scheduled/check-stalled-executions'
@@ -908,7 +908,7 @@ async function seedReservedRun(opts: {
       ${lifecycleOrgId}, 'action', ${lifecycleConnectionId}, ${CONNECTOR_KEY},
       ${CONNECTOR_VERSION},
       ${opts.actionKey ?? DEVICE_FEED_READ_ACTION_KEY},
-      ${sql.json({ feed_key: FEED_KEY, query: 'tenancy deposit', chat_jids: ['15551230000@s.whatsapp.net'] })},
+      ${sql.json({ feed_key: FEED_KEY, query: 'tenancy deposit', chat_jids: ['folder-a'] })},
       ${sql.json({ rows: DEVICE_ROWS })},
       'auto', ${opts.status},
       ${opts.completedAtSecondsAgo == null
@@ -954,7 +954,7 @@ describe('device source-feed read lifecycle — deadlines and orphan sweeping', 
     await initWorkspaceProvider();
     const org = await createTestOrganization({ name: 'WA Lifecycle' });
     lifecycleOrgId = org.id;
-    const user = await createTestUser({ email: 'wa-lifecycle@test.com' });
+    const user = await createTestUser({ email: 'dir-lifecycle@test.com' });
     lifecycleUserId = user.id;
     await addUserToOrganization(user.id, org.id, 'owner');
 
@@ -978,7 +978,7 @@ describe('device source-feed read lifecycle — deadlines and orphan sweeping', 
       INSERT INTO connector_definitions
         (key, name, version, organization_id, status, runtime, required_capability,
          feeds_schema, auth_schema, created_at, updated_at)
-      VALUES (${CONNECTOR_KEY}, 'WhatsApp (this Mac)', ${CONNECTOR_VERSION}, ${lifecycleOrgId},
+      VALUES (${CONNECTOR_KEY}, 'Local Folder (this Mac)', ${CONNECTOR_VERSION}, ${lifecycleOrgId},
               'active', ${sql.json({ platforms: ['macos'] })}, ${CAPABILITY},
               ${sql.json({ [FEED_KEY]: { key: FEED_KEY, operations: ['read'] } })},
               ${sql.json({ methods: [{ type: 'none' }] })}, NOW(), NOW())
@@ -992,7 +992,7 @@ describe('device source-feed read lifecycle — deadlines and orphan sweeping', 
       INSERT INTO connections
         (organization_id, connector_key, slug, display_name, status, visibility,
          device_worker_id, created_by, created_at, updated_at)
-      VALUES (${lifecycleOrgId}, ${CONNECTOR_KEY}, 'whatsapp-lifecycle', 'WhatsApp (this Mac)',
+      VALUES (${lifecycleOrgId}, ${CONNECTOR_KEY}, 'folder-lifecycle', 'Local Folder (this Mac)',
               'active', 'organization', ${lifecycleDeviceId}::uuid, ${lifecycleUserId}, NOW(), NOW())
       RETURNING id
     `) as Array<{ id: number }>;
@@ -1117,7 +1117,7 @@ describe('device source-feed read lifecycle — deadlines and orphan sweeping', 
     expect(after.action_output).toBeNull();
     expect(after.action_input).toEqual({ scrubbed: true, feed_key: FEED_KEY });
     expect(JSON.stringify(after)).not.toContain('tenancy deposit');
-    expect(JSON.stringify(after)).not.toContain('15551230000@s.whatsapp.net');
+    expect(JSON.stringify(after)).not.toContain('folder-a');
     expect(JSON.stringify(after)).not.toContain('invoice 4471');
 
     // Idempotent: a second tick has nothing left to do.
@@ -1142,7 +1142,7 @@ describe('device source-feed read lifecycle — deadlines and orphan sweeping', 
   // `expires_at` on a device action is the UNCLAIMED claim horizon, not an
   // execution deadline — queue-service stamps it so an unclaimed run cannot sit
   // pending forever, and poll.ts enforces it only against `status = 'pending'`.
-  // A device that claimed a WhatsApp query one second before expiry is doing
+  // A device that claimed a folder query one second before expiry is doing
   // exactly what it was asked to; timing it out here would kill live work on a
   // clock that was never about execution.
   it('leaves a CLAIMED run with a lapsed horizon alone while it is still beating', async () => {

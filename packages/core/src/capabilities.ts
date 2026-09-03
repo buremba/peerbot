@@ -17,7 +17,6 @@
 export const BROWSER_CAPABILITIES = [
   "browser.tabs",
   "browser.scripting",
-  "browser.whatsapp",
   "browser.history",
   "browser.bookmarks",
   "browser.downloads",
@@ -51,7 +50,6 @@ export const MAC_DEVICE_CAPABILITIES = [
   "local_directory",
   "healthkit",
   "photos",
-  "whatsapp_local",
   "calendar",
   "reminders",
   "system_audio",

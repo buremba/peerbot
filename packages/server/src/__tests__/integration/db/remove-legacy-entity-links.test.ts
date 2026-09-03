@@ -118,7 +118,7 @@ describe('removed entityLinks migration', () => {
             (user_id, worker_id, platform, app_version, capabilities, label, organization_id, connector_manifests)
           VALUES (
             ${user.id}, 'removed-entity-links-test', 'macos', '1.0.0',
-            ${tx.json(['whatsapp_local'])}, 'Migration test', ${org.id},
+            ${tx.json(['local_directory'])}, 'Migration test', ${org.id},
             ${tx.json({
               legacy: {
                 manifest_hash: 'legacy',

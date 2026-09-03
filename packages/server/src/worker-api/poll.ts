@@ -787,7 +787,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 runManifestBacked: tx`run_cv.manifest_backed`,
                 runManifestHash: tx`run_cv.artifact_hash`,
                 runArtifactSourcePath: tx`run_cv.artifact_source_path`,
-                runArtifactCompiledCode: tx`run_cv.artifact_compiled_code`,
                 runRuntime: tx`cd.run_runtime`,
               })}
             )

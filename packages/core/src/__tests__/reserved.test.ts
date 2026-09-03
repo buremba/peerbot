@@ -31,6 +31,9 @@ describe("isReservedEntityTypeSlug", () => {
     // an entity type with that slug would get its list page permanently
     // shadowed by the static route.
     expect(isReservedEntityTypeSlug("entity-types")).toBe(true);
+    // /$owner/recent is the dedicated Recent page, also absent from
+    // OWNER_ROUTE_SEGMENTS for the same splat-guard reason.
+    expect(isReservedEntityTypeSlug("recent")).toBe(true);
     // Deleted legacy routes stay reserved via REMOVED_OWNER_SEGMENTS so old
     // bookmarks and chat links can never resolve as an unrelated entity type.
     expect(isReservedEntityTypeSlug("inference-providers")).toBe(true);

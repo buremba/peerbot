@@ -144,4 +144,89 @@ describe('stale device-worker reaper vs archived automation pins', () => {
     expect(await pinOf(liveId)).toBe(deviceId);
     expect(await pinOf(archivedId)).toBe(deviceId);
   });
+
+  /**
+   * A pin is cleared IF AND ONLY IF its device is actually deleted. The
+   * likeliest way for the two to disagree is `last_seen_at` moving between the
+   * candidate scan and the delete: the dark laptop coming back.
+   *
+   * A real concurrent poll cannot be scheduled deterministically from one
+   * connection, so a trigger stands in for it: it fires the moment the reaper
+   * releases a pin and refreshes that device's `last_seen_at`, landing the
+   * "device came back" change inside the reaper's own transaction — the worst
+   * case for statement ordering. The assertion is the invariant, not the
+   * simulation: whatever the reaper decides, released pins and deleted devices
+   * must match.
+   */
+  test('releases a pin only if the device is actually deleted', async () => {
+    const sql = getDb();
+    const deviceId = await seedStaleDevice('worker-revived-midflight');
+    const automationId = await seedAutomationPinnedTo(deviceId, 'revived-envelope');
+    await archive(automationId);
+
+    await sql`
+      CREATE OR REPLACE FUNCTION test_revive_device_on_unpin() RETURNS trigger
+      LANGUAGE plpgsql AS $revive$
+      BEGIN
+        UPDATE device_workers SET last_seen_at = now() WHERE id = OLD.device_worker_id;
+        RETURN NEW;
+      END
+      $revive$
+    `;
+    await sql`
+      CREATE TRIGGER test_revive_device_on_unpin
+      AFTER UPDATE OF device_worker_id ON automations
+      FOR EACH ROW
+      WHEN (OLD.device_worker_id IS NOT NULL AND NEW.device_worker_id IS NULL)
+      EXECUTE FUNCTION test_revive_device_on_unpin()
+    `;
+
+    try {
+      await reapStaleDeviceWorkers();
+    } finally {
+      await sql`DROP TRIGGER IF EXISTS test_revive_device_on_unpin ON automations`;
+      await sql`DROP FUNCTION IF EXISTS test_revive_device_on_unpin()`;
+    }
+
+    const stillThere = await deviceExists(deviceId);
+    const pinReleased = (await pinOf(automationId)) === null;
+
+    // Either both happened or neither did. The failure this guards is
+    // pinReleased === true while stillThere === true: history destroyed for a
+    // device the reaper decided to keep.
+    expect(pinReleased).toBe(!stillThere);
+    // ...and the pairing must not be satisfied by a reaper that does nothing:
+    // this candidate had no live binding, so it is expected to go.
+    expect(stillThere).toBe(false);
+  });
+
+  test('spares a non-candidate device and leaves its archived pin intact', async () => {
+    const sql = getDb();
+    // Reaped: stale, only an archived pin.
+    const doomedId = await seedStaleDevice('worker-pair-doomed');
+    const doomedAutomation = await seedAutomationPinnedTo(doomedId, 'pair-doomed');
+    await archive(doomedAutomation);
+
+    // Spared: identically stale with an archived pin, but a live connection
+    // keeps it bound, so it never becomes a candidate.
+    const sparedId = await seedStaleDevice('worker-pair-spared');
+    const sparedAutomation = await seedAutomationPinnedTo(sparedId, 'pair-spared');
+    await archive(sparedAutomation);
+    await sql`
+      INSERT INTO connections
+        (organization_id, connector_key, slug, created_by, device_worker_id, status)
+      VALUES
+        (${ORG_ID}, 'os.shell', 'pair-spared-shell', ${USER_ID}, ${sparedId}, 'active')
+    `;
+
+    const result = await reapStaleDeviceWorkers();
+
+    expect(result.reaped).toBe(1);
+    expect(await deviceExists(doomedId)).toBe(false);
+    expect(await pinOf(doomedAutomation)).toBeNull();
+
+    // The spared device keeps both its row and its Automation's record of it.
+    expect(await deviceExists(sparedId)).toBe(true);
+    expect(await pinOf(sparedAutomation)).toBe(sparedId);
+  });
 });

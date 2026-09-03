@@ -558,9 +558,14 @@ export async function transcribeOne(
  * Returns true when the ACCOUNT is walled (quota/credit or auth) rather than
  * this one file being unsupported — the caller uses that to stop the batch.
  *
- * Best-effort, mirroring `secret-proxy`'s `recordProviderHealth`: nothing
- * routes on `status` today, so failing to write a display label must never
- * turn into a thrown error on a path that already kept its placeholder.
+ * Best-effort, mirroring `secret-proxy`'s `recordProviderHealth`. Routing DOES
+ * read `status` — `resolveDispatchModel` takes an `isHealthy` predicate built
+ * from it (#3308) — but only as a PREFERENCE that can never shrink the
+ * candidate set: the strongest thing a missed, stale or duplicated write can do
+ * is fail to break a tie toward a healthy sibling the agent already lists. It
+ * can never strand a workspace or fail a turn that would otherwise have run,
+ * so writing a health label must never turn into a thrown error on a path that
+ * already kept its placeholder.
  */
 async function recordTranscriptionProviderHealth(
   organizationId: string,

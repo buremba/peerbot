@@ -675,7 +675,22 @@ async function ensureDeviceConnectorWired(
           await tx`
             UPDATE feeds
             SET status = 'active',
-                next_run_at = ${canSync ? tx`COALESCE(next_run_at, NOW())` : tx`NULL::timestamptz`},
+                next_run_at = ${
+                  canSync
+                    ? // Re-arm only a feed that HAS a cron, where NULL means
+                      // "auto-paused / cleared" and NOW() resumes its cadence.
+                      // A feed with no cron is manual by #2021, and stamping
+                      // NOW() here invented a trigger nobody chose: this branch
+                      // runs on the slow wire path, which the `ready` fast path
+                      // skips until the manifest hash changes, so the feed
+                      // synced exactly once per extension version. Prod: chrome
+                      // `tab_events` and `watch_observations` = 9 runs since
+                      // 2026-08-04 while their scheduled siblings ran 5,449 —
+                      // every one `completed`, so no failure signal ever fired.
+                      tx`CASE WHEN schedule IS NULL THEN next_run_at
+                              ELSE COALESCE(next_run_at, NOW()) END`
+                    : tx`NULL::timestamptz`
+                },
                 updated_at = current_timestamp
             WHERE id = ${existingFeed[0].id}
           `;
@@ -687,6 +702,12 @@ async function ensureDeviceConnectorWired(
             typeof declaredName === 'string' && declaredName.trim().length > 0
               ? declaredName.trim()
               : metadata.name;
+          // The initial stamp STAYS, unlike the re-arm above: one backfill on
+          // first wire is what makes a newly connected device show anything at
+          // all, and it is a one-shot, not a cadence. What it must not do is
+          // masquerade as a working feed afterwards — that is now visible as
+          // `attention='no_trigger'` rather than hidden behind a lone
+          // successful sync (see `connectors/feed-health-semantics.ts`).
           await tx`
             INSERT INTO feeds (
               organization_id, connection_id, feed_key, display_name, status,

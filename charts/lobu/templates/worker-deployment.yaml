@@ -137,7 +137,7 @@ spec:
           {{- end }}
           # The worker daemon is a poll loop with no HTTP server, so there's no
           # endpoint to httpGet. Liveness is an exec probe that confirms the
-          # daemon process (PID 1, `bun src/bin.ts daemon` per docker/worker)
+          # daemon process (PID 1, `node dist/bin.js daemon` per docker/worker)
           # is still its own command line — if the loop crashes hard the
           # container exits and PID 1 is gone, so kubelet restarts it. Reuses
           # the chart's healthCheck.livenessProbe timing.

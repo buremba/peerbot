@@ -2,10 +2,17 @@
  * Connector runtime parity self-check.
  *
  * One shared function run from BOTH entrypoints — the worker Docker image
- * (`bun src/bin.ts self-check`) and the built CLI (`lobu connector
+ * (`node dist/bin.js self-check`) and the built CLI (`lobu connector
  * runtime-self-check`) — so both assert the identical compile + default
  * `SubprocessExecutor` path. The only per-surface difference is the connector
  * source discovery roots (monorepo vs worker image vs npm-installed CLI).
+ *
+ * The result also reports the isolate lane (`isolate_lane`): whether this
+ * runtime can load `isolated-vm`, the V8 addon behind `lane: 'isolate'` runs.
+ * That section never flips `ok` — the subprocess lane is the parity invariant
+ * and a Bun or Node 25 host legitimately lacks the addon — but the worker
+ * image smoke asserts `isolate_lane.available` separately, because the image
+ * exists to run the isolate lane and its native build is otherwise unproven.
  *
  * Why it exists: the worker image once shipped to prod missing `COPY
  * packages/core`, so `@lobu/connector-sdk`'s transitive `@lobu/core` import
@@ -16,7 +23,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { extname, join, resolve } from "node:path";
@@ -32,10 +39,15 @@ import {
 	stageConnectorRuntimeDependencies,
 } from "../executor/runtime-dependency-loader.js";
 import { executeCompiledConnector } from "../executor/runtime.js";
+import {
+	isolatedVmSpecifier,
+	isolatedVmUnavailableReason,
+	loadIsolatedVm,
+} from "../isolate/load.js";
 
 /**
  * Synthetic no-op connector, inline so the check is self-contained and ships
- * identically in the worker image (`src/`) and the published CLI (`dist/`). It
+ * identically in the worker image and the published CLI (both from `dist/`). It
  * is not a real bundled connector (the catalog never scans it) and touches no
  * network/DB/filesystem, so it passes under `--network=none`.
  */
@@ -82,6 +94,20 @@ export interface SelfCheckEntry {
 	detail: string;
 }
 
+/**
+ * Whether this runtime can host `lane: 'isolate'` runs. Snake_case on purpose:
+ * the image smokes read it with `jq '.isolate_lane.available'`.
+ */
+export interface SelfCheckIsolateLane {
+	/** `isolated-vm` loaded; `selectExecutor` can build an `IsolateExecutor`. */
+	available: boolean;
+	/** Why not, when unavailable; `null` when available. */
+	reason: string | null;
+	/** Installed version of the build this Node line uses; `null` if absent. */
+	isolated_vm_version: string | null;
+	node_version: string;
+}
+
 export interface SelfCheckResult {
 	ok: boolean;
 	/** Which entrypoint ran the check — for log/parity-debugging only. */
@@ -89,6 +115,8 @@ export interface SelfCheckResult {
 	connectorSourceDir: string | null;
 	connectorCount: number;
 	checks: SelfCheckEntry[];
+	/** Informational: does not participate in `ok` (see module doc). */
+	isolate_lane: SelfCheckIsolateLane;
 }
 
 export interface SelfCheckOptions {
@@ -293,6 +321,37 @@ async function runSyntheticConnector(
 }
 
 /**
+ * Probe the isolate lane the way `selectExecutor` does — through the memoized
+ * `loadIsolatedVm()` — and read the installed addon's version from the
+ * package this Node line resolves. The version read is best-effort metadata:
+ * `available` is the assertion.
+ */
+export async function probeIsolateLane(): Promise<SelfCheckIsolateLane> {
+	const node_version = process.versions.node;
+	const specifier = isolatedVmSpecifier();
+	let isolated_vm_version: string | null = null;
+	if (specifier) {
+		try {
+			const pkgPath = createRequire(import.meta.url).resolve(
+				`${specifier}/package.json`,
+			);
+			const pkg = JSON.parse(await readFile(pkgPath, "utf-8")) as {
+				version?: unknown;
+			};
+			if (typeof pkg.version === "string") isolated_vm_version = pkg.version;
+		} catch {
+			// Not installed (optionalDependency skipped) — reported via `reason`.
+		}
+	}
+	const available = (await loadIsolatedVm()) !== null;
+	const reason = available
+		? null
+		: (isolatedVmUnavailableReason() ??
+			`${specifier} did not load on Node ${node_version}: the optionalDependency is missing or its native build failed`);
+	return { available, reason, isolated_vm_version, node_version };
+}
+
+/**
  * Fast boot gate for a worker that is about to advertise connector
  * capabilities. It compiles and executes the synthetic connector through the
  * real subprocess path, so a runtime that cannot load the SDK fails before its
@@ -435,6 +494,7 @@ export async function runConnectorRuntimeSelfCheck(
 		connectorSourceDir,
 		connectorCount: discovered.length,
 		checks,
+		isolate_lane: await probeIsolateLane(),
 	};
 }
 
@@ -451,5 +511,11 @@ export function printSelfCheckResult(result: SelfCheckResult): void {
 	for (const c of result.checks) {
 		lines.push(`  ${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`);
 	}
+	const lane = result.isolate_lane;
+	lines.push(
+		lane.available
+			? `  isolate lane: available (isolated-vm ${lane.isolated_vm_version ?? "unknown"}, Node ${lane.node_version})`
+			: `  isolate lane: unavailable on Node ${lane.node_version} — ${lane.reason}`,
+	);
 	process.stderr.write(`${lines.join("\n")}\n`);
 }

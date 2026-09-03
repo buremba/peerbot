@@ -173,9 +173,19 @@ jobs:
           cache-to: type=gha,mode=max,scope=worker
 
       - name: Worker image self-check (docker run --network=none)
+        # The image runs under Node so the connector isolate lane (isolated-vm,
+        # a V8 addon Bun cannot load) works in prod. A green self-check alone
+        # does not prove that addon's native build, so assert the lane too: an
+        # unavailable lane means the builder's node-gyp toolchain or the
+        # optionalDependency install regressed inside the image.
         run: |
+          set -o pipefail
           docker run --rm --network=none lobu-worker:parity-smoke \
-            bun src/bin.ts self-check --json
+            node dist/bin.js self-check --json | tee worker-self-check.json
+          jq -e '.isolate_lane.available == true' worker-self-check.json >/dev/null || {
+            echo "::error::worker image cannot load isolated-vm: $(jq -c .isolate_lane worker-self-check.json)"
+            exit 1
+          }
 
   build-app:
     runs-on: ubuntu-24.04

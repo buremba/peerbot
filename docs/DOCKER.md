@@ -73,6 +73,10 @@ The Dockerfile lives at `docker/app/Dockerfile`. Three notable details:
 2. **Built artifact**, not a workspace install at runtime. The image bundles `dist/server.bundle.mjs` produced by esbuild — fast cold-start, no `bun install` at boot.
 3. **No SPA bundled in the public image by default.** The admin SPA sources live in a private submodule (`packages/owletto`); the public image stubs them out so external contributors can build the backend without owletto access. To run the SPA, build from a checkout that has the submodule initialized, or use Lobu Cloud.
 
+## Fleet worker image
+
+Lobu Cloud's Helm chart (`charts/lobu`) runs connector workers as a separate Deployment built from `docker/worker/Dockerfile`; the self-hosting image above does not need it. Its runtime stage is Node only: the builder compiles `packages/connector-worker` with `tsc`, and the container's `CMD` is `node dist/bin.js daemon`. The worker runs under Node rather than Bun because the connector isolate lane loads `isolated-vm`, a V8 native addon Bun cannot `dlopen`. CI runs `node dist/bin.js self-check --json` inside the built image with `--network=none` and asserts `isolate_lane.available`, so a broken native build fails the image job instead of surfacing as failed isolate runs in prod.
+
 ## Bumping versions
 
 Main-branch builds publish timestamp tags but no longer move `:latest`. Publishing a stable [GitHub Release](https://github.com/lobu-ai/lobu/releases) named `lobu-vX.Y.Z` publishes image tag `:X.Y.Z` and moves `:latest`; prereleases publish only their version tag. For reproducible deploys, pin a published version. Releases from before versioned image publishing was enabled are not backfilled automatically.

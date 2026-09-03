@@ -1,5 +1,83 @@
 # Changelog
 
+## [18.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v17.2.0...lobu-v18.0.0) (2026-09-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **connector-sdk:** @lobu/connector-sdk's root no longer exports the browser SDK (acquireBrowser, launchBrowser, runReviewScrape, CdpPage, resolveCdpUrl, fetchCdpVersionInfo, browserNetworkSync, ...), the FileSystemSource implementations (GitFileSource, TarballFileSource, LocalFileSource, fileSystemSourceFromUri) or deviceManifestHash. Import them from @lobu/connector-sdk/browser, @lobu/connector-sdk/sources and @lobu/connector-sdk/device-manifest-hash. Compiled connector bundles that imported one of these from the root need a re-run of `lobu apply`.
+* **server:** `EGRESS_JUDGE_MODEL` and any per-rule `judgeModel` must now be a `<provider>/<model>` ref whose provider has a deployment system key set in the environment and speaks the OpenAI-compatible protocol. A bare model id (`gpt-4o-mini`) or an Anthropic-protocol ref (`claude/...`) is unresolvable and the judge FAILS CLOSED, denying every judged egress request. Repoint at an eligible provider, e.g. `openai/gpt-4o-mini`. The boot preflight logs the resolution outcome and is deliberately non-fatal, so a deployment that only reads denials will not see the cause until it reads the log.
+* **server:** migrate the judges off the Anthropic SDK onto the gateway client ([#3277](https://github.com/lobu-ai/lobu/issues/3277))
+
+### Features
+
+* **connector-sdk:** make the SDK root loadable in a V8 isolate ([#3294](https://github.com/lobu-ai/lobu/issues/3294)) ([495cf61](https://github.com/lobu-ai/lobu/commit/495cf61ddf850dd5bbd767eb9aeac7dced78bf2a))
+* **connector-worker:** isolate executor for pure-JS connectors ([#3303](https://github.com/lobu-ai/lobu/issues/3303)) ([5cfcffa](https://github.com/lobu-ai/lobu/commit/5cfcffa9d11819e64e38e96fa7ec3ffefdde491c))
+* **connector-worker:** run the worker image under Node so the isolate lane can load ([#3314](https://github.com/lobu-ai/lobu/issues/3314)) ([f052859](https://github.com/lobu-ai/lobu/commit/f05285995731616b00e9f92264092a81c9736bf6))
+* **device-connectors:** Meeting Audio captures your own voice, and ships what it records ([#3312](https://github.com/lobu-ai/lobu/issues/3312)) ([a218ad2](https://github.com/lobu-ai/lobu/commit/a218ad25dc8f2ccf34b27673dda6c579a16e1dec))
+* expose generic webhook automation event ([#3242](https://github.com/lobu-ai/lobu/issues/3242)) ([a657ccf](https://github.com/lobu-ai/lobu/commit/a657ccf8345ec0e4e4c574a560f182b9b2a18def))
+* **gateway:** warn at boot when an unrestricted allowlist makes every egress judge inert ([#3309](https://github.com/lobu-ai/lobu/issues/3309)) ([9539e1b](https://github.com/lobu-ai/lobu/commit/9539e1b8afb56d6f8f66457a808bcf25416ca792))
+* **oauth:** consolidate authorization review grants ([#3240](https://github.com/lobu-ai/lobu/issues/3240)) ([f7c03c5](https://github.com/lobu-ai/lobu/commit/f7c03c5f00f39d765762fbfc08c1dd9f39c6a10a))
+* prepare generic webhook event activation ([#3238](https://github.com/lobu-ai/lobu/issues/3238)) ([c10f761](https://github.com/lobu-ai/lobu/commit/c10f761e84993b78d499603cb186be28d155b4b2))
+* **sandbox:** public dev previews with the seat claimed and worker auth closed ([#3279](https://github.com/lobu-ai/lobu/issues/3279)) ([a24c090](https://github.com/lobu-ai/lobu/commit/a24c090f4f4330f3b2917ec3a4df926ce0f54e82))
+* **sandbox:** surface and remove sandboxes that outlived their worktree ([#3287](https://github.com/lobu-ai/lobu/issues/3287)) ([85401bf](https://github.com/lobu-ai/lobu/commit/85401bf1e40a7571f02b684752fb60e738be6f5a))
+* **worker:** execute os.shell as a daemon builtin and gate claims on backend capacity ([#3259](https://github.com/lobu-ai/lobu/issues/3259)) ([1ba8123](https://github.com/lobu-ai/lobu/commit/1ba81232ae5a30c0328217b111e7ab8ceac64072))
+
+
+### Bug Fixes
+
+* **agent-worker:** preserve durable turn delivery ([#3251](https://github.com/lobu-ai/lobu/issues/3251)) ([bb78e89](https://github.com/lobu-ai/lobu/commit/bb78e89fe1454df7c38613b2703998a1ca5f5189))
+* **api:** harden pagination contracts and metadata ([#3237](https://github.com/lobu-ai/lobu/issues/3237)) ([6db0f8d](https://github.com/lobu-ai/lobu/commit/6db0f8d958dce51efe70e441465375ff4e094a4f))
+* **authz:** stop marking consent-only GitHub connections ACL-failed ([#3258](https://github.com/lobu-ai/lobu/issues/3258)) ([ada2080](https://github.com/lobu-ai/lobu/commit/ada2080cd62d269f18ce367e24b84b81d6221363))
+* **chart:** minimize embeddings secret projection ([#3252](https://github.com/lobu-ai/lobu/issues/3252)) ([73aae4e](https://github.com/lobu-ai/lobu/commit/73aae4ee491ed5aa0e5118bcaba15088617f9329))
+* **ci:** gate releases on image provenance ([#3247](https://github.com/lobu-ai/lobu/issues/3247)) ([2620057](https://github.com/lobu-ai/lobu/commit/2620057f56d8a9367d0bb71b390fae54872ef102))
+* **cli:** make E2E cleanup portable ([#3232](https://github.com/lobu-ai/lobu/issues/3232)) ([3bafcb5](https://github.com/lobu-ai/lobu/commit/3bafcb56a0c6750a415a0fd10141ebc31409f7fe))
+* **cloud-gate:** admit an image-shipped connector shadowed by an org row ([#3285](https://github.com/lobu-ai/lobu/issues/3285)) ([6e8b110](https://github.com/lobu-ai/lobu/commit/6e8b110504b7b17f6d64f54daad46bf4ba44ee11))
+* **connector-worker:** stage runtime dependencies safely ([#3234](https://github.com/lobu-ai/lobu/issues/3234)) ([b73055b](https://github.com/lobu-ai/lobu/commit/b73055bea3272fc420d9c58495c98f7520406fe2))
+* **connector-worker:** verify runtime before claiming work ([#3233](https://github.com/lobu-ai/lobu/issues/3233)) ([2082b4a](https://github.com/lobu-ai/lobu/commit/2082b4a4077366d6ac87f12fb6e1ca462156e522))
+* **connectors:** bound os.shell process-group cleanup ([#3229](https://github.com/lobu-ai/lobu/issues/3229)) ([28c014b](https://github.com/lobu-ai/lobu/commit/28c014b62892931dcf34581c9757c13171c14508))
+* **connectors:** keep a WhatsApp thumbnail out of payload_text ([#3298](https://github.com/lobu-ai/lobu/issues/3298)) ([40b0540](https://github.com/lobu-ai/lobu/commit/40b05408a53e64946ce919dfa1f915b82efbf313))
+* **connectors:** reject a reserved chrome.* connector key that ships its own code ([#3273](https://github.com/lobu-ai/lobu/issues/3273)) ([ab5c301](https://github.com/lobu-ai/lobu/commit/ab5c301f1f42e395f4fbd9302e186af1cc94a0e7))
+* **core:** accept parent Automation run on live worker tokens ([#3257](https://github.com/lobu-ai/lobu/issues/3257)) ([2e37817](https://github.com/lobu-ai/lobu/commit/2e3781746e539210a19d170460e545276a1e6528))
+* **core:** scrub credentials from agent-worker Sentry events too ([#3261](https://github.com/lobu-ai/lobu/issues/3261)) ([40db6c8](https://github.com/lobu-ai/lobu/commit/40db6c86e8a99493870cb4baa19a4df4060c510c))
+* **deps:** bump undici to 7.29.0 across the workspace, with the lockfile ([#3286](https://github.com/lobu-ai/lobu/issues/3286)) ([4f5ea6b](https://github.com/lobu-ai/lobu/commit/4f5ea6b6f5cb9ff4e72d80ad59829480b443d722))
+* **devices:** enforce target and executed device routing invariants ([#3315](https://github.com/lobu-ai/lobu/issues/3315)) ([da5c47a](https://github.com/lobu-ai/lobu/commit/da5c47afd08f55050dbdcd44d5bbc10fda8f3ae6))
+* **gateway:** never grant an allow for a domain the egress judge governs ([#3300](https://github.com/lobu-ai/lobu/issues/3300)) ([4f5b0f5](https://github.com/lobu-ai/lobu/commit/4f5b0f583e0ae2138851ae50d713c1676ac502ea))
+* **gateway:** prefer a healthy provider over an exhausted one at dispatch ([#3308](https://github.com/lobu-ai/lobu/issues/3308)) ([cb74675](https://github.com/lobu-ai/lobu/commit/cb74675a7a152e8995950fb7f704601b10800431))
+* **gateway:** refuse an allow grant for a judged domain at the GrantStore chokepoint ([#3304](https://github.com/lobu-ai/lobu/issues/3304)) ([b4cee9f](https://github.com/lobu-ai/lobu/commit/b4cee9f01e27a74e1d915fe11f17c29f0daf7b21))
+* **gateway:** reject an egress guardrail whose judged domain an allow grant shadows ([#3299](https://github.com/lobu-ai/lobu/issues/3299)) ([62ddf47](https://github.com/lobu-ai/lobu/commit/62ddf476fa2b344514550d45d4f81c9fcbc5bc83))
+* **gateway:** stop a provider-failed turn from renewing its own liveness deadline ([#3313](https://github.com/lobu-ai/lobu/issues/3313)) ([399bfc4](https://github.com/lobu-ai/lobu/commit/399bfc4a2938b4e296dfb9f24695bdafc9e6eeb0))
+* **gateway:** stop a reasoning model's judge verdict being truncated ([#3293](https://github.com/lobu-ai/lobu/issues/3293)) ([f6c79f3](https://github.com/lobu-ai/lobu/commit/f6c79f350121ed6c9e158da5ddb3c36dc8e275fb))
+* **mcp:** isolate direct client instructions ([#3297](https://github.com/lobu-ai/lobu/issues/3297)) ([5d152ca](https://github.com/lobu-ai/lobu/commit/5d152caac1c9fa8803c0c3ae6a7dddcfe97b9d66))
+* **naming:** stop the canonical-vocabulary gate from renaming Chrome APIs ([#3265](https://github.com/lobu-ai/lobu/issues/3265)) ([ec19023](https://github.com/lobu-ai/lobu/commit/ec190238cc1853b2016cf1ac61017c56490966cd))
+* **queue:** keep one worker per queue and fence claims against shutdown ([#3255](https://github.com/lobu-ai/lobu/issues/3255)) ([41f6b9a](https://github.com/lobu-ai/lobu/commit/41f6b9af4b54b5be54152797e9caae0aa4c65e1f))
+* **sandbox:** accept the API-key credential shape the daytona CLI writes ([#3271](https://github.com/lobu-ai/lobu/issues/3271)) ([5e1bada](https://github.com/lobu-ai/lobu/commit/5e1bada7da800d0ae91edcef6d44609029237a6c))
+* **scripts:** sign lobu-device-daemon with JIT entitlements under Hardened Runtime ([#3307](https://github.com/lobu-ai/lobu/issues/3307)) ([d505471](https://github.com/lobu-ai/lobu/commit/d505471a16fbdc5c0e1e94e670c620c082139d69))
+* **security:** harden connector-controlled egress ([#3236](https://github.com/lobu-ai/lobu/issues/3236)) ([4d38b6c](https://github.com/lobu-ai/lobu/commit/4d38b6c36be5f607c3be666d76478a76e8b43fb5))
+* **server:** cap the wall-clock budget of a connection pushdown ([#3302](https://github.com/lobu-ai/lobu/issues/3302)) ([3471bea](https://github.com/lobu-ai/lobu/commit/3471beaecf74dbf735941d6347cc3177ff07ffab))
+* **server:** claim connectorless embedding backfills ([#3245](https://github.com/lobu-ai/lobu/issues/3245)) ([f7591d2](https://github.com/lobu-ai/lobu/commit/f7591d2db8998043ee37b2d2fd51026ad605fb92))
+* **server:** deny custom connector code in cloud ([#3246](https://github.com/lobu-ai/lobu/issues/3246)) ([8ecb49d](https://github.com/lobu-ai/lobu/commit/8ecb49d7f097a6b911a65030cafde1d7fb794254))
+* **server:** fence inline operation run leases ([#3249](https://github.com/lobu-ai/lobu/issues/3249)) ([37f01ae](https://github.com/lobu-ai/lobu/commit/37f01ae7e1cdfd3df39d52e47b348a4702fa4c37))
+* **server:** harden SDK script errors ([#3239](https://github.com/lobu-ai/lobu/issues/3239)) ([b5c60aa](https://github.com/lobu-ai/lobu/commit/b5c60aa81ab504ef49cd71cd23fc3c660171ce7d))
+* **server:** name the remedy in Cloud connector denials ([#3281](https://github.com/lobu-ai/lobu/issues/3281)) ([630dd21](https://github.com/lobu-ai/lobu/commit/630dd21a304949e5dc60494a1b440fd7299597ee))
+* **server:** narrow Vite fs.allow to the trees the SPA loads from ([#3284](https://github.com/lobu-ai/lobu/issues/3284)) ([0405236](https://github.com/lobu-ai/lobu/commit/0405236ec2cdf081db40c5cea5b60879b1658a52))
+* **server:** redact credentials from Sentry events ([#3253](https://github.com/lobu-ai/lobu/issues/3253)) ([6569c03](https://github.com/lobu-ai/lobu/commit/6569c0342f8c8f894e93c056c4feea8729571e87))
+* **server:** repair cross-replica authorization revocation ([#3250](https://github.com/lobu-ai/lobu/issues/3250)) ([94c5bea](https://github.com/lobu-ai/lobu/commit/94c5beacd40ed68f90fc3a67451e2bc2b53a95de))
+* **server:** resolve a derived row's slug in SQL instead of paging the view ([#3301](https://github.com/lobu-ai/lobu/issues/3301)) ([bc106ec](https://github.com/lobu-ai/lobu/commit/bc106ec8d1cf47f99ca53209c504a1e504b5a7c1))
+* **server:** stop /@fs/ serving live state from the dev server ([#3282](https://github.com/lobu-ai/lobu/issues/3282)) ([c4336dd](https://github.com/lobu-ai/lobu/commit/c4336dd551481b9c365ab1faee6d924dd4aab027))
+* **server:** surface an STT provider outage instead of dropping the job ([#3310](https://github.com/lobu-ai/lobu/issues/3310)) ([63c559b](https://github.com/lobu-ai/lobu/commit/63c559b520ffbd8e19efc172db77f9c5cf18da98))
+* **worker:** stop an orphaned chrome-dispatch reply from killing the worker ([#3288](https://github.com/lobu-ai/lobu/issues/3288)) ([84578ae](https://github.com/lobu-ai/lobu/commit/84578aee4abed6412a893fdeca59382fed38c94c))
+
+
+### Documentation
+
+* **server:** document the judged-egress model contract for operators ([#3290](https://github.com/lobu-ai/lobu/issues/3290)) ([35e8d53](https://github.com/lobu-ai/lobu/commit/35e8d5350d973922ad93b30b324233aefcb587c0))
+
+
+### Code Refactoring
+
+* **server:** migrate the judges off the Anthropic SDK onto the gateway client ([#3277](https://github.com/lobu-ai/lobu/issues/3277)) ([ba6967f](https://github.com/lobu-ai/lobu/commit/ba6967fdf59476853917a0e2084f28e926b6ee11))
+
 ## [17.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v17.1.0...lobu-v17.2.0) (2026-08-29)
 
 

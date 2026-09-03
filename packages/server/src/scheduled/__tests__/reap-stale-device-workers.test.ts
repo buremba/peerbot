@@ -11,9 +11,15 @@
  * A LIVE pin must still block, and must not be cleared as a side effect — that
  * is the difference between reaping a dead machine and silently un-pinning a
  * runnable Automation.
+ *
+ * The suite also covers the reaper's other two exits, which the pin work left
+ * untested: child-token revocation (scoped to the worker_ids actually deleted)
+ * and the `auth_profiles` predicate, whose FK is ON DELETE CASCADE and so fails
+ * silently rather than loudly if the guard is ever lost.
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import postgres from 'postgres';
 import { getDb } from '../../db/client';
 import {
   ensureDbForGatewayTests,
@@ -96,7 +102,29 @@ async function pinOf(automationId: number): Promise<string | null> {
   return row?.device_worker_id ?? null;
 }
 
-describe('stale device-worker reaper vs archived automation pins', () => {
+/**
+ * A PAT bound to a device's `worker_id` (what mint-child-token issues), or an
+ * ordinary unbound user token when `workerId` is null.
+ */
+async function seedChildToken(workerId: string | null, name: string): Promise<void> {
+  const sql = getDb();
+  await sql`
+    INSERT INTO personal_access_tokens
+      (token_hash, token_prefix, user_id, organization_id, name, worker_id)
+    VALUES
+      (${`hash-${name}`}, ${`pfx-${name}`}, ${USER_ID}, ${ORG_ID}, ${name}, ${workerId})
+  `;
+}
+
+async function tokenRevoked(name: string): Promise<boolean> {
+  const sql = getDb();
+  const [row] = (await sql`
+    SELECT revoked_at FROM personal_access_tokens WHERE name = ${name}
+  `) as unknown as Array<{ revoked_at: Date | null }>;
+  return row?.revoked_at != null;
+}
+
+describe('stale device-worker reaper', () => {
   test('reaps a device whose only pin is an archived Automation', async () => {
     const deviceId = await seedStaleDevice('worker-archived-pin');
     const automationId = await seedAutomationPinnedTo(deviceId, 'stale-envelope');
@@ -228,5 +256,185 @@ describe('stale device-worker reaper vs archived automation pins', () => {
     // The spared device keeps both its row and its Automation's record of it.
     expect(await deviceExists(sparedId)).toBe(true);
     expect(await pinOf(sparedAutomation)).toBe(sparedId);
+  });
+
+  /**
+   * The candidate scan runs OUTSIDE the delete transaction, so the set it
+   * returns can be stale by the time the transaction re-picks under lock. This
+   * is the only case where those two sets genuinely differ, and it is the case
+   * the release must be scoped to: releasing across every candidate, rather
+   * than the locked set, strips an archived pin from a device that then
+   * survives.
+   *
+   * Unlike the trigger simulation above, this stages the real race with a
+   * second connection. It holds a row lock on one candidate, lets the reaper
+   * block on it inside its transaction, then revives that device and commits.
+   * Under READ COMMITTED the reaper's `FOR UPDATE` wait re-evaluates the
+   * predicate against the updated row, so the revived device drops out of the
+   * locked set while remaining in the candidate list.
+   */
+  test('a candidate that stops qualifying keeps both its row and its pin', async () => {
+    const revivedId = await seedStaleDevice('worker-race-revived');
+    const revivedAutomation = await seedAutomationPinnedTo(revivedId, 'race-revived');
+    await archive(revivedAutomation);
+
+    // A second candidate with no contention, so the reaper is proven to still
+    // do its job in the same pass rather than passing by doing nothing.
+    const doomedId = await seedStaleDevice('worker-race-doomed');
+    const doomedAutomation = await seedAutomationPinnedTo(doomedId, 'race-doomed');
+    await archive(doomedAutomation);
+
+    const blocker = postgres(process.env.DATABASE_URL as string, { max: 1 });
+    let result: Awaited<ReturnType<typeof reapStaleDeviceWorkers>>;
+
+    try {
+      // The reaper's promise comes back WRAPPED in an object: `begin` awaits
+      // whatever the callback returns, and awaiting the reaper directly would
+      // deadlock (the reaper waits for this commit; the commit waits for the
+      // reaper).
+      const { reaping } = await blocker.begin(async (tx) => {
+        // Hold the row the reaper will want. Its candidate scan is a plain
+        // read and is unaffected, so `revivedId` still enters the batch.
+        await tx`SELECT id FROM device_workers WHERE id = ${revivedId} FOR UPDATE`;
+
+        const reaping = reapStaleDeviceWorkers();
+
+        // Wait for the reaper to actually be parked on the lock. Polling
+        // pg_stat_activity (never a sleep) keeps this deterministic, and the
+        // throw means a run that never blocked fails loudly instead of
+        // quietly testing nothing.
+        const deadline = Date.now() + 8_000;
+        for (;;) {
+          // "Some backend is blocked by THIS one" is the unambiguous signal.
+          // Matching on pg_stat_activity.query is not: a backend parked inside
+          // a transaction reports the last statement its driver sent, which
+          // for postgres.js is not the SELECT doing the waiting. Nor is any
+          // ungranted lock: this suite shares its process (and database) with
+          // other files whose stragglers could be waiting on something else.
+          const [waiting] = (await tx`
+            SELECT count(*)::int AS c FROM pg_stat_activity
+            WHERE pg_backend_pid() = ANY(pg_blocking_pids(pid))
+          `) as unknown as Array<{ c: number }>;
+          if (Number(waiting?.c ?? 0) > 0) break;
+          if (Date.now() > deadline) {
+            const diag = (await tx`
+              SELECT pid, state, wait_event_type, wait_event, left(query, 90) AS q
+              FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND query <> ''
+            `) as unknown as Array<unknown>;
+            throw new Error(
+              'reaper never blocked on the held row lock; the race was not staged. ' +
+                `backends=${JSON.stringify(diag)}`
+            );
+          }
+          await new Promise((r) => setTimeout(r, 25));
+        }
+
+        // The dark laptop comes back. Committing here (end of the callback)
+        // releases the lock and hands the reaper an updated row.
+        await tx`UPDATE device_workers SET last_seen_at = now() WHERE id = ${revivedId}`;
+        return { reaping };
+      });
+
+      result = await reaping;
+    } finally {
+      await blocker.end({ timeout: 5 });
+    }
+
+    // Both devices were candidates; only one was still doomed under lock.
+    expect(result.scanned).toBe(2);
+    expect(result.reaped).toBe(1);
+
+    // The revived device keeps its row AND its Automation's record of it.
+    expect(await deviceExists(revivedId)).toBe(true);
+    expect(await pinOf(revivedAutomation)).toBe(revivedId);
+
+    // The uncontended one is still collected normally.
+    expect(await deviceExists(doomedId)).toBe(false);
+    expect(await pinOf(doomedAutomation)).toBeNull();
+  }, 30_000);
+
+  test("revokes the reaped device's child token", async () => {
+    const deviceId = await seedStaleDevice('worker-pat-reaped');
+    const automationId = await seedAutomationPinnedTo(deviceId, 'pat-reaped');
+    await archive(automationId);
+    await seedChildToken('worker-pat-reaped', 'pat-reaped');
+
+    const result = await reapStaleDeviceWorkers();
+
+    expect(result.reaped).toBe(1);
+    // A live PAT bound to a reaped worker_id would let the device re-create the
+    // row on its next poll, undoing the reap.
+    expect(await tokenRevoked('pat-reaped')).toBe(true);
+  });
+
+  test('leaves tokens belonging to other devices alone', async () => {
+    const sql = getDb();
+    const doomedId = await seedStaleDevice('worker-pat-doomed');
+    const doomedAutomation = await seedAutomationPinnedTo(doomedId, 'pat-doomed');
+    await archive(doomedAutomation);
+    await seedChildToken('worker-pat-doomed', 'pat-doomed');
+
+    // Stale but pinned by a live connection, so its device survives.
+    const sparedId = await seedStaleDevice('worker-pat-spared');
+    await sql`
+      INSERT INTO connections
+        (organization_id, connector_key, slug, created_by, device_worker_id, status)
+      VALUES
+        (${ORG_ID}, 'os.shell', 'pat-spared-shell', ${USER_ID}, ${sparedId}, 'active')
+    `;
+    await seedChildToken('worker-pat-spared', 'pat-spared');
+
+    // An ordinary user PAT, bound to no device at all.
+    await seedChildToken(null, 'pat-unbound');
+
+    const result = await reapStaleDeviceWorkers();
+
+    expect(result.reaped).toBe(1);
+    expect(await tokenRevoked('pat-doomed')).toBe(true);
+    // Revocation must be scoped to the worker_ids actually deleted — an
+    // unscoped UPDATE would log every device in the org out at 3am.
+    expect(await tokenRevoked('pat-spared')).toBe(false);
+    expect(await tokenRevoked('pat-unbound')).toBe(false);
+  });
+
+  /**
+   * `auth_profiles.device_worker_id` is ON DELETE CASCADE, unlike the NO ACTION
+   * FK on `automations`. That asymmetry is why this predicate needs its own
+   * guard: if it were ever dropped, the DELETE would not fail loudly the way an
+   * unreleased automation pin does — it would succeed and silently take the
+   * device's stored credentials with it.
+   */
+  test('an auth profile alone blocks the reap, and survives it', async () => {
+    const sql = getDb();
+    const guardedId = await seedStaleDevice('worker-auth-guarded');
+    // Archived, so the automation itself is NOT what blocks: the auth profile
+    // has to be the sole reason this device survives, or the test passes even
+    // with the predicate removed.
+    const guardedAutomation = await seedAutomationPinnedTo(guardedId, 'auth-guarded');
+    await archive(guardedAutomation);
+    await sql`
+      INSERT INTO auth_profiles
+        (organization_id, slug, display_name, profile_kind, connector_key, device_worker_id)
+      VALUES
+        (${ORG_ID}, 'auth-guarded-profile', 'Guarded', 'env', 'os.shell', ${guardedId})
+    `;
+
+    // Identical but for the auth profile, so a reaper that simply does nothing
+    // cannot satisfy this test.
+    const doomedId = await seedStaleDevice('worker-auth-doomed');
+    const doomedAutomation = await seedAutomationPinnedTo(doomedId, 'auth-doomed');
+    await archive(doomedAutomation);
+
+    const result = await reapStaleDeviceWorkers();
+
+    expect(result.reaped).toBe(1);
+    expect(await deviceExists(doomedId)).toBe(false);
+
+    expect(await deviceExists(guardedId)).toBe(true);
+    expect(await pinOf(guardedAutomation)).toBe(guardedId);
+    const profiles = (await sql`
+      SELECT 1 FROM auth_profiles WHERE device_worker_id = ${guardedId}
+    `) as unknown as Array<unknown>;
+    expect(profiles.length).toBe(1);
   });
 });

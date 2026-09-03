@@ -4,7 +4,10 @@
 # Self-hosted worker for Lobu connectors and embedding generation.
 
 # Keep container builds on the same Bun version as the workflow lanes instead
-# of resolving a different `latest` release when a layer must be rebuilt.
+# of resolving a different `latest` release when a layer must be rebuilt. Bun
+# is a build tool here (workspace install + tsc); the runtime stage is Node
+# only, because the connector isolate lane's `isolated-vm` is a V8 native
+# addon Bun cannot dlopen.
 ARG BUN_VERSION=1.3.5
 
 FROM node:22-bookworm AS builder
@@ -57,32 +60,32 @@ COPY packages/connectors/ packages/connectors/
 COPY packages/embeddings/ packages/embeddings/
 COPY packages/connector-worker/ packages/connector-worker/
 
-# Build workspace dists required by runtime source imports.
+# Build workspace dists required by runtime imports.
 # connector-sdk imports @lobu/core; connector-worker/src/embeddings.ts imports
-# @lobu/embeddings, whose package exports point at dist/.
+# @lobu/embeddings, whose package exports point at dist/. connector-worker
+# itself builds last: the runtime runs its dist under Node (`bin.js` plus the
+# fork()ed `executor/child-runner.js`), never TypeScript source.
 RUN cd packages/core && bunx tsc \
     && cd ../connector-sdk && bunx tsc \
-    && cd ../embeddings && bunx tsc
+    && cd ../embeddings && bunx tsc \
+    && cd ../connector-worker && bunx tsc
 
 # ===========================================
 # Runtime
 # ===========================================
 FROM node:22-bookworm-slim AS runtime
-ARG BUN_VERSION
 
 WORKDIR /app
 
+# No Bun in this stage: everything runs under the image's Node. curl stays for
+# the chart's wait-for-app initContainer, which runs this image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip \
+      ca-certificates curl \
       libimage-exiftool-perl \
       libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
       libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
       libcairo2 libasound2 libxshmfence1 libxfixes3 libglib2.0-0 fonts-liberation \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash -s -- "bun-v${BUN_VERSION}" \
-    && chmod +x /usr/local/bin/bun
-
-ENV PATH="/usr/local/bin:${PATH}"
+    && rm -rf /var/lib/apt/lists/*
 
 # Non-root user. Pinned UID and numeric final USER so the kubelet can
 # verify runAsNonRoot — a named USER fails CreateContainerConfigError
@@ -129,4 +132,9 @@ ENV TRANSFORMERS_CACHE=/app/.cache/transformers
 
 WORKDIR /app/packages/connector-worker
 
-CMD ["bun", "src/bin.ts", "daemon"]
+# Node, not Bun: the isolate lane loads the isolated-vm addon (built by
+# node-gyp in the builder when no prebuild matches), which Bun cannot dlopen.
+# CI runs `node dist/bin.js self-check --json` in this image and asserts
+# `isolate_lane.available`. The chart's liveness probe greps "daemon" from
+# PID 1's cmdline, so keep that argument.
+CMD ["node", "dist/bin.js", "daemon"]

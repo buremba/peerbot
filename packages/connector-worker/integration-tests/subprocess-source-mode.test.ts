@@ -4,13 +4,13 @@
  * The diagnostic suite in subprocess.test.ts imports from `../dist/`, which
  * means SubprocessExecutor's internal `__dirname` resolves to the dist/
  * folder where `child-runner.js` exists. That path takes the .js branch and
- * does NOT exercise the .ts fallback that runs in production worker pods.
+ * does NOT exercise the .ts fallback a source-mode Bun worker takes.
  *
- * Production workers run `bun src/bin.ts daemon` — the SubprocessExecutor
- * loaded from src/ has only `child-runner.ts` next to it, so the executor
- * falls through to the second branch and (before this fix) added
- * `--import tsx` to execArgv, which crashed Bun children with
- * `Cannot find module './cjs/index.cjs' from ''`.
+ * A SubprocessExecutor loaded from src/ under Bun (as this bun:test suite
+ * does; the worker image runs `node dist/bin.js daemon` from dist/) has only
+ * `child-runner.ts` next to it, so the executor falls through to the second
+ * branch and (before this fix) added `--import tsx` to execArgv, which
+ * crashed Bun children with `Cannot find module './cjs/index.cjs' from ''`.
  *
  * This file imports SubprocessExecutor from `../src/executor/subprocess.ts`
  * so the test runner reproduces the source-mode environment. Bun runs .ts

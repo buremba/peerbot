@@ -318,8 +318,18 @@ gate_optional_smoke_filter() {
 
 gate_connector_parity_smoke() {
   gate_require_docker || return 77
-  docker build -f docker/worker/Dockerfile -t lobu-worker:parity-smoke .
-  docker run --rm --network=none lobu-worker:parity-smoke bun src/bin.ts self-check --json
+  docker build -f docker/worker/Dockerfile -t lobu-worker:parity-smoke . || return 1
+  local self_check rc=0
+  self_check=$(docker run --rm --network=none lobu-worker:parity-smoke node dist/bin.js self-check --json) || rc=$?
+  printf '%s\n' "$self_check"
+  [ "$rc" -eq 0 ] || return 1
+  # Mirrors ci.yml / build-images.yml: the image runs under Node so the isolate
+  # lane's isolated-vm addon loads; a green self-check alone does not prove the
+  # native build, so assert the lane explicitly.
+  if ! printf '%s' "$self_check" | jq -e '.isolate_lane.available == true' >/dev/null; then
+    echo "   ✗ worker image cannot load isolated-vm: $(printf '%s' "$self_check" | jq -c .isolate_lane)"
+    return 1
+  fi
   node packages/cli/bin/lobu.js connector runtime-self-check --json || return 1
 }
 

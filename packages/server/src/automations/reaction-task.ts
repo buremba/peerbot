@@ -176,7 +176,8 @@ export async function runAutomationReactionTask(
       automation_id: automationId,
       window_start: String(approvedInput.window_start ?? ''),
       window_end: String(approvedInput.window_end ?? ''),
-      granularity: String(approvedInput.granularity ?? ''),
+      // Retired with the arrival-axis cutover; the SDK field goes with the next major.
+      granularity: '',
       content_analyzed: Number(runMetadata.content_analyzed ?? 0),
     },
     automation: {

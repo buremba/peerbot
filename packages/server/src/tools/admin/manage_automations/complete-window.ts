@@ -9,10 +9,6 @@
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
 import {
-  inferAutomationGranularityFromSchedule,
-  type AutomationTimeGranularity,
-} from '@lobu/connector-sdk';
-import {
   enqueueWorkspaceEventActivations,
   findSubscribedWorkspaceEventTypes,
 } from '../../../automations/workspace-event-enqueue';
@@ -50,7 +46,7 @@ import { classifyRunOutcome } from "../../../runs/run-outcome";
 import { claimPendingAutomationRun } from '../../../runs/queue-service';
 import { AUTOMATION_EVAL_RUN_TYPE, AUTOMATION_RUN_TYPE } from "../../../runs/run-types.js";
 import {
-  advanceExpectedAutomationWindow,
+  advanceAutomationArrivalMark,
   automationOutputOccurredAt,
 } from '../../../utils/window-utils';
 
@@ -77,7 +73,7 @@ function assertCompleteWindowPageChain(
   if (truncated.length > 0) {
     throw new ToolUserError(
       `Automation sources ${truncated.join(', ')} exceed the bounded page and cannot be completed safely. ` +
-        'Narrow those source queries or the Automation granularity, then retry the claim.',
+        'Narrow those source queries or run the Automation more often, then retry the claim.',
       409
     );
   }
@@ -245,7 +241,7 @@ export async function handleCompleteWindow(
   }
 
   const firstToken = tokenPayloads[0];
-  const { automation_id: automationId, window_start, window_end, granularity } = firstToken;
+  const { automation_id: automationId, window_start, window_end } = firstToken;
   const tokenRunIds = new Set(tokenPayloads.map((token) => token.run_id ?? null));
   if (tokenRunIds.size !== 1) {
     throw new ToolUserError(
@@ -265,8 +261,7 @@ export async function handleCompleteWindow(
     if (
       token.automation_id !== automationId ||
       token.window_start !== window_start ||
-      token.window_end !== window_end ||
-      token.granularity !== granularity
+      token.window_end !== window_end
     ) {
       throw new ToolUserError('All window_tokens must belong to the same Automation run/window.', 400);
     }
@@ -393,7 +388,6 @@ export async function handleCompleteWindow(
       AND cc.extraction_config IS NOT NULL
   `;
 
-  const timeGranularity = (granularity || 'weekly') as AutomationTimeGranularity;
   const classifiers = classifierRows.map((r) => ({
     id: r.id as number,
     slug: r.slug as string,
@@ -545,7 +539,6 @@ export async function handleCompleteWindow(
             automation_id: String(automationId),
             window_start,
             window_end,
-            granularity,
             extracted_data: cleanedExtractedData as never,
             content_ids: batchContentIds.slice(0, CAPTURE_PREVIEW_CONTENT_CAP),
             content_linked: batchContentIds.length,
@@ -897,7 +890,6 @@ export async function handleCompleteWindow(
           approved_input = COALESCE(approved_input, '{}'::jsonb) || ${tx.json({
             window_start,
             window_end,
-            granularity: timeGranularity,
           })}::jsonb,
           model_used = COALESCE(
             ${explicitProvenanceModel},
@@ -927,24 +919,18 @@ export async function handleCompleteWindow(
       throw new ToolUserError(`Automation run ${runId} is no longer completable.`, 409);
     }
 
-    // Advance the schedule only when we actually did new work. Idempotent
-    // replays (no window created, no run transitioned) must not push
-    // next_run_at forward, or each retry would shift the schedule.
+    // Book the arrival range and advance the schedule only when we actually
+    // did new work. Idempotent replays (no run transitioned) must not push
+    // next_run_at forward, or each retry would shift the schedule. An event
+    // window is a signal range, not arrival progress, so it never moves the mark.
     if (completedRun.dispatch_source !== 'event') {
-      if (inferAutomationGranularityFromSchedule(lockedAutomation.schedule) === timeGranularity) {
-        await advanceExpectedAutomationWindow(
-          tx,
-          automationId,
-          new Date(window_start),
-          timeGranularity
-        );
-      }
-      await advanceAutomationScheduleAfterSuccessfulWindow(
+      await advanceAutomationArrivalMark(
         tx,
         automationId,
-        Boolean(assignedDeviceWorkerId),
-        timeGranularity
+        new Date(window_start),
+        new Date(window_end)
       );
+      await advanceAutomationScheduleAfterSuccessfulWindow(tx, automationId);
     }
 
     // Reaction handoff, committed WITH the window. Reaching here means the

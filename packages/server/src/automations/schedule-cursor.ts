@@ -1,7 +1,3 @@
-import {
-	alignToAutomationWindowStart,
-	type AutomationTimeGranularity,
-} from "@lobu/connector-sdk";
 import { AgentErrorCode, PROVIDER_BALANCE_EXHAUSTED } from "@lobu/core";
 import type { DbClient } from "../db/client";
 import { nextRunAt } from "../utils/cron";
@@ -379,28 +375,15 @@ export async function advanceAutomationSchedule(
 }
 
 /**
- * Keep a device schedule due while its durable projection still has closed
- * periods to catch up; otherwise retain the ordinary next-cron cursor.
+ * A completed window clears the failure streak and moves the cron cursor to
+ * the next tick. There is no catch-up loop: one arrival window covers however
+ * long a device was offline, so the next tick already reads everything since.
  */
 export async function advanceAutomationScheduleAfterSuccessfulWindow(
 	sql: DbClient,
-	automationId: number,
-	devicePinned: boolean,
-	granularity: AutomationTimeGranularity
+	automationId: number
 ): Promise<void> {
 	await resetScheduledFailureState(sql, automationId);
-	if (devicePinned) {
-		const boundary = alignToAutomationWindowStart(new Date(), granularity);
-		const result = await sql`
-      UPDATE automations
-      SET next_run_at = LEAST(next_run_at, current_timestamp),
-          updated_at = current_timestamp
-      WHERE id = ${automationId}
-        AND schedule_auto_paused_at IS NULL
-        AND next_window_start < ${boundary.toISOString()}::timestamptz
-    `;
-		if (Number(result.count ?? 0) > 0) return;
-	}
 	await advanceAutomationSchedule(sql, automationId);
 }
 

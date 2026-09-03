@@ -1,10 +1,3 @@
-import {
-  addAutomationPeriod,
-  alignToAutomationWindowStart,
-  inferAutomationGranularityFromSchedule,
-  isAutomationTimeGranularity,
-  type AutomationTimeGranularity,
-} from '@lobu/connector-sdk';
 import type { AutomationClaimNextWindowResult } from '@lobu/core/contracts/tools/manage-automations';
 import type { DbClient } from '../../../db/client';
 import { getDb } from '../../../db/client';
@@ -15,7 +8,10 @@ import {
 } from '../../../runs/queue-service';
 import { classifyRunOutcome } from '../../../runs/run-outcome';
 import { ToolUserError } from '../../../utils/errors';
-import { ensureExpectedAutomationWindowStart } from '../../../utils/window-utils';
+import {
+  AUTOMATION_ARRIVAL_SETTLE_MS,
+  computePendingWindow,
+} from '../../../utils/window-utils';
 import { handleAutomationMode } from '../../get_content/automation-mode';
 import type { ToolContext } from '../../registry';
 import type { ManageAutomationsArgs } from '../manage_automations';
@@ -117,7 +113,6 @@ export async function handleClaimNextWindow(
     if (!automation) throw new ToolUserError(`Automation ${automationId} not found.`, 404);
 
     const now = new Date();
-    const granularity = inferAutomationGranularityFromSchedule(automation.schedule);
     let runId: number;
     let windowStart: Date;
     let windowEnd: Date;
@@ -160,15 +155,17 @@ export async function handleClaimNextWindow(
         WHERE id = ${runId}
       `;
     } else {
-      windowStart = await ensureExpectedAutomationWindowStart(
-        tx,
-        automationId,
-        granularity,
-        now
-      );
-      windowEnd = addAutomationPeriod(windowStart, granularity);
-      if (windowEnd > alignToAutomationWindowStart(now, granularity)) {
-        throw new ToolUserError(`Automation ${automationId} has no completed window to claim.`, 409);
+      // The arrival window [mark, horizon). Empty only within the settle
+      // budget of the previous completion: nothing stored since has settled.
+      const pending = await computePendingWindow(tx, automationId);
+      windowStart = pending.windowStart;
+      windowEnd = pending.windowEnd;
+      if (windowEnd <= windowStart) {
+        throw new ToolUserError(
+          `Automation ${automationId} has nothing new to claim yet: rows stored after ` +
+            `${windowStart.toISOString()} become claimable ${AUTOMATION_ARRIVAL_SETTLE_MS / 1000}s after they land.`,
+          409
+        );
       }
       await expireExternalClaims(tx, automationId);
       const active = await tx`
@@ -181,7 +178,7 @@ export async function handleClaimNextWindow(
       if (active.length > 0) {
         throw new ToolUserError(`Automation ${automationId} already has an active window claim.`, 409);
       }
-      const supersededMessage = 'Superseded by the oldest recoverable Automation window';
+      const supersededMessage = 'Superseded by the Automation arrival mark';
       await tx`
         UPDATE runs
         SET status = 'cancelled',
@@ -197,18 +194,21 @@ export async function handleClaimNextWindow(
           AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
           AND (approved_input->>'window_start')::timestamptz <> ${windowStart.toISOString()}::timestamptz
       `;
-      const [pending] = await tx<{ id: number }>`
-        SELECT id FROM runs
+      // A pending run already queued at the mark owns its own horizon (the
+      // scheduler or a manual trigger cut it earlier). Adopt that range: it is
+      // a prefix of what is claimable now, and the remainder is the next claim.
+      const [queued] = await tx<{ id: number; window_end: string }>`
+        SELECT id, approved_input->>'window_end' AS window_end FROM runs
         WHERE automation_id = ${automationId}
           AND run_type = 'automation'
           AND status = 'pending'
           AND COALESCE(approved_input->>'dispatch_source', 'scheduled') <> 'event'
           AND (approved_input->>'window_start')::timestamptz = ${windowStart.toISOString()}::timestamptz
-          AND (approved_input->>'window_end')::timestamptz = ${windowEnd.toISOString()}::timestamptz
         LIMIT 1
       `;
-      const run = pending
-        ? { runId: Number(pending.id) }
+      if (queued) windowEnd = new Date(queued.window_end);
+      const run = queued
+        ? { runId: Number(queued.id) }
         : await createAutomationRunInTransaction(
             {
               organizationId: automation.organization_id,
@@ -236,26 +236,17 @@ export async function handleClaimNextWindow(
       }
     }
 
-    const [snapshot] = await tx<{
-      version_id: number | string | null;
-      granularity: string | null;
-    }>`
+    const [snapshot] = await tx<{ version_id: number | string | null }>`
       SELECT CASE
                WHEN approved_input->>'version_id' ~ '^\\d+$'
                  THEN (approved_input->>'version_id')::bigint
                ELSE NULL
-             END AS version_id,
-             approved_input->>'granularity' AS granularity
+             END AS version_id
       FROM runs
       WHERE id = ${runId}
         AND automation_id = ${automationId}
       LIMIT 1
     `;
-    const claimedGranularity: AutomationTimeGranularity = isAutomationTimeGranularity(
-      snapshot?.granularity
-    )
-      ? snapshot.granularity
-      : granularity;
 
     return {
       runId,
@@ -264,7 +255,6 @@ export async function handleClaimNextWindow(
       leaseExpiresAt,
       templateVersionId:
         snapshot?.version_id == null ? null : Number(snapshot.version_id),
-      granularity: claimedGranularity,
     };
   });
 
@@ -289,7 +279,6 @@ export async function handleClaimNextWindow(
           windowEnd: claimedWindow.windowEnd.toISOString(),
           leaseExpiresAt: claimedWindow.leaseExpiresAt.toISOString(),
           templateVersionId: claimedWindow.templateVersionId,
-          granularity: claimedWindow.granularity,
         },
         throwOnSourceError: true,
       }

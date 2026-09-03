@@ -116,6 +116,16 @@ interface QueueAutomationRunResult {
 	runId: number;
 	status: string;
 	created: boolean;
+	/**
+	 * The arrival range the run actually recorded.
+	 *
+	 * Returned rather than recomputed by the caller: the horizon moves between
+	 * two `computePendingWindow` calls, so a caller that books its own earlier
+	 * reading would leave the milliseconds in between claimed by the run but
+	 * never covered by the mark.
+	 */
+	windowStart: Date;
+	windowEnd: Date;
 }
 
 export function buildLatestAutomationRunJoinSql(
@@ -297,15 +307,15 @@ async function enqueueAutomationRunForRecord(
 		? await createAutomationRunInTransaction(runParams, tx)
 		: await createAutomationRun(runParams, sql);
 
-	return queued;
+	return { ...queued, windowStart, windowEnd };
 }
 
 async function completeSkippedAutomationRun(
 	sql: DbClient,
 	automationId: number,
-	runId: number,
 	windowStart: Date,
 	windowEnd: Date,
+	runId: number,
 ): Promise<void> {
 	// A server-side skip has no child stdout. Preserve the historical `{}`
 	// action_output for consumers, while output_tail makes the terminal no-op
@@ -902,12 +912,14 @@ export async function materializeDueAutomationRuns(
 					// concurrent replica materialized for real work. Completing that
 					// row as "skipped" would silently kill a live dispatch.
 					if (skippedRun.created) {
+						// Book the range the RUN recorded, not the one fingerprinted a
+						// moment earlier: the horizon moved in between.
 						await completeSkippedAutomationRun(
 							sql,
 							automation.id,
+							skippedRun.windowStart,
+							skippedRun.windowEnd,
 							skippedRun.runId,
-							windowStart,
-							windowEnd,
 						);
 					}
 					await advanceAutomationScheduleAfterSuccessfulWindow(sql, automation.id);

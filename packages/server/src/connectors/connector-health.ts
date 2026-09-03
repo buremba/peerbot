@@ -70,12 +70,23 @@
  * this scan on `execution_mode === 'scheduled'` drops its coverage from 43
  * connections to 14 and silences the exact shape it exists for (connection 412,
  * 10 of 11 feeds failing) — so `schedule` is deliberately not read here.
- * Nothing stored today distinguishes an unattended event-driven feed from a
- * human-triggered one; until something does, `schedule` cannot be this scan's
- * predicate. (`deriveFeedHealthSemantics` used to publish an `incidentEligible`
- * flag built on that same inference. Nothing consumed it and it disagreed with
- * this scan, so it was deleted — the paging decision lives here, in the one
- * place that acts on it.)
+ * `schedule` alone therefore cannot be this scan's predicate, and still is not.
+ * (`deriveFeedHealthSemantics` used to publish an `incidentEligible` flag built
+ * on that same inference. Nothing consumed it and it disagreed with this scan,
+ * so it was deleted — the paging decision lives here, in the one place that
+ * acts on it.)
+ *
+ * What HAS changed since that measurement is the signal, not the reasoning.
+ * `feeds_schema[key].webhook` positively identifies the event-driven half, so
+ * `attention='no_trigger'` can name a feed with no dispatch path at all
+ * without inferring intent from a missing cron — see the semantics module's
+ * header. Such a feed is excluded from `expected` below.
+ *
+ * Two of the 2026-08-12 examples are worth re-reading in that light: github
+ * `issue_comments` is genuinely webhook-driven and stays healthy, but linkedin
+ * `home_feed`'s "~hourly" was measured the day after `lobu apply` cleared its
+ * cron (audit ledger, 2026-08-11, 23 feeds that day). It was a feed draining,
+ * not a feed running unattended.
  */
 
 import { type DbClient, getDb, tsTimeOrNull } from '../db/client';
@@ -270,6 +281,9 @@ interface FeedHealthRow {
   device_stale: boolean | null;
   feed_id: string | null;
   operations: Array<'sync' | 'read'> | null;
+  /** Connector declares a webhook route for this feed key — the dispatch path
+   *  that re-arms `next_run_at` without a cron. */
+  webhook_driven: boolean | null;
   store: 'events' | 'channel_messages' | null;
   feed_status: string | null;
   schedule: string | null;
@@ -320,6 +334,7 @@ async function loadConnectionHealthRows(
       ) AS device_stale,
       f.id AS feed_id,
       cd.feed_operations AS operations,
+      cd.feed_webhook_driven AS webhook_driven,
       CASE WHEN f.config ->> 'store' = 'channel_messages' THEN 'channel_messages' ELSE 'events' END AS store,
       f.status AS feed_status,
       f.schedule,
@@ -364,6 +379,8 @@ async function loadConnectionHealthRows(
       SELECT
         COALESCE(definition.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
           AS feed_operations,
+        (definition.feeds_schema -> f.feed_key -> 'webhook') IS NOT NULL
+          AS feed_webhook_driven,
         EXISTS (
           SELECT 1
           FROM jsonb_each(COALESCE(definition.feeds_schema, '{}'::jsonb)) AS declared(feed_key, config)
@@ -430,6 +447,7 @@ function classifyFeed(row: FeedHealthRow, cfg: ConnectorHealthConfig): Classifie
     store: row.store,
     status: row.feed_status,
     schedule: row.schedule,
+    webhook_driven: row.webhook_driven,
     last_sync_status: row.last_sync_status,
     last_sync_at: row.last_sync_at,
     consecutive_failures: cf,
@@ -439,6 +457,14 @@ function classifyFeed(row: FeedHealthRow, cfg: ConnectorHealthConfig): Classifie
 
   const operatorPausedClean = row.feed_status === 'paused' && cf === 0;
   const syncable = row.operations?.includes('sync') === true;
+  // `no_trigger` is deliberately NOT excluded here, though the argument for
+  // excluding it is easy to make (the feed cannot sync, so counting it lets
+  // Rule C report a working connector as stale). Whether a dispatch-less feed
+  // is worth paging about is a paging decision, and this file's header records
+  // that such decisions are made here against prod measurements of what
+  // actually fires — which this change does not have. The feed-level
+  // `attention` is what surfaces the state to an operator; changing who gets
+  // paged is a separate, evidence-backed change.
   const expected =
     syncable && semantics.attention !== 'needs_auth' && !operatorPausedClean;
 

@@ -27,6 +27,15 @@
  *     driven unattended through other dispatch paths (github `issue_comments` =
  *     4551 sync runs in 14 days with `schedule` and `next_run_at` both NULL).
  *     Do not reintroduce the intent reading under a new name.
+ *
+ *     `attention='no_trigger'` is NOT that reading returning. The 2026-08-12
+ *     note named its own precondition — "a stored signal that distinguishes an
+ *     unattended event-driven feed from a human-triggered one" — and that
+ *     signal now exists: `feeds_schema[key].webhook`, the declaration the
+ *     app-webhook router dispatches on. So the classification below is not
+ *     "no cron, therefore manual"; it enumerates the three things that can
+ *     re-arm `next_run_at` and fires only when a syncable feed has none of
+ *     them. github's no-cron feeds declare a webhook and stay `healthy`.
  * - `attention` — what a human/UI should be told about the feed right now,
  *   ordered so the most actionable state wins:
  *   - `needs_auth` — the connection/auth profile is not usable (pending_auth,
@@ -41,6 +50,13 @@
  *     including backoff episodes).
  *   - `overdue` — a scheduled feed has had no active run for more than an hour
  *     past `next_run_at`.
+ *   - `no_trigger` — a syncable feed with no way to be dispatched: no cron, no
+ *     webhook route, not a channel. `CheckDueFeeds` selects on
+ *     `next_run_at <= now`, and the only writers of that column are the cron
+ *     (stamped at run completion), an app-webhook delivery, and device
+ *     auto-wire. With none of them the row can never become due again, so it
+ *     runs only if a human triggers it by hand. Ranked above `never_run`
+ *     because that one states the symptom while this states the cause.
  *   - `never_run` — never synced.
  *   - `healthy` — everything else.
  *
@@ -66,6 +82,7 @@ type FeedAttentionState =
   | "setup_required"
   | "last_attempt_failed"
   | "overdue"
+  | "no_trigger"
   | "never_run"
   | "device_offline"
   | "misconfigured";
@@ -88,6 +105,14 @@ interface FeedHealthSemanticsInput {
   consecutive_failures?: number | null;
   /** `feeds.next_run_at` — only meaningful when schedule is present. */
   next_run_at?: Date | string | null;
+  /**
+   * The connector declares `feeds_schema[feed_key].webhook` for this feed, so
+   * an inbound app-webhook delivery re-arms `next_run_at` (see
+   * `gateway/routes/public/app-webhooks.ts`). This is the stored signal that
+   * separates an unattended event-driven feed from one with no dispatch path
+   * at all; without it, "no cron" is not classifiable (see the header).
+   */
+  webhook_driven?: boolean | null;
   /** Number of pending/claimed/running sync runs selected by list_feeds. */
   active_runs?: number | null;
   /** `connections.status` — 'active' | 'paused' | 'error' | 'revoked' |
@@ -179,6 +204,23 @@ function scheduledExecutionOverdue(
   return Number.isFinite(nextRun) && nextRun < now - FEED_OVERDUE_MARGIN_MS;
 }
 
+/**
+ * A syncable feed with nothing that can re-arm `next_run_at`. Enumerates the
+ * dispatch paths rather than inferring intent from the absence of a cron:
+ * cron (`feeds.schedule`), app-webhook delivery (`webhook_driven`), or a
+ * channel/read-only feed that runs no sync lifecycle at all (both handled
+ * before this is reached). Device auto-wire also stamps `next_run_at` once at
+ * creation, which is why such a feed can show one successful sync and still be
+ * unreachable forever after.
+ */
+function hasNoDispatchPath(input: FeedHealthSemanticsInput): boolean {
+  return (
+    input.operations?.includes('sync') === true &&
+    !isScheduled(input) &&
+    input.webhook_driven !== true
+  );
+}
+
 /** The feed is paused, by operator or auto-pause. */
 function isPaused(input: FeedHealthSemanticsInput): boolean {
   return input.status === "paused" || input.connection_status === "paused";
@@ -247,6 +289,8 @@ export function deriveFeedHealthSemantics(
     attention = "last_attempt_failed";
   } else if (scheduledExecutionOverdue(input, now)) {
     attention = "overdue";
+  } else if (hasNoDispatchPath(input)) {
+    attention = "no_trigger";
   } else if (
     input.last_sync_at == null &&
     input.last_sync_status !== "success"

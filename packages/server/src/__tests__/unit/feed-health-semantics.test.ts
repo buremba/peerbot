@@ -84,9 +84,19 @@ describe("feed attention", () => {
     expect(syncFeed({ status: "active", consecutive_failures: 1 }).attention).toBe(
       "last_attempt_failed",
     );
-    expect(syncFeed({ status: "active", last_sync_at: null }).attention).toBe("never_run");
+    // Both carry a dispatch path so they isolate sync HISTORY: without one the
+    // row would classify on the dispatch gap instead, which the no_trigger
+    // tests below cover separately.
     expect(
-      syncFeed({ status: "active", last_sync_status: "success", last_sync_at: null }).attention,
+      syncFeed({ status: "active", schedule: "0 * * * *", last_sync_at: null }).attention,
+    ).toBe("never_run");
+    expect(
+      syncFeed({
+        status: "active",
+        webhook_driven: true,
+        last_sync_status: "success",
+        last_sync_at: null,
+      }).attention,
     ).toBe("healthy");
   });
 
@@ -104,16 +114,88 @@ describe("feed attention", () => {
         now,
       ).attention,
     ).toBe("overdue");
+    // A webhook-driven feed legitimately carries no cron: the delivery re-arms
+    // next_run_at, so `overdue` (which is measured against the cron) must not
+    // fire for it however old the last sync is.
     expect(
       syncFeed(
         {
           schedule: null,
+          webhook_driven: true,
           status: "active",
           last_sync_status: "success",
           last_sync_at: "2026-01-01T00:00:00Z",
         },
         now,
       ).attention,
+    ).toBe("healthy");
+  });
+
+  test("a sync feed with no cron and no webhook has no dispatch path", () => {
+    const now = Date.parse("2026-09-03T12:00:00Z");
+    // The exact shape of the 78 feeds left dormant by #2021: active, syncable,
+    // last run succeeded, zero failures — and unreachable, because
+    // CheckDueFeeds selects on `next_run_at <= now` and nothing re-arms it.
+    expect(
+      syncFeed(
+        {
+          schedule: null,
+          webhook_driven: false,
+          status: "active",
+          last_sync_status: "success",
+          last_sync_at: "2026-07-18T00:00:00Z",
+          consecutive_failures: 0,
+        },
+        now,
+      ).attention,
+    ).toBe("no_trigger");
+  });
+
+  test("no_trigger yields to states the operator must act on first", () => {
+    const base = {
+      schedule: null,
+      webhook_driven: false,
+      status: "active",
+      last_sync_at: "2026-07-18T00:00:00Z",
+    } as const;
+    expect(syncFeed({ ...base, connection_status: "revoked" }).attention).toBe("needs_auth");
+    expect(syncFeed({ ...base, status: "paused" }).attention).toBe("paused");
+    expect(syncFeed({ ...base, last_sync_status: "failed" }).attention).toBe(
+      "last_attempt_failed",
+    );
+  });
+
+  test("no_trigger explains a feed that has never run", () => {
+    // Precedence matters: `never_run` states the symptom, `no_trigger` states
+    // the cause, and only the cause tells the operator what to do about it.
+    expect(
+      syncFeed({
+        schedule: null,
+        webhook_driven: false,
+        status: "active",
+        last_sync_at: null,
+        last_sync_status: null,
+      }).attention,
+    ).toBe("no_trigger");
+  });
+
+  test("a streaming or read-only feed is never no_trigger", () => {
+    // Neither runs a sync lifecycle, so "no cron" carries no meaning for them.
+    expect(
+      deriveFeedHealthSemantics({
+        operations: [],
+        store: "channel_messages",
+        status: "active",
+        schedule: null,
+      }).attention,
+    ).toBe("healthy");
+    expect(
+      deriveFeedHealthSemantics({
+        operations: ["read"],
+        store: "events",
+        status: "active",
+        schedule: null,
+      }).attention,
     ).toBe("healthy");
   });
 

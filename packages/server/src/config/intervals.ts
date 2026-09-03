@@ -20,6 +20,23 @@ function parseEnvInt(name: string, fallback: number): number {
   return Number.isFinite(raw) && raw > 0 ? Math.round(raw) : fallback;
 }
 
+/**
+ * Like `parseEnvInt`, but ZERO is a legal value.
+ *
+ * That difference is why this cannot reuse `parseEnvInt`, and why it must check
+ * for an empty string explicitly: `Number('')` is `0`, which `>= 0` accepts. A
+ * bare `AUTOMATION_ARRIVAL_SETTLE_MS=` in a .env — a shape people write all the
+ * time meaning "unset" — would otherwise collapse the setting to zero instead of
+ * falling back, silently and with no error. `parseEnvInt` is immune only because
+ * `> 0` happens to reject the same value.
+ */
+function parseEnvIntAllowingZero(name: string, fallback: number): number {
+  const value = process.env[name]?.trim();
+  if (!value) return fallback;
+  const raw = Number(value);
+  return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : fallback;
+}
+
 /** Strict `<n> <unit>` Postgres interval literals only — these values are
  *  inlined into SQL by the stale-run sweeper, so anything fancier (or
  *  malformed) falls back to the default instead of reaching the database. */
@@ -159,11 +176,11 @@ export const intervals = {
    * see a row they just inserted; widening costs only freshness, since a row
    * stored inside the settle window belongs to the next run, never to none.
    *
-   * Zero is a legal value (tests), so this getter does not use `parseEnvInt`.
+   * Zero is a legal value (tests), so this reads through `parseEnvIntAllowingZero`
+   * rather than `parseEnvInt`, which rejects it.
    */
   get automationArrivalSettleMs(): number {
-    const raw = Number(process.env.AUTOMATION_ARRIVAL_SETTLE_MS);
-    return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 60_000;
+    return parseEnvIntAllowingZero('AUTOMATION_ARRIVAL_SETTLE_MS', 60_000);
   },
 
   /**
@@ -188,7 +205,6 @@ export const intervals = {
    * Automation at the clock, since their history was already processed).
    */
   get automationFirstWindowLookbackMs(): number {
-    const raw = Number(process.env.AUTOMATION_FIRST_WINDOW_LOOKBACK_MS);
-    return Number.isFinite(raw) && raw >= 0 ? Math.round(raw) : 7 * 24 * 60 * 60 * 1000;
+    return parseEnvIntAllowingZero('AUTOMATION_FIRST_WINDOW_LOOKBACK_MS', 7 * 24 * 60 * 60 * 1000);
   },
 };

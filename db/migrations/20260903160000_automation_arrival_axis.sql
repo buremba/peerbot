@@ -55,6 +55,13 @@ SET next_window_start = date_trunc('milliseconds', current_timestamp) + interval
     completed_window_coverage = '{}'::tstzmultirange,
     last_completed_window_start = NULL;
 
+-- A run already `pending` at cutover keeps the `approved_input` bounds it was
+-- queued with, which are occurred_at calendar edges that will now be read as
+-- created_at bounds. It opens no coverage hole: those bounds end behind the
+-- freshly seeded mark, so `advanceAutomationArrivalMark` books nothing for them
+-- and the next ordinary claim still starts at the mark. Stated because the
+-- reinterpretation is silent, not because it needs handling.
+
 -- 3. Drop the calendar granularity outright.
 --
 -- It held the period that interpreted the pre-arrival-axis cursor. Nothing

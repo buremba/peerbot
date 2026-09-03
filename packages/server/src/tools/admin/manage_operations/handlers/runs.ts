@@ -143,11 +143,10 @@ export async function handleListRuns(
     where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
   }
   if (args.device_worker_id) {
-    where = sql`${where} AND r.connection_id IN (
-      SELECT id FROM connections
-      WHERE device_worker_id = ${args.device_worker_id}
-        AND organization_id = ${ctx.organizationId}
-        AND deleted_at IS NULL
+    where = sql`${where} AND (
+      r.target_device_worker_id = ${args.device_worker_id}::uuid OR
+      r.executed_by_device_worker_id = ${args.device_worker_id}::uuid OR
+      (r.run_type = 'automation' AND r.approved_input->>'device_worker_id' = ${args.device_worker_id})
     )`;
   }
   if (args.connector_key) {
@@ -185,7 +184,8 @@ export async function handleListRuns(
            r.created_at, r.completed_at,
            r.initiator_kind, r.initiator_ref, r.created_by_user_id,
            f.feed_key, f.display_name AS feed_display_name,
-           c.display_name AS connection_display_name, c.device_worker_id
+           c.display_name AS connection_display_name,
+           COALESCE(r.executed_by_device_worker_id, r.target_device_worker_id, r.approved_input->>'device_worker_id') AS device_worker_id
     FROM runs r
     LEFT JOIN feeds f ON f.id = r.feed_id
     LEFT JOIN connections c ON c.id = r.connection_id

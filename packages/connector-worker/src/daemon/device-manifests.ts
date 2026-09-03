@@ -29,6 +29,11 @@ export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
       description:
         'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash --noprofile --norc -c`, so pipes, redirects, and && chains work, but shell profile/rc files are NOT loaded - use absolute paths rather than relying on aliases or a login PATH. Prefer one focused command per call.',
       requiresApproval: true,
+      annotations: {
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
       inputSchema: {
         type: 'object',
         required: ['command'],
@@ -37,10 +42,25 @@ export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
             type: 'string',
             minLength: 1,
             maxLength: 20000,
+            description:
+              'Shell command to execute. Runs through the device-local shell. Keep commands short and targeted.',
           },
-          cwd: { type: 'string' },
-          timeout_ms: { type: 'integer', minimum: 100, maximum: 150000, default: 60000 },
-          stdin: { type: 'string', maxLength: 1000000 },
+          cwd: {
+            type: 'string',
+            description: 'Absolute working directory. Defaults to the device home directory. Must exist.',
+          },
+          timeout_ms: {
+            type: 'integer',
+            minimum: 100,
+            maximum: 150000,
+            default: 60000,
+            description: 'Wall-clock budget in milliseconds. Default 60000, max 150000.',
+          },
+          stdin: {
+            type: 'string',
+            maxLength: 1000000,
+            description: "Optional string piped to the command's stdin.",
+          },
         },
         additionalProperties: false,
       },

@@ -91,10 +91,11 @@ async function seedPendingSync(opts: {
   const [row] = (await sql`
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key,
-      connector_version, approval_status, status, created_at
+      connector_version, approval_status, status, created_at, target_device_worker_id
     ) VALUES (
       ${opts.orgId}, 'sync', ${opts.connectionId}, ${opts.connectorKey},
-      ${opts.connectorVersion ?? null}, 'auto', 'pending', current_timestamp
+      ${opts.connectorVersion ?? null}, 'auto', 'pending', current_timestamp,
+      (SELECT device_worker_id FROM connections WHERE id = ${opts.connectionId})
     )
     RETURNING id
   `) as unknown as Array<{ id: number }>;
@@ -116,7 +117,7 @@ async function seedPendingAction(opts: {
     INSERT INTO runs (
       organization_id, run_type, connection_id, connector_key, connector_version,
       action_key, action_input, approved_input, run_metadata,
-      approval_status, status, created_at, expires_at
+      approval_status, status, created_at, expires_at, target_device_worker_id
     ) VALUES (
       ${opts.orgId}, 'action', ${opts.connectionId}, ${opts.connectorKey},
       ${opts.connectorVersion ?? null},
@@ -124,9 +125,12 @@ async function seedPendingAction(opts: {
       ${opts.approvedInput == null ? null : sql.json(opts.approvedInput)},
       ${opts.runMetadata == null ? null : sql.json(opts.runMetadata)},
       'auto', 'pending', current_timestamp,
-      ${opts.expiresAtAgoSeconds == null
-        ? null
-        : sql`current_timestamp - make_interval(secs => ${opts.expiresAtAgoSeconds})`}
+      ${
+        opts.expiresAtAgoSeconds != null
+          ? sql`current_timestamp - (${opts.expiresAtAgoSeconds}::int * interval '1 second')`
+          : sql`current_timestamp + interval '5 minutes'`
+      },
+      (SELECT device_worker_id FROM connections WHERE id = ${opts.connectionId})
     )
     RETURNING id
   `) as unknown as Array<{ id: number }>;

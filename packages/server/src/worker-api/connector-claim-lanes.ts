@@ -19,8 +19,6 @@ export interface ConnectorClaimContext {
   capabilityMatchSet: string[];
   /** Successfully reconciled winning manifest identities advertised by this exact device. */
   manifestClaimAuthorizations: ManifestClaimAuthorization[];
-  /** Legacy clients without connector_manifests may claim only hashless, platform-matching artifacts. */
-  allowLegacyManifestCapabilityClaims: boolean;
   orgScopeIds: string[];
   baseOrgScopeIds: string[];
   workerHardensDbEgress: boolean;
@@ -47,13 +45,12 @@ interface ConnectorClaimLaneRefs {
   organizationId: SqlFragment;
   activationKind: SqlFragment;
   activatedAt: SqlFragment;
-  connectionDeviceWorkerId: SqlFragment;
+  targetDeviceWorkerId: SqlFragment;
   pinPlatform: SqlFragment;
   runRequiredCapability: SqlFragment;
   runManifestBacked: SqlFragment;
   runManifestHash: SqlFragment;
   runArtifactSourcePath: SqlFragment;
-  runRuntime: SqlFragment;
 }
 
 /**
@@ -85,43 +82,7 @@ export function connectorClaimLaneSql(
         AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
     )
   `;
-  const legacyHashlessManifestAuthorization = sql`
-    ${context.allowLegacyManifestCapabilityClaims}
-    AND ${refs.runManifestHash} IS NULL
-    AND ${refs.runRequiredCapability} IS NOT NULL
-    AND ${refs.runRequiredCapability} = ANY(
-      ${pgTextArray(context.authorizedCapabilities)}::text[]
-    )
-    -- A legacy capability poll may retain the pre-bridge metadata-only
-    -- contract, but it must never authorize a bridge execution. A
-    -- hash-attested historical artifact has no active definition runtime, so
-    -- it still requires the exact retained manifest authorization above.
-    AND COALESCE(${refs.runRuntime}->>'execution', '') <> 'bridge'
-    AND (
-      NOT COALESCE(${refs.runManifestBacked}, false)
-      OR ${refs.runRuntime} IS NOT NULL
-    )
-    AND ${context.workerPlatform ?? ''}::text NOT IN ('headless', 'chrome-extension')
-    AND COALESCE(
-      ${refs.runRuntime}->'platforms' ? ${context.workerPlatform ?? ''}::text,
-      false
-    )
-  `;
-  const manifestAuthorization = sql`
-    (${exactManifestAuthorization})
-    OR (${legacyHashlessManifestAuthorization})
-  `;
-  const exactDaemonBuiltinAuthorization = sql`
-    EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(${sql.json(context.manifestClaimAuthorizations)}::jsonb) auth_item
-      WHERE auth_item->>'connectorKey' = ${refs.connectorKey}
-        AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
-        AND auth_item->>'manifestHash' = ${refs.runManifestHash}
-        AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
-        AND auth_item->>'runtimeExecution' = ${EXECUTION_BACKENDS.daemonBuiltin}
-    )
-  `;
+  const manifestAuthorization = exactManifestAuthorization;
   const delegatedBrowserAffinity = delegatedBrowserAffinitySql(sql, {
     platform: refs.pinPlatform,
     connectorKey: refs.connectorKey,
@@ -156,16 +117,7 @@ export function connectorClaimLaneSql(
         NOT COALESCE(${refs.runManifestBacked}, false)
         AND ${compiledBackendReady}
       )
-      OR (
-        COALESCE(${refs.runManifestBacked}, false)
-        AND CASE
-          WHEN ${refs.runRuntime}->>'execution' = ${EXECUTION_BACKENDS.daemonBuiltin} THEN ${daemonBuiltinReady}
-          WHEN ${refs.runRuntime}->>'execution' = 'bridge' THEN true
-          WHEN ${refs.runRuntime}->>'execution' IS NULL
-            THEN NOT (${exactDaemonBuiltinAuthorization}) OR ${daemonBuiltinReady}
-          ELSE false
-        END
-      )
+       OR COALESCE(${refs.runManifestBacked}, false)
     )
   `;
 
@@ -190,32 +142,11 @@ export function connectorClaimLaneSql(
           )
           AND (
             (${pageActivated})
-            OR ${refs.connectionDeviceWorkerId} IS NULL
+            OR ${refs.targetDeviceWorkerId} IS NULL
             OR (
               ${delegatedBrowserAffinity}
             )
           )
-        )
-        -- User-scoped worker claiming an unpinned capability connector in its
-        -- base org scope. Page-activated work is handled by the fleet parent.
-        OR (
-          ${context.isUserScopedWorker}
-          AND ${refs.connectionDeviceWorkerId} IS NULL
-          AND (
-            (
-              COALESCE(${refs.runManifestBacked}, false)
-              AND (${manifestAuthorization})
-            )
-            OR (
-              NOT COALESCE(${refs.runManifestBacked}, false)
-              AND ${refs.runRequiredCapability} IS NOT NULL
-              AND ${refs.runRequiredCapability} = ANY(
-                ${pgTextArray(context.authorizedCapabilities)}::text[]
-              )
-            )
-          )
-          AND NOT COALESCE(${pageActivated}, false)
-          AND ${refs.organizationId} = ANY(${pgTextArray(context.baseOrgScopeIds)}::text[])
         )
         -- Exact execution pin. A chrome-extension pin on a connector that does
         -- not execute natively in the extension is delegated browser affinity,
@@ -223,7 +154,7 @@ export function connectorClaimLaneSql(
         OR (
           ${context.isUserScopedWorker}
           AND ${context.deviceWorkerId}::uuid IS NOT NULL
-          AND ${refs.connectionDeviceWorkerId} = ${context.deviceWorkerId}::uuid
+          AND ${refs.targetDeviceWorkerId} = ${context.deviceWorkerId}::uuid
           AND (
             NOT COALESCE(${refs.runManifestBacked}, false)
             OR (${manifestAuthorization})

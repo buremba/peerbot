@@ -559,23 +559,31 @@ async function createSyncRunWithClient(
     INSERT INTO runs (
       organization_id, run_type, feed_id, connection_id,
       connector_key, connector_version, status, approval_status, created_at,
-      dry_run
-    ) VALUES (
+      dry_run, target_device_worker_id
+    )
+    SELECT
       ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
       ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp,
-      true
-    )
+      true, c.device_worker_id
+    FROM feeds f
+    LEFT JOIN connections c ON c.id = f.connection_id
+    WHERE f.id = ${feedId}
     RETURNING id
   `
     : await sql`
     WITH inserted AS (
       INSERT INTO runs (
         organization_id, run_type, feed_id, connection_id,
-        connector_key, connector_version, status, approval_status, created_at
-      ) VALUES (
-        ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
-        ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp
+        connector_key, connector_version, status, approval_status, created_at,
+        target_device_worker_id
       )
+      SELECT
+        ${feed.organization_id}, 'sync', ${feedId}, ${feed.connection_id},
+        ${feed.connector_key}, ${connectorVersion}, 'pending', 'auto', current_timestamp,
+        c.device_worker_id
+      FROM feeds f
+      LEFT JOIN connections c ON c.id = f.connection_id
+      WHERE f.id = ${feedId}
       RETURNING id, feed_id
     )
     UPDATE feeds f
@@ -728,7 +736,8 @@ async function createAutomationRunWithClient(
       status,
       approved_input,
       idempotency_key,
-      created_at
+      created_at,
+      target_device_worker_id
     ) VALUES (
       ${params.organizationId},
       'automation',
@@ -737,10 +746,12 @@ async function createAutomationRunWithClient(
       'pending',
       ${sql.json(payload)},
       ${idempotencyKey},
-      current_timestamp
+      current_timestamp,
+      ${normalizedDeviceWorkerId ? sql`${normalizedDeviceWorkerId}::uuid` : sql`NULL::uuid`}
     )
     RETURNING id, status
   `;
+
 
   const runId = Number((inserted[0] as { id: unknown }).id);
   const status = String((inserted[0] as { status: unknown }).status);
@@ -1061,12 +1072,13 @@ export async function createAutomationEventRun(
     const inserted = await tx`
       INSERT INTO runs (
         organization_id, run_type, automation_id, approval_status, status,
-        approved_input, idempotency_key, created_at
+        approved_input, idempotency_key, created_at, target_device_worker_id
       ) VALUES (
         ${params.organizationId}, 'automation', ${params.automationId}, 'auto',
         'pending', ${tx.json(payload)},
         ${`automation:${params.automationId}:${params.signal.delivery_id}`},
-        current_timestamp
+        current_timestamp,
+        ${params.deviceWorkerId ? tx`${params.deviceWorkerId}::uuid` : tx`NULL::uuid`}
       )
       RETURNING id, status
     `;
@@ -1323,8 +1335,9 @@ export async function createConnectorOperationRun(params: {
       action_idempotency_key, expires_at, claimed_at, last_heartbeat_at, claimed_by,
       activation_kind, activation_target_urls,
       run_metadata,
-      created_at
-    ) VALUES (
+      created_at, target_device_worker_id
+    )
+    SELECT
       ${params.organizationId}, 'action', ${params.connectionId},
       ${params.connectorKey}, ${connectorVersion},
       ${params.operationKey}, ${sql.json(params.operationInput)},
@@ -1342,8 +1355,10 @@ export async function createConnectorOperationRun(params: {
       ${params.activation?.kind ?? null},
       ${params.activation ? pgTextArray(params.activation.urls) : null}::text[],
       ${params.runMetadata == null ? null : sql.json(params.runMetadata)},
-      current_timestamp
-    )
+      current_timestamp,
+      c.device_worker_id
+    FROM (VALUES (${params.connectionId}::bigint)) AS input(conn_id)
+    LEFT JOIN connections c ON c.id = input.conn_id
     ON CONFLICT (organization_id, action_idempotency_key)
       WHERE run_type = 'action' AND action_idempotency_key IS NOT NULL
     DO NOTHING

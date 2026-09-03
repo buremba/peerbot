@@ -118,10 +118,11 @@ describe('mac computer_use action poll', () => {
     const inserted = (await sql`
       INSERT INTO runs (
         organization_id, run_type, connection_id, connector_key, connector_version,
-        action_key, action_input, approval_status, status, created_at
+        action_key, action_input, approval_status, status, created_at, target_device_worker_id
       ) VALUES (
         ${orgId}, 'action', ${connRows[0].id}, ${CONNECTOR_KEY}, '0.1.0',
-        ${OPERATION_KEY}, ${sql.json({})}, 'auto', 'pending', current_timestamp
+        ${OPERATION_KEY}, ${sql.json({})}, 'auto', 'pending', current_timestamp,
+        ${connRows[0].device_worker_id}::uuid
       )
       RETURNING id
     `) as unknown as Array<{ id: number }>;

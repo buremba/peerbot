@@ -48,8 +48,6 @@ export interface ManifestClaimAuthorization {
   definitionManifestHash?: string;
   /** Exact artifact provenance; present for manifest-backed claims. */
   sourcePath?: string;
-  /** Canonical runtime marker from the validated manifest. */
-  runtimeExecution?: DeviceConnectorManifest['runtime']['execution'];
 }
 
 export interface DeviceManifestClaimAuthorization extends ManifestClaimAuthorization {
@@ -100,7 +98,7 @@ export function validateDeviceConnectorManifests(params: {
   capabilities: readonly string[];
   manifests: unknown;
 }): DeviceManifestValidationResult {
-  return validateDeviceConnectorManifestsInternal(params, false);
+  return validateDeviceConnectorManifestsInternal(params);
 }
 
 function validateDeviceConnectorManifestsInternal(
@@ -109,7 +107,6 @@ function validateDeviceConnectorManifestsInternal(
     capabilities: readonly string[];
     manifests: unknown;
   },
-  allowLegacyMissingOperations: boolean
 ): DeviceManifestValidationResult {
   const { platform, manifests } = params;
   if (!Array.isArray(manifests)) return { manifests: [], accepted: false };
@@ -129,7 +126,7 @@ function validateDeviceConnectorManifestsInternal(
   let accepted = true;
   for (const raw of manifests) {
     try {
-      const manifest = normalizeManifest(raw, allowLegacyMissingOperations);
+      const manifest = normalizeManifest(raw);
       if (seen.has(manifest.key)) continue;
       seen.add(manifest.key);
 
@@ -138,31 +135,6 @@ function validateDeviceConnectorManifestsInternal(
       }
       if (!manifest.runtime.platforms.includes(platform)) {
         throw new Error(`runtime.platforms must include '${platform}'`);
-      }
-      if (
-        manifest.runtime.execution !== undefined &&
-        manifest.runtime.execution !== 'bridge' &&
-        manifest.runtime.execution !== 'daemon_builtin'
-      ) {
-        throw new Error(`unsupported runtime.execution '${String(manifest.runtime.execution)}'`);
-      }
-      // Only an EXPLICIT contradiction is rejected. `execution` is absent on
-      // every headless manifest registered before this field existed
-      // (os.shell@0.1.0 declared `runtime: { platforms: ['headless'] }` and
-      // nothing else), and this validator also runs over ALREADY-STORED
-      // manifests to rebuild claim authority — so rejecting an absent value
-      // would strip os.shell from every headless device the moment the gateway
-      // deploys, ahead of any daemon upgrade. An absent value keeps its
-      // pre-existing meaning (ordinary manifest-backed device work over the
-      // compiled runtime); `daemon_builtin` routing is opt-in at 0.2.0.
-      if (
-        platform === 'headless' &&
-        manifest.runtime.execution !== undefined &&
-        manifest.runtime.execution !== 'daemon_builtin'
-      ) {
-        throw new Error(
-          `headless device manifests may not declare runtime.execution='${String(manifest.runtime.execution)}'`
-        );
       }
       const capAuth = authorizeCapabilities(platform, [manifest.required_capability]);
       if (!capAuth.authorized.includes(manifest.required_capability)) {
@@ -238,39 +210,24 @@ export async function getDeviceManifestSourcesForUser(params: {
     }
   }
 
-  // Prefer the newest manifest that at least one online device can execute.
-  // A newer inventory-only manifest represents incomplete setup; it must not
-  // shadow an older capable advertiser and pause a working feed. When no
-  // capable version exists, keep the newest inventory manifest so readiness
-  // can still surface setup_required instead of making the connector vanish.
+  // Keep exact public identities separate. There is one active definition per
+  // organization/key, so reconciliation chooses the active version under its
+  // lock and rejects a same-version hash disagreement instead of electing a
+  // platform winner.
   const retainedManifests = new Map<string, StoredDeviceManifest>();
-  const inventoryWinners = new Map<string, StoredDeviceManifest>();
-  const capableWinners = new Map<string, StoredDeviceManifest>();
   for (const candidate of candidates) {
     const { stored } = candidate;
     retainedManifests.set(
       `${stored.manifest.key}\u0000${stored.manifest.version}\u0000${stored.manifest_hash}`,
       stored
     );
-    const inventoryWinner = inventoryWinners.get(stored.manifest.key);
-    if (!inventoryWinner || compareManifestWinner(stored, inventoryWinner) > 0) {
-      inventoryWinners.set(stored.manifest.key, stored);
-    }
-    if (
-      candidate.online &&
-      liveCapabilities.get(candidate.deviceId)?.has(stored.manifest.required_capability) === true
-    ) {
-      const capableWinner = capableWinners.get(stored.manifest.key);
-      if (!capableWinner || compareManifestWinner(stored, capableWinner) > 0) {
-        capableWinners.set(stored.manifest.key, stored);
-      }
-    }
   }
-  const winners = new Map(inventoryWinners);
-  for (const [key, winner] of capableWinners) winners.set(key, winner);
-  const selectedManifests = [
-    ...(params.includeRetainedVersions ? retainedManifests : winners).values(),
-  ].sort(
+  const selectedManifests = [...retainedManifests.values()]
+    .filter((stored) => params.includeRetainedVersions || stored.manifest.version ===
+      [...retainedManifests.values()]
+        .filter((candidate) => candidate.manifest.key === stored.manifest.key)
+        .sort((a, b) => compareManifestWinner(b, a))[0]?.manifest.version)
+    .sort(
     (a, b) =>
       a.manifest.key.localeCompare(b.manifest.key) || compareManifestWinner(a, b)
   );
@@ -328,7 +285,7 @@ export async function getDeviceManifestSourcesForUser(params: {
           .sort(),
         feedKeys: manifestFeedKeys(stored.manifest),
         metadata: deviceManifestToConnectorMetadata(stored.manifest),
-        sourcePath: `device-manifest://${sourceCandidate.platform}/${stored.manifest.key}@${stored.manifest.version}`,
+        sourcePath: `device-manifest://${stored.manifest.key}@${stored.manifest.version}`,
         manifestHash: stored.manifest_hash,
         definitionManifestHash: projectedDefinitionManifestHash(stored.manifest),
       },
@@ -371,20 +328,11 @@ export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
     // Revalidate the persisted payload before using it as claim authority. The
     // row may predate manifest hashes, and connector_manifests is durable input
     // rather than an authorization primitive by itself.
-    const validation = validateDeviceConnectorManifestsInternal(
-      {
-        platform: row.platform,
-        capabilities,
-        manifests: [stored.manifest],
-      },
-      // Legacy feed schemas without `operations` stay acceptable here (#3132):
-      // this path revalidates an ALREADY-STORED manifest, and a device that
-      // registered before operations existed must keep its claim authorization.
-      // Same reasoning covers an absent headless `runtime.execution` above —
-      // both are fields a device could not have known to send when it
-      // registered, and neither can be a reason to revoke its claim.
-      true
-    );
+    const validation = validateDeviceConnectorManifestsInternal({
+      platform: row.platform,
+      capabilities,
+      manifests: [stored.manifest],
+    });
     const validated = validation.manifests[0];
     if (!validation.accepted || !validated || validated.manifest_hash !== stored.manifest_hash) {
       continue;
@@ -395,8 +343,7 @@ export async function getDeviceManifestClaimAuthorizationsForDevice(params: {
       connectorVersion: validated.manifest.version,
       manifestHash: validated.manifest_hash,
       definitionManifestHash: projectedDefinitionManifestHash(validated.manifest),
-      sourcePath: `device-manifest://${row.platform}/${validated.manifest.key}@${validated.manifest.version}`,
-      runtimeExecution: validated.manifest.runtime.execution,
+      sourcePath: `device-manifest://${validated.manifest.key}@${validated.manifest.version}`,
     };
     authorizations.set(
       `${authorization.connectorKey}\u0000${authorization.connectorVersion}\u0000${authorization.manifestHash}`,
@@ -437,7 +384,7 @@ export function storedManifestMap(valid: StoredDeviceManifest[]): Record<string,
   return Object.fromEntries(valid.map((entry) => [entry.manifest.key, entry]));
 }
 
-function normalizeManifest(raw: unknown, allowLegacyMissingOperations = false): DeviceConnectorManifest {
+function normalizeManifest(raw: unknown): DeviceConnectorManifest {
   if (!isRecord(raw)) throw new Error('manifest must be an object');
   const key = stringField(raw, 'key');
   const version = stringField(raw, 'version');
@@ -450,7 +397,7 @@ function normalizeManifest(raw: unknown, allowLegacyMissingOperations = false): 
   const platforms = runtime.platforms.filter((v): v is string => typeof v === 'string');
   if (platforms.length === 0) throw new Error('runtime.platforms cannot be empty');
   const feedsSchema = optionalRecord(raw, 'feeds_schema') ?? {};
-  validateFeedOperations(feedsSchema, allowLegacyMissingOperations);
+  validateFeedOperations(feedsSchema);
   rejectRemovedEntityLinks(feedsSchema);
   const actionsSchema = optionalRecord(raw, 'actions_schema');
   rejectReservedActionKeys(actionsSchema);
@@ -474,17 +421,11 @@ function normalizeManifest(raw: unknown, allowLegacyMissingOperations = false): 
 }
 
 function validateFeedOperations(
-  feedsSchema: Record<string, unknown>,
-  allowLegacyMissingOperations: boolean
+  feedsSchema: Record<string, unknown>
 ): void {
   for (const [feedKey, feedDefinition] of Object.entries(feedsSchema)) {
     if (!isRecord(feedDefinition)) throw new Error(`feeds_schema.${feedKey} must be an object`);
     const operations = feedDefinition.operations;
-    // Manifests persisted before feed operations became required carried the
-    // capability in `virtual` instead. Keep their original JSON shape so the
-    // artifact hash stays valid — `manifestFeedsForMetadata` projects them onto
-    // operations. New poll payloads still use the strict public validator.
-    if (operations === undefined && allowLegacyMissingOperations) continue;
     if (
       !Array.isArray(operations) ||
       operations.length === 0 ||
@@ -532,7 +473,7 @@ function parseStoredManifest(raw: unknown): StoredDeviceManifest | null {
   if (!isRecord(raw) || !isRecord(raw.manifest)) return null;
   if (typeof raw.manifest_hash !== 'string' || typeof raw.received_at !== 'string') return null;
   try {
-    const manifest = normalizeManifest(raw.manifest, true);
+    const manifest = normalizeManifest(raw.manifest);
     if (deviceManifestHash(manifest) !== raw.manifest_hash) return null;
     manifest.manifest_hash = raw.manifest_hash;
     return { manifest_hash: raw.manifest_hash, received_at: raw.received_at, manifest };

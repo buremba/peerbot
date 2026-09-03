@@ -731,11 +731,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       WITH next_run AS (
         SELECT r.id, r.run_type, r.automation_id
         FROM runs r
-        LEFT JOIN connections con ON con.id = r.connection_id
+
         -- Pin target platform: chrome-extension pins on non-chrome connectors mean
         -- browser affinity (scrape via that extension), not "run parent sync on
         -- the extension". See dispatch-chrome-action preferredBrowserWorkerForConnection.
-        LEFT JOIN device_workers pin_dw ON pin_dw.id = con.device_worker_id
+        LEFT JOIN device_workers pin_dw ON pin_dw.id = r.target_device_worker_id
         LEFT JOIN LATERAL (
           SELECT
             CASE
@@ -781,7 +781,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 organizationId: tx`r.organization_id`,
                 activationKind: tx`r.activation_kind`,
                 activatedAt: tx`r.activated_at`,
-                connectionDeviceWorkerId: tx`con.device_worker_id`,
+                targetDeviceWorkerId: tx`r.target_device_worker_id`,
                 pinPlatform: tx`pin_dw.platform`,
                 runRequiredCapability: tx`cd.run_required_capability`,
                 runManifestBacked: tx`run_cv.manifest_backed`,
@@ -907,7 +907,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             SET status = 'running',
                 claimed_at = current_timestamp,
                 last_heartbeat_at = current_timestamp,
-                claimed_by = ${worker_id}
+                claimed_by = ${worker_id},
+                executed_by_device_worker_id = ${deviceWorkerId ? tx`${deviceWorkerId}::uuid` : tx`NULL::uuid`}
             WHERE id = ${runId}
               AND status = 'pending'
               AND (
@@ -962,7 +963,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.auth_profile_id,
         conn.app_auth_profile_id,
         conn.config AS connection_config,
-        conn.device_worker_id AS connection_device_worker_id,
+        r.target_device_worker_id AS connection_device_worker_id,
         cv.artifact_row_id AS connector_version_row_id,
         cv.artifact_organization_id,
         cv.artifact_row_count,

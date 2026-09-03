@@ -79,130 +79,13 @@ async function ensureDeviceConnectorWired(
   connectorKey: string,
   declaredFeedKeys: string[],
   matchingDeviceIds: string[],
-  requiredCapability: string,
+  _requiredCapability: string,
   source?: DeviceConnectorSource,
   pollingDeviceId?: string | null
 ): Promise<ManifestClaimAuthorization | null> {
   const sql = getDb();
 
-  // Self-heal the device pin against the user's current fleet. Cheap, idempotent
-  // (the WHERE matches nothing when the pin is already a valid fresh device), and
-  // runs even on the fast path so a stale pin doesn't silently strand the feeds.
-  const reconcilePin = async (
-    db: typeof sql,
-    connectionId: number,
-    currentMatchingDeviceIds = matchingDeviceIds,
-    currentRequiredCapability = requiredCapability,
-    currentSource = source
-  ) => {
-    let target = currentMatchingDeviceIds.length === 1 ? currentMatchingDeviceIds[0] : null;
-    // `idx_connections_org_connector_device_live` is UNIQUE on
-    // (organization_id, connector_key, device_worker_id) for live rows, and an
-    // org legitimately holds one connection PER DEVICE (same shape as
-    // `idx_connections_org_connector_account_live` for OAuth accounts). So the
-    // row we were handed is not necessarily the one that owns `target`: retiring
-    // a Mac leaves its connection pinned to the stale device while the new Mac's
-    // connection holds the only fresh one, and pinning the former to the latter's
-    // device violates the index, aborts the whole wire transaction, and retries
-    // forever (~8/min in prod for apple.computer_use).
-    //
-    // Never steal a pin another live connection holds — the same guard
-    // `resolveOnlineChromeConnection` already carries for this index (see
-    // `findOwnerOf` in dispatch-chrome-action.ts, where it used to 500 the
-    // dispatcher). Fall back to NULL rather than skipping the UPDATE: NULL still
-    // clears the dead pin (a connection pinned to a vanished device is claimable
-    // by nobody, while an unpinned one is claimable by any polling device), so
-    // the documented stale-pin repair survives.
-    if (target) {
-      const owner = (await db`
-        SELECT id FROM connections
-        WHERE organization_id = ${organizationId}
-          AND connector_key = ${connectorKey}
-          AND device_worker_id = ${target}::uuid
-          AND deleted_at IS NULL
-        LIMIT 1
-      `) as unknown as Array<{ id: number }>;
-      const ownerId = owner[0]?.id;
-      if (ownerId != null && Number(ownerId) !== connectionId) {
-        logger.warn(
-          { userId, connectorKey, connectionId, ownerConnectionId: ownerId, deviceWorkerId: target },
-          '[device-connectors] Device already pinned to another connection — unpinning instead'
-        );
-        target = null;
-      }
-    }
-    // Compare via text on both sides — passing a `pgTextArray(...)` literal
-    // through a `::uuid[]` cast trips a postgres "malformed array literal"
-    // failure under the extended-protocol path postgres.js uses (the bound
-    // text parameter never gets re-parsed as an array before the uuid[] cast
-    // runs). `device_worker_id::text = ANY(text[])` sidesteps the cast
-    // entirely; UUIDs are canonical lowercase so text equality matches the
-    // uuid form 1:1.
-    await db`
-      UPDATE connections
-      SET device_worker_id = ${target}::uuid, updated_at = NOW()
-      WHERE id = ${connectionId}
-        AND device_worker_id IS DISTINCT FROM ${target}::uuid
-        AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(currentMatchingDeviceIds)}::text[])))
-    `;
-    // The statement above repairs only the row we were handed, but an org holds
-    // one connection PER DEVICE and the fast path resolves just one of them
-    // (`GROUP BY … LIMIT 1`, no ORDER BY). When it returns the row that is
-    // already correctly pinned, the UPDATE no-ops — and a sibling left pinned to
-    // a device that has dropped out is never revisited, so it stays bound to a
-    // worker that will never poll again. Sweep every live row instead: a pin
-    // outside the fresh set is stale by definition, and NULL is strictly better
-    // than a dead pin (unpinned is claimable by any polling device; a vanished
-    // device is claimable by nobody).
-    //
-    // Safe for the multi-fresh case — pins INSIDE the fresh set are deliberate
-    // and untouched — and the empty-fleet case never reaches here, because
-    // `reconcileDeviceCapabilities` only calls this connector's wire pass when
-    // `matchingDeviceIds.length > 0` (an offline fleet routes to
-    // `pauseStaleDeviceFeeds`, which must not unpin anything).
-    // Re-check freshness against `device_workers` AT MUTATION TIME rather than
-    // trusting `matchingDeviceIds`, which is snapshotted before the advisory
-    // lock is taken (see `reconcileDeviceCapabilities`). A concurrent poll on
-    // another replica can refresh a device's heartbeat between this pass's
-    // snapshot and its commit; sweeping from the stale list would unpin a
-    // device that is live again. The NOT EXISTS makes the sweep self-verifying:
-    // a row is cleared only if its worker is genuinely absent, stale, or no
-    // longer advertising the implementation as of this statement. Manifest
-    // sources require the exact winning hash as well as their capability;
-    // capability-only bundled sources retain their existing matching semantics.
-    await db`
-      UPDATE connections c
-      SET device_worker_id = NULL, updated_at = NOW()
-      WHERE c.organization_id = ${organizationId}
-        AND c.connector_key = ${connectorKey}
-        AND c.deleted_at IS NULL
-        -- The device-connector identity: auto-wire's own INSERT writes NULL to
-        -- BOTH profile columns, so anything with either set is credential-backed
-        -- and user-created. Unpinning one would hand it to any capable device
-        -- while the poll withholds credentials from unpinned connections —
-        -- breaking a connection this pass never created.
-        AND c.auth_profile_id IS NULL
-        AND c.app_auth_profile_id IS NULL
-        AND c.device_worker_id IS NOT NULL
-        -- Deliberately NOT also gated on matchingDeviceIds: ANDing the stale
-        -- snapshot in would let a device that has since dropped the capability
-        -- survive, by short-circuiting this check.
-        AND NOT EXISTS (
-          SELECT 1 FROM device_workers dw
-          WHERE dw.id = c.device_worker_id
-            AND dw.user_id = ${userId}
-            AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-            AND dw.capabilities @> ${db.json([currentRequiredCapability])}
-            ${currentSource ? db`AND (dw.connector_manifests -> ${connectorKey}) ->> 'manifest_hash' = ${currentSource.manifestHash}` : db``}
-        )
-    `;
-    // Pin restore (or already-valid pin): drop DELETE/move tombstones so the
-    // connection is not stuck as active + red "Device was removed".
-    await clearDevicePinTombstoneIfPinned(db, {
-      connectionId,
-      matchingDeviceIds: currentMatchingDeviceIds,
-    });
-  };
+
   const lockedManifestWinner = async (db: typeof sql): Promise<DeviceConnectorSource | null> => {
     if (!source) return null;
     const current = (
@@ -324,13 +207,9 @@ async function ensureDeviceConnectorWired(
         ON c.organization_id = cd.organization_id
        AND c.connector_key = cd.key
        AND c.auth_profile_id IS NULL
-       -- Auto-wire's own INSERT writes NULL to BOTH profile columns, so a row
-       -- with either one set is credential-backed and user-created. Matching on
-       -- auth_profile_id alone let the fast path adopt an app-auth-backed
-       -- connection and re-pin it — the poll withholds credentials from
-       -- unpinned connections, so that breaks a connection this pass never made.
        AND c.app_auth_profile_id IS NULL
        AND c.deleted_at IS NULL
+       AND c.device_worker_id = ${pollingDeviceId}::uuid
       LEFT JOIN feeds f
         ON f.connection_id = c.id
        AND f.status = 'active'
@@ -440,13 +319,10 @@ async function ensureDeviceConnectorWired(
           await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
           const currentSource = await lockedManifestWinner(tx);
           if (!currentSource || !(await selectedArtifactMatches(tx, currentSource))) return null;
-          await reconcilePin(
-            tx,
-            readyConnectionId,
-            currentSource.advertiserDeviceIds,
-            currentSource.requiredCapability,
-            currentSource
-          );
+          await clearDevicePinTombstoneIfPinned(tx, {
+            connectionId: readyConnectionId,
+            matchingDeviceIds: currentSource.advertiserDeviceIds,
+          });
           return claimAuthorization(currentSource);
         });
       } else {
@@ -458,7 +334,10 @@ async function ensureDeviceConnectorWired(
         // armed for the first one that does.)
         await sql.begin(async (tx) => {
           await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:autowire'), hashtext(${`${userId}:${connectorKey}`}))`;
-          await reconcilePin(tx, readyConnectionId);
+          await clearDevicePinTombstoneIfPinned(tx, {
+            connectionId: readyConnectionId,
+            matchingDeviceIds: matchingDeviceIds,
+          });
         });
       }
       return null;
@@ -593,6 +472,7 @@ async function ensureDeviceConnectorWired(
           AND auth_profile_id IS NULL
           AND app_auth_profile_id IS NULL
           AND deleted_at IS NULL
+          AND device_worker_id = ${pollingDeviceId}::uuid
         ORDER BY id ASC
         LIMIT 1
       `) as unknown as Array<{ id: number; created_by: string | null }>;
@@ -645,10 +525,12 @@ async function ensureDeviceConnectorWired(
         const inserted = (await tx`
           INSERT INTO connections (
             organization_id, connector_key, slug, display_name, status,
-            auth_profile_id, app_auth_profile_id, config, created_by, visibility
+            auth_profile_id, app_auth_profile_id, config, created_by, visibility,
+            device_worker_id
           ) VALUES (
             ${organizationId}, ${connectorKey}, ${slug}, ${metadata.name}, 'active',
-            NULL, NULL, ${seedConfig ? sql.json(seedConfig) : null}, ${userId}, 'private'
+            NULL, NULL, ${seedConfig ? sql.json(seedConfig) : null}, ${userId}, 'private',
+            ${pollingDeviceId}::uuid
           )
           RETURNING id
         `) as unknown as Array<{ id: number }>;
@@ -700,15 +582,10 @@ async function ensureDeviceConnectorWired(
         }
       }
 
-      // Pin the (possibly just-created) connection to the sole fresh device
-      // serving the capability, or leave it unpinned when several do.
-      await reconcilePin(
-        tx,
+      await clearDevicePinTombstoneIfPinned(tx, {
         connectionId,
-        currentSource?.advertiserDeviceIds ?? matchingDeviceIds,
-        currentSource?.requiredCapability ?? requiredCapability,
-        currentSource ?? source
-      );
+        matchingDeviceIds: currentSource?.advertiserDeviceIds ?? matchingDeviceIds,
+      });
       if (currentSource && !(await selectedArtifactMatches(tx, currentSource))) return null;
       return claimAuthorization(currentSource);
     });
@@ -759,7 +636,7 @@ async function ensureDeviceConnectorWired(
  * in the personal org (exactly what {@link ensureDeviceConnectorWired} creates);
  * that function re-activates them if the capability comes back. Best-effort.
  */
-async function pauseStaleDeviceFeeds(userId: string, organizationId: string, connectorKey: string) {
+async function pauseStaleDeviceFeeds(userId: string, organizationId: string, connectorKey: string, deviceWorkerId: string | null) {
   const sql = getDb();
   try {
     await sql`
@@ -773,6 +650,7 @@ async function pauseStaleDeviceFeeds(userId: string, organizationId: string, con
         AND c.auth_profile_id IS NULL
         AND c.app_auth_profile_id IS NULL
         AND c.deleted_at IS NULL
+        ${deviceWorkerId ? sql`AND c.device_worker_id = ${deviceWorkerId}::uuid` : sql``}
         AND f.status = 'active'
         AND f.deleted_at IS NULL
     `;
@@ -1043,20 +921,23 @@ export async function reconcileDeviceCapabilities(
         'source' in dc && dc.source === 'device-manifest'
           ? dc.advertiserDeviceIds
           : devicesWithCapability(dc.requiredCapability);
-      return matchingDeviceIds.length > 0
+      
+      const thisDeviceAdvertises = pollingDeviceId && matchingDeviceIds.includes(pollingDeviceId);
+      
+      return thisDeviceAdvertises
         ? ensureDeviceConnectorWired(
             userId,
             personalOrgId,
             dc.key,
             dc.feedKeys,
-            matchingDeviceIds,
+            [pollingDeviceId],
             dc.requiredCapability,
             'source' in dc && dc.source === 'device-manifest'
               ? dc
               : undefined,
             pollingDeviceId
           )
-        : pauseStaleDeviceFeeds(userId, personalOrgId, dc.key);
+        : pauseStaleDeviceFeeds(userId, personalOrgId, dc.key, pollingDeviceId ?? null);
     })
   );
 

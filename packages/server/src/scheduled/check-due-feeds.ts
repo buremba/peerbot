@@ -82,7 +82,7 @@ export async function materializeDueFeeds(
         organizationId: sql`f.organization_id`,
         activationKind: sql`NULL::text`,
         activatedAt: sql`NULL::timestamptz`,
-        connectionDeviceWorkerId: sql`c.device_worker_id`,
+        targetDeviceWorkerId: sql`c.device_worker_id`,
         pinPlatform: sql`pin_dw.platform`,
         runRequiredCapability: sql`cd.run_required_capability`,
         runManifestBacked: sql`run_cv.manifest_backed`,

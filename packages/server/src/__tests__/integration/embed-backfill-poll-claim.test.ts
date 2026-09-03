@@ -131,9 +131,9 @@ describe('embed_backfill worker poll claim lane', () => {
     const [run] = (await sql`
       INSERT INTO runs (
         organization_id, run_type, connection_id, connector_key, connector_version,
-        approval_status, status, created_at
+        approval_status, status, created_at, target_device_worker_id
       )
-      VALUES (${org.id}, 'sync', ${connection.id}, ${connectorKey}, '1.0.0', 'auto', 'pending', current_timestamp)
+      VALUES (${org.id}, 'sync', ${connection.id}, ${connectorKey}, '1.0.0', 'auto', 'pending', current_timestamp, ${deviceId}::uuid)
       RETURNING id
     `) as unknown as Array<{ id: number }>;
 

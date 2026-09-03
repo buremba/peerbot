@@ -15,7 +15,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "screentime",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -87,7 +86,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "local_directory",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -177,7 +175,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
         "workouts",
         "resting-heart-rate",
       ],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -309,7 +306,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     runtime: {
       platforms: ["macos"],
       scopes: ["date", "location", "albums"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -444,7 +440,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "system_audio",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -519,7 +514,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "calendar",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -591,7 +585,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "reminders",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -657,7 +650,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "computer_use",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -1207,15 +1199,14 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   },
   {
     key: "os.shell",
-    version: "0.1.0",
-    name: "Mac Shell",
+    version: "0.2.0",
+    name: "Shell",
     description:
-      "Run shell commands on this Mac through Lobu for Mac, as the signed-in user. Returns structured stdout/stderr/exit_code. Same trust tier as computer use — commands run in the user's real environment (host PATH, gh, files). Enable it explicitly in Lobu for Mac; it advertises nothing until switched on.",
+      "Run shell commands on this device through Lobu. Returns structured stdout/stderr/exit_code. Commands see the device's real filesystem and PATH but a minimal environment (no profile, no inherited secrets) - gate with approval.",
     faviconDomain: "apple.com",
     requiredCapability: "os.shell",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -1231,7 +1222,7 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
         kind: "write",
         name: "Run command",
         description:
-          "Run a shell command as the signed-in user and return stdout, stderr, and exit_code. Commands execute through the user's login shell (zsh -l -c), so host-installed CLIs (gh, git, bun, brew, …) resolve via PATH. Prefer one focused command per call over a long script. Destructive/open-world by nature — gate with approval in production.",
+          "Run a shell command on the device and return stdout, stderr, and exit_code. Prefer one focused command per call over a long script. Destructive/open-world by nature - gate with approval.",
         requiresApproval: true,
         annotations: {
           destructiveHint: true,
@@ -1247,20 +1238,20 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
               minLength: 1,
               maxLength: 20000,
               description:
-                "Shell command to execute. Runs via `zsh -l -c`, so pipes, redirects, and && chains work. Keep commands short and targeted.",
+                "Shell command to execute. Runs through the device-local shell. Keep commands short and targeted.",
             },
             cwd: {
               type: "string",
               description:
-                "Absolute working directory. Defaults to the user's home directory. Must exist.",
+                "Absolute working directory. Defaults to the device home directory. Must exist.",
             },
             timeout_ms: {
               type: "integer",
               minimum: 100,
-              maximum: 300000,
+              maximum: 150000,
               default: 60000,
               description:
-                "Wall-clock budget in milliseconds. On timeout the process gets SIGTERM (3s grace) then SIGKILL. Default 60000, max 300000.",
+                "Wall-clock budget in milliseconds. Default 60000, max 150000.",
             },
             stdin: {
               type: "string",

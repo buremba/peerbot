@@ -1,8 +1,5 @@
 export type DeviceManifestSchema = Record<string, unknown>;
 
-/** Execution owner declared by a device-manifest wire artifact. */
-export type DeviceManifestExecution = 'bridge' | 'daemon_builtin';
-
 export interface DeviceConnectorManifest {
   key: string;
   version: string;
@@ -12,7 +9,6 @@ export interface DeviceConnectorManifest {
   required_capability: string;
   runtime: {
     platforms: string[];
-    execution?: DeviceManifestExecution;
     scopes?: string[];
     nix?: { packages?: string[] } | null;
   };
@@ -25,7 +21,6 @@ export interface DeviceConnectorManifest {
 
 export interface DeviceConnectorRuntimeInfo {
   platforms: readonly string[];
-  execution: 'bridge';
   scopes?: readonly string[];
   nix?: { readonly packages?: readonly string[] } | null;
 }
@@ -81,7 +76,10 @@ export function sortDeviceManifestJson(value: unknown): unknown {
 
 /** Return the exact compact canonical JSON used by the server manifest hash. */
 export function canonicalDeviceManifestJson(manifest: DeviceConnectorManifest): string {
-  const { manifest_hash: _ignored, ...payload } = manifest;
+  // Runtime placement is endpoint-local implementation detail. Keeping it out
+  // of the public identity lets macOS bridge and headless daemon handlers share
+  // one contract hash while still validating the advertising platform.
+  const { manifest_hash: _ignored, runtime: _implementation, ...payload } = manifest;
   for (const key of [
     'description',
     'favicon_domain',
@@ -105,7 +103,6 @@ export function serializeDeviceConnector(definition: DeviceConnectorDefinition):
     required_capability: definition.requiredCapability,
     runtime: {
       platforms: [...definition.runtime.platforms],
-      execution: definition.runtime.execution,
       scopes: definition.runtime.scopes ? [...definition.runtime.scopes] : undefined,
       nix: definition.runtime.nix
         ? {
@@ -156,7 +153,6 @@ function validateDeviceConnector(specification: DeviceConnectorSpec): DeviceConn
   if (!isRecord(runtime) || !Array.isArray(runtime.platforms) || runtime.platforms.length === 0) {
     throw new Error('runtime.platforms is required');
   }
-  if (runtime.execution !== 'bridge') throw new Error("runtime.execution must be 'bridge'");
   if (!runtime.platforms.every((platform) => typeof platform === 'string' && platform.trim() !== '')) {
     throw new Error('runtime.platforms must contain non-empty strings');
   }

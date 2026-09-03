@@ -153,17 +153,11 @@ interface FeedHealthSemanticsInput {
   next_run_at?: Date | string | null;
   /**
    * The connector declares a DISPATCHABLE webhook route for this feed, so an
-   * inbound delivery re-arms `next_run_at`. Callers must mirror what
-   * `loadGithubWebhookRoutes` (`gateway/routes/public/app-webhooks.ts`) actually
-   * routes on — `webhook.events` being an array with at least one non-empty
-   * string — not merely that a `webhook` key is present: `{}`,
-   * `{mode:'store'}`, `{events: []}` and a JSON-null all declare nothing the
-   * router will dispatch, and treating them as event-driven would hide exactly
-   * the feed this classification exists to surface.
-   *
-   * This is the stored signal that separates an unattended event-driven feed
-   * from one with no dispatch path at all; without it, "no cron" is not
-   * classifiable (see the header).
+   * inbound delivery re-arms `next_run_at`. This is the stored signal that
+   * separates an unattended event-driven feed from one with no dispatch path
+   * at all; without it, "no cron" is not classifiable (see the header).
+   * Compute it with `feedWebhookDrivenSql` above — "dispatchable" is narrower
+   * than "a webhook key exists", and that fragment is the definition.
    */
   webhook_driven?: boolean | null;
   /** Number of pending/claimed/running sync runs selected by list_feeds. */

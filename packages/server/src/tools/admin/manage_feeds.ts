@@ -322,51 +322,32 @@ async function handleListFeeds(
   // true count there.
   const pageQuery = sql`
     SELECT ${sql.unsafe(publicFeedColumnList('f'))}, c.connector_key,
-           COALESCE((
-             SELECT definition.feeds_schema -> f.feed_key -> 'operations'
-             FROM connector_definitions definition
-             WHERE definition.key = c.connector_key
-               AND definition.organization_id = f.organization_id
-               -- Same definition selection as readSourceFeed, so the reported
-               -- capabilities are the ones a read/sync would actually run.
-               AND (
-                 (f.pinned_version IS NULL AND definition.status = 'active')
-                 OR (
-                   f.pinned_version IS NOT NULL
-                   AND (definition.version = f.pinned_version OR definition.status = 'active')
-                 )
-               )
-             ORDER BY (definition.version = f.pinned_version) DESC,
-                      (definition.status = 'active') DESC,
-                      definition.updated_at DESC, definition.id DESC
-             LIMIT 1
-           ), '[]'::jsonb) AS operations,
-           -- Same definition selection as the operations subquery above: the
-           -- webhook declaration must come from the version a sync would
-           -- actually run, or a pinned feed is classified against a newer
-           -- contract than the one that would execute.
-           COALESCE((
-             -- Shared with connector-health's lateral so the two surfaces
-             -- cannot disagree about one feed; see feedWebhookDrivenSql.
-             SELECT ${sql.unsafe(feedWebhookDrivenSql('definition', 'f'))}
-             FROM connector_definitions definition
-             WHERE definition.key = c.connector_key
-               AND definition.organization_id = f.organization_id
-               AND (
-                 (f.pinned_version IS NULL AND definition.status = 'active')
-                 OR (
-                   f.pinned_version IS NOT NULL
-                   AND (definition.version = f.pinned_version OR definition.status = 'active')
-                 )
-               )
-             ORDER BY (definition.version = f.pinned_version) DESC,
-                      (definition.status = 'active') DESC,
-                      definition.updated_at DESC, definition.id DESC
-             LIMIT 1
-           ), false) AS webhook_driven,
+           COALESCE(selected_definition.operations, '[]'::jsonb) AS operations,
+           COALESCE(selected_definition.webhook_driven, false) AS webhook_driven,
            COUNT(*) OVER()::int AS filtered_total
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
+    -- One definition per feed, projected twice. Same selection as
+    -- readSourceFeed, so the reported capabilities and the webhook
+    -- declaration both come from the version a read/sync would actually run.
+    LEFT JOIN LATERAL (
+      SELECT definition.feeds_schema -> f.feed_key -> 'operations' AS operations,
+             ${sql.unsafe(feedWebhookDrivenSql('definition', 'f'))} AS webhook_driven
+      FROM connector_definitions definition
+      WHERE definition.key = c.connector_key
+        AND definition.organization_id = f.organization_id
+        AND (
+          (f.pinned_version IS NULL AND definition.status = 'active')
+          OR (
+            f.pinned_version IS NOT NULL
+            AND (definition.version = f.pinned_version OR definition.status = 'active')
+          )
+        )
+      ORDER BY (definition.version = f.pinned_version) DESC,
+               (definition.status = 'active') DESC,
+               definition.updated_at DESC, definition.id DESC
+      LIMIT 1
+    ) selected_definition ON true
     WHERE ${where}
     ORDER BY f.created_at DESC LIMIT ${limit} OFFSET ${offset}
   `;

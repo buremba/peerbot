@@ -82,12 +82,6 @@
  * without inferring intent from a missing cron — see the semantics module's
  * header. It is deliberately NOT excluded from `expected` below; see the note
  * at `classifyFeed` for why that stays a separate, evidence-backed decision.
- *
- * Two of the 2026-08-12 examples are worth re-reading in that light: github
- * `issue_comments` is genuinely webhook-driven and stays healthy, but linkedin
- * `home_feed`'s "~hourly" was measured the day after `lobu apply` cleared its
- * cron (audit ledger, 2026-08-11, 23 feeds that day). It was a feed draining,
- * not a feed running unattended.
  */
 
 import { type DbClient, getDb, tsTimeOrNull } from '../db/client';

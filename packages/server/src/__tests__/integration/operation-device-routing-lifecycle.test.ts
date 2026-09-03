@@ -251,6 +251,33 @@ describe("connection-to-device operation routing lifecycle", () => {
 			output: { owner: "A" },
 		});
 
+		// Historical run attribution is immutable: moving the connection to device B
+		// does not change firstRun's target or execution attribution.
+		const firstRunDetails = (await manageOperations(
+			{ action: "get_run", run_id: firstRunId },
+			{} as Env,
+			ctx,
+		)) as { run: Record<string, unknown> };
+		expect(firstRunDetails.run.target_device_worker_id).toBe(deviceA.id);
+		expect(firstRunDetails.run.executed_by_device_worker_id).toBe(deviceA.id);
+		expect(firstRunDetails.run.device_worker_id).toBe(deviceA.id);
+
+		// list_runs filtered by device A finds firstRun even though connection was moved to B
+		const runsForA = (await manageOperations(
+			{ action: "list_runs", device_worker_id: deviceA.id },
+			{} as Env,
+			ctx,
+		)) as { runs: Array<Record<string, unknown>> };
+		expect(runsForA.runs.some((r) => r.id === firstRunId)).toBe(true);
+
+		// list_runs filtered by device B does NOT claim firstRun
+		const runsForBBeforeSecond = (await manageOperations(
+			{ action: "list_runs", device_worker_id: deviceB.id },
+			{} as Env,
+			ctx,
+		)) as { runs: Array<Record<string, unknown>> };
+		expect(runsForBBeforeSecond.runs.some((r) => r.id === firstRunId)).toBe(false);
+
 		// B going stale makes the moved target non-executable; its next poll both
 		// restores readiness and is the only legal claim for the next operation.
 		await sql`
@@ -292,6 +319,23 @@ describe("connection-to-device operation routing lifecycle", () => {
 			status: "completed",
 			output: { owner: "B" },
 		});
+
+		const secondRunDetails = (await manageOperations(
+			{ action: "get_run", run_id: secondRunId },
+			{} as Env,
+			ctx,
+		)) as { run: Record<string, unknown> };
+		expect(secondRunDetails.run.target_device_worker_id).toBe(deviceB.id);
+		expect(secondRunDetails.run.executed_by_device_worker_id).toBe(deviceB.id);
+		expect(secondRunDetails.run.device_worker_id).toBe(deviceB.id);
+
+		const runsForBAfterSecond = (await manageOperations(
+			{ action: "list_runs", device_worker_id: deviceB.id },
+			{} as Env,
+			ctx,
+		)) as { runs: Array<Record<string, unknown>> };
+		expect(runsForBAfterSecond.runs.some((r) => r.id === secondRunId)).toBe(true);
+		expect(runsForBAfterSecond.runs.some((r) => r.id === firstRunId)).toBe(false);
 
 		// Chrome pinning a non-Chrome connector chooses delegated scrape affinity;
 		// it must not move the connector's parent operation off the gateway.

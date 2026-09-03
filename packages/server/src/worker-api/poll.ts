@@ -782,6 +782,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 activationKind: tx`r.activation_kind`,
                 activatedAt: tx`r.activated_at`,
                 connectionDeviceWorkerId: tx`con.device_worker_id`,
+                runTargetDeviceWorkerId: tx`r.target_device_worker_id`,
                 pinPlatform: tx`pin_dw.platform`,
                 runRequiredCapability: tx`cd.run_required_capability`,
                 runManifestBacked: tx`run_cv.manifest_backed`,
@@ -821,8 +822,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               ${isUserScopedWorker}
               AND r.run_type = 'automation'
               AND ${deviceWorkerId}::uuid IS NOT NULL
-              AND r.approved_input ? 'device_worker_id'
-              AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
+              AND (
+                r.target_device_worker_id = ${deviceWorkerId}::uuid
+                OR (
+                  r.target_device_worker_id IS NULL
+                  AND r.approved_input ? 'device_worker_id'
+                  AND r.approved_input->>'device_worker_id' = ${deviceWorkerId}::text
+                )
+              )
               AND (
                 'automations.execute' = ANY(${pgTextArray(authorizedCapabilities)}::text[])
                 OR ${effectivePlatform}::text = 'macos'
@@ -854,8 +861,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
               AND r.queue_name = 'messages'
               AND ${deviceWorkerId}::uuid IS NOT NULL
               AND jsonb_typeof(r.action_input) = 'object'
-              AND r.action_input->'executionTarget'->>'kind' = 'device'
-              AND r.action_input->'executionTarget'->>'deviceWorkerId' = ${deviceWorkerId}::text
+              AND (
+                r.target_device_worker_id = ${deviceWorkerId}::uuid
+                OR (
+                  r.target_device_worker_id IS NULL
+                  AND r.action_input->'executionTarget'->>'kind' = 'device'
+                  AND r.action_input->'executionTarget'->>'deviceWorkerId' = ${deviceWorkerId}::text
+                )
+              )
               AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
               AND ${agentKindsParam}::text[] IS NOT NULL
               AND r.action_input->'executionTarget'->>'agentKind' = ANY(${agentKindsParam}::text[])
@@ -898,6 +911,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           automationId: Number(candidate.automation_id),
           claimedBy: worker_id,
           status: 'running',
+          executedByDeviceWorkerId: deviceWorkerId,
         });
         if (!claimed) return null;
       } else {
@@ -907,7 +921,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             SET status = 'running',
                 claimed_at = current_timestamp,
                 last_heartbeat_at = current_timestamp,
-                claimed_by = ${worker_id}
+                claimed_by = ${worker_id},
+                executed_by_device_worker_id = COALESCE(${deviceWorkerId ?? null}::uuid, executed_by_device_worker_id)
             WHERE id = ${runId}
               AND status = 'pending'
               AND (

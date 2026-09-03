@@ -26,7 +26,7 @@ const expectedOriginHashes: Record<string, string> = {
   "local.directory":
     "6846173d4a56d58677375f654cb10f04844b275280ec1cfb18d4d24b0fca89ee",
   "os.shell":
-    "4d9446e6bfb7ec6a7d2c4decfb74fe45fc683d42fa37c0e88af29e572d7621ea",
+    "f7c1cf1b0adad1cb0bfc130e41039963c723c31f589a1b8bbf08f2beb6cab374",
 };
 
 describe("Mac device connector registry", () => {

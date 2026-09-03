@@ -193,7 +193,7 @@ async function ensureDeviceConnectorWired(
             AND dw.user_id = ${userId}
             AND dw.last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
             AND dw.capabilities @> ${db.json([currentRequiredCapability])}
-            ${currentSource ? db`AND (dw.connector_manifests -> ${connectorKey}) ->> 'manifest_hash' = ${currentSource.manifestHash}` : db``}
+            ${currentSource ? db`AND (dw.connector_manifests -> ${connectorKey}) IS NOT NULL` : db``}
         )
     `;
     // Pin restore (or already-valid pin): drop DELETE/move tombstones so the

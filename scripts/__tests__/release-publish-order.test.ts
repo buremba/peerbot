@@ -199,8 +199,39 @@ describe("release-please only acts on a green main push", () => {
     for (const name of REQUIRED_IMAGE_JOBS) {
       expect(read("release-please.yml")).toContain(name);
     }
-    // The bounded wait must re-check that main has not moved under it.
-    expect(body).toContain("main moved while waiting for exact CI");
+    // The bounded wait must re-check, every iteration, that the commit it is
+    // waiting on is still on main.
+    expect(body).toContain("attested SHA left main while waiting for exact CI");
+  });
+
+  // A release commit's own image build routinely finishes after later commits
+  // have landed. Requiring the attested SHA to *be* the main tip threw that
+  // run away, so the release never got cut -- silently, with every run green.
+  // Merged is merged: the predicate is reachability from main, spelled the
+  // same way publish-packages.yml already spells it.
+  it("attests any commit reachable from main, not only the current tip", () => {
+    const bodies = {
+      attest: shell("release-please.yml", "attest"),
+      write: shell("release-please.yml", "release-please-write"),
+    };
+    for (const [id, body] of Object.entries(bodies)) {
+      // `compare/<commit>...<main>` is `identical` at the tip and `ahead`
+      // once main has moved on; anything else means the commit left main.
+      expect(body, id).toContain("...${current_sha}");
+      expect(body, id).toContain('[ "$compare_status" = ahead ]');
+      expect(body, id).toContain('[ "$compare_status" = identical ]');
+      // The equality tests that stranded 18.0.0 must not come back. Guard the
+      // shape rather than one error string, so a reworded copy still fails.
+      expect(body, id).not.toMatch(/"\$current_sha" = "\$(sha|ATTESTED_SHA)"/);
+    }
+    // Class guard: both stranding bugs read main's tip into `current_sha` and
+    // put it on the left of an equality. Nothing may do that again. The one
+    // legitimate tip comparison left is the workflow_dispatch ref guard, whose
+    // subject is GITHUB_SHA -- the ref being dispatched, not a commit being
+    // attested -- and which reads `[ "$GITHUB_SHA" = "$current_sha" ]`.
+    for (const [id, body] of Object.entries(bodies)) {
+      expect(body, id).not.toMatch(/"\$current_sha" = /);
+    }
   });
 });
 
@@ -214,7 +245,9 @@ describe("the release is created bound to the attested commit", () => {
       "pull-requests": "write",
     });
     expect(read("release-please.yml")).not.toContain("concurrency:");
-    expect(body()).toContain("main advanced after attestation");
+    // main advancing after attestation is expected, not a fault: the release
+    // is bound to ATTESTED_SHA. Only losing reachability is a fault.
+    expect(body()).toContain("attested SHA is no longer reachable from main");
   });
 
   it("lets release-please open the PR and creates the release itself", () => {

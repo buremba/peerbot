@@ -37,8 +37,8 @@ jobs:
       sha: ${{ steps.producer.outputs.sha }}
     steps:
       # Deliberately before any checkout: no repository code runs until the
-      # producing run is known to be a completed-success push to the current
-      # main tip.
+      # producing run is known to be a completed-success push to a commit
+      # that is still reachable from main.
       - name: Attest the producing Build Images run
         id: producer
         env:
@@ -70,14 +70,20 @@ jobs:
           [ "$event" = push ] && [ "$branch" = main ] || { echo "::error::Build Images run must be a main push"; exit 1; }
           [ "$status" = completed ] && [ "$conclusion" = success ] || { echo "::error::Build Images run is not completed-success"; exit 1; }
 
+          # Reachability, not tip-ness. A release commit's own image build
+          # routinely finishes after later commits have landed; demanding the
+          # tip threw that run away and left the version unreleased with every
+          # run green. A commit still reachable from main got there through
+          # branch protection, which is the property the checkout below needs.
           current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-          [ "$current_sha" = "$sha" ] || { echo "::error::main moved while attesting Build Images"; exit 1; }
+          compare_status=$(gh api "repos/${REPOSITORY}/compare/${sha}...${current_sha}" --jq '.status')
+          [ "$compare_status" = ahead ] || [ "$compare_status" = identical ] || { echo "::error::attested SHA ${sha} is not reachable from main (${compare_status})"; exit 1; }
 
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "image_run_id=$image_run_id" >> "$GITHUB_OUTPUT"
 
-      # Pinned to the SHA the step above proved is the current main tip, so the
-      # policy helper cannot come from a ref that moved mid-run.
+      # Pinned to the SHA the step above proved is reachable from main, so the
+      # policy helper cannot come from a ref that never merged.
       - name: Check out the attested commit
         uses: actions/checkout@v7
         with:
@@ -104,8 +110,11 @@ jobs:
           ci_workflow_id=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml" --jq '.id' | tr -d '\n')
           ci_run_id=""
           for _ in $(seq 1 20); do
+            # Re-checked every iteration so the bounded wait still bails out
+            # early: a commit force-pushed off main stops being reachable.
             current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-            [ "$current_sha" = "$ATTESTED_SHA" ] || { echo "::error::main moved while waiting for exact CI"; exit 1; }
+            compare_status=$(gh api "repos/${REPOSITORY}/compare/${ATTESTED_SHA}...${current_sha}" --jq '.status')
+            [ "$compare_status" = ahead ] || [ "$compare_status" = identical ] || { echo "::error::attested SHA left main while waiting for exact CI (${compare_status})"; exit 1; }
             ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${ATTESTED_SHA}&event=push&branch=main&status=completed&per_page=100")
             selection=$(jq -n --argjson body "$ci_runs" --argjson workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$ATTESTED_SHA" \
               '{runs: [$body.workflow_runs[] | . + {repo: .repository.full_name}],
@@ -145,15 +154,19 @@ jobs:
           ref: ${{ needs.attest.outputs.sha }}
           fetch-depth: 2
 
-      - name: Recheck current main immediately before release action
+      - name: Recheck the attested commit is still on main before releasing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # main advancing after attestation is normal and harmless: the
+          # release below is bound to ATTESTED_SHA, not to whatever the action
+          # considers HEAD. Only an attested commit that left main is a fault.
           current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-          [ "$current_sha" = "$ATTESTED_SHA" ] || { echo "::error::main advanced after attestation"; exit 1; }
+          compare_status=$(gh api "repos/${REPOSITORY}/compare/${ATTESTED_SHA}...${current_sha}" --jq '.status')
+          [ "$compare_status" = ahead ] || [ "$compare_status" = identical ] || { echo "::error::attested SHA is no longer reachable from main (${compare_status})"; exit 1; }
 
       - name: Run Release Please against main
         uses: googleapis/release-please-action@v5

@@ -119,6 +119,15 @@ await client.automations.completeWindow({
 });
 ```
 
+**Every claim must end in a `completeWindow` call, including a window that held
+nothing worth acting on.** The arrival mark advances only inside the completion
+transaction, so a claim that is simply abandoned lets the lease expire, marks the
+run `timeout`, leaves the mark where it was, and serves the same arrivals again on
+the next claim — indefinitely. Submit the completion with whatever the extraction
+contract allows for an empty result rather than dropping the lease; nothing is
+lost by completing an empty window, because the mark only ever moves forward over
+arrivals the run was actually shown.
+
 The database serializes claims per Automation. The signed tokens bind the exact
 window, run attempt, lease, source IDs, and page chain. A stale attempt cannot
 complete after a newer claim, while retrying an already committed completion is

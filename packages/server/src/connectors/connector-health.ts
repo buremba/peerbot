@@ -94,7 +94,7 @@ import { type DbClient, getDb, tsTimeOrNull } from '../db/client';
 import { notifyBrowserAuthExpired } from '../notifications/triggers';
 import logger from '../utils/logger';
 import { aclConnectionIdSql, isAclErrorMessage } from '../authz/acl-observability';
-import { deriveFeedHealthSemantics } from './feed-health-semantics';
+import { deriveFeedHealthSemantics, feedWebhookDrivenSql } from './feed-health-semantics';
 
 /**
  * Does this feed error look like an expired/invalid site session (the user must
@@ -380,23 +380,9 @@ async function loadConnectionHealthRows(
       SELECT
         COALESCE(definition.feeds_schema -> f.feed_key -> 'operations', '[]'::jsonb)
           AS feed_operations,
-        -- Match what the router actually dispatches on. buildWebhookRoutes
-        -- (app-webhooks.ts) skips a feed unless webhook.events is an ARRAY
-        -- holding at least one non-empty string, so an empty object, a
-        -- mode-only object, an empty events array and a JSON-null webhook are
-        -- all undispatchable. A bare IS NOT NULL on the webhook key would call
-        -- every one of them webhook-driven and hide exactly the feed this
-        -- classification exists to surface (jsonb null is not SQL NULL).
-        jsonb_typeof(definition.feeds_schema -> f.feed_key -> 'webhook' -> 'events')
-            = 'array'
-          AND EXISTS (
-            SELECT 1
-            FROM jsonb_array_elements(
-              definition.feeds_schema -> f.feed_key -> 'webhook' -> 'events'
-            ) AS declared_event
-            WHERE jsonb_typeof(declared_event) = 'string'
-              AND declared_event #>> '{}' <> ''
-          ) AS feed_webhook_driven,
+        -- Shared with list_feeds; see feedWebhookDrivenSql for why a bare
+        -- IS NOT NULL on the webhook key is not equivalent.
+        ${sql.unsafe(feedWebhookDrivenSql('definition', 'f'))} AS feed_webhook_driven,
         EXISTS (
           SELECT 1
           FROM jsonb_each(COALESCE(definition.feeds_schema, '{}'::jsonb)) AS declared(feed_key, config)

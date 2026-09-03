@@ -80,6 +80,39 @@
  * unattended event-driven feed from a human-triggered one.
  */
 
+/**
+ * SQL for the `webhook_driven` input below — the single definition of what
+ * counts as a dispatchable webhook route.
+ *
+ * It mirrors `buildWebhookRoutes` (`app-webhooks.ts`), which skips a feed
+ * unless `webhook.events` is an ARRAY holding at least one non-empty string.
+ * A bare `IS NOT NULL` on the `webhook` key is NOT equivalent: jsonb null is
+ * not SQL NULL, so `{}`, `{mode:'store'}`, `{events: []}`, `{events: ['']}`
+ * and a JSON-null webhook would all read as event-driven and hide exactly the
+ * feed `no_trigger` exists to surface.
+ *
+ * Exported as one fragment because two readers must agree — `list_feeds`
+ * (`tools/admin/manage_feeds.ts`) and the health scan
+ * (`connectors/connector-health.ts`). Hand-copied jsonb predicates drift, and
+ * drift here means the two surfaces silently disagree about one feed.
+ *
+ * `jsonb_typeof(...) = 'array'` short-circuits the EXISTS, so a scalar or
+ * object `events` cannot reach `jsonb_array_elements` and error.
+ */
+export function feedWebhookDrivenSql(
+  definitionAlias: string,
+  feedAlias: string
+): string {
+  const events = `${definitionAlias}.feeds_schema -> ${feedAlias}.feed_key -> 'webhook' -> 'events'`;
+  return `jsonb_typeof(${events}) = 'array'
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(${events}) AS declared_event
+            WHERE jsonb_typeof(declared_event) = 'string'
+              AND declared_event #>> '{}' <> ''
+          )`;
+}
+
 type FeedExecutionMode = "source_only" | "streaming" | "scheduled" | "no_schedule";
 
 type FeedAttentionState =

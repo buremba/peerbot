@@ -106,7 +106,7 @@ window, run attempt, lease, source IDs, and page chain. A stale attempt cannot
 complete after a newer claim, while retrying an already committed completion is
 idempotent even after its lease expires. If a non-pageable source exceeds its
 bound, completion fails closed and the Automation source or granularity must be
-narrowed. An assigned `agent_id` does not exclude external claiming; ordinary
+narrowed. An assigned `managed_agent_id` does not exclude external claiming; ordinary
 internal dispatch through that agent continues to use the same run lifecycle.
 
 ## Activation types

@@ -557,7 +557,7 @@ export default async (_ctx, client) => {
 	},
 	"automations.create": {
 		summary:
-			"Create an Automation. Successful creates return the canonical `{ action: 'create', automation_id, version, status }` receipt; policy-gated creates return a pending approval receipt with `run_id`. Requires slug and agent_id; window/manual Automations also need prompt, skills, or a reaction script. Use device_worker_id to pin execution to a registered device and agent_kind to select its interchangeable local CLI. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a run-result/reaction-only Automation. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Automation.",
+			"Create an Automation. Successful creates return the canonical `{ action: 'create', automation_id, version, status }` receipt; policy-gated creates return a pending approval receipt with `run_id`. Requires slug and managed_agent_id; window/manual Automations also need prompt, skills, or a reaction script. Use device_worker_id to pin execution to a registered device and agent_kind to select its interchangeable local CLI. Declare named outputs as `{ entity, key, name? }` or `{ event }`, or omit outputs for a run-result/reaction-only Automation. Event output rows are standard drafts with required content and optional title, metadata, author, source_url, occurred_at, parent_event_id, payload_type, and idempotency_key. Outputs require window execution. Each sources[] entry requires `name` and a read-only SELECT/WITH `query` projecting an `id` column; optional `context: true` marks the source as context-only. entity_id is optional for an org-scoped Automation.",
 		access: "admin",
 		throws: ["EntityNotFound"],
 		signature:
@@ -581,7 +581,7 @@ export default async (_ctx, client) => {
 	},
 	"automations.update": {
 		summary:
-			"Update runtime config only: triggers, agent_id, model_config, execution_config, device_worker_id, agent_kind, delivery_target, min_cooldown_seconds, tags. delivery_target is a strict bound chat destination `{ connection_id, channel_id }`; null clears it. Version-owned fields (name, description, prompt, sources) are immutable here — use createVersion. Status is not patchable here (an Automation is retired via delete → archived).",
+			"Update runtime config only: triggers, managed_agent_id, model_config, execution_config, device_worker_id, agent_kind, delivery_target, min_cooldown_seconds, tags. delivery_target is a strict bound chat destination `{ connection_id, channel_id }`; null clears it. Version-owned fields (name, description, prompt, sources) are immutable here — use createVersion. Status is not patchable here (an Automation is retired via delete → archived).",
 		access: "admin",
 	},
 	"automations.createVersion": {

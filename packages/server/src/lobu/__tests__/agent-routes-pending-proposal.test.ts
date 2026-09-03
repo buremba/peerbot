@@ -170,9 +170,9 @@ describe("GET /:agentId/config/pending/:runId", () => {
 		expect(res.status).toBe(404);
 	});
 
-	test("404 for a manage_automations run (real shape: agent_id nested in args)", async () => {
+	test("404 for a manage_automations run (real shape: managed_agent_id nested in args)", async () => {
 		// buildAutomationProposal returns `{ args, actingAgentId, actingAutomationId }`
-		// with agent_id INSIDE args — an automation-shaped proposal can't prefill the
+		// with managed_agent_id INSIDE args — an automation-shaped proposal can't prefill the
 		// agent config form, so this endpoint excludes it (automation review is a
 		// separate surface). Fixture matches the real ManageAutomationsProposal shape.
 		const app = await importAgentRoutes();
@@ -182,7 +182,7 @@ describe("GET /:agentId/config/pending/:runId", () => {
 				args: {
 					action: "update",
 					automation_id: "w1",
-					agent_id: AGENT,
+					managed_agent_id: AGENT,
 					prompt: "x",
 				},
 				actingAgentId: null,
@@ -238,11 +238,11 @@ describe("GET /:agentId/config/pending/:runId", () => {
 const AUTOMATION_ID = 501;
 
 // The endpoint reads the automation's owner + target from the held proposal/event
-// metadata (`current.agent_id`, `args.automation_id`), NOT from the `automations`
+// metadata (`current.managed_agent_id`, `args.automation_id`), NOT from the `automations`
 // table — so no automation row needs seeding; the proposal fixtures carry it all.
 
 /** A real ManageAutomationsProposal: `{ args: {...}, actingAgentId, actingAutomationId }`
- *  with automation_id / agent_id nested INSIDE args. */
+ *  with automation_id / managed_agent_id nested INSIDE args. */
 function automationProposal(
 	args: Record<string, unknown>
 ): Record<string, unknown> {
@@ -260,7 +260,7 @@ describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
 				name: "New Automation Name",
 				prompt: "Watch for X",
 			}),
-			current: { id: AUTOMATION_ID, agent_id: AGENT, name: "Old" },
+			current: { id: AUTOMATION_ID, managed_agent_id: AGENT, name: "Old" },
 		});
 
 		const res = await app.request(
@@ -302,7 +302,7 @@ describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
 				],
 				name: "ignored-version-owned",
 			}),
-			current: { id: AUTOMATION_ID, agent_id: AGENT },
+			current: { id: AUTOMATION_ID, managed_agent_id: AGENT },
 		});
 		const res = await app.request(
 			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
@@ -331,7 +331,7 @@ describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
 	});
 
 	test("resolves the owning agent from the proposal args when it reassigns owner", async () => {
-		// An update may reassign the owner via args.agent_id; the endpoint prefers
+		// An update may reassign the owner via args.managed_agent_id; the endpoint prefers
 		// the PROPOSED owner over the current row so the review lands on the right
 		// agent-nested route.
 		const app = await importAgentRoutes();
@@ -340,10 +340,10 @@ describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
 			proposal: automationProposal({
 				action: "update",
 				automation_id: AUTOMATION_ID,
-				agent_id: AGENT,
+				managed_agent_id: AGENT,
 				name: "N",
 			}),
-			current: { id: AUTOMATION_ID, agent_id: "old-owner" },
+			current: { id: AUTOMATION_ID, managed_agent_id: "old-owner" },
 		});
 		const res = await app.request(
 			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
@@ -358,7 +358,7 @@ describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
 			proposal: automationProposal({
 				action: "create",
 				automation_id: AUTOMATION_ID,
-				agent_id: AGENT,
+				managed_agent_id: AGENT,
 			}),
 		});
 		const res = await app.request(
@@ -388,7 +388,7 @@ describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
 				automation_id: 999,
 				name: "X",
 			}),
-			current: { id: 999, agent_id: AGENT },
+			current: { id: 999, managed_agent_id: AGENT },
 		});
 		const res = await app.request(
 			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
@@ -405,9 +405,9 @@ describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
 				automation_id: AUTOMATION_ID,
 				name: "X",
 			}),
-			current: { id: AUTOMATION_ID, agent_id: "other-agent" },
+			current: { id: AUTOMATION_ID, managed_agent_id: "other-agent" },
 		});
-		// Path agent is AGENT, but the automation's owner (current + no args.agent_id)
+		// Path agent is AGENT, but the automation's owner (current + no args.managed_agent_id)
 		// is other-agent → 404.
 		const res = await app.request(
 			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`
@@ -431,7 +431,7 @@ describe("GET /:agentId/automations/:automationId/pending/:runId", () => {
 				automation_id: AUTOMATION_ID,
 				name: "X",
 			}),
-			current: { id: AUTOMATION_ID, agent_id: AGENT },
+			current: { id: AUTOMATION_ID, managed_agent_id: AGENT },
 		});
 		const res = await app.request(
 			`/${AGENT}/automations/${AUTOMATION_ID}/pending/${runId}`

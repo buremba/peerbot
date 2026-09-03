@@ -21,16 +21,14 @@
 -- Operational cost: `automations` is a bounded config table — 192 rows in
 -- production, counted 2026-09-03. The UPDATE touches single-digit rows, both
 -- renames are O(1) catalog flips, and validating the CHECK scans those 192
--- rows under SHARE UPDATE EXCLUSIVE. Not timed against a production-sized
--- restore; at this row count every statement is bounded by catalog latency
--- rather than by table size. This migration is NOT `lobu:no-quiesce` — the
--- code running before it selects `agent_id` by name and breaks the moment the
--- rename lands.
+-- rows. dbmate runs this file in one transaction, so the rename's ACCESS
+-- EXCLUSIVE lock is held until commit either way. Not timed against a
+-- production-sized restore; at this row count every statement is bounded by
+-- catalog latency rather than by table size. This migration is NOT
+-- `lobu:no-quiesce` — the code running before it selects `agent_id` by name
+-- and breaks the moment the rename lands.
 
--- 1. Drop the dangling-owner rows to the unowned lane they behave as.
-UPDATE public.automations SET agent_id = NULL WHERE agent_id = '';
-
--- 2. Catalog-only rename. Views that read the column follow it automatically
+-- 1. Catalog-only rename. Views that read the column follow it automatically
 --    (their stored parse trees reference it by attnum); plpgsql bodies are
 --    plain text and do NOT, so the one function naming it is recreated below.
 DO $rename_managed_agent_id$
@@ -65,13 +63,13 @@ BEGIN
 END
 $rename_managed_agent_id$;
 
--- 3. Index identifiers do not follow a column rename.
+-- 2. Index identifiers do not follow a column rename.
 ALTER INDEX IF EXISTS public.idx_automations_agent_id
   RENAME TO idx_automations_managed_agent_id;
 ALTER INDEX IF EXISTS public.automations_agent_recent
   RENAME TO automations_managed_agent_recent;
 
--- 4. Deleting an agent archives the Automations it executed. The body is text,
+-- 3. Deleting an agent archives the Automations it executed. The body is text,
 --    so it has to be rewritten against the new column name.
 CREATE OR REPLACE FUNCTION public.archive_automations_for_deleted_agent()
 RETURNS trigger
@@ -87,9 +85,14 @@ BEGIN
 END
 $archive$;
 
--- 5. Make the state that caused the outage unrepresentable. NOT VALID first so
---    the ADD takes no full-table lock, then VALIDATE under SHARE UPDATE
---    EXCLUSIVE.
+-- 4. Drop the dangling-owner rows to the unowned lane they behave as. Runs
+--    after the rename so a re-run against an already-renamed schema still
+--    finds the column.
+UPDATE public.automations SET managed_agent_id = NULL WHERE managed_agent_id = '';
+
+-- 5. Make the state that caused the outage unrepresentable. NOT VALID + VALIDATE
+--    is the lock-lint shape; inside dbmate's single transaction it buys nothing
+--    over a plain ADD, and at this row count neither does.
 ALTER TABLE public.automations
   DROP CONSTRAINT IF EXISTS automations_managed_agent_id_nonempty;
 ALTER TABLE public.automations

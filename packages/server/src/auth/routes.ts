@@ -572,10 +572,11 @@ credentialRoutes.get('/sse-ticket', async (c) => {
 credentialRoutes.get('/extension-bootstrap', (c) => {
   c.header('Referrer-Policy', 'no-referrer');
   c.header('Cache-Control', 'no-store');
-  // Inline script is allowed: the app's CSP sets only frame-ancestors, no
-  // script-src. The page carries no markup an injection could target.
+  // Inline script and style are allowed: the app's CSP sets only
+  // frame-ancestors, no script-src or style-src. The page carries no markup an
+  // injection could target.
   return c.html(
-    `<!doctype html><meta charset="utf-8"><title>Connecting…</title><body><script>
+    `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="dark"><title>Connecting…</title><style>html,body{background:#0a0a0a;color:#a8a29e;margin:0;font:13px/1.45 system-ui,sans-serif}</style><body><script>
 (function () {
   var h = new URLSearchParams(location.hash.slice(1));
   var token = h.get("token") || "";
@@ -614,12 +615,12 @@ credentialRoutes.get('/extension-bootstrap', (c) => {
     // we also offer an escape hatch to the panel's Settings (change-server /
     // re-pair) — the only path that recovers a token this page can't refresh.
     document.body.innerHTML =
-      '<div style="font:14px/1.5 system-ui,sans-serif;color:#334155;padding:24px;max-width:24rem">' +
+      '<div style="font:14px/1.5 system-ui,sans-serif;color:#e7e5e4;padding:24px;max-width:24rem">' +
       '<p style="margin:0 0 .5rem;font-weight:600">Could not connect to your Owletto.</p>' +
-      '<p style="margin:0 0 1rem;color:#64748b"></p>' +
-      '<button id="owl-retry" style="font:inherit;padding:.4rem .9rem;border:1px solid #cbd5e1;border-radius:.4rem;background:#f8fafc;cursor:pointer">Retry</button>' +
+      '<p style="margin:0 0 1rem;color:#a8a29e"></p>' +
+      '<button id="owl-retry" style="font:inherit;padding:.4rem .9rem;border:1px solid #3f3f46;border-radius:.4rem;background:#18181b;color:inherit;cursor:pointer">Retry</button>' +
       (retried
-        ? '<button id="owl-settings" style="font:inherit;margin-left:.5rem;padding:.4rem .9rem;border:1px solid #cbd5e1;border-radius:.4rem;background:#f8fafc;cursor:pointer">Change server</button>'
+        ? '<button id="owl-settings" style="font:inherit;margin-left:.5rem;padding:.4rem .9rem;border:1px solid #3f3f46;border-radius:.4rem;background:#18181b;color:inherit;cursor:pointer">Change server</button>'
         : '') +
       '</div>';
     document.querySelectorAll("p")[1].textContent = msg;

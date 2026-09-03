@@ -424,21 +424,26 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     const ctx = await setupKeyedAutomation();
     const { sql, workspace, parentEntityId } = ctx;
 
-    // Place the in-window event inside the automation's pending daily window so
-    // read_knowledge actually grants it in the token's content_ids.
+    // Stored after the Automation's arrival mark, so read_knowledge grants it in
+    // the token's content_ids. Dated in the PAST: every read path carries
+    // `occurred_at <= now()`, so a future date would hide the row whatever the
+    // window said.
     const { windowStart } = await computePendingWindow(ctx.dbClient, ctx.automationId);
+    expect(windowStart.getTime()).toBeLessThanOrEqual(Date.now());
     const inWindow = await createTestEvent({
       entity_id: parentEntityId,
       organization_id: workspace.org.id,
       content: 'Users report the app crashing and loading slowly.',
-      occurred_at: new Date(windowStart.getTime() + 60 * 60 * 1000),
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
     });
-    // Content that exists in the org but is NOT part of this window's token.
+    // Content that exists in the org but is NOT part of this window's token:
+    // stored long before the mark, so no window reaching forward can grant it.
     const outOfWindow = await createTestEvent({
       entity_id: parentEntityId,
       organization_id: workspace.org.id,
       content: 'Unrelated content the agent must not be able to cite.',
       occurred_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
+      created_at: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000),
     });
 
     const runId = await queueRunningRun(ctx);

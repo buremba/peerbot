@@ -143,7 +143,12 @@ export async function archiveTestAutomationSubscriptions(opts: {
 export interface TestAutomationSubscription {
 	automation_id: number;
 	organization_id: string;
-	managed_agent_id: string;
+	/**
+	 * Mirrors the `automation_message_subscriptions` view, whose projected name
+	 * stays `agent_id` across the base-column rename: Postgres keeps a view's
+	 * stored output column names and only rewrites the underlying reference.
+	 */
+	agent_id: string;
 	platform: string;
 	channel_id: string;
 	team_id: string | null;
@@ -163,7 +168,7 @@ export async function listTestAutomationSubscriptions(filters?: {
 			SELECT
 				w.id AS automation_id,
 				w.organization_id,
-				w.managed_agent_id,
+				w.managed_agent_id AS agent_id,
 				trigger->>'connector_key' AS platform,
 				COALESCE(
 					NULLIF(trigger->'match'->>'channel_key', ''),

@@ -930,7 +930,7 @@ describe("ChatInstanceManager webhook wiring", () => {
 					slug: "supported-webhook-automation",
 					name: "Supported webhook Automation",
 					prompt: "Process the incoming deployment.",
-					agent_id: AGENT,
+					managed_agent_id: AGENT,
 					triggers: [
 						{
 							kind: "event",

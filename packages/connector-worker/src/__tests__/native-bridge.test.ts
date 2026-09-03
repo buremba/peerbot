@@ -155,7 +155,15 @@ describe('native bridge handshake', () => {
     expect(output.read()).toBeNull();
     input.write(helloFrame());
     await bridge.handshake();
-    const handshakeFrames = outputDecoder.append(output.read() as Buffer);
+    const handshakeFrames = [];
+    while (handshakeFrames.length < 2) {
+      const chunk = output.read();
+      if (chunk) {
+        handshakeFrames.push(...outputDecoder.append(chunk as Buffer));
+      } else {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
     const acknowledgement = handshakeFrames[0]!;
     expect(acknowledgement).toMatchObject({
       kind: 'hello_ack',

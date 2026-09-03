@@ -254,3 +254,15 @@ export type { Env } from './types.js';
 // `node:fs`, `node:https` and isomorphic-git, so `fileSystemSourceFromUri` and
 // the source classes live behind `@lobu/connector-sdk/sources`.
 export type { FileDelta, FileSystemSource, Snapshot } from './file-source.js';
+
+// =============================================================================
+// WinterCG Direct Sockets (Cloudflare / Isolate Sockets API)
+// =============================================================================
+export { connect } from './net.js';
+export type {
+  ConnectFn,
+  Socket,
+  SocketAddress,
+  SocketInfo,
+  SocketOptions,
+} from './net.js';

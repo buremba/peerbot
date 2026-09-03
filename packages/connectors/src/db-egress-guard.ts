@@ -37,9 +37,12 @@
  * tenant from its own operators and is an enterprise policy feature layered on
  * top later.
  */
-import dns from 'node:dns';
-import net from 'node:net';
+import { createRequire } from 'node:module';
+import type net from 'node:net';
+
+const dynamicRequire = typeof require === 'function' ? require : createRequire(import.meta.url);
 import {
+  ipFamily,
   isReservedIpv4,
   isReservedIpv6,
   matchesIpv4Prefix,
@@ -142,7 +145,10 @@ export function isBlockedIp(ip: string, policy: DbEgressPolicy): boolean {
 /** Resolver injected for testability; defaults to the real DNS lookup. */
 export type HostLookup = (host: string) => Promise<Array<{ address: string }>>;
 
-const defaultLookup: HostLookup = (host) => dns.promises.lookup(host, { all: true });
+const defaultLookup: HostLookup = async (host) => {
+  const dns = dynamicRequire('node:dns') as typeof import('node:dns');
+  return dns.promises.lookup(host, { all: true });
+};
 
 /**
  * Parse an operator-supplied allow-host list (comma-separated) into entries.
@@ -183,7 +189,7 @@ function malformedAllowedHostReason(entry: string): string | null {
   }
   // A bare IPv6 literal legitimately contains `:` — only flag a trailing
   // `:port`, which `extractDbHosts` would already have removed from the URL.
-  if (net.isIP(entry) === 0 && /:\d+$/.test(entry)) return 'a :port is not part of the host';
+  if (ipFamily(entry) === 0 && /:\d+$/.test(entry)) return 'a :port is not part of the host';
   return null;
 }
 
@@ -463,7 +469,10 @@ export interface PinnedSocketOptions {
 /** Injected for tests; production uses a real TCP socket. */
 export type MakeSocket = () => net.Socket;
 
-const defaultMakeSocket: MakeSocket = () => new net.Socket();
+const defaultMakeSocket: MakeSocket = () => {
+  const net = dynamicRequire('node:net') as typeof import('node:net');
+  return new net.Socket();
+};
 
 /**
  * Resolve-then-pin, step 2: a postgres.js `socket` factory that dials the

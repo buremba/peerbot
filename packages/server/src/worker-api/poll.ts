@@ -51,7 +51,6 @@ import {
 } from '../scheduled/check-due-feeds';
 import { reconcileDeviceCapabilities } from './device-reconcile';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
-import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
 import { errorMessage } from '../utils/errors';
@@ -1690,34 +1689,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     }
   }
 
-  // Execution-time cloud gate: a raw-DB connector (postgres) opens outbound TCP
-  // with no tenant-URL egress hardening yet, so it must not run under
-  // LOBU_CLOUD_MODE — fail the already-claimed run rather than hand it to a
-  // worker. This covers the production worker-poll path; feed-sync.ts gates the
-  // dev CLI path. No-op when not in cloud mode.
-  if (row.connector_key) {
-    try {
-      assertConnectorAllowedInCloud(row.connector_key);
-    } catch (err) {
-      const message = errorMessage(err);
-      await failClaimedWorkerRun({
-        runId: row.run_id,
-        workerId: worker_id,
-        errorMessage: message,
-      });
-      logger.warn(
-        { run_id: row.run_id, connector_key: row.connector_key },
-        'Blocked cloud-restricted connector run under LOBU_CLOUD_MODE'
-      );
-      return c.json({
-        next_poll_seconds: 1,
-        skipped_run_id: row.run_id,
-        error: message,
-        ...pollMetadata,
-      });
-    }
-  }
-
   let compiledCode: string | undefined;
   const gatewayHasLocalSource = row.connector_key
     ? findBundledConnectorFile(row.connector_key) !== null
@@ -1834,17 +1805,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       ? resolvedPreviousCredentials
       : undefined;
 
-  // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
-  // The worker provisions these on PATH via nix-shell before executing.
-  // A connector executed by connector-worker needs its declared native
-  // dependencies. Device-native bridge and legacy manifest implementations do
-  // not, because the device owns their runtime.
-  const nixPackages = (deviceWillExecuteNativeConnector
-    ? []
-    : (row.connector_runtime?.nix?.packages ?? [])
-  ).filter(
-    (p): p is string => typeof p === 'string'
-  );
   const selectedActionInput = row.approved_input ?? row.action_input ?? undefined;
   const isChromeAction =
     row.run_type === 'action' &&
@@ -1863,6 +1823,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_type: row.run_type,
     connector_key: row.connector_key ?? undefined,
     connector_version: row.connector_version ?? undefined,
+    lane: 'isolate',
     // The routing marker the worker switches on: `daemon_builtin` selects the
     // daemon's supervised built-in, `native_bridge` the native bridge daemon.
     // Every classified backend has to reach the worker -- emitting only one of
@@ -1874,7 +1835,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           connector_manifest_hash: selectedExecution.manifestHash,
         }
       : {}),
-    nix_packages: nixPackages.length > 0 ? nixPackages : undefined,
     feed_key: row.feed_key ?? undefined,
     feed_id: row.feed_id ?? undefined,
     connection_id: row.connection_id ?? undefined,

@@ -3,7 +3,7 @@ import { readdir, stat } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-	createConnectorCompiler,
+	createIsolateConnectorCompiler,
 	findBundledConnectorFile as findInDirs,
 } from "@lobu/connector-worker/compile";
 import { getErrorMessage } from "@lobu/core";
@@ -29,18 +29,7 @@ const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
 	resolve(process.cwd(), "connectors"),
 ];
 
-const connectorCompiler = createConnectorCompiler({
-	onUnresolvedNpm: ({ bareSpecifier, importer }) => {
-		// Package isn't installed in this image — externalize so the bundle
-		// still produces. Worker runtime supplies the implementation.
-		// Log so an actual typo or missing-dep regression is diagnosable
-		// rather than silently producing a bundle that crashes at runtime.
-		logger.warn(
-			{ package: bareSpecifier, importer },
-			"externalising npm:* import — package not resolvable in gateway image (worker runtime must provide it)",
-		);
-	},
-});
+const connectorCompiler = createIsolateConnectorCompiler();
 
 type CachedMetadata =
 	| {

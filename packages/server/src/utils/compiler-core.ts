@@ -401,7 +401,8 @@ export async function extractMetadata<TMetadata>(
 
   try {
     await stageRuntimeProvidedPackages(tmpDir);
-    const codePath = join(tmpDir, 'source.mjs');
+    const isEsm = compiledCode.startsWith('import ') || compiledCode.includes('\nimport ');
+    const codePath = join(tmpDir, isEsm ? 'source.mjs' : 'source.cjs');
     const runnerPath = join(tmpDir, 'runner.mjs');
 
     await writeFile(codePath, compiledCode, 'utf-8');
@@ -412,6 +413,10 @@ export async function extractMetadata<TMetadata>(
         stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
         execArgv: ['--max-old-space-size=256'],
         timeout: 30000,
+        env: {
+          PATH: process.env.PATH ?? '',
+          NODE_ENV: 'production',
+        },
       });
 
       let resolved = false;

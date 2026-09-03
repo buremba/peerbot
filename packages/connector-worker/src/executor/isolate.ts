@@ -14,7 +14,11 @@
  * work with `IsolateLaneIneligibleError`.
  */
 
+import dns from 'node:dns';
+import net from 'node:net';
+import tls from 'node:tls';
 import type { EventEnvelope } from '@lobu/connector-sdk';
+import { isReservedIp, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
 import { IsolateHost, IsolateHostError, type IsolateTerminalState } from '../isolate/bridge.js';
 import { assertIsolateEligible } from '../isolate/eligibility.js';
 import type { IsolatedVm } from '../isolate/ivm-types.js';
@@ -28,7 +32,7 @@ import type {
   SyncExecutor,
 } from './interface.js';
 import { redactOutput } from './redact.js';
-import { RingBuffer, SubprocessError } from './subprocess.js';
+import { RingBuffer, SubprocessError } from './interface.js';
 
 export type IsolateLogLevel = 'log' | 'info' | 'debug' | 'warn' | 'error';
 
@@ -294,7 +298,7 @@ function isIpLiteral(host: string): boolean {
   return host.startsWith('[') || /^\d+(\.\d+){3}$/.test(host);
 }
 
-function hostAllowed(hostname: string, allowedDomains: readonly string[]): boolean {
+export function hostAllowed(hostname: string, allowedDomains: readonly string[]): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, '');
   if (isIpLiteral(host)) return allowedDomains.includes(host);
   return allowedDomains.some((domain) => host === domain || host.endsWith(`.${domain}`));
@@ -349,12 +353,6 @@ export class IsolateExecutor implements SyncExecutor {
     hooks?: ExecutionHooks,
     options?: ExecutionOptions
   ): Promise<ExecutorResult> {
-    const nixPackages = options?.nixPackages ?? [];
-    if (nixPackages.length > 0) {
-      throw new Error(
-        `This connector declares native packages [${nixPackages.join(', ')}], which the isolate lane cannot provide; route it to the process lane.`
-      );
-    }
     assertIsolateEligible(compiledCode);
     const ivm = await this.requireIsolatedVm();
 
@@ -371,12 +369,66 @@ export class IsolateExecutor implements SyncExecutor {
     const inflightFetches = new Map<number, AbortController>();
     let host: IsolateHost | null = null;
 
+    interface ActiveSocket {
+      id: number;
+      sock: net.Socket;
+      chunks: string[];
+      pendingReads: Array<(res: { data: string | null; done: boolean; error?: string }) => void>;
+      closed: boolean;
+      closeError: string | null;
+    }
+    let nextSocketId = 1;
+    const activeSockets = new Map<number, ActiveSocket>();
+    const closeAllSockets = () => {
+      for (const active of activeSockets.values()) {
+        try {
+          active.closed = true;
+          active.sock.destroy();
+          while (active.pendingReads.length > 0) {
+            const r = active.pendingReads.shift()!;
+            r({ data: null, done: true });
+          }
+        } catch {
+          // ignore
+        }
+      }
+      activeSockets.clear();
+    };
+
+    const attachSocketListeners = (sock: net.Socket, active: ActiveSocket) => {
+      sock.on('data', (buf: Buffer) => {
+        const b64 = buf.toString('base64');
+        if (active.pendingReads.length > 0) {
+          const r = active.pendingReads.shift()!;
+          r({ data: b64, done: false });
+        } else {
+          active.chunks.push(b64);
+        }
+      });
+      sock.on('end', () => {
+        active.closed = true;
+        while (active.pendingReads.length > 0) {
+          const r = active.pendingReads.shift()!;
+          r({ data: null, done: true });
+        }
+      });
+      sock.on('error', (err: Error) => {
+        active.closed = true;
+        active.closeError = err.message;
+        while (active.pendingReads.length > 0) {
+          const r = active.pendingReads.shift()!;
+          r({ data: null, done: true, error: err.message });
+        }
+      });
+    };
+
     const terminate = (state: IsolateTerminalState) => {
       runAbort.abort();
       for (const timer of pendingSleeps) clearTimeout(timer);
       pendingSleeps.clear();
       for (const controller of inflightFetches.values()) controller.abort();
       inflightFetches.clear();
+      closeAllSockets();
       host?.terminate(state);
     };
 
@@ -496,10 +548,198 @@ export class IsolateExecutor implements SyncExecutor {
           }
           const parsed = parseGuestJson(inputJson, 'dispatchChromeAction');
           const input = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-          const output = await hooks.onChromeDispatch(String(actionKey), input);
-          return JSON.stringify(output ?? {});
+          const keyStr = String(actionKey);
+          let timer: NodeJS.Timeout | undefined;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              reject(
+                new Error(
+                  `chrome_dispatcher.dispatch('${keyStr}') exceeded 120000ms; IPC may be wedged`
+                )
+              );
+            }, 120_000);
+          });
+          try {
+            const output = await Promise.race([
+              hooks.onChromeDispatch(keyStr, input),
+              timeoutPromise,
+            ]);
+            return JSON.stringify(output ?? {});
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
         },
         fetch: fetchCapability,
+        socketOpen: async (hostParam: unknown, portParam: unknown, optionsJson: unknown) => {
+          const rawHost = String(hostParam);
+          const hostname = stripIpv6Brackets(rawHost);
+          const port = typeof portParam === 'number' ? portParam : parseInt(String(portParam), 10);
+          if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            throw new Error(`Invalid port: ${portParam}`);
+          }
+          const options = (optionsJson ? parseGuestJson(optionsJson, 'socketOpen') : {}) as {
+            secureTransport?: 'off' | 'on' | 'starttls';
+          };
+
+          const mergedConfig = buildConnectorConfig(job);
+          const policy =
+            ((job.env?.LOBU_DB_EGRESS_POLICY as string) ||
+              (mergedConfig.LOBU_DB_EGRESS_POLICY as string) ||
+              'block-private');
+          const allowHostsRaw = String(
+            job.env?.LOBU_DB_EGRESS_ALLOW_HOSTS ||
+              mergedConfig.LOBU_DB_EGRESS_ALLOW_HOSTS ||
+              ''
+          );
+          const allowHosts = allowHostsRaw
+            .split(',')
+            .map((h) => h.trim())
+            .filter(Boolean);
+
+          let targetIp: string;
+          if (isReservedIp(hostname)) {
+            if (policy === 'block-private' && !allowHosts.includes(hostname)) {
+              throw new Error(`EgressDenied: socket to ${hostname} is blocked under policy ${policy}`);
+            }
+            targetIp = hostname;
+          } else {
+            const addresses = await dns.promises.lookup(hostname, { all: true });
+            if (!addresses || addresses.length === 0) {
+              throw new Error(`getaddrinfo ENOTFOUND ${hostname}`);
+            }
+            if (policy === 'block-private' && !allowHosts.includes(hostname)) {
+              for (const a of addresses) {
+                if (isReservedIp(a.address)) {
+                  throw new Error(
+                    `EgressDenied: socket to ${hostname} (${a.address}) is blocked under policy ${policy}`
+                  );
+                }
+              }
+            }
+            targetIp = addresses[0].address;
+          }
+
+          const id = nextSocketId++;
+          let sock: net.Socket;
+          const isTls = options?.secureTransport === 'on';
+
+          if (isTls) {
+            sock = tls.connect({
+              host: targetIp,
+              port,
+              servername: hostname,
+            });
+          } else {
+            sock = net.createConnection({
+              host: targetIp,
+              port,
+            });
+          }
+
+          const active: ActiveSocket = {
+            id,
+            sock,
+            chunks: [],
+            pendingReads: [],
+            closed: false,
+            closeError: null,
+          };
+          activeSockets.set(id, active);
+
+          await new Promise<void>((resolve, reject) => {
+            let settled = false;
+            const timer = setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              sock.destroy();
+              activeSockets.delete(id);
+              reject(new Error(`Connection to ${hostname}:${port} timed out`));
+            }, 10000);
+
+            const onConnect = () => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              resolve();
+            };
+            const onError = (err: Error) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              activeSockets.delete(id);
+              reject(err);
+            };
+
+            if (isTls) {
+              sock.once('secureConnect', onConnect);
+            } else {
+              sock.once('connect', onConnect);
+            }
+            sock.once('error', onError);
+          });
+
+          attachSocketListeners(sock!, active);
+          return id;
+        },
+        socketRead: async (idParam: unknown) => {
+          const active = activeSockets.get(Number(idParam));
+          if (!active) return { data: null, done: true };
+          if (active.chunks.length > 0) {
+            return { data: active.chunks.shift()!, done: false };
+          }
+          if (active.closed) {
+            return { data: null, done: true, error: active.closeError ?? undefined };
+          }
+          return await new Promise<{ data: string | null; done: boolean; error?: string }>((resolve) => {
+            active.pendingReads.push(resolve);
+          });
+        },
+        socketWrite: async (idParam: unknown, base64Data: unknown) => {
+          const active = activeSockets.get(Number(idParam));
+          if (!active || active.closed) throw new Error('Socket is closed');
+          const buf = Buffer.from(String(base64Data), 'base64');
+          await new Promise<void>((resolve, reject) => {
+            active.sock.write(buf, (err) => (err ? reject(err) : resolve()));
+          });
+          return true;
+        },
+        socketClose: async (idParam: unknown) => {
+          const active = activeSockets.get(Number(idParam));
+          if (active) {
+            active.closed = true;
+            active.sock.destroy();
+            while (active.pendingReads.length > 0) {
+              const r = active.pendingReads.shift()!;
+              r({ data: null, done: true });
+            }
+            activeSockets.delete(Number(idParam));
+          }
+          return true;
+        },
+        socketStartTls: async (idParam: unknown, optionsJson: unknown) => {
+          const active = activeSockets.get(Number(idParam));
+          if (!active || active.closed) throw new Error('Socket is closed');
+          const opts = (optionsJson ? parseGuestJson(optionsJson, 'socketStartTls') : {}) as {
+            servername?: string;
+          };
+          const oldSock = active.sock;
+          oldSock.removeAllListeners('data');
+          oldSock.removeAllListeners('end');
+          oldSock.removeAllListeners('error');
+
+          return await new Promise<boolean>((resolve, reject) => {
+            const tlsSock = tls.connect({
+              socket: oldSock,
+              servername: opts?.servername,
+            });
+            tlsSock.once('secureConnect', () => {
+              active.sock = tlsSock;
+              attachSocketListeners(tlsSock, active);
+              resolve(true);
+            });
+            tlsSock.once('error', reject);
+          });
+        },
       },
     });
 
@@ -509,8 +749,21 @@ export class IsolateExecutor implements SyncExecutor {
       return t ? `${prefix}\n[console]\n${t}` : prefix;
     };
 
+    let executableCode = compiledCode;
+    if (/\bexport\s+(?:default\s+|{[^}]+})/.test(executableCode)) {
+      executableCode = executableCode
+        .replace(/\bexport\s+default\s+([^;]+);?/g, 'module.exports.default = $1;')
+        .replace(/\bexport\s*{\s*([^}]+)\s*};?/g, (_, names) => {
+          const parts = names.split(',').map((n: string) => {
+            const [orig, alias] = n.trim().split(/\s+as\s+/);
+            return `module.exports.${alias || orig} = ${orig};`;
+          });
+          return parts.join('\n');
+        });
+    }
+
     try {
-      const source = `var __job_json = ${jsonLiteral(job)};\nvar __config_json = ${jsonLiteral(mergedConfig)};\n${compiledCode}\n${GUEST_RUNNER}`;
+      const source = `var __job_json = ${jsonLiteral(job)};\nvar __config_json = ${jsonLiteral(mergedConfig)};\n${executableCode}\n${GUEST_RUNNER}`;
       let raw: unknown;
       try {
         raw = await host.run(source, { timeoutMs: this.options.timeoutMs });
@@ -564,6 +817,7 @@ export class IsolateExecutor implements SyncExecutor {
       runAbort.abort();
       for (const timer of pendingSleeps) clearTimeout(timer);
       pendingSleeps.clear();
+      closeAllSockets();
       host.dispose();
     }
   }
@@ -608,6 +862,22 @@ export class IsolateExecutor implements SyncExecutor {
         const denied = new Error(`fetch to ${url.hostname} is not in the connector's allowed domains${closed}`);
         denied.name = 'EgressDenied';
         throw denied;
+      }
+      if (!net.isIP(url.hostname)) {
+        try {
+          const addresses = await dns.promises.lookup(url.hostname, { all: true });
+          for (const a of addresses) {
+            if (isReservedIp(a.address) && !this.options.allowedDomains.includes(a.address)) {
+              const denied = new Error(
+                `fetch to ${url.hostname} (${a.address}) is blocked: resolved to a private or reserved IP address`
+              );
+              denied.name = 'EgressDenied';
+              throw denied;
+            }
+          }
+        } catch (err) {
+          if ((err as Error).name === 'EgressDenied') throw err;
+        }
       }
       let response: Response;
       try {

@@ -33,7 +33,7 @@ describe("Mac device-daemon package graph guard", () => {
     expect(() =>
       assertMacDeviceDaemonGraph({
         "packages/connector-worker/src/compile/index.ts": {},
-        "packages/connector-worker/src/executor/child-runner.ts": {},
+        "packages/connector-worker/src/executor/isolate.ts": {},
         "packages/embeddings/src/index.ts": {},
         "node_modules/@xenova/transformers/src/pipelines.js": {},
         "node_modules/onnxruntime-node/dist/index.js": {},

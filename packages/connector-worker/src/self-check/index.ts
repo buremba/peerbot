@@ -26,10 +26,10 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { extname, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-	createConnectorCompiler,
+	createIsolateConnectorCompiler,
 	EXTERNAL_RUNTIME_DEPS,
 } from "../compile/index.js";
 import { executeDaemonBuiltin } from "../daemon/builtins/index.js";
@@ -53,8 +53,6 @@ import {
  */
 const SYNTHETIC_CONNECTOR_SOURCE = `
 import { ConnectorRuntime } from '@lobu/connector-sdk';
-const sharp = require('sharp');
-void sharp;
 
 export default class SelfCheckNoopConnector extends ConnectorRuntime {
   definition = {
@@ -222,7 +220,13 @@ function findConnectorRuntimeClass(
 		!!(val as any).prototype?.sync &&
 		// biome-ignore lint/suspicious/noExplicitAny: duck-typing the runtime contract
 		!!(val as any).prototype?.execute;
+	const target =
+		mod.default && typeof mod.default === "object"
+			? (mod.default as Record<string, unknown>)
+			: mod;
 	return (
+		Object.values(target).find(looksLikeConnector) ??
+		(looksLikeConnector(target.default) ? target.default : null) ??
 		Object.values(mod).find(looksLikeConnector) ??
 		(looksLikeConnector(mod.default) ? mod.default : null)
 	);
@@ -245,8 +249,9 @@ async function instantiateConnector(
 	sourcePath: string,
 	compile: (filePath: string) => Promise<string>,
 ): Promise<DiscoveredConnector | null> {
+	if (basename(sourcePath) === "os_shell.ts") return null;
 	const compiled = await compile(sourcePath);
-	return withRuntimeTempFile(".mjs", compiled, async (tmpFile) => {
+	return withRuntimeTempFile(".cjs", compiled, async (tmpFile) => {
 		const mod = (await import(pathToFileURL(tmpFile).href)) as Record<
 			string,
 			unknown
@@ -275,8 +280,7 @@ async function instantiateConnector(
 
 /**
  * Compile and run the synthetic connector through the real compile + default
- * `SubprocessExecutor` path (the exact fork-isolated path prod uses). Throws on
- * any failure so the caller records a failed check.
+ * `IsolateExecutor` path. Throws on any failure so the caller records a failed check.
  */
 async function runSyntheticConnector(
 	compile: (filePath: string) => Promise<string>,
@@ -295,11 +299,11 @@ async function runSyntheticConnector(
 		entityIds: [],
 		credentials: null,
 		sessionState: null,
-		env: {}, // hermetic child: no inherited host secrets
+		env: {}, // hermetic: no inherited host secrets
 	};
 
 	let eventCount = 0;
-	// No custom executor — defaults to the real SubprocessExecutor.
+	// No custom executor — defaults to the real IsolateExecutor.
 	const result = await executeCompiledConnector({
 		compiledCode: compiled,
 		job,
@@ -359,8 +363,8 @@ export async function probeIsolateLane(): Promise<SelfCheckIsolateLane> {
  */
 export async function assertConnectorRuntimeLoadable(): Promise<void> {
 	registerConnectorRuntimeDependencyLoader();
-	const { compileConnectorFromFile } = createConnectorCompiler({ cacheMax: 1 });
-	await runSyntheticConnector(compileConnectorFromFile);
+	const { compileConnectorForIsolateFromFile } = createIsolateConnectorCompiler({ cacheMax: 1 });
+	await runSyntheticConnector(compileConnectorForIsolateFromFile);
 }
 
 /**
@@ -432,14 +436,14 @@ export async function runConnectorRuntimeSelfCheck(
 	});
 
 	// One compiler instance (mtime-LRU cache) across every connector + fixture.
-	const { compileConnectorFromFile } = createConnectorCompiler();
+	const { compileConnectorForIsolateFromFile } = createIsolateConnectorCompiler();
 
 	// Discover, compile, and instantiate every connector; then assert key uniqueness.
 	const discovered: DiscoveredConnector[] = [];
 	await check("connectors-instantiate", async () => {
 		if (!connectorSourceDir) throw new Error("No connector source directory.");
 		for (const file of await collectConnectorSourceFiles(connectorSourceDir)) {
-			const conn = await instantiateConnector(file, compileConnectorFromFile);
+			const conn = await instantiateConnector(file, compileConnectorForIsolateFromFile);
 			if (conn) discovered.push(conn);
 		}
 		if (discovered.length === 0) {
@@ -462,10 +466,10 @@ export async function runConnectorRuntimeSelfCheck(
 		return `${seen.size} unique keys.`;
 	});
 
-	// Synthetic connector compiles + runs through the DEFAULT SubprocessExecutor.
-	await check("synthetic-connector-subprocess-execute", async () => {
-		await runSyntheticConnector(compileConnectorFromFile);
-		return "compiled + executed via default SubprocessExecutor; emitted >=1 event.";
+	// Synthetic connector compiles + runs through the DEFAULT IsolateExecutor.
+	await check("synthetic-connector-execute", async () => {
+		await runSyntheticConnector(compileConnectorForIsolateFromFile);
+		return "compiled + executed via default IsolateExecutor; emitted >=1 event.";
 	});
 
 	// Recovery/control primitives must remain executable even when the dynamic

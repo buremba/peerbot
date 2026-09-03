@@ -104,7 +104,7 @@ async function main(): Promise<void> {
   // This is one of the two parity entrypoints (the other is the CLI's
   // `lobu connector runtime-self-check`); both call the SAME
   // runConnectorRuntimeSelfCheck() so the worker image and the built CLI assert
-  // the identical compile + SubprocessExecutor invariant.
+  // the identical compile + IsolateExecutor invariant.
   if (command === 'self-check') {
     const result = await runConnectorRuntimeSelfCheck({ surface: 'worker' });
     if (options.json) {

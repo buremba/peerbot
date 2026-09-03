@@ -64,6 +64,12 @@ export const PRELUDE_GLOBALS = [
   'Headers',
   'Response',
   'fetch',
+  'crypto',
+  'Buffer',
+  'connect',
+  'EventEmitter',
+  'ReadableStream',
+  'WritableStream',
 ] as const;
 
 /** What the guest `URL` holds: the components Node's URL reports. */
@@ -141,6 +147,14 @@ export const PRELUDE_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> 
   // pair the parser skips, so a query that still begins with '?' keeps it.
   formUrlencodedParse: (input: unknown): [string, string][] => Array.from(new URLSearchParams(`&${String(input)}`)),
   formUrlencodedSerialize: (list: unknown): string => new URLSearchParams(asPairs(list)).toString(),
+  randomBytes: (byteLength: unknown): Uint8Array => {
+    const len = Math.min(Math.max(0, Number(byteLength) || 0), 65536);
+    const buf = new Uint8Array(len);
+    if (typeof globalThis.crypto?.getRandomValues === 'function') {
+      globalThis.crypto.getRandomValues(buf);
+    }
+    return buf;
+  },
 };
 
 export const GUEST_PRELUDE = String.raw`
@@ -212,6 +226,12 @@ var exports = module.exports;
   // ---------------------------------------------------------------------------
 
   global.require = function require(specifier) {
+    if (specifier === 'crypto' || specifier === 'node:crypto') return global.crypto;
+    if (specifier === 'buffer' || specifier === 'node:buffer') return { Buffer: global.Buffer };
+    if (specifier === 'events' || specifier === 'node:events') return { EventEmitter: global.EventEmitter, default: global.EventEmitter };
+    if (specifier === 'stream' || specifier === 'node:stream') return { Readable: global.ReadableStream, Writable: global.WritableStream, default: { Readable: global.ReadableStream, Writable: global.WritableStream } };
+    if (specifier === 'cloudflare:sockets') return { connect: global.connect };
+    if (specifier === 'module' || specifier === 'node:module') return { createRequire: function () { return global.require; } };
     var err = new Error(
       "Module '" + specifier + "' is not available on the isolate lane: Node builtins and runtime-provided packages need the process lane."
     );
@@ -913,5 +933,439 @@ var exports = module.exports;
     });
   }
   global.fetch = fetch;
+
+  var crypto = {
+    getRandomValues: function (array) {
+      if (!array || !array.buffer || typeof array.byteLength !== 'number') {
+        throw new TypeError('crypto.getRandomValues: expected an ArrayBufferView');
+      }
+      var bytes = hostSync('randomBytes', array.byteLength);
+      new Uint8Array(array.buffer, array.byteOffset, array.byteLength).set(bytes);
+      return array;
+    },
+    randomUUID: function () {
+      var bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      var hex = [];
+      for (var i = 0; i < 16; i++) {
+        var h = bytes[i].toString(16);
+        hex.push(h.length === 1 ? '0' + h : h);
+      }
+      return (
+        hex.slice(0, 4).join('') + '-' +
+        hex.slice(4, 6).join('') + '-' +
+        hex.slice(6, 8).join('') + '-' +
+        hex.slice(8, 10).join('') + '-' +
+        hex.slice(10, 16).join('')
+      );
+    }
+  };
+  global.crypto = crypto;
+
+  var Buffer = function Buffer(arg, enc) {
+    return Buffer.from(arg, enc);
+  };
+  Buffer.isBuffer = function (obj) {
+    return obj instanceof Uint8Array;
+  };
+  Buffer.alloc = function (size, fill) {
+    var u8 = new Uint8Array(size);
+    if (fill !== undefined) u8.fill(typeof fill === 'number' ? fill : 0);
+    return u8;
+  };
+  Buffer.allocUnsafe = function (size) {
+    return new Uint8Array(size);
+  };
+  Buffer.byteLength = function (str) {
+    var encoded = utf8Encode(String(str));
+    return encoded ? encoded.length : String(str).length;
+  };
+  Buffer.concat = function (list, length) {
+    if (!length) {
+      length = 0;
+      for (var i = 0; i < list.length; i++) length += list[i].length;
+    }
+    var res = new Uint8Array(length);
+    var offset = 0;
+    for (var j = 0; j < list.length; j++) {
+      var item = list[j];
+      res.set(item, offset);
+      offset += item.length;
+      if (offset >= length) break;
+    }
+    return res;
+  };
+  Buffer.from = function (data, encoding) {
+    if (typeof data === 'number') {
+      throw new TypeError('The "value" argument must not be of type number. Received type number');
+    }
+    if (typeof data === 'string') {
+      var enc = (encoding || 'utf8').toLowerCase();
+      if (enc === 'hex') {
+        var clean = data.trim();
+        var len = Math.floor(clean.length / 2);
+        var u8 = new Uint8Array(len);
+        for (var i = 0; i < len; i++) {
+          u8[i] = parseInt(clean.substr(i * 2, 2), 16);
+        }
+        return u8;
+      }
+      if (enc === 'base64' || enc === 'base64url') {
+        var cleanB64 = data.replace(/-/g, '+').replace(/_/g, '/');
+        while (cleanB64.length % 4 !== 0) cleanB64 += '=';
+        var decoded = global.atob(cleanB64);
+        var u8B64 = new Uint8Array(decoded.length);
+        for (var b = 0; b < decoded.length; b++) u8B64[b] = decoded.charCodeAt(b);
+        return u8B64;
+      }
+      var res = utf8Encode(data);
+      if (res instanceof Uint8Array) return res;
+      var unescaped = unescape(encodeURIComponent(data));
+      var u8Fallback = new Uint8Array(unescaped.length);
+      for (var u = 0; u < unescaped.length; u++) u8Fallback[u] = unescaped.charCodeAt(u);
+      return u8Fallback;
+    }
+    if (data instanceof Uint8Array) {
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    if (Array.isArray(data)) {
+      return new Uint8Array(data);
+    }
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
+    }
+    if (data && data.buffer instanceof ArrayBuffer) {
+      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    return Buffer.from(String(data));
+  };
+
+  Uint8Array.prototype.toString = function (enc, start, end) {
+    var outEnc = (enc || 'utf8').toLowerCase();
+    var slice = (start !== undefined || end !== undefined) ? this.subarray(start || 0, end !== undefined ? end : this.length) : this;
+    if (outEnc === 'base64') {
+      var bin = '';
+      for (var i = 0; i < slice.length; i++) bin += String.fromCharCode(slice[i]);
+      return global.btoa(bin);
+    }
+    if (outEnc === 'hex') {
+      var hex = '';
+      for (var j = 0; j < slice.length; j++) {
+        var h = slice[j].toString(16);
+        hex += (h.length === 1 ? '0' + h : h);
+      }
+      return hex;
+    }
+    var decoded = utf8Decode(slice);
+    if (typeof decoded === 'string') return decoded;
+    var s = '';
+    for (var k = 0; k < slice.length; k++) s += String.fromCharCode(slice[k]);
+    try {
+      return decodeURIComponent(escape(s));
+    } catch {
+      return s;
+    }
+  };
+  Uint8Array.prototype.write = function (str, offset, length, encoding) {
+    var off = offset || 0;
+    var encoded = Buffer.from(str, encoding);
+    var toWrite = length !== undefined ? Math.min(length, encoded.length) : encoded.length;
+    for (var i = 0; i < toWrite && off + i < this.length; i++) {
+      this[off + i] = encoded[i];
+    }
+    return toWrite;
+  };
+  Uint8Array.prototype.readInt32BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getInt32(offset || 0, false);
+  };
+  Uint8Array.prototype.readUInt32BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getUint32(offset || 0, false);
+  };
+  Uint8Array.prototype.readInt16BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getInt16(offset || 0, false);
+  };
+  Uint8Array.prototype.readUInt16BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getUint16(offset || 0, false);
+  };
+  Uint8Array.prototype.readUInt8 = function (offset) {
+    return this[offset || 0];
+  };
+  Uint8Array.prototype.readBigInt64BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getBigInt64(offset || 0, false);
+  };
+  Uint8Array.prototype.writeInt32BE = function (val, offset) {
+    new DataView(this.buffer, this.byteOffset, this.byteLength).setInt32(offset || 0, val, false);
+    return (offset || 0) + 4;
+  };
+  Uint8Array.prototype.writeUInt32BE = function (val, offset) {
+    new DataView(this.buffer, this.byteOffset, this.byteLength).setUint32(offset || 0, val, false);
+    return (offset || 0) + 4;
+  };
+  Uint8Array.prototype.writeUInt16BE = function (val, offset) {
+    new DataView(this.buffer, this.byteOffset, this.byteLength).setUint16(offset || 0, val, false);
+    return (offset || 0) + 2;
+  };
+  Uint8Array.prototype.writeBigInt64BE = function (val, offset) {
+    new DataView(this.buffer, this.byteOffset, this.byteLength).setBigInt64(offset || 0, BigInt(val), false);
+    return (offset || 0) + 8;
+  };
+  global.Buffer = Buffer;
+
+  // ---------------------------------------------------------------------------
+  // EventEmitter shim
+  // ---------------------------------------------------------------------------
+  function EventEmitter() {
+    this._events = Object.create(null);
+  }
+  EventEmitter.prototype.on = function (event, listener) {
+    if (!this._events[event]) this._events[event] = [];
+    this._events[event].push(listener);
+    return this;
+  };
+  EventEmitter.prototype.once = function (event, listener) {
+    var self = this;
+    function g() {
+      self.off(event, g);
+      listener.apply(this, arguments);
+    }
+    g.listener = listener;
+    return this.on(event, g);
+  };
+  EventEmitter.prototype.off = function (event, listener) {
+    var list = this._events[event];
+    if (!list) return this;
+    this._events[event] = list.filter(function (l) {
+      return l !== listener && l.listener !== listener;
+    });
+    return this;
+  };
+  EventEmitter.prototype.removeListener = EventEmitter.prototype.off;
+  EventEmitter.prototype.removeAllListeners = function (event) {
+    if (event) delete this._events[event];
+    else this._events = Object.create(null);
+    return this;
+  };
+  EventEmitter.prototype.emit = function (event) {
+    var list = this._events[event];
+    if (!list || list.length === 0) return false;
+    var args = Array.prototype.slice.call(arguments, 1);
+    var copy = list.slice();
+    for (var i = 0; i < copy.length; i++) {
+      copy[i].apply(this, args);
+    }
+    return true;
+  };
+  global.EventEmitter = EventEmitter;
+
+  // ---------------------------------------------------------------------------
+  // Web Streams (ReadableStream, WritableStream)
+  // ---------------------------------------------------------------------------
+  function ReadableStream(underlyingSource) {
+    this._source = underlyingSource || {};
+  }
+  ReadableStream.prototype.getReader = function () {
+    var self = this;
+    var queue = [];
+    var pendingRead = null;
+    var isClosed = false;
+    var streamError = null;
+
+    var controller = {
+      enqueue: function (chunk) {
+        if (pendingRead) {
+          var r = pendingRead;
+          pendingRead = null;
+          r({ value: chunk, done: false });
+        } else {
+          queue.push(chunk);
+        }
+      },
+      close: function () {
+        isClosed = true;
+        if (pendingRead) {
+          var r = pendingRead;
+          pendingRead = null;
+          r({ value: undefined, done: true });
+        }
+      },
+      error: function (err) {
+        streamError = err;
+        if (pendingRead) {
+          var r = pendingRead;
+          pendingRead = null;
+          r(Promise.reject(err));
+        }
+      }
+    };
+
+    if (this._source && this._source.start) {
+      this._source.start(controller);
+    }
+
+    return {
+      read: function () {
+        if (streamError) return Promise.reject(streamError);
+        if (queue.length > 0) {
+          return Promise.resolve({ value: queue.shift(), done: false });
+        }
+        if (isClosed) {
+          return Promise.resolve({ value: undefined, done: true });
+        }
+        if (self._source && self._source.pull) {
+          self._source.pull(controller);
+        }
+        return new Promise(function (resolve) {
+          pendingRead = resolve;
+        });
+      },
+      releaseLock: function () {},
+      cancel: function (reason) {
+        if (self._source && self._source.cancel) {
+          return Promise.resolve(self._source.cancel(reason));
+        }
+        return Promise.resolve();
+      }
+    };
+  };
+  global.ReadableStream = ReadableStream;
+
+  function WritableStream(underlyingSink) {
+    this._sink = underlyingSink || {};
+  }
+  WritableStream.prototype.getWriter = function () {
+    var self = this;
+    return {
+      ready: Promise.resolve(),
+      write: function (chunk) {
+        if (self._sink && self._sink.write) {
+          return Promise.resolve(self._sink.write(chunk));
+        }
+        return Promise.resolve();
+      },
+      close: function () {
+        if (self._sink && self._sink.close) {
+          return Promise.resolve(self._sink.close());
+        }
+        return Promise.resolve();
+      },
+      releaseLock: function () {}
+    };
+  };
+  global.WritableStream = WritableStream;
+
+  // ---------------------------------------------------------------------------
+  // WinterCG Direct Sockets (connect)
+  // ---------------------------------------------------------------------------
+  global.connect = function connect(address, options) {
+    var host = '';
+    var port = 5432;
+    if (typeof address === 'string') {
+      var idx = address.lastIndexOf(':');
+      if (idx !== -1) {
+        host = address.slice(0, idx);
+        port = parseInt(address.slice(idx + 1), 10);
+      } else {
+        host = address;
+      }
+    } else if (address && typeof address === 'object') {
+      host = address.hostname || '';
+      port = address.port || 5432;
+    }
+
+    var socketId = null;
+    var closedResolve;
+    var closedReject;
+    var closedPromise = new Promise(function (resolve, reject) {
+      closedResolve = resolve;
+      closedReject = reject;
+    });
+
+    var openPromise = hostAsync('socketOpen', host, port, options ? JSON.stringify(options) : '{}').then(
+      function (id) {
+        socketId = id;
+        return id;
+      },
+      function (err) {
+        closedReject(err);
+        throw err;
+      }
+    );
+
+    var readable = new ReadableStream({
+      pull: function (controller) {
+        return openPromise.then(function () {
+          return hostAsync('socketRead', socketId).then(function (res) {
+            if (res.error) {
+              var err = new Error(res.error);
+              controller.error(err);
+              closedReject(err);
+            } else if (res.done || res.data === null) {
+              controller.close();
+              closedResolve();
+            } else {
+              var bin = atob(res.data);
+              var u8 = new Uint8Array(bin.length);
+              for (var i = 0; i < bin.length; i++) {
+                u8[i] = bin.charCodeAt(i);
+              }
+              controller.enqueue(u8);
+            }
+          });
+        });
+      },
+      cancel: function () {
+        if (socketId !== null) {
+          hostAsync('socketClose', socketId);
+        }
+        closedResolve();
+      }
+    });
+
+    var writable = new WritableStream({
+      write: function (chunk) {
+        return openPromise.then(function () {
+          var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+          var bin = '';
+          for (var i = 0; i < u8.length; i++) {
+            bin += String.fromCharCode(u8[i]);
+          }
+          return hostAsync('socketWrite', socketId, btoa(bin));
+        });
+      },
+      close: function () {
+        if (socketId !== null) {
+          return hostAsync('socketClose', socketId).then(function () {
+            closedResolve();
+          });
+        }
+        closedResolve();
+      }
+    });
+
+    var socketObj = {
+      readable: readable,
+      writable: writable,
+      closed: closedPromise,
+      close: function () {
+        if (socketId !== null) {
+          return hostAsync('socketClose', socketId).then(function () {
+            closedResolve();
+          });
+        }
+        closedResolve();
+        return Promise.resolve();
+      },
+      startTls: function (opts) {
+        openPromise = openPromise.then(function () {
+          return hostAsync('socketStartTls', socketId, opts ? JSON.stringify(opts) : '{}');
+        });
+        return socketObj;
+      }
+    };
+
+    return socketObj;
+  };
 })(globalThis);
 `;

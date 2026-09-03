@@ -17,8 +17,6 @@ export async function executeCompiledConnector(params: {
   job: ExecutorJob;
   executor?: SyncExecutor;
   hooks?: ExecutionHooks;
-  /** Native (nixpkgs) packages the connector declared in `runtime.nix.packages`. */
-  nixPackages?: string[];
   /**
    * Hard wall-clock limit for this connector run. Only applies to the
    * executor chosen here; an injected `executor` owns its own budget.
@@ -26,14 +24,14 @@ export async function executeCompiledConnector(params: {
   timeoutMs?: number;
   /**
    * Execution lane. `'isolate'` requires `isolated-vm` on this host and
-   * rejects otherwise; unset or `'process'` forks a Node child as before.
+   * rejects otherwise.
    */
   lane?: ExecutionLane | null;
+  /** Hosts the connector may fetch. Unset or empty uses default egress. */
+  allowedDomains?: readonly string[];
 }): Promise<ExecutorResult> {
   const executor =
     params.executor ??
-    (await selectExecutor({ lane: params.lane, timeoutMs: params.timeoutMs }));
-  return executor.execute(params.compiledCode, params.job, params.hooks, {
-    nixPackages: params.nixPackages,
-  });
+    (await selectExecutor({ lane: params.lane, timeoutMs: params.timeoutMs, allowedDomains: params.allowedDomains }));
+  return executor.execute(params.compiledCode, params.job, params.hooks);
 }

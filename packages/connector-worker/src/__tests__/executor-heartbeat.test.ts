@@ -33,6 +33,7 @@ mock.module('../executor/runtime.js', () => ({
   executeCompiledConnector: executeCompiledConnectorMock,
 }));
 
+
 mock.module('../embeddings.js', () => ({
   batchGenerateEmbeddings: batchGenerateEmbeddingsMock,
   generateEmbedding: async () => [0, 0, 0],
@@ -43,16 +44,6 @@ mock.module('../compile-connector.js', () => ({
   findBundledConnectorFile: () => '/fake/path',
 }));
 
-mock.module('../executor/subprocess.js', () => ({
-  SubprocessExecutor: class {
-    // biome-ignore lint/suspicious/noExplicitAny: test stub
-    constructor(_opts: any) {}
-  },
-  // `executor/select.js` also pulls in the isolate lane, which imports these;
-  // a mock missing a named export fails the whole module graph at load.
-  SubprocessError: class extends Error {},
-  RingBuffer: class {},
-}));
 
 import { executeRun } from '../daemon/executor.js';
 
@@ -150,7 +141,9 @@ describe('executor heartbeats (lobu#860)', () => {
     } as any;
 
     // biome-ignore lint/suspicious/noExplicitAny: minimal env
-    const result = await executeRun(client as any, job, {} as any);
+    const result = await executeRun(client as any, job, {} as any, {
+      executor: { execute: executeCompiledConnectorMock },
+    });
     expect(result.error).toBeUndefined();
     expect(client.__heartbeats).toBeGreaterThanOrEqual(2);
 
@@ -220,7 +213,9 @@ describe('executor heartbeats (lobu#860)', () => {
     } as any;
 
     // biome-ignore lint/suspicious/noExplicitAny: minimal env
-    await executeRun(client as any, job, {} as any);
+    await executeRun(client as any, job, {} as any, {
+      executor: { execute: executeCompiledConnectorMock },
+    });
     // After the run, the heartbeat interval should be cleared on every
     // path via `finally`.
     expect(scheduledIntervals.length).toBe(0);
@@ -243,7 +238,9 @@ describe('executor heartbeats (lobu#860)', () => {
     } as any;
 
     // biome-ignore lint/suspicious/noExplicitAny: minimal env
-    const result = await executeRun(client as any, job, {} as any);
+    const result = await executeRun(client as any, job, {} as any, {
+      executor: { execute: executeCompiledConnectorMock },
+    });
     expect(result.error).toContain('boom');
     expect(scheduledIntervals.length).toBe(0);
   });

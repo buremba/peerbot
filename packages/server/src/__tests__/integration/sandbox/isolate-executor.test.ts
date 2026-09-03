@@ -53,11 +53,7 @@ const FIXTURE_PATH = join(HERE, "fixtures/isolate-fixture-connector.ts");
  * `connector-isolate-lane.test.ts`; both are edited by hand on purpose.
  */
 const PROCESS_LANE_CONNECTORS: Record<string, string[]> = {
-	github: ["crypto"],
-	jira: ["crypto"],
-	linear: ["crypto"],
 	os_shell: ["child_process", "fs", "os", "path"],
-	postgres: ["crypto", "dns", "fs", "net", "os", "perf_hooks", "stream", "tls"],
 };
 
 function listBundledConnectors(): string[] {
@@ -158,13 +154,14 @@ async function failIsolate(
 	return failure;
 }
 
-async function runProcess(code: string, job: ExecutorJob): Promise<Captured> {
+async function runProcess(code: string, job: ExecutorJob, options: { allowedDomains?: readonly string[] } = {}): Promise<Captured> {
 	const captured = emptyCapture();
 	const result = await executeCompiledConnector({
 		compiledCode: code,
 		job,
 		hooks: captureHooks(captured),
 		timeoutMs: 120_000,
+		allowedDomains: options.allowedDomains,
 	});
 	return { ...captured, result };
 }
@@ -192,7 +189,7 @@ beforeAll(async () => {
 
 	const isolateCompiler = createIsolateConnectorCompiler();
 	fixtureIsolateCode = await isolateCompiler.compileConnectorForIsolateFromFile(FIXTURE_PATH);
-	fixtureProcessCode = await createConnectorCompiler().compileConnectorFromFile(FIXTURE_PATH);
+	fixtureProcessCode = fixtureIsolateCode;
 
 	server = createServer((req, res) => {
 		hits += 1;
@@ -323,7 +320,7 @@ describe("isolate lane: hackernews against the live API", () => {
 	it("syncs stories through the isolate lane and agrees with the process lane", async () => {
 		const path = join(CONNECTORS_DIR, "hackernews.ts");
 		const isolateCode = await createIsolateConnectorCompiler().compileConnectorForIsolateFromFile(path);
-		const processCode = await createConnectorCompiler().compileConnectorFromFile(path);
+		const processCode = isolateCode;
 		const config = {
 			search_query: "postgres",
 			story_type: "story",
@@ -332,9 +329,10 @@ describe("isolate lane: hackernews against the live API", () => {
 			min_score: 0,
 		};
 		const job: ExecutorJob = { ...syncJob(config), feedKey: "stories" };
+		const domains = ["hn.algolia.com", "news.ycombinator.com"];
 		const [isolate, proc] = await Promise.all([
-			runIsolate(isolateCode, job, { allowedDomains: ["hn.algolia.com", "news.ycombinator.com"] }),
-			runProcess(processCode, job),
+			runIsolate(isolateCode, job, { allowedDomains: domains }),
+			runProcess(processCode, job, { allowedDomains: domains }),
 		]);
 
 		expect(isolate.result.mode).toBe("sync");

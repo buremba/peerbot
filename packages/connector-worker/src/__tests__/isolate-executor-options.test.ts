@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { ExecutorJob } from '../executor/interface.js';
-import { IsolateExecutor, IsolateRuntimeUnavailableError } from '../executor/isolate.js';
+import { hostAllowed, IsolateExecutor, IsolateRuntimeUnavailableError } from '../executor/isolate.js';
 import { IsolateLaneIneligibleError } from '../isolate/eligibility.js';
 
 const job: ExecutorJob = {
@@ -52,14 +52,27 @@ describe('IsolateExecutor options', () => {
     );
   });
 
-  it('refuses nix packages: there is no shell around an isolate', async () => {
-    const failure = await new IsolateExecutor()
-      .execute('module.exports.default = class { sync() {} execute() {} };', job, undefined, {
-        nixPackages: ['ffmpeg'],
-      })
-      .then(() => null, (error: unknown) => error);
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toContain('native packages [ffmpeg]');
-    expect((failure as Error).message).toContain('process lane');
+
+  it('enforces SSRF protection and opens public egress by default in hostAllowed', () => {
+    // Default open to public internet under SSRF guard
+    expect(hostAllowed('api.spotify.com', [])).toBe(true);
+    expect(hostAllowed('news.ycombinator.com', [])).toBe(true);
+
+    // Blocks cloud metadata and private addresses
+    expect(hostAllowed('169.254.169.254', [])).toBe(false);
+    expect(hostAllowed('127.0.0.1', [])).toBe(false);
+    expect(hostAllowed('10.0.0.1', [])).toBe(false);
+    expect(hostAllowed('192.168.1.1', [])).toBe(false);
+    expect(hostAllowed('172.16.0.1', [])).toBe(false);
+    expect(hostAllowed('[::1]', [])).toBe(false);
+    expect(hostAllowed('localhost', [])).toBe(false);
+    expect(hostAllowed('my-service.local', [])).toBe(false);
+    expect(hostAllowed('internal.corp', [])).toBe(false);
+
+    // When an explicit domain allowlist is supplied, restrict to it
+    expect(hostAllowed('api.spotify.com', ['spotify.com'])).toBe(true);
+    expect(hostAllowed('spotify.com', ['spotify.com'])).toBe(true);
+    expect(hostAllowed('attacker.com', ['spotify.com'])).toBe(false);
+    expect(hostAllowed('169.254.169.254', ['spotify.com'])).toBe(false);
   });
 });

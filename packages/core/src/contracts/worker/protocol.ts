@@ -350,7 +350,6 @@ export const PollResponseSchema = Type.Object({
   connection_id: Type.Optional(Type.Integer()),
   feed_id: Type.Optional(Type.Integer()),
   compiled_code: Type.Optional(Type.String()),
-  nix_packages: Type.Optional(Type.Array(Type.String())),
   /**
    * Execution lane for the compiled connector code. Absent means `process`.
    * Additive: no producer sends it yet; the worker honors it when present.

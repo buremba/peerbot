@@ -22,17 +22,6 @@ mock.module('../executor/runtime.js', () => ({
   executeCompiledConnector: executeCompiledConnectorMock,
 }));
 
-mock.module('../executor/subprocess.js', () => ({
-  SubprocessExecutor: class {
-    // biome-ignore lint/suspicious/noExplicitAny: test stub
-    constructor(_opts: any) {}
-  },
-  // `executor/select.js` also pulls in the isolate lane, which imports these;
-  // a mock missing a named export fails the whole module graph at load.
-  SubprocessError: class extends Error {},
-  RingBuffer: class {},
-}));
-
 import { executeRun } from '../daemon/executor.js';
 
 function makeStubClient() {
@@ -86,7 +75,9 @@ test('sync metadata.fetch_errors → forwarded as error_message on the successfu
 
   const client = makeStubClient();
   // biome-ignore lint/suspicious/noExplicitAny: stubbed client/job for unit test
-  await executeRun(client as any, baseJob as any, {} as any);
+  await executeRun(client as any, baseJob as any, {} as any, {
+    executor: { execute: executeCompiledConnectorMock },
+  });
 
   expect(client.completions).toHaveLength(1);
   const completion = client.completions[0];
@@ -104,7 +95,9 @@ test('clean sync → no error_message on the completion', async () => {
 
   const client = makeStubClient();
   // biome-ignore lint/suspicious/noExplicitAny: stubbed client/job for unit test
-  await executeRun(client as any, baseJob as any, {} as any);
+  await executeRun(client as any, baseJob as any, {} as any, {
+    executor: { execute: executeCompiledConnectorMock },
+  });
 
   expect(client.completions).toHaveLength(1);
   expect(client.completions[0].status).toBe('success');

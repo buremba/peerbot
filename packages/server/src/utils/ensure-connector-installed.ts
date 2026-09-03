@@ -111,12 +111,23 @@ export async function resolveConnectorCode(
       }
       return compileConnectorFromFile(imagePath);
     }
-    if (stored?.organization_id != null) {
-      throw new Error(
-        `Refusing organization-supplied code for '${connectorKey}' in Lobu Cloud.`
-      );
+    if (stored?.compiled_code) {
+      if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;
+      if (stored.id != null) {
+        try {
+          const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.id);
+          if (recompiled) return recompiled;
+        } catch {
+          // fall through
+        }
+      }
+      return stored.compiled_code;
     }
-    throw new Error(`No bundled source for '${connectorKey}' in Lobu Cloud.`);
+    if (stored?.id != null) {
+      const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.id);
+      if (recompiled) return recompiled;
+    }
+    throw new Error(`No bundled source or stored compiled code for '${connectorKey}'.`);
   }
   if (stored?.compiled_code) {
     if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;

@@ -1,8 +1,8 @@
 /**
  * Connector-runtime env whitelist.
  *
- * Connector subprocesses (`SubprocessExecutor.fork`) inherit
- * `context.env`, which becomes `process.env` inside the connector child.
+ * Connector isolate execution inherits
+ * `context.env`, which becomes `process.env` inside the connector isolate.
  * The standalone `connector-worker` CLI builds this set deliberately so
  * connectors only see the env vars they actually need (GitHub token,
  * provider API keys, etc.) — never the host process's secrets.
@@ -25,12 +25,13 @@ function cloudModeOn(): boolean {
 }
 
 export function buildConnectorWorkerEnv(): Env {
+  const isCloud = cloudModeOn();
   return {
     ENVIRONMENT: process.env.ENVIRONMENT || 'production',
-    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-    GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY,
-    REDDIT_CLIENT_ID: process.env.REDDIT_CLIENT_ID,
-    REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET,
+    GITHUB_TOKEN: isCloud ? undefined : process.env.GITHUB_TOKEN,
+    GOOGLE_MAPS_API_KEY: isCloud ? undefined : process.env.GOOGLE_MAPS_API_KEY,
+    REDDIT_CLIENT_ID: isCloud ? undefined : process.env.REDDIT_CLIENT_ID,
+    REDDIT_CLIENT_SECRET: isCloud ? undefined : process.env.REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT: process.env.REDDIT_USER_AGENT,
     // WORKER_API_TOKEN is deliberately absent. Everything returned here reaches
     // connector code — `subprocess.ts` spreads `job.env` into the child process

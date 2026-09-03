@@ -289,6 +289,9 @@ async function openGuardedPool(
   connectionString: string,
   config: Record<string, unknown>,
 ): Promise<postgres.Sql> {
+  if (typeof (globalThis as unknown as { connect?: unknown }).connect === 'function') {
+    return postgres(connectionString, POOL_OPTS as unknown as postgres.Options<Record<string, never>>);
+  }
   const hardening = await buildDbEgressHardening(
     connectionString,
     readEgressPolicy(config.LOBU_DB_EGRESS_POLICY),

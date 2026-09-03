@@ -61,6 +61,20 @@ describe('connector-facing env', () => {
     expect(env.LOBU_DB_EGRESS_POLICY).toBeDefined();
   });
 
+  test('omits platform master secrets under LOBU_CLOUD_MODE', () => {
+    process.env.LOBU_CLOUD_MODE = '1';
+    process.env.GITHUB_TOKEN = 'gh-platform-secret';
+    process.env.GOOGLE_MAPS_API_KEY = 'maps-secret';
+    process.env.REDDIT_CLIENT_SECRET = 'reddit-secret';
+
+    const env = buildConnectorWorkerEnv() as Record<string, unknown>;
+
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.GOOGLE_MAPS_API_KEY).toBeUndefined();
+    expect(env.REDDIT_CLIENT_SECRET).toBeUndefined();
+    expect(env.LOBU_DB_EGRESS_POLICY).toBe('block-private');
+  });
+
   test('the daemon authenticates with the token that Env omits', async () => {
     // Excluding the token from Env is only correct because the daemon still
     // sends it on the wire. Asserting the exclusion alone would stay green if

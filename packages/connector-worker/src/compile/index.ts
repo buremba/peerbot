@@ -21,11 +21,16 @@
  */
 
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build, type BuildOptions, type Metafile, type Plugin } from 'esbuild';
-import { IsolateLaneIneligibleError, isNodeBuiltinSpecifier } from '../isolate/eligibility.js';
+import {
+  IsolateLaneIneligibleError,
+  ISOLATE_PRELUDE_PROVIDED_BUILTINS,
+  isNodeBuiltinSpecifier,
+} from '../isolate/eligibility.js';
 import { EXTERNAL_RUNTIME_DEPS } from '../runtime-deps.js';
 
 export {
@@ -109,6 +114,8 @@ export const ISOLATE_LANE_BUILD_OPTIONS = {
   format: 'cjs',
   target: 'esnext',
   platform: 'node',
+  conditions: ['workerd'],
+  supported: { 'dynamic-import': false },
   external: [],
 } as const satisfies Partial<BuildOptions>;
 
@@ -360,8 +367,36 @@ export function createConnectorCompiler(options?: CompileOptions) {
   return { compileConnectorFromFile };
 }
 
+const workerRequire = createRequire(import.meta.url);
+
+function resolveSdkFile(specifier: string): string | null {
+  try {
+    return workerRequire.resolve(specifier);
+  } catch {
+    // subpath or monorepo workspace resolution
+  }
+  try {
+    const root = workerRequire.resolve('@lobu/connector-sdk');
+    const rootDir = root.includes('/dist/') ? root.split('/dist/')[0] : root.split('/src/')[0];
+    const subpath = specifier === '@lobu/connector-sdk' ? '' : specifier.replace(/^@lobu\/connector-sdk\/?/, '');
+    if (!subpath) return root;
+    const candidates = [
+      join(rootDir, 'dist', `${subpath}.js`),
+      join(rootDir, 'dist', `${subpath}/index.js`),
+      join(rootDir, 'src', `${subpath}.ts`),
+      join(rootDir, 'src', `${subpath}/index.ts`),
+    ];
+    for (const cand of candidates) {
+      if (existsSync(cand)) return cand;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 /**
- * esbuild plugin that resolves the `lobu` alias to `@lobu/connector-sdk` so the
+ * esbuild plugin that resolves the `lobu` alias and `@lobu/connector-sdk` so the
  * SDK is INLINED into the bundle. The isolate has no module loader, so unlike
  * the process lane nothing is externalized; the real package name falls
  * through to esbuild's own resolution.
@@ -370,13 +405,16 @@ function createSdkInlinePlugin(): Plugin {
   return {
     name: 'sdk-inline',
     setup(b) {
-      b.onResolve({ filter: /^lobu(\/.*)?$/ }, (args) =>
-        b.resolve(normalizeSdkSpecifier(args.path), {
-          resolveDir: args.resolveDir,
+      b.onResolve({ filter: SDK_SPECIFIER_RE }, (args) => {
+        const specifier = normalizeSdkSpecifier(args.path);
+        const resolved = resolveSdkFile(specifier);
+        if (resolved) return { path: resolved };
+        return b.resolve(specifier, {
+          resolveDir: args.resolveDir.startsWith(tmpdir()) ? (process.env.LOBU_ROOT ?? resolve(import.meta.dirname ?? __dirname, '../../..')) : args.resolveDir,
           kind: args.kind,
           importer: args.importer,
-        })
-      );
+        });
+      });
     },
   };
 }
@@ -414,7 +452,12 @@ function builtinsFromMetafile(metafile: Metafile): string[] {
   const found = new Set<string>();
   for (const meta of Object.values(metafile.inputs)) {
     for (const imp of meta.imports) {
-      if (imp.external && isNodeBuiltinSpecifier(imp.path)) found.add(imp.path.replace(/^node:/, ''));
+      if (imp.external && isNodeBuiltinSpecifier(imp.path)) {
+        const bare = imp.path.replace(/^node:/, '');
+        if (!ISOLATE_PRELUDE_PROVIDED_BUILTINS.has(bare) && !ISOLATE_PRELUDE_PROVIDED_BUILTINS.has(imp.path)) {
+          found.add(bare);
+        }
+      }
     }
   }
   return [...found].sort();
@@ -486,5 +529,45 @@ export function createIsolateConnectorCompiler(options?: Pick<CompileOptions, 'c
     return bundle.code;
   }
 
-  return { bundleConnectorForIsolate, compileConnectorForIsolateFromFile };
+  async function bundleConnectorForIsolateFromSource(sourceCode: string): Promise<IsolateBundle> {
+    const tmpDir = await mkdtemp(join(tmpdir(), 'lobu-connector-isolate-'));
+    const sourcePath = join(tmpDir, 'source.ts');
+    try {
+      await writeFile(sourcePath, sourceCode, 'utf-8');
+      const result = await build({
+        ...ISOLATE_LANE_BUILD_OPTIONS,
+        entryPoints: [sourcePath],
+        bundle: true,
+        write: false,
+        metafile: true,
+        minify: false,
+        sourcemap: false,
+        logLevel: 'silent',
+        nodePaths: [resolve(process.cwd(), 'node_modules')],
+        plugins,
+      });
+      const code = result.outputFiles[0]?.text ?? '';
+      return {
+        code,
+        builtins: builtinsFromMetafile(result.metafile),
+      };
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  }
+
+  async function compileConnectorForIsolateFromSource(sourceCode: string): Promise<string> {
+    const bundle = await bundleConnectorForIsolateFromSource(sourceCode);
+    if (bundle.builtins.length > 0) throw new IsolateLaneIneligibleError(bundle.builtins, '<source>');
+    return bundle.code;
+  }
+
+  return {
+    bundleConnectorForIsolate,
+    compileConnectorForIsolateFromFile,
+    compileConnectorFromFile: compileConnectorForIsolateFromFile,
+    bundleConnectorForIsolateFromSource,
+    compileConnectorForIsolateFromSource,
+    compileConnectorFromSource: compileConnectorForIsolateFromSource,
+  };
 }

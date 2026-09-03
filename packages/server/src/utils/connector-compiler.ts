@@ -5,9 +5,11 @@
  * and metadata extraction (finds ConnectorRuntime subclass with sync()+execute()).
  */
 
-import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
+import {
+  createIsolateConnectorCompiler,
+} from '@lobu/connector-worker/compile';
 import type { ConnectorAgentTooling } from '@lobu/connector-sdk';
-import { type CompileResult, compileSource, extractMetadata } from './compiler-core';
+import { type CompileResult, computeCodeHash, extractMetadata } from './compiler-core';
 import { isReservedConnectorKey } from './reserved';
 import { validateConnectorRelationshipDeclarations } from './connector-relationship-declarations';
 import { connectorIdentityScopeDeclarations } from './connector-identity-scopes';
@@ -80,10 +82,11 @@ import { pathToFileURL } from 'node:url';
 async function main() {
   try {
     const mod = await import(pathToFileURL(process.argv[2]).href);
+    const target = (mod.default && typeof mod.default === 'object') ? mod.default : mod;
 
     let RuntimeClass = null;
-    for (const key of Object.keys(mod)) {
-      const val = mod[key];
+    for (const key of Object.keys(target)) {
+      const val = target[key];
       if (
         typeof val === 'function' &&
         val.prototype &&
@@ -92,6 +95,18 @@ async function main() {
       ) {
         RuntimeClass = val;
         break;
+      }
+    }
+
+    if (!RuntimeClass && target.default) {
+      const val = target.default;
+      if (
+        typeof val === 'function' &&
+        val.prototype &&
+        typeof val.prototype.sync === 'function' &&
+        typeof val.prototype.execute === 'function'
+      ) {
+        RuntimeClass = val;
       }
     }
 
@@ -173,30 +188,12 @@ async function main() {
 main();
 `;
 
-const CJS_SHIM_BANNER = `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`;
+const isolateCompiler = createIsolateConnectorCompiler();
 
 export async function compileConnectorSource(sourceCode: string): Promise<CompileResult> {
-  // Idempotence: a pre-compiled upload keeps its artifact in source_code, and
-  // normalizing it under the current compile config routes back through here.
-  // Without stripping our own shim first, esbuild's banner would declare
-  // __createRequire a second time and the artifact dies at import.
-  const input = sourceCode.startsWith(CJS_SHIM_BANNER)
-    ? sourceCode.slice(CJS_SHIM_BANNER.length)
-    : sourceCode;
-  return compileSource(input, {
-    tmpPrefix: '.connector-compile-',
-    label: 'ConnectorCompiler',
-    buildOptions: {
-      target: 'node20',
-      banner: {
-        js: CJS_SHIM_BANNER,
-      },
-      // Only externalize deps that genuinely can't be bundled (native binaries,
-      // runtime install steps). Bundle everything else so connector artifacts
-      // stay self-contained and survive runtime image drift.
-      external: [...EXTERNAL_RUNTIME_DEPS],
-    },
-  });
+  const compiledCode = await isolateCompiler.compileConnectorForIsolateFromSource(sourceCode);
+  const compiledCodeHash = computeCodeHash(compiledCode);
+  return { compiledCode, compiledCodeHash };
 }
 
 export async function extractConnectorMetadata(compiledCode: string): Promise<ConnectorMetadata> {

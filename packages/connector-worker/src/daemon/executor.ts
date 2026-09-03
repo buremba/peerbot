@@ -15,6 +15,7 @@ import { attachedInteractiveSession, attachInteractiveSession } from './interact
 import { log } from './log.js';
 import { reportTerminalFailure } from './terminal-failure.js';
 import { completeActionOnce } from './terminal-delivery.js';
+import type { SyncExecutor, ExecutorResult } from '../executor/interface.js';
 
 /**
  * Resolve the executable compiled code for a job.
@@ -101,18 +102,19 @@ async function resolveJobExecution(
   select: typeof import('../executor/select.js'),
   job: PollResponse,
   timeoutMs: number,
-  maxOldSpaceSize: number
+  maxOldSpaceSize: number,
+  customExecutor?: SyncExecutor
 ): Promise<JobExecution> {
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) return codeResult;
+  if (customExecutor) {
+    return { ok: true, code: codeResult.code, executor: customExecutor };
+  }
   try {
-    // No allowlist rides on the poll payload yet, so an isolate-lane run has
-    // no egress: the executor denies every fetch until the gateway supplies
-    // the connector's declared domains.
+    // Isolate executor enforces SSRF protection and domain allowlist restrictions.
     const executor = await select.selectExecutor({
       lane: job.lane,
       timeoutMs,
-      maxOldSpaceSize,
     });
     return { ok: true, code: codeResult.code, executor };
   } catch (err) {
@@ -128,6 +130,8 @@ export interface ExecutorConfig {
   generateEmbeddings: boolean;
   timeoutMs: number;
   maxOldSpaceSize: number;
+  /** Optional executor override (tests / custom runner). */
+  executor?: SyncExecutor;
   /** Daemon lifecycle signal used only by pending interactive handoffs. */
   shutdownSignal?: AbortSignal;
   /** Local agent kind used when an Automation omits agent_kind. */
@@ -284,7 +288,13 @@ async function executeSyncRun(
     throw new Error('Invalid run: missing run_id or connector_key');
   }
 
-  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg.maxOldSpaceSize);
+  const execution = await resolveJobExecution(
+    select,
+    job,
+    cfg.timeoutMs,
+    cfg.maxOldSpaceSize,
+    cfg.executor
+  );
   if (!execution.ok) {
     const errorMessage = `Run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
@@ -359,7 +369,6 @@ async function executeSyncRun(
 
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
-      nixPackages: job.nix_packages,
       executor: laneExecutor,
       job: {
         mode: 'sync',
@@ -527,7 +536,13 @@ async function executeActionRun(
 
   const [select, { executeCompiledConnector }] = await loadCompiledRuntime();
 
-  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg.maxOldSpaceSize);
+  const execution = await resolveJobExecution(
+    select,
+    job,
+    cfg.timeoutMs,
+    cfg.maxOldSpaceSize,
+    cfg.executor
+  );
   if (!execution.ok) {
     const errorMessage = `Action run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
@@ -563,7 +578,6 @@ async function executeActionRun(
   try {
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
-      nixPackages: job.nix_packages,
       executor: laneExecutor,
       job: {
         mode: 'action',
@@ -717,7 +731,13 @@ async function executeAuthRun(
   // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
   // redirects) — a fixed timeout would kill the pairing mid-flow. Terminate
   // via the UI cancel signal instead (timeoutMs: 0 on either lane).
-  const execution = await resolveJobExecution(select, job, 0, cfg.maxOldSpaceSize);
+  const execution = await resolveJobExecution(
+    select,
+    job,
+    0,
+    cfg.maxOldSpaceSize,
+    cfg.executor
+  );
   if (!execution.ok) {
     const errorMessage = `Auth run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
@@ -746,7 +766,6 @@ async function executeAuthRun(
   try {
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
-      nixPackages: job.nix_packages,
       executor: laneExecutor,
       job: {
         mode: 'authenticate',

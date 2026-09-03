@@ -31,10 +31,7 @@ const config: KnipConfig = {
         "src/mac-device-daemon.ts",
         "src/daemon/index.ts",
         "src/compile-connector.ts",
-        // child-runner is fork()ed by absolute path, not imported.
-        "src/executor/child-runner.ts",
         "src/**/*.test.ts",
-        "integration-tests/**/*.test.ts",
       ],
       ignoreDependencies: [
         // Native media/ML deps reached at runtime by connector bundles

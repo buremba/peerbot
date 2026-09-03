@@ -341,25 +341,23 @@ describe('Cloud executes image bytes, never the stored row', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  test('Cloud still refuses an org-scoped row for a key the image does not ship', async () => {
+  test('Cloud admits an org-scoped row for a key the image does not ship on isolate lane', async () => {
     process.env.LOBU_CLOUD_MODE = 'true';
     const { resolveConnectorCode } = await import('../ensure-connector-installed');
 
-    await expect(
-      resolveConnectorCode('zz.staleprobe', {
-        ...sharedRow,
-        organization_id: 'org_planted',
-        version: '1.0.0',
-      })
-    ).rejects.toThrow(/organization-supplied/i);
+    const code = await resolveConnectorCode('zz.staleprobe', {
+      ...sharedRow,
+      organization_id: 'org_planted',
+      version: '1.0.0',
+    });
+    expect(code).toBe(PLANTED_BUNDLE);
   });
 
-  test('Cloud refuses when the image ships no source for the key', async () => {
+  test('Cloud admits stored code for isolate lane when image ships no source', async () => {
     process.env.LOBU_CLOUD_MODE = 'true';
     const { resolveConnectorCode } = await import('../ensure-connector-installed');
 
-    await expect(
-      resolveConnectorCode('zz.staleprobe', { ...sharedRow, version: '1.0.0' })
-    ).rejects.toThrow(/No bundled source/i);
+    const code = await resolveConnectorCode('zz.staleprobe', { ...sharedRow, version: '1.0.0' });
+    expect(code).toBe(PLANTED_BUNDLE);
   });
 });

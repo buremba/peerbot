@@ -176,7 +176,7 @@ export async function startDaemonCommand(
     assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
     await assertConnectorRuntimeLoadable();
   } catch (error) {
-    if (platform !== 'headless') throw error;
+    if (!platform && typeof (process.versions as { bun?: string }).bun !== 'string') throw error;
     compiledRuntimeReady = false;
     log.info(
       '[cli] compiled-connector runtime unavailable; this daemon will advertise built-in operations only:',

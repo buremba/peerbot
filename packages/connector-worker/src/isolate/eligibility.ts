@@ -29,12 +29,28 @@ export function isNodeBuiltinSpecifier(specifier: string): boolean {
  */
 const REQUIRE_CALL_RE = /(?:^|[^\w$.])(?:__)?require\(\s*(["'])([^"'\\\n]+)\1\s*\)/g;
 
+export const ISOLATE_PRELUDE_PROVIDED_BUILTINS = new Set([
+  'buffer',
+  'node:buffer',
+  'crypto',
+  'node:crypto',
+  'events',
+  'node:events',
+  'stream',
+  'node:stream',
+  'cloudflare:sockets',
+  'module',
+  'node:module',
+]);
+
 /** Node builtins a bundle still requires, `node:` prefix stripped, sorted. */
 export function findIsolateIneligibleBuiltins(code: string): string[] {
   const found = new Set<string>();
   for (const match of code.matchAll(REQUIRE_CALL_RE)) {
     const specifier = match[2];
-    if (isNodeBuiltinSpecifier(specifier)) found.add(specifier.replace(/^node:/, ''));
+    if (isNodeBuiltinSpecifier(specifier) && !ISOLATE_PRELUDE_PROVIDED_BUILTINS.has(specifier)) {
+      found.add(specifier.replace(/^node:/, ''));
+    }
   }
   return [...found].sort();
 }

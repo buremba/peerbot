@@ -219,4 +219,84 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     const [{ n }] = await getTestDb()`SELECT count(*)::int AS n FROM pgc_it WHERE email = 'hack'`;
     expect(Number(n)).toBe(0);
   });
+
+  it('executes postgres query inside V8 isolate with host-mediated socket and egress policy', async () => {
+    const { createIsolateConnectorCompiler } = await import('@lobu/connector-worker/compile');
+    const { IsolateExecutor } = await import('@lobu/connector-worker/executor/isolate');
+    const path = await import('node:path');
+    const { compileConnectorForIsolateFromFile } = createIsolateConnectorCompiler();
+    const connectorPath = path.resolve(__dirname, '../../../../../connectors/src/postgres.ts');
+    const code = await compileConnectorForIsolateFromFile(connectorPath);
+
+    const executor = new IsolateExecutor({ timeoutMs: 10000, memoryMb: 512 });
+
+    // 1. Under block-private policy in env, connection to 127.0.0.1 test DB is blocked by SSRF egress guard
+    await expect(
+      executor.execute(code, {
+        mode: 'query',
+        query: 'SELECT 1 AS n',
+        config: { DATABASE_URL: process.env.DATABASE_URL },
+        checkpoint: null,
+        credentials: null,
+        sessionState: null,
+        env: { LOBU_DB_EGRESS_POLICY: 'block-private' },
+      })
+    ).rejects.toThrow(/EgressDenied/);
+
+    // 1b. Policy passed via config (gateway pushdown pattern) is also enforced
+    await expect(
+      executor.execute(code, {
+        mode: 'query',
+        query: 'SELECT 1 AS n',
+        config: {
+          DATABASE_URL: process.env.DATABASE_URL,
+          LOBU_DB_EGRESS_POLICY: 'block-private',
+        },
+        checkpoint: null,
+        credentials: null,
+        sessionState: null,
+        env: {},
+      })
+    ).rejects.toThrow(/EgressDenied/);
+
+    // 2. Under allow-private policy, connection succeeds through isolate host socket
+    const res = await executor.execute(code, {
+      mode: 'query',
+      query: 'SELECT count(*)::int AS n FROM pgc_it',
+      config: { DATABASE_URL: process.env.DATABASE_URL },
+      checkpoint: null,
+      credentials: null,
+      sessionState: null,
+      env: { LOBU_DB_EGRESS_POLICY: 'allow-private' },
+    });
+    expect(res).toBeDefined();
+    expect((res as any).rows[0].n).toBe(3);
+
+    // 3. Under allow-private policy, sync mode runs inside isolate and emits all events
+    const emittedEvents: any[] = [];
+    const syncRes = await executor.execute(
+      code,
+      {
+        mode: 'sync',
+        feedKey: 'query',
+        config: {
+          DATABASE_URL: process.env.DATABASE_URL,
+          query: 'SELECT id, email, created_at FROM pgc_it',
+          primary_key: 'id',
+          cursor_column: 'created_at',
+        },
+        checkpoint: null,
+        credentials: null,
+        sessionState: null,
+        env: { LOBU_DB_EGRESS_POLICY: 'allow-private' },
+      },
+      {
+        onEventChunk: (events) => {
+          emittedEvents.push(...events);
+        },
+      }
+    );
+    expect(syncRes).toMatchObject({ mode: 'sync' });
+    expect(emittedEvents.map((e: any) => e.origin_id)).toEqual(['query:1', 'query:2', 'query:3']);
+  });
 });

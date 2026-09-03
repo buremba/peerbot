@@ -20,7 +20,6 @@ import type { AuthzScope } from '../authz/scope';
 import { getDb } from '../db/client';
 import { dbEgressConfig } from '../utils/cloud-mode';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
-import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import { isMetadataOnlyDeviceConnector, readDeviceFeed } from './device-feed-read';
@@ -120,10 +119,6 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
     config: Record<string, unknown> | null;
   };
 
-  // Execution-time cloud gate: blocking connection CREATION isn't enough — an
-  // existing raw-DB connection must not run pushdown under LOBU_CLOUD_MODE either.
-  assertConnectorAllowedInCloud(conn.connector_key);
-
   const compiledCode = await resolveConnectorCodeForKey(
     conn.connector_key,
     p.scope.organizationId
@@ -148,17 +143,16 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       // credentials + caller overrides (any connector-level config).
       // ONLY the connection's own credentials reach ctx.config — deliberately NOT
       // the gateway's process.env, so a connection missing DATABASE_URL fails
-      // cleanly instead of falling back to Lobu's own DB. The egress policy is the
       // one non-credential we inject: under cloud mode a DB connector must reject
       // internal/metadata hosts (block-private); self-hosted reaches its own
-      // private DB (allow-private). env is {} so this is the only channel for it.
-      // Injected LAST so neither caller config nor credentials can override this
-      // security control.
+      // private DB (allow-private). The egress policy rides on both config and env
+      // so the isolate's socketOpen and hostFetch enforce it. Injected LAST so
+      // neither caller config nor credentials can override this security control.
       config: {
         ...mergeExecutionConfig(conn.config, connectionCredentials, p.config),
         ...dbEgressConfig(),
       },
-      env: {},
+      env: dbEgressConfig(),
       sessionState,
       credentials,
       limit: p.limit,
@@ -400,9 +394,6 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
     throw new ToolError('NOT_FOUND', `feed '${p.feedId}' not found or not accessible`);
   }
 
-  // Execution-time cloud gate, identical to the slug pushdown above.
-  assertConnectorAllowedInCloud(feed.connector_key);
-
   if (metadataOnlyDeviceConnector) {
     remainingReadMs(p);
     return readDeviceFeed({
@@ -484,7 +475,7 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
       query: p.query,
       cursor: p.cursor,
       config,
-      env: {},
+      env: { ...dbEgressConfig() },
       sessionState,
       credentials,
       limit: p.limit,

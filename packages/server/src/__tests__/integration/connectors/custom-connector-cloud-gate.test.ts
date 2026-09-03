@@ -102,7 +102,7 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
     delete process.env.LOBU_CLOUD_MODE;
   });
 
-  it('queue admission refuses to create a sync run for org-supplied code', async () => {
+  it('queue admission admits sync run for org-supplied code on isolate lane', async () => {
     const sql = getTestDb();
     const { feedId, orgId } = await setupFeed(UNATTESTED_KEY);
     await makeArtifactOrgSupplied(orgId, UNATTESTED_KEY);
@@ -110,23 +110,12 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
     process.env.LOBU_CLOUD_MODE = '1';
     const created = await createSyncRun(feedId, {} as Env, sql);
 
-    expect(created.ok).toBe(false);
-    expect(created.ok ? null : created.reason).toBe('cloud_restricted');
-    // The reason code alone reads as an outage. `cloud_restricted` collapses
-    // two unrelated causes, and the sentence it maps to ("cannot run on Lobu
-    // Cloud yet") gave an operator nowhere to go — verified against prod,
-    // where that string is all a denied trigger_feed returns. The gate's own
-    // message names the provenance AND the supported path, so it rides along
-    // and wins in `describeSyncRunSkip`.
-    const detail = created.ok ? null : created.detail;
-    expect(detail).toContain('organization-supplied');
-    expect(detail).toMatch(/MCP/);
-    expect(describeSyncRunSkip('cloud_restricted', detail ?? undefined)).toBe(detail);
+    expect(created.ok).toBe(true);
     const runs = await sql`SELECT id FROM runs WHERE feed_id = ${feedId}`;
-    expect(runs.length).toBe(0);
+    expect(runs.length).toBe(1);
   });
 
-  it('the same org-supplied row is self-hostable — the gate is cloud mode, not the row', async () => {
+  it('the same org-supplied row is self-hostable', async () => {
     const sql = getTestDb();
     const { feedId, orgId } = await setupFeed();
     await makeArtifactOrgSupplied(orgId);
@@ -139,7 +128,7 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
     expect(runs.length).toBe(1);
   });
 
-  it('worker dispatch fails an already-claimed run rather than shipping org code', async () => {
+  it('worker dispatch admits claimed run on isolate lane', async () => {
     const sql = getTestDb();
     const { feedId, connId, orgId } = await setupFeed(UNATTESTED_KEY);
     const runId = await insertPendingRun(orgId, feedId, connId, UNATTESTED_KEY);
@@ -155,15 +144,10 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       run_id?: number;
-      skipped_run_id?: number;
-      error?: string;
+      lane?: string;
     };
-    expect(body.run_id).toBeUndefined();
-    expect(Number(body.skipped_run_id)).toBe(runId);
-    expect(body.error).toContain('CUSTOM_CONNECTOR_CLOUD_DISABLED');
-
-    const [row] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
-    expect((row as { status: string }).status).toBe('failed');
+    expect(body.run_id).toBe(runId);
+    expect(body.lane).toBe('isolate');
   });
 
   /**

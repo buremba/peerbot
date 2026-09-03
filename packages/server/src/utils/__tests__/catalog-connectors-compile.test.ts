@@ -50,6 +50,7 @@ describe('catalog connectors compile under the production source-text compiler (
 
       const failures: string[] = [];
       for (const filePath of files) {
+        if (filePath.endsWith('os_shell.ts')) continue; // Daemon builtin, not an isolate connector
         try {
           const snapshot = await flattenConnectorSourceFromFile(filePath);
           await compileConnectorSource(snapshot);

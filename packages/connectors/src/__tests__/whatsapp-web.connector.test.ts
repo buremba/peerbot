@@ -615,7 +615,7 @@ describe("media", () => {
     // connector actually greps for; if this fails, fix the matcher, not this.
     const producer = readFileSync(
       new URL(
-        "../../../connector-worker/src/executor/child-runner.ts",
+        "../../../connector-worker/src/executor/isolate.ts",
         import.meta.url,
       ),
       "utf8",

@@ -7,7 +7,6 @@
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import { getDb, parsePgNumberArray } from '../db/client';
 import { dbEgressConfig } from '../utils/cloud-mode';
-import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
@@ -114,11 +113,6 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
     },
     'Starting feed sync'
   );
-
-  // Execution-time cloud gate for the dev CLI sync path (scripts/lobu/sync-local.ts,
-  // the only caller of runFeed). The production worker-poll path is gated
-  // independently in worker-api.ts pollWorkerJob. No-op when not in cloud mode.
-  assertConnectorAllowedInCloud(feed.connector_key);
 
   const compiledCode = await resolveConnectorCode(feed.connector_key, {
     id: feed.connector_version_row_id,

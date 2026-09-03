@@ -1,4 +1,3 @@
-import { isCloudMode } from './cloud-mode';
 
 export type ConnectorCloudAvailability =
   | { allowed: true }
@@ -38,24 +37,14 @@ export const CLOUD_RESTRICTED_CONNECTOR_KEYS: ReadonlySet<string> = new Set([]);
 export const DB_EGRESS_HARDENED_CONNECTOR_KEYS: ReadonlySet<string> = new Set(['postgres']);
 
 export function getConnectorCloudAvailability(
-  connectorKey: string | null | undefined
+  _connectorKey: string | null | undefined
 ): ConnectorCloudAvailability {
-  if (connectorKey && CLOUD_RESTRICTED_CONNECTOR_KEYS.has(connectorKey) && isCloudMode()) {
-    return {
-      allowed: false,
-      reason: 'cloud_restricted',
-      message: `The '${connectorKey}' connector is not available on Lobu Cloud yet — it requires a self-hosted or single-tenant deployment. Reach out for enterprise database connectivity.`,
-    };
-  }
   return { allowed: true };
 }
 
 /**
- * Hard gate: throw when an org tries to create/use a cloud-restricted connector
- * while the gateway runs in multi-tenant cloud mode. Self-hosted (isCloudMode()
- * false) is unaffected — the operator's DATABASE_URL is a trusted secret.
+ * Connectors are allowed in Cloud mode; security is enforced by the Isolate sandbox.
  */
-export function assertConnectorAllowedInCloud(connectorKey: string | null | undefined): void {
-  const availability = getConnectorCloudAvailability(connectorKey);
-  if (!availability.allowed) throw new Error(availability.message);
+export function assertConnectorAllowedInCloud(_connectorKey: string | null | undefined): void {
+  // Permitted in Cloud mode.
 }

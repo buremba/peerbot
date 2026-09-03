@@ -117,7 +117,7 @@ describe('Automation schema vocabulary', () => {
               SELECT nextval('automations_id_seq')::int AS id
             )
             INSERT INTO automations (
-              id, organization_id, created_by, agent_id, automation_group_id,
+              id, organization_id, created_by, managed_agent_id, automation_group_id,
               name, slug
             )
             SELECT id, ${org.id}, ${user.id}, ${agent.agentId}, id, ${params.slug}, ${params.slug}
@@ -326,7 +326,7 @@ describe('Automation schema vocabulary', () => {
         SELECT nextval('automations_id_seq')::int AS id
       )
       INSERT INTO automations (
-        id, organization_id, created_by, agent_id, automation_group_id,
+        id, organization_id, created_by, managed_agent_id, automation_group_id,
         name, slug, sources
       )
       SELECT

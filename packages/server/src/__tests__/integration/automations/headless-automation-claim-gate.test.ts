@@ -92,7 +92,7 @@ async function setupDevicePinnedAutomation(opts: {
     name: 'Claim Gate Automation',
     prompt: 'Summarize {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   const automationId = Number(automation.automation_id);
 
@@ -322,7 +322,7 @@ describe('headless Automation claim gate (automations.execute)', () => {
     // was wired into device dispatch. They must keep dispatching with the
     // instructions prompt + exit-report completion, not fail at claim time.
     await ctx.sql`
-      UPDATE automations SET agent_id = NULL WHERE id = ${ctx.automationId}
+      UPDATE automations SET managed_agent_id = NULL WHERE id = ${ctx.automationId}
     `;
     const { token } = await createWorkerBoundPat(
       ctx.workspace.users.owner.id,
@@ -432,7 +432,7 @@ describe('headless Automation claim gate (automations.execute)', () => {
       platform: 'macos',
       capabilities: { 'automations.execute': true },
     });
-    await ctx.sql`UPDATE automations SET agent_id = NULL WHERE id = ${ctx.automationId}`;
+    await ctx.sql`UPDATE automations SET managed_agent_id = NULL WHERE id = ${ctx.automationId}`;
     const { token } = await createWorkerBoundPat(
       ctx.workspace.users.owner.id,
       ctx.workspace.org.id,

@@ -45,7 +45,7 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     slug: `${slug}-automation`,
     name: `${slug} Automation`,
     prompt: 'collect signals.',
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
 
   const created = (await workspace.owner.classifiers.create({

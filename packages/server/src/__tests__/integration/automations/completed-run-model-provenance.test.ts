@@ -46,7 +46,7 @@ async function createDispatchedRun(opts: {
 				skip_if_unchanged: false,
 			},
 		],
-		agent_id: agent.agentId,
+		managed_agent_id: agent.agentId,
 	})) as { automation_id: string };
 
 	const [run] = await sql`

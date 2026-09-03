@@ -94,7 +94,7 @@ describe("An Automation's output is visible when written and still not its own i
 				slug,
 				name: slug,
 				prompt: "Rank the day's stories.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				sources: [{ name: "stories", query: OPEN_SOURCE }],
 				entity_id: boundEntityId,
 				// Hourly cron. `AUTOMATION_TIME_GRANULARITIES` has no 'hourly', so this

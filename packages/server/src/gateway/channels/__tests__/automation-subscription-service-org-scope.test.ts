@@ -154,7 +154,7 @@ describe("AutomationSubscriptionService connection-scoped routing", () => {
 		await sql`
 			INSERT INTO automations (
 				id, name, slug, description, organization_id, entity_ids,
-				schedule, next_run_at, triggers, agent_id, model_config,
+				schedule, next_run_at, triggers, managed_agent_id, model_config,
 				execution_config, sources, version, current_version_id, tags,
 				status, created_by, created_at, updated_at, automation_group_id
 			) VALUES (
@@ -311,7 +311,7 @@ describe("AutomationSubscriptionService connection-scoped routing", () => {
 		const sql = getDb();
 		await sql`
 			INSERT INTO automations (
-				id, name, slug, organization_id, agent_id, created_by,
+				id, name, slug, organization_id, managed_agent_id, created_by,
 				automation_group_id
 			)
 			SELECT 1, 'Existing Automation', 'existing-automation', ${ORG_A},

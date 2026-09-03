@@ -18,7 +18,7 @@ function stubSql(
 			if (!automationExists) return Promise.resolve([]);
 			return Promise.resolve([
 				{
-					agent_id: ownerAgentId,
+					managed_agent_id: ownerAgentId,
 					owner_resolved: ownerAgentId == null ? true : agentExists,
 				},
 			]);

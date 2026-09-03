@@ -274,7 +274,7 @@ export function buildAttributionAndOwned(
     return {
       slug: d.slug,
       automation_id: r?.automation_id,
-      agent_id: p.agent,
+      managed_agent_id: p.agent,
       name: p.name,
       description: p.description,
       prompt: p.prompt,

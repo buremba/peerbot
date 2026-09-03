@@ -78,7 +78,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 				slug: "no-id-source",
 				name: "No Id Source",
 				prompt: "Track stuff.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				sources: [
 					{
 						name: "content",
@@ -95,7 +95,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 			slug: "with-id-source",
 			name: "With Id Source",
 			prompt: "Track stuff.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [
 				{
 					name: "content",
@@ -136,7 +136,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 			slug: "source-ref-context",
 			name: "Source Ref Context",
 			prompt: "Track {{content}} with customer context.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [
 				{ name: "content", query: "@feed:default" },
 				{ name: "customers", query: "@entity:customer" },
@@ -172,7 +172,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 			slug: "source-ref-org-count",
 			name: "Source Ref Org Count",
 			prompt: "Track {{content}}.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [{ name: "content", query: "@feed:default" }],
 		})) as { automation_id: string };
 
@@ -199,7 +199,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 			slug: "version-id-guard",
 			name: "Version Id Guard",
 			prompt: "Track stuff.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
 		})) as { automation_id: string };
 
@@ -224,7 +224,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 				slug: "typo-feed",
 				name: "Typo Feed",
 				prompt: "Track stuff.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				sources: [{ name: "content", query: "@feed:nonexistent-typo" }],
 			})
 		).rejects.toThrow(/nonexistent-typo/i);
@@ -251,7 +251,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 			slug: "channel-feed-src",
 			name: "Channel Feed Src",
 			prompt: "Track stuff.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [{ name: "content", query: "@feed:slack:C123" }],
 		})) as { automation_id: string };
 		expect(created.automation_id).toBeTruthy();
@@ -264,7 +264,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 				slug: "typo-entity",
 				name: "Typo Entity",
 				prompt: "Track stuff.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				sources: [{ name: "ctx", query: "@entity:nope-not-a-type" }],
 			})
 		).rejects.toThrow(/entity type/i);
@@ -277,7 +277,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 				slug: "typo-metric",
 				name: "Typo Metric",
 				prompt: "Track stuff.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				sources: [
 					{
 						name: "m",
@@ -296,7 +296,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 			slug: "cfv-base",
 			name: "CFV Base",
 			prompt: "Track stuff.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
 		})) as { automation_id: string };
 
@@ -334,7 +334,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 			slug: "cfv-base-ok",
 			name: "CFV Base OK",
 			prompt: "Track stuff.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
 		})) as { automation_id: string };
 
@@ -374,7 +374,7 @@ describe("manage_automations source-id + cross-org guards", () => {
 			slug: "foreign-del-target",
 			name: "Foreign Automation",
 			prompt: "Track stuff.",
-			agent_id: foreignAgent.agentId,
+			managed_agent_id: foreignAgent.agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
 		})) as { automation_id: string };
 		const foreignId = String(foreignAutomation.automation_id);

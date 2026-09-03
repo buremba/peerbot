@@ -201,7 +201,7 @@ async function manageAutomationsImpl(
   //
   // TOCTOU: gateAutomationWrite's escalation guard reads the affected automation owners
   // (resolveEffectiveAutomationOwners) and the mutation writes them, but on SEPARATE
-  // pooled connections. A concurrent reassign of the target automation's agent_id
+  // pooled connections. A concurrent reassign of the target automation's managed_agent_id
   // could slip between the check and the write, so the guard would pass on owner A
   // while the write lands on a now-B-owned Automation. We serialize both the guard
   // AND the mutation under ONE session-level advisory lock keyed by the target's
@@ -333,16 +333,16 @@ function automationWriteAction(
 
 /**
  * EVERY agent that ends up OWNING automation this write installs — resolved by what
- * each handler ACTUALLY persists, NOT the supplied `args.agent_id` (several handlers
+ * each handler ACTUALLY persists, NOT the supplied `args.managed_agent_id` (several handlers
  * ignore it). The guard requires all of them to be the actor itself. Returns `[]`
  * when there's nothing to check.
  *
- *  - `create`: the supplied `args.agent_id`, including an explicit null.
- *  - `create_from_version`: IGNORES args.agent_id — the clone inherits the SOURCE
- *    version's automation.agent_id.
- *  - `update`: an explicit args.agent_id (including null) becomes the new owner;
+ *  - `create`: the supplied `args.managed_agent_id`, including an explicit null.
+ *  - `create_from_version`: IGNORES args.managed_agent_id — the clone inherits the SOURCE
+ *    version's automation.managed_agent_id.
+ *  - `update`: an explicit args.managed_agent_id (including null) becomes the new owner;
  *    omission preserves the current owner.
- *  - `create_version` / `set_reaction_script`: IGNORE args.agent_id and write
+ *  - `create_version` / `set_reaction_script`: IGNORE args.managed_agent_id and write
  *    GROUP-WIDE (WHERE automation_group_id = …) → EVERY owner in the target's group is
  *    affected; a mixed-owner group means A editing its assignment also rewrites B's
  *    prompt/reaction code. Validate ALL of them.
@@ -358,37 +358,37 @@ async function resolveEffectiveAutomationOwners(
     case 'create':
       // Explicitly preserve the ownerless state. Humans bypass this guard, but
       // a non-human principal must not be able to shed its policy ancestry by
-      // creating an Automation with agent_id: null.
-      return [args.agent_id ?? null];
+      // creating an Automation with managed_agent_id: null.
+      return [args.managed_agent_id ?? null];
     case 'create_from_version': {
       if (!args.version_id) return [];
-      const rows = await sql<{ agent_id: string | null }>`
-        SELECT w.agent_id
+      const rows = await sql<{ managed_agent_id: string | null }>`
+        SELECT w.managed_agent_id
         FROM automation_versions wv JOIN automations w ON w.id = wv.automation_id
         WHERE wv.id = ${Number(args.version_id)} AND w.organization_id = ${ctx.organizationId}
         LIMIT 1
       `;
-      return rows.length > 0 ? [rows[0].agent_id ?? null] : [];
+      return rows.length > 0 ? [rows[0].managed_agent_id ?? null] : [];
     }
     case 'update': {
       // `undefined` means ownership is unchanged; `null` is an explicit clear
       // and must be checked as the effective owner rather than treated as
       // omission. Otherwise an agent could drop its own policy ancestor.
-      if (args.agent_id !== undefined) return [args.agent_id];
+      if (args.managed_agent_id !== undefined) return [args.managed_agent_id];
       if (args.automation_id == null) return [];
-      const rows = await sql<{ agent_id: string | null }>`
-        SELECT agent_id FROM automations
+      const rows = await sql<{ managed_agent_id: string | null }>`
+        SELECT managed_agent_id FROM automations
         WHERE id = ${Number(args.automation_id)} AND organization_id = ${ctx.organizationId}
         LIMIT 1
       `;
-      return rows.length > 0 ? [rows[0].agent_id ?? null] : [];
+      return rows.length > 0 ? [rows[0].managed_agent_id ?? null] : [];
     }
     case 'create_version':
     case 'set_reaction_script': {
       if (args.automation_id == null) return [];
       // Group-wide: EVERY owner in the target automation's group is affected.
-      const rows = await sql<{ agent_id: string | null }>`
-        SELECT DISTINCT agent_id FROM automations
+      const rows = await sql<{ managed_agent_id: string | null }>`
+        SELECT DISTINCT managed_agent_id FROM automations
         WHERE organization_id = ${ctx.organizationId}
           AND automation_group_id = (
             SELECT automation_group_id FROM automations
@@ -396,7 +396,7 @@ async function resolveEffectiveAutomationOwners(
             LIMIT 1
           )
       `;
-      return rows.map((r) => r.agent_id ?? null);
+      return rows.map((r) => r.managed_agent_id ?? null);
     }
     default:
       return [];
@@ -434,7 +434,7 @@ async function fetchCurrentAutomation(
   if (args.automation_id == null) return null;
   const sql = getDb();
   const rows = await sql`
-    SELECT id, slug, name, description, agent_id, schedule, timezone, triggers,
+    SELECT id, slug, name, description, managed_agent_id, schedule, timezone, triggers,
            delivery_target, status
     FROM automations
     WHERE organization_id = ${organizationId} AND id = ${Number(args.automation_id)}
@@ -472,9 +472,9 @@ function buildAutomationProposal(
       args.skills,
       args.reaction_script
     );
-    if (!args.agent_id) {
+    if (!args.managed_agent_id) {
       throw new ToolUserError(
-        'agent_id is required to create an Automation (the agent that executes it).'
+        'managed_agent_id is required to create an Automation (the agent that executes it).'
       );
     }
   }
@@ -539,7 +539,7 @@ const AUTOMATION_PATCHABLE_FIELDS = [
   // schedule/timezone are projections of triggers (resolveAutomationTriggerWrite);
   // patch them only via triggers, not as direct writable fields.
   'triggers',
-  'agent_id',
+  'managed_agent_id',
   'tags',
   'device_worker_id',
   'agent_kind',
@@ -573,7 +573,7 @@ function assertAutomationUpdateArgs(args: ManageAutomationsArgs): void {
   }
   if (present(AUTOMATION_PATCHABLE_FIELDS).length === 0) {
     throw new ToolUserError(
-      "update changes runtime config only (e.g. triggers, agent_id, tags, model_config) and needs at least one such field. It cannot change status — an Automation is retired via action: 'delete' (→ archived); name/description/prompt/sources are version-owned (action: 'create_version')."
+      "update changes runtime config only (e.g. triggers, managed_agent_id, tags, model_config) and needs at least one such field. It cannot change status — an Automation is retired via action: 'delete' (→ archived); name/description/prompt/sources are version-owned (action: 'create_version')."
     );
   }
 }
@@ -626,7 +626,7 @@ const AUTOMATION_APPROVAL_FIELD_TITLES: Record<string, string> = {
   schedule: 'Schedule',
   triggers: 'Triggers',
   timezone: 'Timezone',
-  agent_id: 'Agent',
+  managed_agent_id: 'Agent',
   automation_id: 'Automation ID',
   automation_ids: 'Automation IDs',
   version_id: 'Version ID',
@@ -846,7 +846,7 @@ async function queueAutomationWriteForApproval(
  * as the gate's `actor.kind === 'user'` branch). Throws ToolUserError 403.
  *
  * Uses {@link resolveEffectiveAutomationOwners} so the check matches what each
- * handler actually persists (not the supplied args.agent_id alone).
+ * handler actually persists (not the supplied args.managed_agent_id alone).
  */
 async function assertAutomationOwnersMatchActingAgent(
   args: ManageAutomationsArgs,
@@ -985,12 +985,12 @@ async function gateAutomationWrite(
   const actingAutomationId = ctx.actingAutomationId != null ? String(ctx.actingAutomationId) : null;
 
   // Escalation guard: a non-human caller must not end up installing automation OWNED by
-  // another agent. An automation's `agent_id` IS its policy principal, so if restricted
+  // another agent. An automation's `managed_agent_id` IS its policy principal, so if restricted
   // agent A could create/clone/edit an automation (or a group-shared prompt/reaction)
   // that stays owned by looser agent B, every later run would fold B's (looser)
   // envelope instead of A's, side-stepping A's deny rules. We validate what each
   // handler ACTUALLY persists (see resolveEffectiveAutomationOwners) — NOT the supplied
-  // `agent_id` (create_from_version/create_version/set_reaction_script ignore it) —
+  // `managed_agent_id` (create_from_version/create_version/set_reaction_script ignore it) —
   // and ALL owners a group-wide write touches. EVERY affected owner must be the actor
   // itself. Humans are ungoverned here and may own/assign freely.
   // MUST run BEFORE queueing so a foreign-owner proposal never becomes a pending card.

@@ -485,7 +485,7 @@ export class AutomationSubscriptionService {
 				});
 				await tx`
 					UPDATE automations
-					SET agent_id = ${agentId},
+					SET managed_agent_id = ${agentId},
 						triggers = ${tx.json([...kept, trigger])},
 						execution_config = CASE
 							WHEN ${model}::text IS NULL
@@ -515,7 +515,7 @@ export class AutomationSubscriptionService {
 			await tx`
 				INSERT INTO automations (
 					id, name, slug, description, organization_id, entity_ids,
-					schedule, next_run_at, triggers, agent_id, model_config,
+					schedule, next_run_at, triggers, managed_agent_id, model_config,
 					execution_config, sources, version, current_version_id, tags,
 					status, created_by, created_at, updated_at, automation_group_id,
 					next_window_start, completed_window_coverage, window_projection_granularity
@@ -576,7 +576,7 @@ export class AutomationSubscriptionService {
 				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
 				WHERE w.status = 'active'
 				  AND w.organization_id = ${orgId}
-				  AND w.agent_id = ${agentId}
+				  AND w.managed_agent_id = ${agentId}
 				  AND trigger->>'kind' = 'event'
 				  AND jsonb_typeof(trigger->'connection_id') = 'number'
 				  AND (trigger->>'connection_id')::bigint = ${connectionId}
@@ -654,7 +654,7 @@ export class AutomationSubscriptionService {
 				CROSS JOIN LATERAL jsonb_array_elements(COALESCE(w.triggers, '[]'::jsonb)) trigger
 				WHERE w.status = 'active'
 				  AND w.organization_id = ${orgId}
-				  AND w.agent_id = ${agentId}
+				  AND w.managed_agent_id = ${agentId}
 				  AND trigger->>'kind' = 'event'
 				  AND jsonb_typeof(trigger->'connection_id') = 'number'
 				  AND trigger->'event_types' ? 'message.created'

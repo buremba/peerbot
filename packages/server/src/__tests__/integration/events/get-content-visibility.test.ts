@@ -1142,7 +1142,7 @@ describe('getContent > source attribution fields across query branches', () => {
     await sql`
       INSERT INTO automations (
         id, name, slug, organization_id, entity_ids, schedule, timezone,
-        next_run_at, agent_id, model_config, sources, version, tags, status,
+        next_run_at, managed_agent_id, model_config, sources, version, tags, status,
         created_by, created_at, updated_at, automation_group_id, triggers
       ) VALUES (
         ${automationId}, 'Attribution Automation', 'attribution-automation',

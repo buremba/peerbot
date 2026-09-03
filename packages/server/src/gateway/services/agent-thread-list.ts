@@ -283,7 +283,7 @@ export async function listAgentThreads(args: {
       SELECT id, name, last_run_completed_at
       FROM public.automations
       WHERE organization_id = ${organizationId}
-        AND agent_id = ${agentId}
+        AND managed_agent_id = ${agentId}
         AND status = 'active'
         AND last_run_completed_at IS NOT NULL
       ORDER BY last_run_completed_at DESC

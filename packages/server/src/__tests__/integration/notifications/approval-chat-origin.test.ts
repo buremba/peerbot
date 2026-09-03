@@ -278,7 +278,7 @@ describe("resolveApprovalChatOrigin", () => {
 		});
 		const [automation] = await sql<{ id: number }[]>`
 			INSERT INTO automations (
-				organization_id, agent_id, created_by, automation_group_id, name
+				organization_id, managed_agent_id, created_by, automation_group_id, name
 			) VALUES (${org.id}, ${agent.agentId}, ${user.id}, 0, 'Hourly incident triage')
 			RETURNING id
 		`;

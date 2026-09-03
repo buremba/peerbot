@@ -106,7 +106,7 @@ describe("MCP entitySchema.createType approval", () => {
 
 	beforeEach(async () => {
 		await getDb()`DELETE FROM write_approval_policies WHERE organization_id = ${org.id}`;
-		await getDb()`UPDATE automations SET agent_id = NULL, status = 'active' WHERE id = ${automationId}`;
+		await getDb()`UPDATE automations SET managed_agent_id = NULL, status = 'active' WHERE id = ${automationId}`;
 	});
 
 	function inProcessAgentCtx(agentId: string): ToolContext {
@@ -392,7 +392,7 @@ describe("MCP entitySchema.createType approval", () => {
 			organizationId: org.id,
 			ownerUserId: owner.id,
 		});
-		await getDb()`UPDATE automations SET agent_id = ${originalOwner.agentId} WHERE id = ${automationId}`;
+		await getDb()`UPDATE automations SET managed_agent_id = ${originalOwner.agentId} WHERE id = ${automationId}`;
 		await upsertEntityApprovalPolicy(org.id, {
 			resourceClass: "entity_schema",
 			principalKind: "automation",
@@ -421,7 +421,7 @@ describe("MCP entitySchema.createType approval", () => {
 			},
 		);
 		expect(pending).toMatchObject({ status: "pending_approval" });
-		await getDb()`UPDATE automations SET agent_id = ${currentOwner.agentId} WHERE id = ${automationId}`;
+		await getDb()`UPDATE automations SET managed_agent_id = ${currentOwner.agentId} WHERE id = ${automationId}`;
 
 		const { response } = await resolveInApp(Number(pending.run_id), "approve");
 		expect(response.result?.isError).toBe(true);

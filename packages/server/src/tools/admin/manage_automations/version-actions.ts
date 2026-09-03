@@ -71,7 +71,7 @@ export async function handleCreateVersion(
   // schedule) to that specific row.
   const automationRows = await sql`
     SELECT i.id, i.version, i.current_version_id, i.automation_group_id, i.sources, i.organization_id,
-           i.entity_ids, i.schedule, i.timezone, i.triggers, i.agent_id,
+           i.entity_ids, i.schedule, i.timezone, i.triggers, i.managed_agent_id,
            i.device_worker_id::text AS device_worker_id, i.agent_kind,
            i.reaction_script
     FROM automations i WHERE i.id = ${args.automation_id}
@@ -198,7 +198,7 @@ export async function handleCreateVersion(
     // is gated above: inherited snapshots were already valid when pinned, and a
     // name-only bump must not start failing because a skill was since renamed or
     // disabled in the library. The stored text still runs either way.
-    const versionAgentId = automationRows[0].agent_id as string | null;
+    const versionAgentId = automationRows[0].managed_agent_id as string | null;
     if (args.skills !== undefined && skills.length > 0) {
       if (!versionAgentId) {
         throw new ToolUserError(
@@ -239,7 +239,7 @@ export async function handleCreateVersion(
   const setAsCurrentForMatrix = args.set_as_current !== false;
   if (setAsCurrentForMatrix && versionOrganizationId && triggersChanged) {
     const rowDefaults: AutomationExecutorDefaults = {
-      agentId: (automationRows[0].agent_id as string | null) ?? null,
+      agentId: (automationRows[0].managed_agent_id as string | null) ?? null,
       deviceWorkerId:
         (automationRows[0].device_worker_id as string | null) ?? null,
       agentKind: (automationRows[0].agent_kind as string | null) ?? null,

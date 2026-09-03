@@ -81,7 +81,7 @@ describe("manage_automations — create_version source ownership", () => {
 				slug,
 				name: "Digest",
 				prompt: "Write the digest.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx

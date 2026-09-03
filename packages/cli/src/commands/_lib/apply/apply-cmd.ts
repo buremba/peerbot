@@ -998,8 +998,8 @@ export async function executePlan(
             ...(scalarForUpdate.includes("triggers")
               ? { triggers: w.triggers ?? [] }
               : {}),
-            ...(scalarForUpdate.includes("agent_id")
-              ? { agent_id: w.agent }
+            ...(scalarForUpdate.includes("managed_agent_id")
+              ? { managed_agent_id: w.agent }
               : {}),
             ...(scalarForUpdate.includes("device_worker_id")
               ? { device_worker_id: w.deviceWorkerId ?? null }

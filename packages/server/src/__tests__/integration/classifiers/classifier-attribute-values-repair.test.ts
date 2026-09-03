@@ -50,7 +50,7 @@ describe('classifier attribute_values corruption (item 4)', () => {
       slug: 'attr-automation',
       name: 'Attr Automation',
       prompt: 'gather signals.',
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     automationId = w.automation_id;
   });

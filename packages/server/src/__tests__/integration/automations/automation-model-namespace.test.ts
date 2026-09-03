@@ -86,7 +86,7 @@ describe('execution_config.model namespace guard', () => {
         name: 'Server Lane Bad Model',
         prompt: 'Do a thing.',
         triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
-        agent_id: agentId,
+        managed_agent_id: agentId,
         execution_config: { model: 'opencode-go/deepseek-v4-flash' },
       })
     ).rejects.toThrow(/opencode-go/);
@@ -102,7 +102,7 @@ describe('execution_config.model namespace guard', () => {
         name: 'Server Lane Agent Kind Only',
         prompt: 'Do a thing.',
         triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
-        agent_id: agentId,
+        managed_agent_id: agentId,
         agent_kind: 'opencode',
         execution_config: { model: 'opencode-go/deepseek-v4-flash' },
       })
@@ -115,7 +115,7 @@ describe('execution_config.model namespace guard', () => {
       name: 'Server Lane Good Model',
       prompt: 'Do a thing.',
       triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
       execution_config: { model: 'deepseek/deepseek-v4-flash' },
     })) as { automation_id: string };
     expect(created.automation_id).toBeDefined();
@@ -127,7 +127,7 @@ describe('execution_config.model namespace guard', () => {
       name: 'Device Lane CLI Model',
       prompt: 'Do a thing.',
       triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
       agent_kind: 'opencode',
       device_worker_id: deviceWorkerId,
       execution_config: { model: 'opencode-go/deepseek-v4-flash' },
@@ -142,7 +142,7 @@ describe('execution_config.model namespace guard', () => {
         name: `Server Lane Unqualified ${index}`,
         prompt: 'Do a thing.',
         triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
-        agent_id: agentId,
+        managed_agent_id: agentId,
         execution_config: { model },
       })) as { automation_id: string };
       expect(created.automation_id).toBeDefined();
@@ -155,7 +155,7 @@ describe('execution_config.model namespace guard', () => {
       name: 'Server Lane Update Target',
       prompt: 'Do a thing.',
       triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     await expect(
@@ -193,7 +193,7 @@ describe('execution_config.model namespace guard', () => {
       name: 'Server Lane System Provider',
       prompt: 'Do a thing.',
       triggers: [{ kind: 'schedule', cron: '0 * * * *' }],
-      agent_id: agentId,
+      managed_agent_id: agentId,
       execution_config: { model: 'test-system-provider/some-model' },
     })) as { automation_id: string };
     expect(created.automation_id).toBeDefined();

@@ -56,7 +56,7 @@ describe('platform event subscriptions', () => {
       slug: 'connection-consumer',
       prompt: 'Handle the platform event.',
       triggers: workspaceTrigger(['connection.deleted']),
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     expect(Number(created.automation_id)).toBeGreaterThan(0);
   });
@@ -68,7 +68,7 @@ describe('platform event subscriptions', () => {
         slug: 'typo-consumer',
         prompt: 'Handle the platform event.',
         triggers: workspaceTrigger(['connection.delted']),
-        agent_id: agent.agentId,
+        managed_agent_id: agent.agentId,
       })
     ).rejects.toThrow(/does not declare workspace event/i);
   });
@@ -83,7 +83,7 @@ describe('platform event subscriptions', () => {
         slug: 'firehose-consumer',
         prompt: 'Handle every write.',
         triggers: workspaceTrigger(['change']),
-        agent_id: agent.agentId,
+        managed_agent_id: agent.agentId,
       })
     ).rejects.toThrow(/does not declare workspace event/i);
   });
@@ -101,7 +101,7 @@ describe('platform event subscriptions', () => {
       slug: 'invoice-consumer',
       prompt: 'Handle the invoice change.',
       triggers: workspaceTrigger(['entity.updated'], 'invoice'),
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     expect(Number(created.automation_id)).toBeGreaterThan(0);
   });
@@ -114,7 +114,7 @@ describe('platform event subscriptions', () => {
       slug: 'invoice-atomic-consumer',
       prompt: 'Handle invoice updates.',
       triggers: workspaceTrigger(['entity.updated'], 'invoice'),
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     });
     const created = (await api.entities.create({
       type: 'invoice',
@@ -206,7 +206,7 @@ describe('platform event subscriptions', () => {
       slug: 'union-consumer',
       prompt: 'Handle either.',
       triggers: workspaceTrigger(['risk_detected']),
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     expect(Number(created.automation_id)).toBeGreaterThan(0);
     expect(

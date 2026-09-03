@@ -59,7 +59,7 @@ async function seedRunnableWindow(reactionScript: string) {
 				skip_if_unchanged: false,
 			},
 		],
-		agent_id: agent.agentId,
+		managed_agent_id: agent.agentId,
 	})) as { automation_id: string };
 	const automationId = Number(automation.automation_id);
 

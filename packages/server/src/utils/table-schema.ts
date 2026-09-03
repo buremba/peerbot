@@ -466,7 +466,7 @@ export const QUERYABLE_SCHEMA = {
         'next_run_at',
         'consecutive_scheduled_failures',
         'schedule_auto_paused_at',
-        'agent_id',
+        'managed_agent_id',
         'model_config',
         'execution_config',
         'status',

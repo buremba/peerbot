@@ -1,9 +1,9 @@
 /**
  * Escalation guard on manage_automations (codex review 9, P1).
  *
- * An automation's `agent_id` IS its policy principal — every write the automation performs
+ * An automation's `managed_agent_id` IS its policy principal — every write the automation performs
  * folds that agent's envelope. So a NON-HUMAN caller must not be able to set/change
- * an automation's agent_id to a DIFFERENT agent: agent A (with a deny envelope) could
+ * an automation's managed_agent_id to a DIFFERENT agent: agent A (with a deny envelope) could
  * otherwise mint/reassign an automation owned by looser agent B and route its writes
  * through B, side-stepping A's rules. Humans are ungoverned and may assign freely.
  */
@@ -55,7 +55,7 @@ async function createAutomationAs(
 			slug,
 			name: slug,
 			prompt: "Track things.",
-			agent_id: agentIdForAutomation,
+			managed_agent_id: agentIdForAutomation,
 		},
 		TEST_ENV,
 		ctx
@@ -103,7 +103,7 @@ describe("manage_automations owner-escalation guard", () => {
 					slug: "agentless-escalation-attempt",
 					name: "agentless-escalation-attempt",
 					prompt: "Track things.",
-					agent_id: null,
+					managed_agent_id: null,
 				},
 				TEST_ENV,
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
@@ -118,7 +118,7 @@ describe("manage_automations owner-escalation guard", () => {
 			slug: "agent-a-owned-before-clear",
 			name: "agent-a-owned-before-clear",
 			prompt: "Track things.",
-			agent_id: agentA,
+			managed_agent_id: agentA,
 		})) as { automation_id: string };
 
 		await expect(
@@ -127,7 +127,7 @@ describe("manage_automations owner-escalation guard", () => {
 				{
 					action: "update",
 					automation_id: owned.automation_id,
-					agent_id: null,
+					managed_agent_id: null,
 				},
 				TEST_ENV,
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
@@ -136,11 +136,11 @@ describe("manage_automations owner-escalation guard", () => {
 			/cannot install an Automation owned by another agent/i
 		);
 
-		const [row] = await getTestDb()<{ agent_id: string | null }>`
-			SELECT agent_id FROM automations
+		const [row] = await getTestDb()<{ managed_agent_id: string | null }>`
+			SELECT managed_agent_id FROM automations
 			WHERE id = ${Number(owned.automation_id)}
 		`;
-		expect(row.agent_id).toBe(agentA);
+		expect(row.managed_agent_id).toBe(agentA);
 	});
 
 	it("a HUMAN may assign an automation to any agent (ungoverned)", async () => {
@@ -148,7 +148,7 @@ describe("manage_automations owner-escalation guard", () => {
 			slug: "human-assigns-b",
 			name: "human-assigns-b",
 			prompt: "Track things.",
-			agent_id: agentB,
+			managed_agent_id: agentB,
 		})) as { automation_id: string };
 		expect(created.automation_id).toBeDefined();
 	});
@@ -167,12 +167,12 @@ describe("manage_automations owner-escalation guard", () => {
 			slug: "b-owned-source",
 			name: "b-owned-source",
 			prompt: "Track things.",
-			agent_id: agentB,
+			managed_agent_id: agentB,
 		})) as { automation_id: string };
 		const [ver] = await getTestDb()<{ id: number }>`
       SELECT id FROM automation_versions WHERE automation_id = ${Number(bAutomation.automation_id)} ORDER BY id ASC LIMIT 1
     `;
-		// Agent A clones it WITHOUT supplying agent_id — the clone would inherit B's
+		// Agent A clones it WITHOUT supplying managed_agent_id — the clone would inherit B's
 		// owner. The guard resolves the effective (inherited) owner and blocks it.
 		await expect(
 			executeTool(
@@ -190,14 +190,14 @@ describe("manage_automations owner-escalation guard", () => {
 		);
 	});
 
-	it("blocks agent A from EDITING agent B's automation (preserved owner, no agent_id)", async () => {
+	it("blocks agent A from EDITING agent B's automation (preserved owner, no managed_agent_id)", async () => {
 		const bAutomation = (await workspace.owner.automations.create({
 			slug: "b-owned-edit",
 			name: "b-owned-edit",
 			prompt: "Track things.",
-			agent_id: agentB,
+			managed_agent_id: agentB,
 		})) as { automation_id: string };
-		// Agent A updates it WITHOUT agent_id — ownership stays B. Blocked because the
+		// Agent A updates it WITHOUT managed_agent_id — ownership stays B. Blocked because the
 		// preserved effective owner (B) isn't A.
 		await expect(
 			executeTool(
@@ -215,7 +215,7 @@ describe("manage_automations owner-escalation guard", () => {
 		);
 	});
 
-	it("create_from_version STILL blocked when A passes agent_id=A (handler ignores it, clone inherits B) (codex-12)", async () => {
+	it("create_from_version STILL blocked when A passes managed_agent_id=A (handler ignores it, clone inherits B) (codex-12)", async () => {
 		await workspace.owner.entity_schema.createType({
 			slug: "company",
 			name: "Company",
@@ -228,12 +228,12 @@ describe("manage_automations owner-escalation guard", () => {
 			slug: "b-owned-source-2",
 			name: "b-owned-source-2",
 			prompt: "Track things.",
-			agent_id: agentB,
+			managed_agent_id: agentB,
 		})) as { automation_id: string };
 		const [ver] = await getTestDb()<{ id: number }>`
       SELECT id FROM automation_versions WHERE automation_id = ${Number(bAutomation.automation_id)} ORDER BY id ASC LIMIT 1
     `;
-		// A supplies agent_id=A to try to satisfy the guard — but handleCreateFromVersion
+		// A supplies managed_agent_id=A to try to satisfy the guard — but handleCreateFromVersion
 		// IGNORES it and clones B's owner, so the guard must resolve the SOURCE owner.
 		await expect(
 			executeTool(
@@ -242,7 +242,7 @@ describe("manage_automations owner-escalation guard", () => {
 					action: "create_from_version",
 					version_id: String(ver.id),
 					entity_ids: [target.entity.id],
-					agent_id: agentA,
+					managed_agent_id: agentA,
 				},
 				TEST_ENV,
 				agentCtx(workspace.org.id, workspace.users.owner.id, agentA)
@@ -260,7 +260,7 @@ describe("manage_automations owner-escalation guard", () => {
 			slug: "a-owned-grouproot",
 			name: "a-owned-grouproot",
 			prompt: "Track things.",
-			agent_id: agentA,
+			managed_agent_id: agentA,
 		})) as { automation_id: string };
 		// Add a B-owned sibling into wA's group. Create it via the normal CRUD path
 		// (so all its rows/triggers are consistent), then move it into wA's group with
@@ -269,7 +269,7 @@ describe("manage_automations owner-escalation guard", () => {
 			slug: "b-sibling",
 			name: "b-sibling",
 			prompt: "Track things.",
-			agent_id: agentB,
+			managed_agent_id: agentB,
 		})) as { automation_id: string };
 		const [grp] = await getTestDb()<{ automation_group_id: number }>`
       SELECT automation_group_id FROM automations WHERE id = ${Number(wA.automation_id)} LIMIT 1

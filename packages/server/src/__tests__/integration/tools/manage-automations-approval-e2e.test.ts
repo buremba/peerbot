@@ -151,7 +151,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "human-automation",
 				name: "Human Automation",
 				prompt: "Track things.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx
@@ -178,7 +178,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "agent-proposed-automation",
 				name: "Agent Proposed",
 				prompt: "Track launches.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			agentCtx
@@ -241,7 +241,7 @@ describe("manage_automations — builder gate e2e", () => {
 				action: "create",
 				slug: "agent-proposed-skills-only",
 				name: "Agent Proposed Skills Only",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				skills: [
 					{
 						name: "approval-runbook",
@@ -266,7 +266,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "delivery-target-approval",
 				name: "Delivery Target Approval",
 				prompt: "Track routed notifications.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx
@@ -308,7 +308,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "approved-automation",
 				name: "Approved Automation",
 				prompt: "Track approved items.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			agentCtx
@@ -351,7 +351,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "write-scope-approved",
 				name: "Write Scope Approved",
 				prompt: "Track write-scope approvals.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			agentCtx
@@ -395,7 +395,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "rejected-automation",
 				name: "Rejected Automation",
 				prompt: "Track rejected items.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			agentCtx
@@ -437,7 +437,7 @@ describe("manage_automations — builder gate e2e", () => {
 					slug: "foreign-owned",
 					name: "Foreign Owned",
 					prompt: "Should not queue.",
-					agent_id: otherAgentId,
+					managed_agent_id: otherAgentId,
 				},
 				TEST_ENV,
 				agentCtx
@@ -465,7 +465,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "tz-fail-automation",
 				name: "TZ Fail Automation",
 				prompt: "Track timezone failures.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx
@@ -530,7 +530,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "noop-update-target",
 				name: "Noop target",
 				prompt: "Target.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx
@@ -554,7 +554,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "reaction-target",
 				name: "Reaction target",
 				prompt: "Target.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx
@@ -579,7 +579,7 @@ describe("manage_automations — builder gate e2e", () => {
 				slug: "a-owned-then-reassigned",
 				name: "A owned",
 				prompt: "Owned by agent A at queue time.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx
@@ -603,7 +603,7 @@ describe("manage_automations — builder gate e2e", () => {
 		// Race: the automation is reassigned to agent B while the approval is pending.
 		const sql = getTestDb();
 		await sql`
-			UPDATE automations SET agent_id = ${otherAgentId}
+			UPDATE automations SET managed_agent_id = ${otherAgentId}
 			WHERE id = ${automationId} AND organization_id = ${orgId}
 		`;
 

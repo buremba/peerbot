@@ -51,7 +51,7 @@ describe("Automation activation transactionality", () => {
 				slug: "transactional-coalesce",
 				name: "Transactional coalesce",
 				prompt: "Summarize changed pull requests.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",

@@ -57,7 +57,7 @@ async function seedRootAutomation(workspace: TestWorkspace, suffix: string) {
     name: `Digest ${suffix}`,
     prompt: 'Summarize content for {{entities}}.',
     triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   return { automationId: Number(automation.automation_id), entityId: entity.id };
 }
@@ -486,7 +486,7 @@ describe('automation group edit contract', () => {
   it('parseAutomationRunPayload tolerates legacy runs missing version_id', () => {
     const legacyPayload = {
       automation_id: 1,
-      agent_id: 'a',
+      managed_agent_id: 'a',
       window_start: '2024-01-01',
       window_end: '2024-01-02',
       dispatch_source: 'scheduled',

@@ -359,7 +359,7 @@ describe("Google Chat declared event action adapter", () => {
 					name: ["actor_name"],
 				},
 			},
-			agent_id: null,
+			managed_agent_id: null,
 		})) as { automation_id: string };
 		const automationId = Number(automation.automation_id);
 		const pollId = "release-2026-08-28";
@@ -406,7 +406,7 @@ describe("Google Chat declared event action adapter", () => {
 		});
 		await workspace.owner.automations.update({
 			automation_id: automation.automation_id,
-			agent_id: agent.agentId,
+			managed_agent_id: agent.agentId,
 			triggers: [
 				{
 					kind: "event",

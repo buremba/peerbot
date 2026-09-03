@@ -24,7 +24,7 @@ async function createAgentlessAutomation(opts: { slug: string }) {
     slug: opts.slug,
     name: `Manual Run Automation ${opts.slug}`,
     prompt: 'Summarize the bounded window.',
-    agent_id: null,
+    managed_agent_id: null,
   })) as { automation_id: string };
 
   return {
@@ -113,7 +113,7 @@ describe('abandoned manual Automation run expiry', () => {
     });
     await workspace.owner.automations.update({
       automation_id: automationId,
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
       triggers: [
         {
           kind: 'schedule',

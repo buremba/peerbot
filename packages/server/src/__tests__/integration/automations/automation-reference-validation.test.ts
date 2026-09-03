@@ -1,11 +1,11 @@
 /**
  * Foreign-key-shaped reference validation on manage_automations.
  *
- * `agent_id`, `outputs.*.entity`, and `outputs.*.event` are free-text references with NO
+ * `managed_agent_id`, `outputs.*.entity`, and `outputs.*.event` are free-text references with NO
  * database foreign key, so a typo is accepted and only fails much later — or
  * never fails at all, silently:
  *
- *  - `agent_id`: the scheduler joins automations to agents on `agent_id`, so a
+ *  - `managed_agent_id`: the scheduler joins automations to agents on `managed_agent_id`, so a
  *    nonexistent agent yields an Automation that reports status 'active' /
  *    health 'healthy' and never runs. `automations.create` documents
  *    `throws: ["EntityNotFound"]` for exactly this case (see
@@ -72,10 +72,10 @@ describe("manage_automations reference validation", () => {
 	});
 
 	// ============================================
-	// agent_id
+	// managed_agent_id
 	// ============================================
 
-	it("create rejects a nonexistent agent_id (documented EntityNotFound)", async () => {
+	it("create rejects a nonexistent managed_agent_id (documented EntityNotFound)", async () => {
 		await expect(
 			executeTool(
 				"manage_automations",
@@ -84,7 +84,7 @@ describe("manage_automations reference validation", () => {
 					slug: "ghost-agent",
 					name: "ghost-agent",
 					prompt: "Track things.",
-					agent_id: "agent-does-not-exist",
+					managed_agent_id: "agent-does-not-exist",
 				},
 				TEST_ENV,
 				ctx
@@ -92,7 +92,7 @@ describe("manage_automations reference validation", () => {
 		).rejects.toThrow(/Agent "agent-does-not-exist" not found/i);
 	});
 
-	it("create does NOT persist an Automation when agent_id is nonexistent", async () => {
+	it("create does NOT persist an Automation when managed_agent_id is nonexistent", async () => {
 		await executeTool(
 			"manage_automations",
 			{
@@ -100,7 +100,7 @@ describe("manage_automations reference validation", () => {
 				slug: "ghost-agent-norow",
 				name: "ghost-agent-norow",
 				prompt: "Track things.",
-				agent_id: "agent-does-not-exist",
+				managed_agent_id: "agent-does-not-exist",
 			},
 			TEST_ENV,
 			ctx
@@ -112,7 +112,7 @@ describe("manage_automations reference validation", () => {
 		expect(rows).toHaveLength(0);
 	});
 
-	it("create rejects an agent_id belonging to ANOTHER organization", async () => {
+	it("create rejects a managed_agent_id belonging to ANOTHER organization", async () => {
 		const other = await TestWorkspace.create({ name: "Other Org" });
 		const foreign = await createTestAgent({
 			organizationId: other.org.id,
@@ -127,7 +127,7 @@ describe("manage_automations reference validation", () => {
 					slug: "cross-org-agent",
 					name: "cross-org-agent",
 					prompt: "Track things.",
-					agent_id: foreign.agentId,
+					managed_agent_id: foreign.agentId,
 				},
 				TEST_ENV,
 				ctx
@@ -135,7 +135,7 @@ describe("manage_automations reference validation", () => {
 		).rejects.toThrow(/not found/i);
 	});
 
-	it("update rejects a nonexistent agent_id", async () => {
+	it("update rejects a nonexistent managed_agent_id", async () => {
 		const created = (await executeTool(
 			"manage_automations",
 			{
@@ -143,7 +143,7 @@ describe("manage_automations reference validation", () => {
 				slug: "update-agent-target",
 				name: "update-agent-target",
 				prompt: "Track things.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ctx
@@ -155,7 +155,7 @@ describe("manage_automations reference validation", () => {
 				{
 					action: "update",
 					automation_id: created.automation_id,
-					agent_id: "agent-does-not-exist",
+					managed_agent_id: "agent-does-not-exist",
 				},
 				TEST_ENV,
 				ctx
@@ -163,13 +163,13 @@ describe("manage_automations reference validation", () => {
 		).rejects.toThrow(/Agent "agent-does-not-exist" not found/i);
 
 		// The stored owner must be untouched by the rejected update.
-		const [row] = await getTestDb()<{ agent_id: string }>`
-      SELECT agent_id FROM automations WHERE id = ${Number(created.automation_id)}
+		const [row] = await getTestDb()<{ managed_agent_id: string }>`
+      SELECT managed_agent_id FROM automations WHERE id = ${Number(created.automation_id)}
     `;
-		expect(row.agent_id).toBe(agentId);
+		expect(row.managed_agent_id).toBe(agentId);
 	});
 
-	it("create/update accept a real agent_id", async () => {
+	it("create/update accept a real managed_agent_id", async () => {
 		const created = (await executeTool(
 			"manage_automations",
 			{
@@ -177,7 +177,7 @@ describe("manage_automations reference validation", () => {
 				slug: "happy-agent",
 				name: "happy-agent",
 				prompt: "Track things.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ctx
@@ -193,12 +193,12 @@ describe("manage_automations reference validation", () => {
 			{
 				action: "update",
 				automation_id: created.automation_id,
-				agent_id: second.agentId,
+				managed_agent_id: second.agentId,
 			},
 			TEST_ENV,
 			ctx
 		)) as { updated_fields: string[] };
-		expect(updated.updated_fields).toContain("agent_id");
+		expect(updated.updated_fields).toContain("managed_agent_id");
 	});
 
 	// ============================================
@@ -214,7 +214,7 @@ describe("manage_automations reference validation", () => {
 					slug: "ghost-entity-type",
 					name: "ghost-entity-type",
 					prompt: "Track things.",
-					agent_id: agentId,
+					managed_agent_id: agentId,
 					outputs: {
 						rows: { entity: "not-a-real-type", key: ["sku"] },
 					},
@@ -238,7 +238,7 @@ describe("manage_automations reference validation", () => {
 				slug: "real-entity-type",
 				name: "real-entity-type",
 				prompt: "Track things.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				outputs: {
 					prices: { entity: "price", key: ["sku"] },
 				},
@@ -266,7 +266,7 @@ describe("manage_automations reference validation", () => {
 					action: "create",
 					slug: "bad-output-key",
 					prompt: "Track prices.",
-					agent_id: agentId,
+					managed_agent_id: agentId,
 					outputs: {
 						prices: { entity: "typed-price", key: ["skuu"], name: ["label"] },
 					},
@@ -305,7 +305,7 @@ describe("manage_automations reference validation", () => {
 				action: "create",
 				slug: "local-shadow-output",
 				prompt: "Track local rows.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				outputs: {
 					rows: { entity: "shadowed-output", key: ["local_key"] },
 				},
@@ -325,7 +325,7 @@ describe("manage_automations reference validation", () => {
 				slug: "version-entity-type",
 				name: "version-entity-type",
 				prompt: "Track things.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ctx
@@ -356,7 +356,7 @@ describe("manage_automations reference validation", () => {
 					action: "create",
 					slug: "ghost-event-type",
 					prompt: "Track things.",
-					agent_id: agentId,
+					managed_agent_id: agentId,
 					outputs: { alerts: { event: "not_a_registered_kind" } },
 				},
 				TEST_ENV,
@@ -370,7 +370,7 @@ describe("manage_automations reference validation", () => {
 				action: "create",
 				slug: "event-version-target",
 				prompt: "Track things.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ctx
@@ -396,7 +396,7 @@ describe("manage_automations reference validation", () => {
 				action: "create",
 				slug: "draft-reply-output",
 				prompt: "Draft a reply without publishing it.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 				outputs: { drafts: { event: "draft_reply" } },
 			},
 			TEST_ENV,
@@ -413,7 +413,7 @@ describe("manage_automations reference validation", () => {
 				{
 					action: "create",
 					slug: "turn-output",
-					agent_id: agentId,
+					managed_agent_id: agentId,
 					outputs: { alerts: { event: "observation" } },
 					triggers: [
 						{

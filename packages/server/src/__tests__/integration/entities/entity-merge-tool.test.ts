@@ -354,7 +354,7 @@ describe("manage_entity merge action", () => {
 		const sql = getTestDb();
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
          status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -910,7 +910,7 @@ describe("manage_entity merge action", () => {
 		const sql = getTestDb();
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
          status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -964,7 +964,7 @@ describe("manage_entity merge action", () => {
 		const sql = getTestDb();
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
          status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -1087,7 +1087,7 @@ describe("manage_entity merge action", () => {
 		`;
 		await sql`
 			INSERT INTO automations
-			  (id, organization_id, agent_id, created_by, automation_group_id, name,
+			  (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
 			   status, min_cooldown_seconds,
 			   created_at, updated_at)
 			VALUES
@@ -1193,7 +1193,7 @@ describe("manage_entity merge action", () => {
 		`;
 		await sql`
 			INSERT INTO automations
-			  (id, organization_id, agent_id, created_by, automation_group_id, name,
+			  (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
 			   status, min_cooldown_seconds,
 			   created_at, updated_at)
 			VALUES
@@ -1459,7 +1459,7 @@ export default (row) => {
 		`;
 		await sql`
 			INSERT INTO automations
-			  (id, organization_id, agent_id, created_by, automation_group_id, name,
+			  (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
 			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1513,7 +1513,7 @@ export default (row) => {
 		`;
 		await sql`
 			INSERT INTO automations
-			  (id, organization_id, agent_id, created_by, automation_group_id, name,
+			  (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
 			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1598,7 +1598,7 @@ export default (row) => {
 		`;
 		await sql`
 			INSERT INTO automations
-			  (id, organization_id, agent_id, created_by, automation_group_id, name,
+			  (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
 			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1651,7 +1651,7 @@ export default (row) => {
 		const sql = getTestDb();
 		await sql`
 			INSERT INTO automations
-			  (id, organization_id, agent_id, created_by, automation_group_id, name,
+			  (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
 			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1732,7 +1732,7 @@ export default (row) => {
 		`;
 		await sql`
 			INSERT INTO automations
-			  (id, organization_id, agent_id, created_by, automation_group_id, name,
+			  (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
 			   status,
 			   min_cooldown_seconds, created_at, updated_at)
 			VALUES
@@ -1891,7 +1891,7 @@ export default (row) => {
     `;
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
          status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -1982,7 +1982,7 @@ export default (row) => {
 		const sql = getTestDb();
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
          status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -2041,7 +2041,7 @@ export default (row) => {
 		const sql = getTestDb();
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
          status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES
@@ -2215,7 +2215,7 @@ export default (row) => {
 		const sql = getTestDb();
 		await sql`
       INSERT INTO automations
-        (id, organization_id, agent_id, created_by, automation_group_id, name,
+        (id, organization_id, managed_agent_id, created_by, automation_group_id, name,
          status, min_cooldown_seconds,
          created_at, updated_at)
       VALUES

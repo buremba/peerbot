@@ -58,7 +58,7 @@ async function setup() {
     SELECT "userId" FROM "member" WHERE "organizationId" = ${org.id} LIMIT 1
   `;
 	const createdBy = (member?.userId as string) ?? "test-seed-user";
-	// A REAL automation (with an owning agent) — the gate resolves automations.agent_id and
+	// A REAL automation (with an owning agent) — the gate resolves automations.managed_agent_id and
 	// FAILS CLOSED if the automation row is missing, so a fake id would now deny every
 	// write. We exercise the interceptor fail-closed here, not owner-resolution.
 	const agent = await createTestAgent({
@@ -72,7 +72,7 @@ async function setup() {
   `;
 	const automationId = Number(nextid);
 	await sql`
-    INSERT INTO automations (id, organization_id, slug, name, agent_id, created_by, automation_group_id, created_at, updated_at)
+    INSERT INTO automations (id, organization_id, slug, name, managed_agent_id, created_by, automation_group_id, created_at, updated_at)
     VALUES (${automationId}, ${org.id}, 'gate-fail-closed', 'Gate Fail Closed', ${agent.agentId}, ${createdBy}, ${automationId}, NOW(), NOW())
   `;
 	const [run] = await sql<{ id: number }[]>`

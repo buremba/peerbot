@@ -201,7 +201,7 @@ describe('getContent > score path honours forwarded filters', () => {
     const sql = getTestDb();
     await sql`
       INSERT INTO automations
-        (id, organization_id, created_by, automation_group_id, name, slug, agent_id)
+        (id, organization_id, created_by, automation_group_id, name, slug, managed_agent_id)
       VALUES
         (${AUTOMATION_A}, ${org.id}, ${user.id}, ${AUTOMATION_A}, 'Score A', 'score-a', ${AGENT_A}),
         (${AUTOMATION_B}, ${org.id}, ${user.id}, ${AUTOMATION_B}, 'Score B', 'score-b', ${AGENT_B})

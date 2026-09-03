@@ -436,10 +436,10 @@ routes.get("/", async (c) => {
 		countRuntimeMessagingClientsByAgent(orgId),
 		// Automations owned by each agent (active only).
 		sql`
-        SELECT agent_id, count(*)::int as count
+        SELECT managed_agent_id, count(*)::int as count
         FROM automations
-        WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
-        GROUP BY agent_id
+        WHERE organization_id = ${orgId} AND status = 'active' AND managed_agent_id IS NOT NULL
+        GROUP BY managed_agent_id
       `,
 		// Distinct end-users per agent across messaging platforms.
 		sql`
@@ -481,7 +481,7 @@ routes.get("/", async (c) => {
 		for (const clientId of runtimeIds) ids.add(clientId);
 	}
 	const automationCountMap = new Map(
-		automationCounts.map((r: any) => [r.agent_id, r.count])
+		automationCounts.map((r: any) => [r.managed_agent_id, r.count])
 	);
 	const userCountMap = new Map(
 		userCounts.map((r: any) => [r.agent_id, r.count])
@@ -1614,7 +1614,7 @@ routes.get("/:agentId/config", async (c) => {
 // AuthZ: org-scoped by the middleware `organizationId`; the held proposal must
 // also TARGET `:agentId`. Scoped to manage_agents update runs, whose proposal
 // carries agent_id at the top level (manage_automations, whose proposal nests
-// agent_id under `args`, is excluded — see below).
+// managed_agent_id under `args`, is excluded — see below).
 routes.get("/:agentId/config/pending/:runId", async (c) => {
 	const { agentId } = c.req.param();
 	const organizationId = c.get("organizationId") as string;
@@ -1653,7 +1653,7 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 	// for an update. A create has no existing agent to render; a delete would show
 	// ordinary config fields + a generic Approve that silently DELETES the agent —
 	// so both 404 here (they keep the run-permalink review path). manage_automations
-	// proposals (`{ args, actingAgentId, ... }`, automation-shaped, agent_id in args)
+	// proposals (`{ args, actingAgentId, ... }`, automation-shaped, managed_agent_id in args)
 	// belong to a separate automation review surface. Anything else 404s.
 	const rawProposal = row.proposal ?? null;
 	if (
@@ -1691,7 +1691,7 @@ routes.get("/:agentId/config/pending/:runId", async (c) => {
 //
 // AuthZ: org-scoped by middleware; the held proposal must target `:automationId`
 // AND be owned by `:agentId`. A manage_automations proposal is `{ args, ... }` with
-// automation_id / agent_id nested INSIDE `args` (unlike manage_agents, top-level) —
+// automation_id / managed_agent_id nested INSIDE `args` (unlike manage_agents, top-level) —
 // hence a separate endpoint rather than folding into the agent one.
 routes.get("/:agentId/automations/:automationId/pending/:runId", async (c) => {
 	const { agentId, automationId } = c.req.param();
@@ -1740,7 +1740,7 @@ routes.get("/:agentId/automations/:automationId/pending/:runId", async (c) => {
 	}
 
 	// manage_automations proposal nests the target under `args`. The held proposal
-	// must target the automation in the path, and its owning agent (args.agent_id ??
+	// must target the automation in the path, and its owning agent (args.managed_agent_id ??
 	// current owner) must be the agent in the path. Don't leak cross-target/agent
 	// existence — same 404 as "no pending proposal".
 	const args = (rawProposal as { args?: Record<string, unknown> }).args ?? null;
@@ -1753,8 +1753,8 @@ routes.get("/:agentId/automations/:automationId/pending/:runId", async (c) => {
 	}
 	const current = row.current ?? null;
 	const ownerAgentId =
-		(args.agent_id as string | null | undefined) ??
-		(current?.agent_id as string | null | undefined) ??
+		(args.managed_agent_id as string | null | undefined) ??
+		(current?.managed_agent_id as string | null | undefined) ??
 		null;
 	if (ownerAgentId !== agentId) {
 		return c.json({ error: "No pending proposal for this run" }, 404);

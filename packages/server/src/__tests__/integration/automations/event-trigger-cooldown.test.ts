@@ -106,7 +106,7 @@ async function automationWithCooldown(
 			slug,
 			name: `Cooldown ${slug}`,
 			prompt: "Summarize changed pull requests.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			min_cooldown_seconds: cooldownSeconds,
 			triggers: [
 				{

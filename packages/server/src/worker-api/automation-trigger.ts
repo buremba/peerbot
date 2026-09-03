@@ -87,14 +87,14 @@ export async function triggerAutomationForDevice(c: Context<{ Bindings: Env }>) 
   //       the user owns both devices, A cannot trigger an automation pinned to B
   //       — that's a different pairing in the UI.
   const automationRows = (await sql`
-    SELECT id, organization_id, agent_id, status, device_worker_id::text AS device_worker_id
+    SELECT id, organization_id, managed_agent_id, status, device_worker_id::text AS device_worker_id
     FROM automations
     WHERE id = ${automationId}
     LIMIT 1
   `) as unknown as Array<{
     id: number;
     organization_id: string;
-    agent_id: string | null;
+    managed_agent_id: string | null;
     status: string;
     device_worker_id: string | null;
   }>;

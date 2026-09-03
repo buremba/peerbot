@@ -168,7 +168,7 @@ describe('prune (server gate)', () => {
       const agent = await createTestAgent({ organizationId: orgId });
       const created = (await owner.automations.create({
         slug: 'prune-automation',
-        agent_id: agent.agentId,
+        managed_agent_id: agent.agentId,
         prompt: 'Watch for things.',
       })) as { automation_id?: string };
       expect(created.automation_id).toBeTruthy();

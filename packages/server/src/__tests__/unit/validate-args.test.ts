@@ -364,7 +364,7 @@ describe("registry completeness", () => {
     expect(
       validateToolArgs("manage_automations", schema, {
         action: "list",
-        agent_id: "agent-1",
+        managed_agent_id: "agent-1",
         status: "active",
         include_details: true,
         order_by: "last_fired_at",

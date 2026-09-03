@@ -47,7 +47,7 @@ describe("platform-derived connector activation", () => {
 				slug: "x-home-listener",
 				name: "X home listener",
 				prompt: "Draft a reply worth making.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",
@@ -158,7 +158,7 @@ describe("platform-derived connector activation", () => {
 				slug: "x-cold-listener",
 				name: "X cold listener",
 				prompt: "Draft a reply worth making.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",
@@ -254,7 +254,7 @@ describe("platform-derived connector activation", () => {
 				slug: "x-stream-listener",
 				name: "X stream listener",
 				prompt: "Draft a reply worth making.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",
@@ -355,7 +355,7 @@ describe("platform-derived connector activation", () => {
 				slug: "x-deleted-listener",
 				name: "X deleted listener",
 				prompt: "Draft a reply worth making.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",
@@ -450,7 +450,7 @@ describe("platform-derived connector activation", () => {
 				slug: "x-overlong-listener",
 				name: "X overlong listener",
 				prompt: "Draft a reply worth making.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",

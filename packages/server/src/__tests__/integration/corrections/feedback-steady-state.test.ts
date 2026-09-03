@@ -34,7 +34,7 @@ describe('feedback correction-events steady state (P1 phase 4)', () => {
     const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
     const automationId = 953000;
     await sql`
-      INSERT INTO automations (id, name, slug, created_by, organization_id, agent_id, automation_group_id)
+      INSERT INTO automations (id, name, slug, created_by, organization_id, managed_agent_id, automation_group_id)
       VALUES (${automationId}, 'w', 'w-fss', ${user.id}, ${org.id}, ${agent.agentId}, ${automationId})
     `;
     const runId = await createAutomationResultRun({

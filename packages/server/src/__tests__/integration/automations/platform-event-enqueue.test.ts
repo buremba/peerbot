@@ -53,7 +53,7 @@ async function subscriber(name: string, eventTypes: string[]) {
         active_run: 'queue',
       },
     ],
-    agent_id: agent.agentId,
+    managed_agent_id: agent.agentId,
   })) as { automation_id: string };
   return {
     organizationId: workspace.org.id,
@@ -72,7 +72,7 @@ async function secondAutomation(
   const created = (await api.automations.create({
     slug,
     prompt: 'Upstream automation.',
-    agent_id: agentId,
+    managed_agent_id: agentId,
   })) as { automation_id: string };
   return Number(created.automation_id);
 }

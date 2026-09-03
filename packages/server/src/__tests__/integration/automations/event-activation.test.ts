@@ -54,7 +54,7 @@ describe("Automation connector-event activation", () => {
 				slug: "github-pr-created",
 				name: "GitHub PR created",
 				prompt: "Review the incoming pull request.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [trigger],
 			},
 			{} as Env,
@@ -149,7 +149,7 @@ describe("Automation connector-event activation", () => {
 				slug: "github-pr-window",
 				name: "GitHub PR window",
 				prompt: "Summarize changed pull requests.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",
@@ -224,7 +224,7 @@ describe("Automation connector-event activation", () => {
 				slug: "github-mixed-delivery-policy",
 				name: "GitHub mixed delivery policy",
 				prompt: "Handle changed pull requests.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",
@@ -322,7 +322,7 @@ describe("Automation connector-event activation", () => {
 				slug: "event-failure-with-schedule",
 				name: "Event failure with schedule",
 				prompt: "Handle the delivery.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				triggers: [
 					{
 						kind: "event",
@@ -404,7 +404,7 @@ describe("Automation connector-event activation", () => {
 					slug,
 					name: slug,
 					prompt: "Handle the connector delivery.",
-					agent_id: agent.agentId,
+					managed_agent_id: agent.agentId,
 					triggers: [
 						{
 							kind: "event",
@@ -468,7 +468,7 @@ describe("Automation connector-event activation", () => {
 					slug,
 					name: slug,
 					prompt: "Handle the incoming event.",
-					agent_id: agent.agentId,
+					managed_agent_id: agent.agentId,
 					triggers: [
 						{
 							kind: "event",

@@ -78,7 +78,7 @@ interface EntityMutationBase {
 	 * folded max-restrictive — so an agent's envelope binds its automation, while a
 	 * pre-existing automation-specific restriction can only tighten (the agent
 	 * envelope never loosens it away). Null when not an automation, or an automation with
-	 * no agent. `automations.agent_id` is the sole principal-ownership edge, so this
+	 * no agent. `automations.managed_agent_id` is the sole principal-ownership edge, so this
 	 * is the only ancestor a write ever folds.
 	 */
 	ownerAgentId?: string | null;

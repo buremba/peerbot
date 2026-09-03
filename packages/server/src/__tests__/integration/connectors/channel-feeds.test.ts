@@ -216,7 +216,7 @@ describe("channel feeds", () => {
     const created = (await workspace.owner.automations.create({
       slug: "versioned-channel-feed",
       prompt: "Respond to channel messages.",
-      agent_id: agentId,
+      managed_agent_id: agentId,
       triggers: [],
     })) as { automation_id: string };
     const messageTrigger = {

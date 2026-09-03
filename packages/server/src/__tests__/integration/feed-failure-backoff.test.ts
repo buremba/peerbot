@@ -265,7 +265,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
         slug: 'feed-auto-pause-test',
         name: 'Feed auto-pause test',
         prompt: 'Notify about the paused feed.',
-        agent_id: agent.agentId,
+        managed_agent_id: agent.agentId,
         triggers: [
           {
             kind: 'event',
@@ -367,7 +367,7 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
         slug: 'feed-auto-pause-resume-test',
         name: 'Feed auto-pause resume test',
         prompt: 'Notify about the paused feed.',
-        agent_id: agent.agentId,
+        managed_agent_id: agent.agentId,
         triggers: [
           {
             kind: 'event',

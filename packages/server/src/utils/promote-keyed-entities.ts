@@ -290,7 +290,7 @@ async function upsertKeyedEntity(params: {
   /** Automation whose run is promoting this entity — used for per-principal policy. */
   automationId: number;
   /**
-   * The agent that owns this automation (automations.agent_id). The gate resolves the
+   * The agent that owns this automation (automations.managed_agent_id). The gate resolves the
    * principal to this agent id so the agent's own envelope binds the automation's
    * writes; null when the automation row is missing (see automationOwnerResolved).
    */
@@ -675,7 +675,7 @@ export async function promoteAutomationEntityOutput(
   }
 
   // An automation IS an agent's autonomous mode: resolve the owning agent so its
-  // write envelope binds these promotions (automations.agent_id is NOT NULL). The
+  // write envelope binds these promotions (automations.managed_agent_id, when set). The
   // principal resolves to the agent id — the same id the agent uses when acting
   // attended — and mode 'autonomous' lets the agent set a stricter automation-only
   // envelope. Without this, an agent's own delete=deny would NOT bind its own

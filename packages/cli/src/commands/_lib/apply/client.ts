@@ -148,7 +148,7 @@ export interface RemoteAutomation {
   slug: string;
   name?: string;
   automation_id?: string;
-  agent_id?: string | null;
+  managed_agent_id?: string | null;
   triggers?: import("@lobu/core/contracts/tools/manage-automations").AutomationTrigger[];
   device_worker_id?: string | null;
   goal_id?: number | null;
@@ -1110,7 +1110,7 @@ export class ApplyClient {
       {
         action: "create",
         slug: payload.slug,
-        agent_id: payload.agentId,
+        managed_agent_id: payload.agentId,
         ...(payload.name ? { name: payload.name } : {}),
         ...(payload.description ? { description: payload.description } : {}),
         prompt: payload.prompt,
@@ -1161,7 +1161,7 @@ export class ApplyClient {
   async updateAutomation(payload: {
     automation_id: string;
     triggers?: import("@lobu/core/contracts/tools/manage-automations").AutomationTrigger[];
-    agent_id?: string;
+    managed_agent_id?: string;
     device_worker_id?: string | null;
     min_cooldown_seconds?: number;
     tags?: string[];
@@ -1172,7 +1172,9 @@ export class ApplyClient {
       action: "update",
       automation_id: payload.automation_id,
       ...(payload.triggers !== undefined ? { triggers: payload.triggers } : {}),
-      ...(payload.agent_id !== undefined ? { agent_id: payload.agent_id } : {}),
+      ...(payload.managed_agent_id !== undefined
+        ? { managed_agent_id: payload.managed_agent_id }
+        : {}),
       ...(payload.device_worker_id !== undefined
         ? { device_worker_id: payload.device_worker_id }
         : {}),

@@ -155,19 +155,22 @@ describe("automation event trigger", () => {
 });
 
 describe("manage Automations agent assignment", () => {
-  test("accepts null to clear agent_id and rejects an empty-string workaround", () => {
+  test("accepts null to clear managed_agent_id and rejects an empty-string workaround", () => {
     expect(
       Value.Check(ManageAutomationsSchema, {
         action: "update",
         automation_id: "1",
-        agent_id: null,
+        managed_agent_id: null,
       })
     ).toBe(true);
+    // The contract has always rejected '' here; the row that reached production
+    // in that state got there off this path, which is why
+    // `automations_managed_agent_id_nonempty` now enforces it in storage too.
     expect(
       Value.Check(ManageAutomationsSchema, {
         action: "update",
         automation_id: "1",
-        agent_id: "",
+        managed_agent_id: "",
       })
     ).toBe(false);
   });

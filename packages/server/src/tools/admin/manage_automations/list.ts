@@ -61,7 +61,7 @@ export async function handleList(
       i.consecutive_scheduled_failures,
       i.schedule_auto_paused_at,
       i.last_event_activation_at AS health_last_event_activation_at,
-      i.agent_id,
+      i.managed_agent_id,
       i.device_worker_id,
       i.last_fired_at,
       -- Materialized completion stamp of the most recent completed run,
@@ -148,9 +148,9 @@ export async function handleList(
 		paramCount++;
 	}
 
-	if (args.agent_id) {
-		conditions.push(`i.agent_id = $${paramCount}`);
-		params.push(args.agent_id);
+	if (args.managed_agent_id) {
+		conditions.push(`i.managed_agent_id = $${paramCount}`);
+		params.push(args.managed_agent_id);
 		paramCount++;
 	}
 

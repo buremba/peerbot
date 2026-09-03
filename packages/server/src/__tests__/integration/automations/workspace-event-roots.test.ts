@@ -69,7 +69,7 @@ async function subscriberOrg(eventTypes: string[][]) {
           active_run: 'queue',
         },
       ],
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     automationIds.push(Number(created.automation_id));
   }

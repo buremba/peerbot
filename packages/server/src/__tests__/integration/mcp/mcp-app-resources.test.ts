@@ -1651,7 +1651,7 @@ describe('MCP App resources — ui:// serving (host-authored view)', () => {
   it('renders a completed approval once and preserves its submitted form values', async () => {
     const [automation] = await getDb()<{ id: number }>`
       INSERT INTO automations (
-        organization_id, agent_id, created_by, automation_group_id, name
+        organization_id, managed_agent_id, created_by, automation_group_id, name
       ) VALUES (
         ${org.id}, ${actingAgent.agentId}, ${owner.id}, 0, 'Hourly approval sweep'
       )

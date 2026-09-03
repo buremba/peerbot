@@ -115,7 +115,7 @@ describe("manage_automations update — version-owned fields are not silently dr
 				slug: "wu-target",
 				name: "Original",
 				prompt: "Original prompt.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			ownerCtx
@@ -149,7 +149,7 @@ describe("manage_automations update — version-owned fields are not silently dr
 			SELECT id, triggers
 			FROM automations
 			WHERE organization_id = ${orgId}
-			  AND agent_id = ${agentId}
+			  AND managed_agent_id = ${agentId}
 			  AND tags @> ARRAY['system:chat-link']::text[]
 			ORDER BY id DESC
 			LIMIT 1
@@ -375,7 +375,7 @@ describe("manage_automations create_version — source replacement semantics (#2
 				slug: "cv-target",
 				name: "CV Target",
 				prompt: "Analyze the data.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				sources: [
 					{ name: "alpha", query: "SELECT id FROM events" },
 					{ name: "beta", query: "SELECT id FROM events WHERE 1=1" },

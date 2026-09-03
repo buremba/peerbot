@@ -216,12 +216,12 @@ export async function handleCreate(
   }
   // Both of these are free-text columns with NO database foreign key, so an
   // unresolvable id is accepted by the INSERT and only shows up as an Automation
-  // that never runs (agent_id) or one whose output contract is silently voided
+  // that never runs (managed_agent_id) or one whose output contract is silently voided
   // (outputs' entity/event targets). The executor matrix catches unresolvable
   // executors up front — every automated Automation needs an executor;
   // manual-only Automations (no triggers) may be executor-less.
   const executorDefaults: AutomationExecutorDefaults = {
-    agentId: args.agent_id ?? null,
+    agentId: args.managed_agent_id ?? null,
     deviceWorkerId: args.device_worker_id ?? null,
     agentKind: args.agent_kind ?? null,
   };
@@ -259,7 +259,7 @@ export async function handleCreate(
     ? await assertAutomationDeliveryTarget(
         sql,
         organizationId,
-        args.agent_id ?? null,
+        args.managed_agent_id ?? null,
         args.delivery_target
       )
     : null;
@@ -273,7 +273,7 @@ export async function handleCreate(
   if (skills.length > 0) {
     if (!defaultExecutor || defaultExecutor.kind !== 'agent') {
       throw new ToolUserError(
-        'skills require an Automation-level agent executor: skills compile against the default agent’s library. Set agent_id, or remove skills for device-executed / manual-only Automations.',
+        'skills require an Automation-level agent executor: skills compile against the default agent’s library. Set managed_agent_id, or remove skills for device-executed / manual-only Automations.',
         422
       );
     }
@@ -334,7 +334,7 @@ export async function handleCreate(
       await tx`
       INSERT INTO automations (
         id, name, slug, organization_id, entity_ids,
-        schedule, timezone, next_run_at, triggers, agent_id, model_config, sources, version,
+        schedule, timezone, next_run_at, triggers, managed_agent_id, model_config, sources, version,
         current_version_id, tags, status, created_by, created_at, updated_at,
         automation_group_id,
         device_worker_id, agent_kind,
@@ -346,7 +346,7 @@ export async function handleCreate(
         ${automationId}, ${args.name ?? args.slug}, ${args.slug}, ${organizationId},
         ${`{${entityIdsArray.join(',')}}`}::bigint[],
         ${triggerWrite.schedule}, ${triggerWrite.timezone}, ${nextRunAtVal}, ${tx.json(triggerWrite.triggers)},
-        ${args.agent_id ?? null},
+        ${args.managed_agent_id ?? null},
         ${sql.json(args.model_config || {})}, ${sql.json(sources)},
         1, NULL, ${toTextArrayParam(args.tags || [])}::text[],
         'active', ${createdBy}, NOW(), NOW(),
@@ -443,7 +443,7 @@ export async function handleCreate(
       op: 'created',
       entityId: automationId,
       summary: `Automation "${args.name ?? args.slug}" created`,
-      extra: { slug: args.slug, agent_id: args.agent_id ?? null },
+      extra: { slug: args.slug, managed_agent_id: args.managed_agent_id ?? null },
     });
 
     recordToolConfigChange(ctx, {
@@ -465,7 +465,7 @@ export async function handleCreate(
         schedule: triggerWrite.schedule,
         timezone: triggerWrite.timezone,
         triggers: triggerWrite.triggers,
-        agent_id: args.agent_id ?? null,
+        managed_agent_id: args.managed_agent_id ?? null,
         agent_kind: args.agent_kind ?? null,
         device_worker_id: args.device_worker_id ?? null,
         model_config: args.model_config ?? {},
@@ -517,7 +517,7 @@ export async function handleUpdate(
 
   await requireExists(sql, 'automations', args.automation_id, 'Automation');
   const currentRows = await sql`
-    SELECT w.organization_id, w.agent_id, w.schedule, w.timezone, w.triggers,
+    SELECT w.organization_id, w.managed_agent_id, w.schedule, w.timezone, w.triggers,
            w.device_worker_id::text AS device_worker_id, w.agent_kind,
            w.delivery_target, w.reaction_script,
            cv.prompt AS current_prompt, cv.skills AS current_skills,
@@ -529,7 +529,7 @@ export async function handleUpdate(
   `;
   const currentRow = currentRows[0] as {
     organization_id: string;
-    agent_id: string | null;
+    managed_agent_id: string | null;
     device_worker_id: string | null;
     agent_kind: string | null;
     schedule: string | null;
@@ -588,11 +588,11 @@ export async function handleUpdate(
   }
 
   // Executor matrix on the EFFECTIVE state (patch over the current row): an
-  // automated Automation needs an executor. Clearing agent_id is fine when a
+  // automated Automation needs an executor. Clearing managed_agent_id is fine when a
   // device pin remains (device precedence), and manual-only Automations (no
   // triggers) may be executor-less.
   const effectiveDefaults: AutomationExecutorDefaults = {
-    agentId: args.agent_id !== undefined ? args.agent_id : currentRow.agent_id,
+    agentId: args.managed_agent_id !== undefined ? args.managed_agent_id : currentRow.managed_agent_id,
     deviceWorkerId:
       args.device_worker_id !== undefined
         ? args.device_worker_id
@@ -620,7 +620,7 @@ export async function handleUpdate(
       args.delivery_target
     );
   } else if (
-    args.agent_id !== undefined &&
+    args.managed_agent_id !== undefined &&
     args.delivery_target === undefined &&
     currentRow.delivery_target
   ) {
@@ -636,7 +636,7 @@ export async function handleUpdate(
   if (args.model_config !== undefined) updatedFields.push('model_config');
   if (args.execution_config !== undefined) updatedFields.push('execution_config');
   if (args.triggers !== undefined) updatedFields.push('triggers');
-  if (args.agent_id !== undefined) updatedFields.push('agent_id');
+  if (args.managed_agent_id !== undefined) updatedFields.push('managed_agent_id');
   if (args.tags !== undefined) updatedFields.push('tags');
   if (args.device_worker_id !== undefined) updatedFields.push('device_worker_id');
   if (args.agent_kind !== undefined) updatedFields.push('agent_kind');
@@ -699,7 +699,7 @@ export async function handleUpdate(
       completed_window_coverage = CASE WHEN ${resetsWindowProjection} THEN '{}'::tstzmultirange ELSE completed_window_coverage END,
       window_projection_granularity = CASE WHEN ${resetsWindowProjection} THEN ${effectiveGranularity} ELSE window_projection_granularity END,
       last_completed_window_start = CASE WHEN ${resetsWindowProjection} THEN NULL ELSE last_completed_window_start END,
-      agent_id = CASE WHEN ${has('agent_id')} THEN ${patch.agent_id ?? null} ELSE agent_id END,
+      managed_agent_id = CASE WHEN ${has('managed_agent_id')} THEN ${patch.managed_agent_id ?? null} ELSE managed_agent_id END,
       tags = CASE WHEN ${has('tags')} THEN ${toTextArrayParam(patch.tags ?? [])}::text[] ELSE tags END,
       device_worker_id = CASE WHEN ${has('device_worker_id')} THEN ${patch.device_worker_id ?? null}::uuid ELSE device_worker_id END,
       agent_kind = CASE WHEN ${has('agent_kind')} THEN ${patch.agent_kind ?? null} ELSE agent_kind END,
@@ -884,7 +884,7 @@ export async function handleCreateFromVersion(
   // new assignment would have no reactions — or (dropping the input schema) a
   // reaction with no extraction contract, silently running free-form.
   const versionRows = await sql`
-    SELECT wv.*, w.organization_id, w.schedule, w.timezone, w.triggers, w.sources, w.agent_id,
+    SELECT wv.*, w.organization_id, w.schedule, w.timezone, w.triggers, w.sources, w.managed_agent_id,
            w.device_worker_id::text AS device_worker_id, w.agent_kind,
            w.model_config, w.execution_config, w.tags, w.automation_group_id,
            w.reaction_script, w.reaction_script_compiled, w.reaction_input_schema
@@ -911,12 +911,12 @@ export async function handleCreateFromVersion(
   // handleCreate/handleUpdate).
   const cloneTriggers = stripChatLinkTriggers(version.triggers) as AutomationTrigger[];
   const cloneDefaults: AutomationExecutorDefaults = {
-    agentId: (version.agent_id as string | null) ?? null,
+    agentId: (version.managed_agent_id as string | null) ?? null,
     deviceWorkerId: (version.device_worker_id as string | null) ?? null,
     agentKind: (version.agent_kind as string | null) ?? null,
   };
   // The executor is copied verbatim onto every clone, and a version can
-  // outlive the executor it names (agent_id/device_worker_id have no FK, so a
+  // outlive the executor it names (managed_agent_id/device_worker_id have no FK, so a
   // deleted agent/device leaves the reference dangling). Resolve + authorize
   // once here so the fan-out cannot mint a batch of Automations the scheduler
   // will never run — or store a device pin the caller may not target.
@@ -1046,7 +1046,7 @@ export async function handleCreateFromVersion(
         await tx`
           INSERT INTO automations (
             id, name, slug, organization_id, entity_ids,
-            schedule, timezone, next_run_at, triggers, agent_id, device_worker_id, agent_kind, model_config, execution_config, sources, version,
+            schedule, timezone, next_run_at, triggers, managed_agent_id, device_worker_id, agent_kind, model_config, execution_config, sources, version,
             current_version_id, tags, status, created_by, created_at, updated_at,
             automation_group_id, source_automation_id,
             reaction_script, reaction_script_compiled, reaction_input_schema,
@@ -1055,7 +1055,7 @@ export async function handleCreateFromVersion(
             ${automationId}, ${automationName}, ${automationSlug}, ${organizationId},
             ${`{${entityId}}`}::bigint[],
             ${version.schedule ?? null}, ${version.timezone ?? null}, ${version.schedule ? nextRunAt(version.schedule as string, new Date(), version.timezone as string | null) : null}, ${toJsonParam(tx, cloneTriggers)},
-            ${version.agent_id ?? null},
+            ${version.managed_agent_id ?? null},
             ${version.device_worker_id ?? null},
             ${version.agent_kind ?? null},
             ${toJsonParam(tx, version.model_config)}, ${toJsonParam(tx, version.execution_config)}, ${toJsonParam(tx, clonedSources)},
@@ -1136,7 +1136,7 @@ export async function handleCreateFromVersion(
         schedule: version.schedule ?? null,
         timezone: version.timezone ?? null,
         triggers: version.triggers ?? [],
-        agent_id: version.agent_id ?? null,
+        managed_agent_id: version.managed_agent_id ?? null,
         device_worker_id: (version.device_worker_id as string | null) ?? null,
         agent_kind: (version.agent_kind as string | null) ?? null,
         version: (version.version as number) ?? 1,

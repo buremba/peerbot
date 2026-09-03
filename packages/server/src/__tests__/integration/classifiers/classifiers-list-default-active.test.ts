@@ -43,7 +43,7 @@ describe('classifier list — default excludes deprecated', () => {
       slug: 'cls-list-automation',
       name: 'Classifier List Automation',
       prompt: 'gather signals.',
-      agent_id: agent.agentId,
+      managed_agent_id: agent.agentId,
     })) as { automation_id: string };
     automationId = w.automation_id;
 

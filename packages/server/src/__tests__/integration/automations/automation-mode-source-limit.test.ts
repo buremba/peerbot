@@ -113,7 +113,7 @@ describe("automation-mode limit bounds every SQL-backed source", () => {
 			slug: "multi-source-limit",
 			name: "Multi Source Limit",
 			prompt: "Summarize {{content}} alongside {{secondary}}.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [
 				{ name: "content", query: `@feed:${primaryFeedId}` },
 				{ name: "secondary", query: `@feed:${secondaryFeedId}` },
@@ -161,7 +161,7 @@ describe("automation-mode limit bounds every SQL-backed source", () => {
 			slug: "context-source-limit",
 			name: "Context Source Limit",
 			prompt: "Summarize {{content}} with {{context_rows}}.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [
 				{ name: "content", query: `@feed:${primaryFeedId}` },
 				{
@@ -206,7 +206,7 @@ describe("automation-mode limit bounds every SQL-backed source", () => {
 			slug: "multi-source-fits",
 			name: "Multi Source Fits",
 			prompt: "Summarize {{content}} alongside {{secondary}}.",
-			agent_id: agentId,
+			managed_agent_id: agentId,
 			sources: [
 				{ name: "content", query: `@feed:${primaryFeedId}` },
 				{ name: "secondary", query: `@feed:${secondaryFeedId}` },

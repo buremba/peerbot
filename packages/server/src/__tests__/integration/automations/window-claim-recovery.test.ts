@@ -103,7 +103,7 @@ describe('Automation window claim and recovery', () => {
       ],
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       outputs: { signals: { event: 'observation' } },
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
     automationId = Number(created.automation_id);
   });
@@ -562,7 +562,7 @@ describe('Automation window claim and recovery', () => {
       ],
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       outputs: { signals: { event: 'observation' } },
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     const truncated = (await api.automations.claimNextWindow({
@@ -622,7 +622,7 @@ describe('Automation window claim and recovery', () => {
       ],
       triggers: [{ kind: 'schedule', cron: '0 9 * * *' }],
       outputs: { signals: { event: 'observation' } },
-      agent_id: agentId,
+      managed_agent_id: agentId,
     })) as { automation_id: string };
 
     const truncated = (await api.automations.claimNextWindow({

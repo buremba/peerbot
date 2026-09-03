@@ -36,7 +36,7 @@ async function seedWindow(opts: {
       : new Date(opts.start);
   await sql`
     INSERT INTO automations (
-      id, name, slug, created_by, organization_id, agent_id, automation_group_id,
+      id, name, slug, created_by, organization_id, managed_agent_id, automation_group_id,
       next_window_start, completed_window_coverage, window_projection_granularity
     ) VALUES (
       ${opts.automationId}, ${`Window ${opts.automationId}`},

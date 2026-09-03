@@ -134,7 +134,7 @@ function fullOrgRoutes(): Record<
           slug: "account-health",
           automation_id: "1",
           name: "Account health",
-          agent_id: "sales",
+          managed_agent_id: "sales",
           prompt: "Poll CRM data.",
           skills: [
             {

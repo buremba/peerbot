@@ -67,7 +67,7 @@ type AutomationRunStatus =
 interface DueAutomationRow {
 	id: number;
 	organization_id: string;
-	agent_id: string;
+	managed_agent_id: string;
 	schedule: string | null;
 	status?: string;
 	/** Automation is pinned to a user-owned device worker (e.g. Lobu Mac app). */
@@ -238,7 +238,7 @@ async function loadAutomationForAutomation(
 	automationId: number
 ): Promise<DueAutomationRow | null> {
 	const rows = await sql<DueAutomationRow>`
-    SELECT id, organization_id, agent_id, schedule, status, triggers,
+    SELECT id, organization_id, managed_agent_id, schedule, status, triggers,
            device_worker_id::text AS device_worker_id, agent_kind
     FROM automations
     WHERE id = ${automationId}
@@ -264,13 +264,13 @@ async function enqueueAutomationRunForRecord(
 	// the run stays pending for any connected MCP client to execute and
 	// complete.
 	const executor = resolveAutomationExecutor({
-		agentId: automation.agent_id ?? null,
+		agentId: automation.managed_agent_id ?? null,
 		deviceWorkerId: automation.device_worker_id ?? null,
 		agentKind: automation.agent_kind ?? null,
 	});
 	if (!executor && dispatchSource !== "manual") {
 		throw new Error(
-			`Automation ${automation.id} has no executor for ${dispatchSource} activation (need agent_id or device_worker_id).`
+			`Automation ${automation.id} has no executor for ${dispatchSource} activation (need managed_agent_id or device_worker_id).`
 		);
 	}
 
@@ -790,7 +790,7 @@ export async function materializeDueAutomationRuns(
 			// dispatch-time `ensureAutomationAgentExists` check stays as a delete-after-select
 			// backstop.
 			const dueAutomations = await sql<DueAutomationRow>`
-				SELECT w.id, w.organization_id, w.agent_id, w.schedule, w.triggers,
+				SELECT w.id, w.organization_id, w.managed_agent_id, w.schedule, w.triggers,
 				       w.entity_ids, w.created_by, w.current_version_id,
                w.device_worker_id::text AS device_worker_id, w.agent_kind
         FROM automations w
@@ -821,10 +821,10 @@ export async function materializeDueAutomationRuns(
             )
             OR (
               w.device_worker_id IS NULL
-              AND w.agent_id IS NOT NULL
+              AND w.managed_agent_id IS NOT NULL
               AND EXISTS (
                 SELECT 1 FROM agents a
-                WHERE a.id = w.agent_id
+                WHERE a.id = w.managed_agent_id
                   AND a.organization_id = w.organization_id
               )
             )
@@ -853,7 +853,7 @@ export async function materializeDueAutomationRuns(
           AND w.device_worker_id IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM agents a
-            WHERE a.id = w.agent_id
+            WHERE a.id = w.managed_agent_id
               AND a.organization_id = w.organization_id
           )
           AND NOT EXISTS (

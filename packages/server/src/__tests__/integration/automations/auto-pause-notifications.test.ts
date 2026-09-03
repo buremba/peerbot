@@ -26,7 +26,7 @@ async function createScheduledAutomation(name: string) {
 		name,
 		prompt: "Run the scheduled task.",
 		triggers: [{ kind: "schedule", cron: "0 * * * *" }],
-		agent_id: agent.agentId,
+		managed_agent_id: agent.agentId,
 	})) as { automation_id: string };
 	return {
 		workspace,

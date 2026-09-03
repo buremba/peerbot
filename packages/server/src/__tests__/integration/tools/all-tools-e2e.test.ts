@@ -347,7 +347,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				slug: "coverage-automation",
 				name: "Coverage Automation",
 				prompt: "Track coverage signals.",
-				agent_id: agentId,
+				managed_agent_id: agentId,
 			},
 			TEST_ENV,
 			authCtx

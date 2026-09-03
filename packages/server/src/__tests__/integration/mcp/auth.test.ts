@@ -1729,7 +1729,7 @@ describe('MCP Authentication', () => {
               slug: 'cross-org-sdk-created',
               name: 'Cross-Org SDK Created',
               prompt: 'Prove target-aware mutation authorization.',
-              agent_id: ${JSON.stringify(targetAgent.agentId)},
+              managed_agent_id: ${JSON.stringify(targetAgent.agentId)},
               device_worker_id: ${JSON.stringify(String(targetDevice.id))},
               agent_kind: 'opencode'
             });
@@ -1831,7 +1831,7 @@ describe('MCP Authentication', () => {
               slug: 'cross-org-deny-created',
               name: 'Cross-Org Deny Created',
               prompt: 'Must not be created.',
-              agent_id: ${JSON.stringify(targetAgent.agentId)}
+              managed_agent_id: ${JSON.stringify(targetAgent.agentId)}
             });
           };`,
         },

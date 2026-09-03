@@ -86,7 +86,7 @@ describe("Automation window lag is visible and actionable", () => {
 				slug: "stale-daily",
 				name: "Stale daily Automation",
 				prompt: "Draft replies to the day's stories.",
-				agent_id: agent.agentId,
+				managed_agent_id: agent.agentId,
 				sources: [
 					{
 						name: "stories",

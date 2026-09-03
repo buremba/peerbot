@@ -320,7 +320,7 @@ export function runHref(
 		connection_id: number | null;
 		connector_key: string | null;
 		approval_status: string | null;
-		agent_id: string | null;
+		managed_agent_id: string | null;
 	},
 ): string | null {
 	if (row.run_type === "automation" && row.automation_id != null) {
@@ -530,11 +530,11 @@ export async function listOrgActivity(opts: {
 		if (runKinds.length > 0) {
 			const sql = getDb();
 			// When agent-scoped, restrict to that agent's Automation runs. The join to
-			// `automations` already exposes `w.agent_id`; a non-null agentId turns the
+			// `automations` already exposes `w.managed_agent_id`; a non-null agentId turns the
 			// LEFT JOIN into an effective inner filter (runs with no automation, i.e.
 			// bare syncs/actions, are dropped — they aren't agent-owned).
 			const agentFilter = opts.agentId
-				? sql`AND w.agent_id = ${opts.agentId}`
+				? sql`AND w.managed_agent_id = ${opts.agentId}`
 				: sql``;
 			const rows = (await sql`
         SELECT r.id, r.run_type, r.automation_id, r.connection_id, r.feed_id,
@@ -543,7 +543,7 @@ export async function listOrgActivity(opts: {
                r.created_at, r.completed_at,
                f.feed_key, f.display_name AS feed_display_name,
                c.display_name AS connection_display_name,
-               w.name AS automation_name, w.agent_id
+               w.name AS automation_name, w.managed_agent_id
         FROM runs r
         LEFT JOIN feeds f ON f.id = r.feed_id
         LEFT JOIN connections c ON c.id = r.connection_id
@@ -570,7 +570,7 @@ export async function listOrgActivity(opts: {
 				feed_display_name: string | null;
 				connection_display_name: string | null;
 				automation_name: string | null;
-				agent_id: string | null;
+				managed_agent_id: string | null;
 			}>;
 
 			for (const r of rows) {

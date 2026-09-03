@@ -633,12 +633,12 @@ export default async (_ctx, client) => {
 	},
 	"automations.completeWindow": {
 		summary:
-			"Submit LLM-extracted data for an Automation window. Requires a signed window_token.",
+			"Submit LLM-extracted data for an Automation window and advance the Automation arrival mark. Requires a signed window_token. Required after every claimNextWindow, including when the window held nothing actionable: the mark moves only inside this call, so an unfinished claim lets the lease expire, times the run out, and serves the same content again on the next claim.",
 		access: "write",
 	},
 	"automations.claimNextWindow": {
 		summary:
-			"Atomically lease the oldest completed Automation period and return bounded source context plus a fenced window_token. Pass run_id and context.page.next_cursor to continue a multi-page claim.",
+			"Atomically claim the Automation unclaimed arrival window and return bounded source context plus a fenced window_token. The window is [arrival mark, now - settle) over events.created_at, not a calendar period. The caller MUST finish the claim with completeWindow, even for an empty or non-actionable window. Pass run_id and context.page.next_cursor to continue a multi-page claim.",
 		access: "write",
 		signature:
 			"automations.claimNextWindow(input: { automation_id: string; lease_seconds?: number; limit?: number; run_id?: number; before_occurred_at?: string; before_id?: number }): Promise<AutomationClaimNextWindowResult>",

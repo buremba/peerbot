@@ -504,11 +504,12 @@ export const ManageAutomationsSchema = Type.Object(
           description: "Create a new versioned Automation config.",
         }),
         Type.Literal("complete_window", {
-          description: "Submit an Automation window result.",
+          description:
+            "Submit an Automation window result and advance the Automation arrival mark. Required after every claim_next_window, including when the window held nothing actionable: the mark moves only inside this call, so an unfinished claim lets the lease expire, times the run out, and serves the same content again on the next claim.",
         }),
         Type.Literal("claim_next_window", {
           description:
-            "Atomically claim the oldest completed Automation period and return bounded source context plus a fenced window token.",
+            "Atomically claim the Automation unclaimed arrival window and return bounded source context plus a fenced window token. The window is [arrival mark, now - settle) over events.created_at, not a calendar period. The caller MUST finish the claim with complete_window, even for an empty or non-actionable window.",
         }),
         Type.Literal("trigger", {
           description:

@@ -77,6 +77,12 @@ interface SpotifySavedTrack {
 interface SpotifyPlaylist {
   id: string;
   name: string;
+  /**
+   * Spotify's own content fingerprint — it changes when and only when the
+   * playlist's contents change. `syncPlaylists` gates on it, which is why that
+   * feed can stamp `occurred_at` with the observation time.
+   */
+  snapshot_id: string;
   description: string | null;
   public: boolean | null;
   collaborative: boolean;
@@ -112,6 +118,10 @@ interface SpotifyCheckpoint {
   last_sync_at?: string;
   offset?: number;
   cursor?: string;
+  /** Per-playlist `snapshot_id` as of the last sync. See `syncPlaylists`. */
+  playlist_snapshots?: Record<string, string>;
+  /** Fingerprint of the last emitted top-tracks ranking. See `syncTopTracks`. */
+  top_tracks_digest?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +145,34 @@ export function trackKey(track: { id: string | null; uri: string }): string {
 
 function albumArt(images: SpotifyImage[]): string | undefined {
   return images[0]?.url;
+}
+
+/**
+ * Spotify's own ceiling for `/me/top/tracks` is offset 999, and the default
+ * stays deliberately shallow: a rank only carries information inside a bounded
+ * list. Prod ran the maximum depth and every run rewrote ~1000 rows because one
+ * listen shifted every position below it.
+ */
+export function topTracksLimit(raw: unknown): number {
+  const parsed = typeof raw === "number" ? Math.floor(raw) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed < 1) return 50;
+  return Math.min(parsed, 1000);
+}
+
+/**
+ * FNV-1a over the canonical form of a snapshot. Not cryptographic — it only has
+ * to answer "did this list change since the last sync", and it is written in
+ * plain JS so the connector stays portable across isolate backends (no
+ * `node:crypto`, no `crypto.subtle` async).
+ */
+export function snapshotDigest(parts: readonly string[]): string {
+  let hash = 0x811c9dc5;
+  const canonical = parts.join("\u0000");
+  for (let i = 0; i < canonical.length; i++) {
+    hash ^= canonical.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +226,11 @@ export default class SpotifyConnector extends ConnectorRuntime {
         eventKinds: {
           track: {
             description: "A saved Spotify track",
+            // No `popularity`: it is Spotify's global chart figure, it drifts
+            // daily, and it says nothing about the user's own library. Carrying
+            // it made an otherwise unchanged saved track supersede itself on
+            // every run (observed in prod: popularity oscillating 21<->22 was
+            // the ONLY difference between stored versions).
             metadataSchema: {
               type: "object",
               properties: {
@@ -195,7 +238,6 @@ export default class SpotifyConnector extends ConnectorRuntime {
                 album: { type: "string" },
                 album_art_url: { type: "string", format: "uri" },
                 duration_ms: { type: "number" },
-                popularity: { type: "number" },
                 explicit: { type: "boolean" },
                 release_date: { type: "string" },
               },
@@ -220,6 +262,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
                 public: { type: "boolean" },
                 collaborative: { type: "boolean" },
                 owner: { type: "string" },
+                snapshot_id: { type: "string" },
               },
             },
           },
@@ -279,17 +322,28 @@ export default class SpotifyConnector extends ConnectorRuntime {
               description:
                 "Time range: short_term (~4 weeks), medium_term (~6 months), long_term (all time).",
             },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 1000,
+              default: 50,
+              description:
+                "How deep the ranking goes. A rank is only meaningful inside a bounded list — at depth 1000 a single listen reshuffles hundreds of positions and rewrites the whole feed.",
+            },
           },
         },
         eventKinds: {
           top_track: {
             description: "A top track by listening frequency",
+            // No `popularity` here either — same volatile global counter as in
+            // saved_tracks. `rank` stays because it IS this feed's subject, and
+            // the digest gate below keeps a reshuffle from rewriting the list
+            // when the ranking has not actually moved.
             metadataSchema: {
               type: "object",
               properties: {
                 artist: { type: "string" },
                 album: { type: "string" },
-                popularity: { type: "number" },
                 rank: { type: "number" },
                 time_range: { type: "string" },
               },
@@ -367,7 +421,6 @@ export default class SpotifyConnector extends ConnectorRuntime {
             album: track.album.name,
             album_art_url: albumArt(track.album.images),
             duration_ms: track.duration_ms,
-            popularity: track.popularity,
             explicit: track.explicit,
             release_date: track.album.release_date,
           },
@@ -394,6 +447,9 @@ export default class SpotifyConnector extends ConnectorRuntime {
     http: HttpClient
   ): Promise<SyncResult> {
     const events: EventEnvelope[] = [];
+    const previous = (ctx.checkpoint ?? {}) as SpotifyCheckpoint;
+    const lastSnapshots = previous.playlist_snapshots ?? {};
+    const snapshots: Record<string, string> = {};
 
     // First, fetch all playlists
     const playlists: SpotifyPlaylist[] = [];
@@ -410,29 +466,16 @@ export default class SpotifyConnector extends ConnectorRuntime {
       playlists.push(...items);
     }
 
-    // Emit playlist events
     for (const pl of playlists) {
-      events.push({
-        origin_id: `spotify_playlist_${pl.id}`,
-        title: pl.name,
-        payload_text: pl.description ?? pl.name,
-        author_name: pl.owner.display_name ?? pl.owner.id,
-        source_url: pl.external_urls.spotify,
-        occurred_at: new Date(),
-        origin_type: "playlist",
-        metadata: {
-          track_count: pl.tracks.total,
-          public: pl.public,
-          collaborative: pl.collaborative,
-          owner: pl.owner.display_name ?? pl.owner.id,
-        },
-      });
-    }
+      snapshots[pl.id] = pl.snapshot_id;
 
-    if (ctx.emitEvents) await ctx.emitEvents(events.splice(0));
+      // Spotify hands us a content fingerprint for free. An unchanged
+      // `snapshot_id` means nothing in this playlist moved, so there is nothing
+      // to emit AND nothing to fetch — the track request below is skipped too.
+      // An absent entry is the first run, so no backfill flag is needed.
+      if (lastSnapshots[pl.id] === pl.snapshot_id) continue;
 
-    // Then fetch tracks for each playlist
-    for (const pl of playlists) {
+      const trackEvents: EventEnvelope[] = [];
       const trackPages = paginateByOffset(
         async (offset) => {
           const data = await http.get<
@@ -446,17 +489,23 @@ export default class SpotifyConnector extends ConnectorRuntime {
       );
 
       for await (const items of trackPages) {
-        const trackEvents: EventEnvelope[] = [];
         for (const item of items) {
           if (!item.track) continue;
           const track = item.track;
+          const addedAt = new Date(item.added_at);
           trackEvents.push({
-            origin_id: `spotify_pl_${pl.id}_track_${trackKey(track)}`,
+            // A playlist ENTRY, not a track: Spotify allows the same track to
+            // sit in one playlist several times, each with its own `added_at`.
+            // Keying on the track alone collapsed those entries onto one
+            // origin_id, so within a single run they superseded each other down
+            // to the last one — silent data loss, the same collision class the
+            // `trackKey` doc warns about. Mirrors `recently_played`'s key.
+            origin_id: `spotify_pl_${pl.id}_track_${trackKey(track)}_${addedAt.getTime()}`,
             title: track.name,
             payload_text: `${track.name} by ${artistNames(track.artists)}`,
             author_name: artistNames(track.artists),
             source_url: track.external_urls.spotify,
-            occurred_at: new Date(item.added_at),
+            occurred_at: addedAt,
             origin_type: "playlist_track",
             origin_parent_id: `spotify_playlist_${pl.id}`,
             metadata: {
@@ -469,16 +518,38 @@ export default class SpotifyConnector extends ConnectorRuntime {
             },
           });
         }
-
-        if (ctx.emitEvents) await ctx.emitEvents(trackEvents);
-        else events.push(...trackEvents);
       }
+
+      events.push({
+        origin_id: `spotify_playlist_${pl.id}`,
+        title: pl.name,
+        payload_text: pl.description ?? pl.name,
+        author_name: pl.owner.display_name ?? pl.owner.id,
+        source_url: pl.external_urls.spotify,
+        // Observation time, which under the `snapshot_id` gate above is only
+        // reached when the playlist actually changed. Ungated this was the
+        // single worst source of churn in prod (62x): an untouched playlist got
+        // a fresh occurred_at every run and superseded itself forever.
+        occurred_at: new Date(),
+        origin_type: "playlist",
+        metadata: {
+          track_count: pl.tracks.total,
+          public: pl.public,
+          collaborative: pl.collaborative,
+          owner: pl.owner.display_name ?? pl.owner.id,
+          snapshot_id: pl.snapshot_id,
+        },
+      });
+      events.push(...trackEvents);
+
+      if (ctx.emitEvents) await ctx.emitEvents(events.splice(0));
     }
 
     return {
       events,
       checkpoint: {
         last_sync_at: new Date().toISOString(),
+        playlist_snapshots: snapshots,
       } satisfies SpotifyCheckpoint as Record<string, unknown>,
     };
   }
@@ -560,6 +631,8 @@ export default class SpotifyConnector extends ConnectorRuntime {
     http: HttpClient
   ): Promise<SyncResult> {
     const timeRange = (ctx.config.time_range as string) ?? "medium_term";
+    const limit = topTracksLimit(ctx.config.limit);
+    const previous = (ctx.checkpoint ?? {}) as SpotifyCheckpoint;
     const events: EventEnvelope[] = [];
     let rank = 1;
     // UTC-midnight bucket so re-syncs within the same day dedup (see occurred_at below).
@@ -569,19 +642,30 @@ export default class SpotifyConnector extends ConnectorRuntime {
 
     const pages = paginateByOffset(
       async (offset) => {
+        const pageSize = Math.min(this.PAGE_SIZE, limit - offset);
         const data = await http.get<SpotifyPagingResponse<SpotifyTrack>>(
-          `${this.API_BASE}/me/top/tracks?time_range=${timeRange}&limit=${this.PAGE_SIZE}&offset=${offset}`
+          `${this.API_BASE}/me/top/tracks?time_range=${timeRange}&limit=${pageSize}&offset=${offset}`
         );
-        return { items: data.items, hasMore: !!data.next };
+        return {
+          items: data.items,
+          hasMore: !!data.next && offset + pageSize < limit,
+        };
       },
-      { pageSize: this.PAGE_SIZE, maxPages: this.MAX_PAGES }
+      {
+        pageSize: this.PAGE_SIZE,
+        maxPages: Math.ceil(limit / this.PAGE_SIZE),
+      }
     );
 
     for await (const items of pages) {
       for (const track of items) {
+        if (rank > limit) break;
         events.push({
           origin_id: `spotify_top_${timeRange}_${trackKey(track)}`,
-          title: `#${rank} ${track.name}`,
+          // The rank lives in metadata, not in the title. Embedding it made the
+          // title itself churn on every reshuffle, which rewrites the search
+          // index for a track whose name never changed.
+          title: track.name,
           payload_text: `${track.name} by ${artistNames(track.artists)} — ${track.album.name}`,
           author_name: artistNames(track.artists),
           source_url: track.external_urls.spotify,
@@ -596,21 +680,38 @@ export default class SpotifyConnector extends ConnectorRuntime {
           metadata: {
             artist: artistNames(track.artists),
             album: track.album.name,
-            popularity: track.popularity,
             rank,
             time_range: timeRange,
           },
         });
         rank++;
       }
-
-      if (ctx.emitEvents) await ctx.emitEvents(events.splice(0));
     }
+
+    // The ranking is a snapshot, so re-emitting an unmoved list buys nothing:
+    // each item supersedes its own previous version and mints a fresh row. Gate
+    // on a fingerprint of the ranking itself — same digest, emit nothing.
+    // Absent digest IS the first run, so no separate backfill flag is needed.
+    const digest = snapshotDigest(
+      events.map((e, index) => `${index}:${e.origin_id}`)
+    );
+    if (previous.top_tracks_digest === digest) {
+      return {
+        events: [],
+        checkpoint: {
+          last_sync_at: new Date().toISOString(),
+          top_tracks_digest: digest,
+        } satisfies SpotifyCheckpoint as Record<string, unknown>,
+      };
+    }
+
+    if (ctx.emitEvents) await ctx.emitEvents(events.splice(0));
 
     return {
       events,
       checkpoint: {
         last_sync_at: new Date().toISOString(),
+        top_tracks_digest: digest,
       } satisfies SpotifyCheckpoint as Record<string, unknown>,
     };
   }

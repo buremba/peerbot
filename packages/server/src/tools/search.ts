@@ -627,6 +627,20 @@ function unavailableWorkspaceCoverage(workspace: GrantedMemberWorkspace): Worksp
   };
 }
 
+/**
+ * Access tier the empty-result guidance should speak to.
+ *
+ * In-process system callers (automation reactions) carry no user identity, so
+ * `resolveSdkMaxAccessLevel` floors them at 'read' — but `save_content` and the
+ * entity-write path bypass their gates for exactly those contexts, so read-only
+ * copy would state a falsehood to a caller that CAN persist. Treat them as
+ * write: they get the persist block, without the admin-only type-creation hop.
+ */
+function guidanceAccessTier(ctx: ToolContext): ToolAccessLevel {
+  if (isInProcessSystemCall(ctx)) return 'write';
+  return resolveSdkMaxAccessLevel(ctx.allowCrossOrg ? 'owner' : ctx.memberRole, ctx.scopes);
+}
+
 function buildEmptySearchSuggestion(
   query: string | null,
   args: SearchArgs,
@@ -1461,12 +1475,7 @@ async function searchImpl(
       logger.warn({ err: getErrorMessage(item.reason) }, '[search] workspace shard failed');
     }
   }
-  return mergeFederatedSearchResults(
-    args,
-    targets,
-    settled,
-    resolveSdkMaxAccessLevel(ctx.allowCrossOrg ? 'owner' : ctx.memberRole, ctx.scopes)
-  );
+  return mergeFederatedSearchResults(args, targets, settled, guidanceAccessTier(ctx));
 }
 
 /**
@@ -1762,12 +1771,7 @@ async function searchWorkspaceImpl(
 
   const suggestionText = hasRecallHits
     ? 'No matching entities found, but related memory content was recalled below.'
-    : buildEmptySearchSuggestion(
-        query,
-        args,
-        recall.coverage,
-        resolveSdkMaxAccessLevel(ctx.allowCrossOrg ? 'owner' : ctx.memberRole, ctx.scopes)
-      );
+    : buildEmptySearchSuggestion(query, args, recall.coverage, guidanceAccessTier(ctx));
 
   const result = withRecall(
     emptyResult({

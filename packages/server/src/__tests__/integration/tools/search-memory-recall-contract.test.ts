@@ -524,4 +524,29 @@ describe('search_memory > recall contract', () => {
     expect(suggestion).not.toContain('client.entities.create');
     expect(suggestion).not.toContain('client.entitySchema.createType(...)');
   });
+  // An automation reaction has no user identity, so the tier resolver floors it
+  // at read — but `save_content` bypasses its write gate for exactly this
+  // context (`isSystemContext`), so read-only copy would be a lie to a caller
+  // that CAN persist. It gets the write-tier block, minus the admin-only hop.
+  it('does not call an in-process system caller read-only when it can write', async () => {
+    const result = await search(
+      { query: 'zzzz-tier-probe-system' },
+      env,
+      {
+        organizationId: org.id,
+        userId: null,
+        memberRole: null,
+        isAuthenticated: true,
+        tokenType: 'session',
+        scopes: ['*'],
+      } as ToolContext
+    );
+
+    const suggestion = result.suggestion ?? '';
+    expect(suggestion).not.toContain('this caller has read-only access to the workspace');
+    expect(suggestion).toContain('save_memory');
+    expect(suggestion).toContain('client.entities.create');
+    // Still not admin: type creation stays behind the admin gate.
+    expect(suggestion).not.toContain('client.entitySchema.createType(...)');
+  });
 });

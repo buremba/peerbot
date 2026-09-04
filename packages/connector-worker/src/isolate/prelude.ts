@@ -25,7 +25,9 @@
  *    body; there are no streams on this lane (`Response.body` is null).
  *  - `crypto`: `getRandomValues`/`randomUUID`, plus the `subtle` operations
  *    postgres.js needs to answer an md5 or SCRAM-SHA-256 challenge, all
- *    computed by Node on the host.
+ *    computed by Node on the host. `require('node:crypto')` additionally
+ *    answers with `createHash`/`createHmac`/`randomBytes` over the same host
+ *    capabilities, because that specifier is a Node module and not WebCrypto.
  *  - `Buffer`, `EventEmitter`, `ReadableStream`/`WritableStream` and
  *    `connect` (WinterCG Direct Sockets), which the DB connectors need.
  *
@@ -44,7 +46,7 @@
  * live in this module verbatim. `String.raw` keeps the regex escapes intact.
  */
 
-import { createHash, createHmac, pbkdf2Sync } from 'node:crypto';
+import { createHash, createHmac, pbkdf2Sync, randomBytes as nodeRandomBytes } from 'node:crypto';
 
 /** Names the prelude defines on the guest global. */
 export const PRELUDE_GLOBALS = [
@@ -169,13 +171,13 @@ export const PRELUDE_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> 
   // pair the parser skips, so a query that still begins with '?' keeps it.
   formUrlencodedParse: (input: unknown): [string, string][] => Array.from(new URLSearchParams(`&${String(input)}`)),
   formUrlencodedSerialize: (list: unknown): string => new URLSearchParams(asPairs(list)).toString(),
+  /**
+   * Node's CSPRNG, never a fallback: a silently-zeroed buffer here would be a
+   * predictable nonce or UUID in the guest with nothing to signal it.
+   */
   randomBytes: (byteLength: unknown): Uint8Array => {
     const len = Math.min(Math.max(0, Number(byteLength) || 0), 65536);
-    const buf = new Uint8Array(len);
-    if (typeof globalThis.crypto?.getRandomValues === 'function') {
-      globalThis.crypto.getRandomValues(buf);
-    }
-    return buf;
+    return new Uint8Array(nodeRandomBytes(len));
   },
   /**
    * WebCrypto primitives behind the guest's `crypto.subtle`. postgres.js's
@@ -288,7 +290,7 @@ var exports = module.exports;
   // ---------------------------------------------------------------------------
 
   global.require = function require(specifier) {
-    if (specifier === 'crypto' || specifier === 'node:crypto') return global.crypto;
+    if (specifier === 'crypto' || specifier === 'node:crypto') return global.__lobuNodeCrypto;
     if (specifier === 'buffer' || specifier === 'node:buffer') return { Buffer: global.Buffer };
     if (specifier === 'events' || specifier === 'node:events') return { EventEmitter: global.EventEmitter, default: global.EventEmitter };
     if (specifier === 'stream' || specifier === 'node:stream') return { Readable: global.ReadableStream, Writable: global.WritableStream, default: { Readable: global.ReadableStream, Writable: global.WritableStream } };
@@ -1127,6 +1129,86 @@ var exports = module.exports;
 
   global.crypto = crypto;
 
+  // ---------------------------------------------------------------------------
+  // node:crypto
+  // ---------------------------------------------------------------------------
+  // require('node:crypto') handed back the WebCrypto object, so everything
+  // Node exposes under that specifier and WebCrypto does not -- createHash,
+  // createHmac, randomBytes -- was simply missing. Eligibility could not catch
+  // it: node:crypto IS a provided builtin, so the bundle loads and the call
+  // dies at run time as "createHash is not a function". github, jira and
+  // linear each mint a webhook secret with randomBytes(32).toString('hex').
+  // Node does the work; the guest marshals bytes and encodes the digest.
+  function nodeCryptoBytes(data, encoding, what) {
+    if (typeof data === 'string') return Buffer.from(data, encoding || 'utf8');
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (data && data.buffer instanceof ArrayBuffer) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    throw new TypeError(what + ': data must be a string, ArrayBuffer or ArrayBufferView');
+  }
+
+  // Node's Hash/Hmac are streaming; the host capabilities are one-shot. Buffer
+  // the chunks and hash once at digest() -- identical output, and a connector
+  // cannot tell the difference without timing a partial write.
+  function nodeCryptoHash(what, compute) {
+    var chunks = [];
+    var api = {
+      update: function (data, inputEncoding) {
+        chunks.push(nodeCryptoBytes(data, inputEncoding, what));
+        return api;
+      },
+      digest: function (encoding) {
+        var out = compute(Buffer.concat(chunks));
+        return !encoding || encoding === 'buffer' ? out : out.toString(encoding);
+      }
+    };
+    return api;
+  }
+
+  var nodeCrypto = {
+    createHash: function (algorithm) {
+      return nodeCryptoHash('createHash', function (bytes) {
+        return hostSync('cryptoDigest', algorithm, bytes);
+      });
+    },
+    createHmac: function (algorithm, key) {
+      var keyBytes = nodeCryptoBytes(key, undefined, 'createHmac');
+      return nodeCryptoHash('createHmac', function (bytes) {
+        return hostSync('cryptoHmac', algorithm, keyBytes, bytes);
+      });
+    },
+    randomBytes: function (size) {
+      var n = Number(size);
+      if (!isFinite(n) || n < 0 || n % 1 !== 0) {
+        throw new TypeError('randomBytes: size must be a non-negative integer, got ' + String(size));
+      }
+      // Re-wrap so the result is a guest Uint8Array carrying the Buffer
+      // methods installed on the prototype -- .toString('hex') is the whole
+      // point of the call at every site that makes it.
+      var out = new Uint8Array(n);
+      if (n > 0) out.set(hostSync('randomBytes', n));
+      return out;
+    },
+    randomUUID: function () { return crypto.randomUUID(); },
+    getRandomValues: function (array) { return crypto.getRandomValues(array); },
+    webcrypto: crypto,
+    subtle: crypto.subtle
+  };
+  nodeCrypto.default = nodeCrypto;
+  global.__lobuNodeCrypto = nodeCrypto;
+
+  // ---------------------------------------------------------------------------
+  // Buffer, as Uint8Array
+  // ---------------------------------------------------------------------------
+  // Buffer.from returns a plain Uint8Array rather than a subclass, so the
+  // Buffer-only methods are installed on Uint8Array.prototype — which means
+  // they apply to EVERY typed array in the guest, including toString, whose
+  // default (comma-joined digits) is replaced by Node's utf8/hex/base64 decode.
+  // That is the point: the DB drivers this exists for pass wire buffers through
+  // SDK and connector code that cannot tell the two apart, and a subclass would
+  // be lost the first time one of them sliced or concatenated. Nothing in the
+  // guest depends on the array default, and the isolate global is thrown away
+  // with the run.
   var Buffer = function Buffer(arg, enc) {
     return Buffer.from(arg, enc);
   };
@@ -1153,10 +1235,12 @@ var exports = module.exports;
     var res = new Uint8Array(length);
     var offset = 0;
     for (var j = 0; j < list.length; j++) {
-      var item = list[j];
+      var room = length - offset;
+      if (room <= 0) break;
+      // Node TRUNCATES to the requested length; res.set() would throw instead.
+      var item = list[j].length > room ? list[j].subarray(0, room) : list[j];
       res.set(item, offset);
       offset += item.length;
-      if (offset >= length) break;
     }
     return res;
   };
@@ -1390,12 +1474,16 @@ var exports = module.exports;
         if (isClosed) {
           return Promise.resolve({ value: undefined, done: true });
         }
+        // The waiter is registered BEFORE pull(), because a source that
+        // enqueues synchronously would otherwise push into the queue while
+        // pendingRead was still null and leave this read hanging forever.
+        var waiter = new Promise(function (resolve) {
+          pendingRead = resolve;
+        });
         if (self._source && self._source.pull) {
           self._source.pull(controller);
         }
-        return new Promise(function (resolve) {
-          pendingRead = resolve;
-        });
+        return waiter;
       },
       releaseLock: function () {},
       cancel: function (reason) {

@@ -219,3 +219,66 @@ describe('findIsolateIneligibleBuiltins', () => {
     expect(err.message).toContain('the isolate does not provide');
   });
 });
+
+/**
+ * `node:crypto` is a PROVIDED builtin, so a bundle that imports it passes
+ * eligibility and loads — which is exactly why the module the guest hands back
+ * has to be Node's, not WebCrypto's. It used to be WebCrypto's, so
+ * `createHash('sha256')` died at the call site as "is not a function" with the
+ * bundle already running. github, jira and linear each mint a webhook secret
+ * with `randomBytes(32).toString('hex')`, and every scraping connector hashes
+ * content for change detection.
+ */
+describe('guest node:crypto', () => {
+  it('createHash matches Node for every digest encoding', () => {
+    const guest = instantiateGuest();
+    const nodeCrypto = guest.require('node:crypto');
+    for (const algorithm of ['sha256', 'sha1', 'md5'] as const) {
+      for (const encoding of ['hex', 'base64'] as const) {
+        expect(nodeCrypto.createHash(algorithm).update('lobu').digest(encoding)).toBe(
+          createHash(algorithm).update('lobu').digest(encoding)
+        );
+      }
+    }
+  });
+
+  it('createHash accumulates chained updates the way a stream would', () => {
+    const guest = instantiateGuest();
+    const nodeCrypto = guest.require('crypto');
+    const hash = nodeCrypto.createHash('sha256');
+    expect(hash.update('lo')).toBe(hash);
+    hash.update('bu');
+    expect(hash.digest('hex')).toBe(createHash('sha256').update('lobu').digest('hex'));
+  });
+
+  it('createHmac matches Node, keyed by string or bytes', () => {
+    const guest = instantiateGuest();
+    const nodeCrypto = guest.require('node:crypto');
+    expect(nodeCrypto.createHmac('sha256', 'k').update('lobu').digest('hex')).toBe(
+      createHmac('sha256', 'k').update('lobu').digest('hex')
+    );
+    const key = new Uint8Array([1, 2, 3]);
+    expect(nodeCrypto.createHmac('sha256', key).update('lobu').digest('hex')).toBe(
+      createHmac('sha256', Buffer.from(key)).update('lobu').digest('hex')
+    );
+  });
+
+  it('randomBytes returns hex-encodable bytes of the requested length', () => {
+    const guest = instantiateGuest();
+    const nodeCrypto = guest.require('node:crypto');
+    const bytes = nodeCrypto.randomBytes(32);
+    expect(bytes.length).toBe(32);
+    // The call site every bundled connector makes.
+    expect(nodeCrypto.randomBytes(32).toString('hex')).toMatch(/^[0-9a-f]{64}$/);
+    expect(nodeCrypto.randomBytes(0).length).toBe(0);
+    expect(() => nodeCrypto.randomBytes(-1)).toThrow(TypeError);
+  });
+
+  it('still carries the WebCrypto surface for callers that want it', () => {
+    const guest = instantiateGuest();
+    const nodeCrypto = guest.require('node:crypto');
+    expect(typeof nodeCrypto.randomUUID()).toBe('string');
+    expect(nodeCrypto.subtle).toBe(guest.crypto.subtle);
+    expect(nodeCrypto.webcrypto).toBe(guest.crypto);
+  });
+});

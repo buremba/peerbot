@@ -290,13 +290,28 @@ describe('Automation window claim and recovery', () => {
     expect(active).toHaveLength(0);
   });
 
-  it('fences continuations to the full identified caller and rejects unidentified claimants', async () => {
+  it('fences continuations to the identified caller, across sessions, and rejects unidentified claimants', async () => {
     const first = await handleClaimNextWindow(
       { action: 'claim_next_window', automation_id: String(automationId) },
       ENV,
       { ...ctx, mcpSessionId: 'session-a' }
     );
 
+    // A different MCP SESSION of the same caller continues its own claim: an
+    // MCP session is a transport artifact that rotates per tool call, so
+    // session-scoped ownership would make claim -> complete impossible.
+    const continued = await handleClaimNextWindow(
+      {
+        action: 'claim_next_window',
+        automation_id: String(automationId),
+        run_id: first.run_id,
+      },
+      ENV,
+      { ...ctx, mcpSessionId: 'session-b' }
+    );
+    expect(continued.run_id).toBe(first.run_id);
+
+    // A different OAuth CLIENT is a different caller and still cannot take it.
     await expect(
       handleClaimNextWindow(
         {
@@ -305,7 +320,7 @@ describe('Automation window claim and recovery', () => {
           run_id: first.run_id,
         },
         ENV,
-        { ...ctx, mcpSessionId: 'session-b' }
+        { ...ctx, clientId: 'someone-elses-client', mcpSessionId: 'session-c' }
       )
     ).rejects.toThrow('Automation window continuation does not own an active lease.');
 

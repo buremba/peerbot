@@ -2,10 +2,10 @@ import type { AutomationTriggerResult } from '@lobu/core/contracts/tools/manage-
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import { createAutomationRun } from '../../../runs/queue-service';
+import { encodeExternalAutomationClaimOwner } from '../../../tools/admin/manage_automations/claim-next-window';
 import { handleCompleteWindow } from '../../../tools/admin/manage_automations/complete-window';
 import { handleAutomationMode } from '../../../tools/get_content/automation-mode';
 import type { ToolContext } from '../../../tools/registry';
-import { encodeExternalAutomationClaimOwner } from '../../../tools/admin/manage_automations/claim-next-window';
 import { generateWindowToken, verifyWindowToken } from '../../../utils/jwt';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {

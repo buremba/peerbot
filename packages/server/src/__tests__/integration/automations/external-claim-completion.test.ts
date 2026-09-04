@@ -1,21 +1,26 @@
+import type { AutomationClaimNextWindowResult } from '@lobu/core/contracts/tools/manage-automations';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestEntity, createTestEvent, seedOwnerContext } from '../../setup/test-fixtures';
 import { TestApiClient } from '../../setup/test-mcp-client';
+import type { Env } from '../../../index';
+import type { ToolContext } from '../../../tools/registry';
+import { handleClaimNextWindow } from '../../../tools/admin/manage_automations/claim-next-window';
+import { handleCompleteWindow } from '../../../tools/admin/manage_automations/complete-window';
 
-type ClaimResult = {
-  run_id: number;
-  context: { window_start: string; window_end: string; window_token: string };
-};
+const ENV = { JWT_SECRET: 'test-jwt-secret-for-testing-only' } as Env;
 
 /**
- * An Automation with NO managed agent and NO device worker is the shape an
- * external MCP client drives: `claim_next_window` opens the run, the same
- * client completes it. Every other suite seeds `managed_agent_id`, which makes
- * the run non-manual-open and skips the external claim-ownership fence
- * entirely — so this shape is the only one that exercises it.
+ * `claim_next_window` writes the run's claim owner and `complete_window`
+ * re-derives it to fence the completion, so the two encodings only ever meet on
+ * an Automation with NO managed agent and NO device worker that is claimed and
+ * then completed by the same external caller. The other claim-then-complete
+ * suites seed `managed_agent_id`, which skips the fence; the agentless suites
+ * open their runs with `trigger`, where `complete_window` mints the claim
+ * itself and therefore agrees with whatever it wrote. Only this shape compares
+ * them.
  */
 describe('external MCP claim then completion', () => {
   let sql: DbClient;
@@ -24,6 +29,7 @@ describe('external MCP claim then completion', () => {
   let entityId: number;
   let automationId: number;
   let api: TestApiClient;
+  let ownerCtx: ToolContext;
 
   beforeAll(async () => {
     await initWorkspaceProvider();
@@ -32,6 +38,7 @@ describe('external MCP claim then completion', () => {
   beforeEach(async () => {
     await cleanupTestDatabase();
     const seeded = await seedOwnerContext();
+    ownerCtx = seeded.ctx as ToolContext;
     sql = getTestDb() as unknown as DbClient;
     orgId = seeded.org.id;
     userId = seeded.user.id;
@@ -71,7 +78,7 @@ describe('external MCP claim then completion', () => {
 
     const claimed = (await api.automations.claimNextWindow({
       automation_id: String(automationId),
-    })) as ClaimResult;
+    })) as AutomationClaimNextWindowResult;
 
     const [run] = await sql<{ claimed_by: string | null }>`
       SELECT claimed_by FROM runs WHERE id = ${claimed.run_id}
@@ -99,12 +106,53 @@ describe('external MCP claim then completion', () => {
     expect(new Date(after.last_completed_window_start as string).toISOString()).toBe(
       claimed.context.window_start
     );
+
+    // The completion must leave the claim owner byte-identical to the one the
+    // claim wrote — a re-encoding that merely happened to pass the fence would
+    // still strand the next caller.
+    const [finished] = await sql<{ status: string; claimed_by: string | null }>`
+      SELECT status, claimed_by FROM runs WHERE id = ${claimed.run_id}
+    `;
+    expect(finished).toMatchObject({ status: 'completed', claimed_by: run.claimed_by });
+  });
+
+  it('completes a claim opened under a DIFFERENT MCP session', async () => {
+    // ChatGPT opens a new MCP session per tool call, so the session that claims
+    // a window is never the session that completes it. An owner encoding that
+    // included `mcp_session_id` made the pairing structurally impossible.
+    const claimSession: ToolContext = { ...ownerCtx, mcpSessionId: 'session-claim' };
+    const completeSession: ToolContext = { ...ownerCtx, mcpSessionId: 'session-complete' };
+
+    const claimed = await handleClaimNextWindow(
+      { action: 'claim_next_window', automation_id: String(automationId) } as never,
+      ENV,
+      claimSession
+    );
+
+    const completed = (await handleCompleteWindow(
+      {
+        action: 'complete_window',
+        automation_id: String(automationId),
+        run_id: claimed.run_id,
+        window_token: claimed.context.window_token,
+        extracted_data: { signals: [] },
+      } as never,
+      ENV,
+      completeSession
+    )) as { run_id: number; completed_now: boolean };
+
+    expect(completed).toMatchObject({ run_id: claimed.run_id, completed_now: true });
+
+    const [after] = await sql<{ next_window_start: string | Date }>`
+      SELECT next_window_start FROM automations WHERE id = ${automationId}
+    `;
+    expect(new Date(after.next_window_start).toISOString()).toBe(claimed.context.window_end);
   });
 
   it('completes an empty window so the arrival mark still advances', async () => {
     const claimed = (await api.automations.claimNextWindow({
       automation_id: String(automationId),
-    })) as ClaimResult;
+    })) as AutomationClaimNextWindowResult;
 
     const completed = (await api.automations.completeWindow({
       automation_id: String(automationId),

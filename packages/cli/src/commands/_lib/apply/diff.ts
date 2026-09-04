@@ -129,15 +129,33 @@ export interface AuthProfileDiffRow
   needsAuth?: boolean;
 }
 
+/**
+ * Field names `diffConnection` and `diffFeed` can report. `changedFields` is
+ * the sole input to apply-cmd routing, and apply reads these exact strings back
+ * to decide what goes in the update payload. Naming them here means a rename or
+ * a typo on EITHER side fails the build, instead of silently dropping the field
+ * from the wire and leaving the remote value stale.
+ */
+export type ConnectionField =
+  | "name"
+  | "auth"
+  | "app_auth"
+  | "config"
+  | "device_worker_id";
+
+export type FeedField = "name" | "schedule" | "config";
+
 export interface ConnectionDiffRow
   extends ResourceRow<DesiredConnection, RemoteConnection> {
   kind: "connection";
+  changedFields?: ConnectionField[];
 }
 
 export interface FeedDiffRow extends ResourceRow<DesiredFeed, RemoteFeed> {
   kind: "feed";
   /** Owning connection slug. */
   connectionSlug: string;
+  changedFields?: FeedField[];
 }
 
 export interface InferenceProviderDiffRow
@@ -281,8 +299,8 @@ export function canonical(value: unknown): string {
 // ── Generic diff-row builder ───────────────────────────────────────────────
 
 /** One comparable field: a label plus a "did it change?" predicate. */
-interface DiffField<D, R> {
-  name: string;
+interface DiffField<D, R, F extends string = string> {
+  name: F;
   changed: (desired: D, remote: R) => boolean;
 }
 
@@ -315,21 +333,21 @@ function optionalNameChanged(
  * adds verb-specific props derived from the changed-field list (e.g.
  * `willRestart`). `changedFields` is attached automatically on update.
  */
-function buildDiffRow<D, R, K extends string>(opts: {
+function buildDiffRow<D, R, K extends string, F extends string = string>(opts: {
   kind: K;
   id: string;
   desired: D;
   remote: R | undefined;
-  fields: ReadonlyArray<DiffField<D, R>>;
+  fields: ReadonlyArray<DiffField<D, R, F>>;
   extras?: Record<string, unknown>;
-  updateExtras?: (changed: string[]) => Record<string, unknown>;
+  updateExtras?: (changed: F[]) => Record<string, unknown>;
 }): {
   kind: K;
   verb: DiffVerb;
   id: string;
   desired: D;
   remote?: R;
-  changedFields?: string[];
+  changedFields?: F[];
 } & Record<string, unknown> {
   const extras = opts.extras ?? {};
   if (!opts.remote) {
@@ -1630,7 +1648,12 @@ function diffConnection(
       `${desired.sourceFile}: connection "${desired.slug}" is bound to connector "${remote.connector_key}" remotely, but the manifest declares "${desired.connector}" — delete it manually or use a new slug`
     );
   }
-  return buildDiffRow({
+  return buildDiffRow<
+    DesiredConnection,
+    RemoteConnection,
+    "connection",
+    ConnectionField
+  >({
     kind: "connection",
     id: desired.slug,
     desired,
@@ -1693,7 +1716,7 @@ function diffFeed(
   desired: DesiredFeed,
   remote: RemoteFeed | undefined
 ): FeedDiffRow {
-  return buildDiffRow({
+  return buildDiffRow<DesiredFeed, RemoteFeed, "feed", FeedField>({
     kind: "feed",
     id: `${connectionSlug}/${desired.feedKey}`,
     desired,

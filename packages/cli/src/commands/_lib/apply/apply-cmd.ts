@@ -37,8 +37,10 @@ import {
 } from "./desired-state.js";
 import {
   computeDiff,
+  type ConnectionField,
   type DiffPlan,
   type DiffRow,
+  type FeedField,
   type RemoteSnapshot,
 } from "./diff.js";
 import {
@@ -1146,7 +1148,7 @@ export async function executePlan(
       // alone. Re-listing every field here was the second place to get
       // "undeclared" wrong, and it got it wrong for `config` (replaced UI-set
       // connection settings with `{}`) and, on feeds below, for `schedule`.
-      const changed = new Set(row.changedFields ?? []);
+      const changed = new Set<ConnectionField>(row.changedFields ?? []);
       const updated = await ctx.client.updateConnection(existing.id, {
         ...(changed.has("name") ? { name: desired.name } : {}),
         ...(changed.has("auth")
@@ -1205,7 +1207,7 @@ export async function executePlan(
       // written. An undeclared cadence or config produces no changed-field, so
       // it never reaches the wire and the server keeps what the feed has. An
       // explicit `schedule: null` IS a declared change and still clears it.
-      const changed = new Set(row.changedFields ?? []);
+      const changed = new Set<FeedField>(row.changedFields ?? []);
       await ctx.client.updateFeed(remoteFeed.id, {
         ...(changed.has("name") ? { name: feed.name } : {}),
         ...(changed.has("schedule") ? { schedule: feed.schedule ?? null } : {}),

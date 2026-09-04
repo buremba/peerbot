@@ -1177,6 +1177,49 @@ describe("apply diff — connectors", () => {
     });
   }
 
+  function remoteWithFeedCron(schedule: string | null): RemoteSnapshot {
+    return {
+      ...emptyRemote(),
+      connectorDefinitions: [builtinConnectorDef],
+      authProfiles: [
+        {
+          slug: "hn-token",
+          display_name: "HN token",
+          connector_key: "hackernews",
+          profile_kind: "env",
+          status: "active",
+        },
+      ],
+      connections: [
+        {
+          id: 7,
+          slug: "hn-frontpage",
+          connector_key: "hackernews",
+          display_name: "HN front page",
+          status: "active",
+          auth_profile_slug: "hn-token",
+          app_auth_profile_slug: null,
+          config: {},
+        },
+      ],
+      feedsByConnectionId: new Map([
+        [
+          7,
+          [
+            {
+              id: 11,
+              connection_id: 7,
+              feed_key: "stories",
+              status: "active",
+              schedule,
+              config: {},
+            },
+          ],
+        ],
+      ]),
+    };
+  }
+
   test("create verbs for new connector def, auth profile, connection, feed", () => {
     const plan = computeDiff(connectorState(), {
       ...emptyRemote(),
@@ -1256,6 +1299,45 @@ describe("apply diff — connectors", () => {
       plan.rows.find((r) => r.kind === "auth-profile" && r.id === "x-account")
         ?.verb
     ).toBe("noop");
+  });
+
+  // The config declares the feed but not its cadence. A cron set in the UI is
+  // not drift the config gets to overwrite — apply must leave it alone, which
+  // means the row is a noop, not an update that writes null.
+  test("an undeclared schedule does not diff against a remote cron", () => {
+    const state = connectorState();
+    const feed = state.connectors.connections[0]?.feeds[0];
+    if (feed) delete (feed as { schedule?: unknown }).schedule;
+
+    const plan = computeDiff(state, remoteWithFeedCron("0 0 * * *"));
+    expect(plan.rows.find((r) => r.kind === "feed")?.verb).toBe("noop");
+  });
+
+  test("an explicitly null schedule still diffs as a deliberate clear", () => {
+    const state = connectorState();
+    const feed = state.connectors.connections[0]?.feeds[0];
+    if (feed) (feed as { schedule?: string | null }).schedule = null;
+
+    const plan = computeDiff(state, remoteWithFeedCron("0 0 * * *"));
+    const row = plan.rows.find((r) => r.kind === "feed");
+    expect(row?.verb).toBe("update");
+    expect(row && "changedFields" in row ? row.changedFields : []).toEqual([
+      "schedule",
+    ]);
+  });
+
+  // Same class: an undeclared config must not diff against a remote one.
+  test("an undeclared feed config does not diff against a remote config", () => {
+    const state = connectorState();
+    const feed = state.connectors.connections[0]?.feeds[0];
+    if (feed) delete (feed as { config?: unknown }).config;
+
+    const remote = remoteWithFeedCron("0 * * * *");
+    const feeds = remote.feedsByConnectionId.get(7);
+    if (feeds?.[0]) feeds[0].config = { depth: 3 };
+
+    const plan = computeDiff(state, remote);
+    expect(plan.rows.find((r) => r.kind === "feed")?.verb).toBe("noop");
   });
 
   test("update when feed schedule changes; needs-auth when oauth profile inactive", () => {

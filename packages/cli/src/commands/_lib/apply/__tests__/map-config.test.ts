@@ -949,7 +949,12 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/connection slug/);
   });
 
-  test("omitted feed schedule maps to null (manual-only, no platform default)", () => {
+  // Three states, not two. Omitting `schedule` means "this config does not
+  // manage the cadence" — apply must leave whatever the feed already has. Only
+  // an explicit `null` clears it. Collapsing omitted to null made every apply
+  // silently wipe crons set in the UI (prod: 41 clears by actor `cli` over two
+  // days in 2026-08), and a DB-side backfill could never survive the next run.
+  test("an omitted feed schedule is left undeclared, not collapsed to null", () => {
     const conn = defineConnection({
       slug: "gh",
       connector: "github",
@@ -958,9 +963,38 @@ describe("mapProjectToDesiredState", () => {
     const state = mapProjectToDesiredState(
       defineConfig({ agents: [], connections: [conn] })
     );
+    const feed = state.connectors.connections[0]?.feeds[0];
+    expect(feed).toEqual({ feedKey: "stars" });
+    expect("schedule" in (feed ?? {})).toBe(false);
+  });
+
+  test("an explicit null schedule stays expressible as a deliberate clear", () => {
+    const conn = defineConnection({
+      slug: "gh",
+      connector: "github",
+      feeds: [{ feed: "stars", schedule: null }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
     expect(state.connectors.connections[0]?.feeds).toEqual([
       { feedKey: "stars", schedule: null },
     ]);
+  });
+
+  // Same class as schedule: an omitted `config` must not wipe the remote one.
+  test("an omitted feed config is left undeclared", () => {
+    const conn = defineConnection({
+      slug: "gh",
+      connector: "github",
+      feeds: [{ feed: "stars" }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    expect("config" in (state.connectors.connections[0]?.feeds[0] ?? {})).toBe(
+      false
+    );
   });
 
   test("rejects an invalid cron schedule", () => {

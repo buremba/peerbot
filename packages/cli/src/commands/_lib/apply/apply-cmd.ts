@@ -1188,15 +1188,21 @@ export async function executePlan(
     if (remoteFeed && row.verb === "update") {
       await ctx.client.updateFeed(remoteFeed.id, {
         name: feed.name,
-        // null clears remote cron (manual-only); string sets it.
-        schedule: feed.schedule ?? null,
-        config: feed.config ?? {},
+        // Only forward what the config declared. `updateFeed` omits an
+        // undefined field from the wire payload, so an undeclared cadence or
+        // config is left exactly as the feed already has it; an explicit
+        // `null` schedule still clears it.
+        ...(feed.schedule !== undefined ? { schedule: feed.schedule } : {}),
+        ...(feed.config !== undefined ? { config: feed.config } : {}),
       });
     } else {
       await ctx.client.createFeed({
         connectionId,
         feedKey: feed.feedKey,
         name: feed.name,
+        // A brand-new feed has no cadence to preserve, so undeclared and
+        // explicit-null both mean manual-only here. The platform still never
+        // invents a default cron.
         schedule: feed.schedule ?? null,
         config: feed.config,
       });

@@ -470,11 +470,15 @@ describe("lobu init --from-org", () => {
     // Feeds are emitted sorted by feed_key (query < stargazers). Capabilities
     // belong to connector definitions, so connection config only carries the
     // feed instance settings.
+    //
+    // `query` has no remote cron, so the generated config omits `schedule`
+    // entirely and it round-trips as UNDECLARED rather than an explicit null.
+    // That is the point: a later cron set in the UI is then left alone by
+    // `lobu apply` instead of being silently wiped.
     expect(conn?.feeds).toEqual([
       {
         feedKey: "query",
         name: "Churn rollup (live)",
-        schedule: null,
         config: { query: "SELECT 1" },
       },
       {

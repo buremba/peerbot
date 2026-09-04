@@ -1701,12 +1701,18 @@ function diffFeed(
         changed: (d, r) => optionalNameChanged(d.name, r.display_name),
       },
       {
+        // Undeclared is not a difference — the same rule `optionalNameChanged`
+        // applies to `name`. Only a declared value (a cron, or an explicit
+        // `null` meaning clear) can put this row into `update`.
         name: "schedule",
-        changed: (d, r) => (d.schedule ?? null) !== (r.schedule ?? null),
+        changed: (d, r) =>
+          d.schedule !== undefined &&
+          (d.schedule ?? null) !== (r.schedule ?? null),
       },
       {
         name: "config",
-        changed: (d, r) => !deepEqual(d.config ?? {}, r.config ?? {}),
+        changed: (d, r) =>
+          d.config !== undefined && !deepEqual(d.config, r.config ?? {}),
       },
     ],
   }) as unknown as FeedDiffRow;

@@ -32,7 +32,7 @@ import type {
   SyncExecutor,
 } from './interface.js';
 import { redactOutput } from './redact.js';
-import { RingBuffer, SubprocessError } from './interface.js';
+import { RingBuffer, ConnectorExecutionError } from './interface.js';
 
 export type IsolateLogLevel = 'log' | 'info' | 'debug' | 'warn' | 'error';
 
@@ -120,10 +120,10 @@ interface HostFetchReply {
 }
 
 /**
- * Guest-side port of `child-runner.ts`'s `executeConnectorRuntime`: same
- * mode dispatch, same context shapes, same result and error envelopes. Runs
- * after the prelude and the connector bundle in one script; its final
- * expression is the promise the host awaits.
+ * The guest's `executeConnectorRuntime`: mode dispatch, context shapes, and
+ * result/error envelopes for a connector run. Runs after the prelude and the
+ * connector bundle in one script; its final expression is the promise the host
+ * awaits.
  */
 const GUEST_RUNNER = String.raw`
 (async function () {
@@ -798,7 +798,7 @@ export class IsolateExecutor implements SyncExecutor {
         if (guestFatal) throw this.guestError(guestFatal, redactedTail());
         if (error instanceof IsolateHostError) {
           if (error.kind === 'timeout') {
-            throw new SubprocessError(withTail(`Feed execution timed out after ${this.options.timeoutMs}ms`), {
+            throw new ConnectorExecutionError(withTail(`Feed execution timed out after ${this.options.timeoutMs}ms`), {
               exitCode: null,
               exitSignal: null,
               outputTail: redactedTail(),
@@ -806,14 +806,14 @@ export class IsolateExecutor implements SyncExecutor {
             });
           }
           if (error.kind === 'memory') {
-            throw new SubprocessError(withTail(`Isolate out of memory (limit ${this.options.memoryMb} MB)`), {
+            throw new ConnectorExecutionError(withTail(`Isolate out of memory (limit ${this.options.memoryMb} MB)`), {
               exitCode: null,
               exitSignal: null,
               outputTail: redactedTail(),
               exitReason: 'oom',
             });
           }
-          throw new SubprocessError(withTail(error.message), {
+          throw new ConnectorExecutionError(withTail(error.message), {
             exitCode: null,
             exitSignal: null,
             outputTail: redactedTail(),
@@ -848,10 +848,10 @@ export class IsolateExecutor implements SyncExecutor {
     }
   }
 
-  /** Same shape `SubprocessExecutor` produces for a child `{type:'error'}` message. */
-  private guestError(description: GuestErrorDescription, outputTail: string): SubprocessError {
+  /** Build the `ConnectorExecutionError` the daemon reports for a guest-thrown error. */
+  private guestError(description: GuestErrorDescription, outputTail: string): ConnectorExecutionError {
     const rawMessage = description.message ?? 'Connector reported error';
-    const error = new SubprocessError(redactOutput(String(rawMessage)), {
+    const error = new ConnectorExecutionError(redactOutput(String(rawMessage)), {
       exitCode: null,
       exitSignal: null,
       outputTail,
@@ -861,7 +861,7 @@ export class IsolateExecutor implements SyncExecutor {
           ? description.httpStatus
           : undefined,
     });
-    error.name = description.name ? redactOutput(String(description.name)) : 'SubprocessError';
+    error.name = description.name ? redactOutput(String(description.name)) : 'ConnectorExecutionError';
     if (description.stack) error.stack = redactOutput(String(description.stack));
     return error;
   }

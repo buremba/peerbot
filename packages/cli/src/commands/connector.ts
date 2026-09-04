@@ -21,7 +21,7 @@ export async function connectorRunCommand(
  * parity smoke gate. STATIC-imports the SAME `runConnectorRuntimeSelfCheck`
  * the worker image runs (`@lobu/connector-worker/self-check`); the parity
  * invariant is that both entrypoints call this one function over the same
- * compile + default `SubprocessExecutor` path. Internal/CI-only — not user
+ * compile + isolate execution path. Internal/CI-only — not user
  * facing (no auth, no network), so it's registered hidden in index.ts.
  */
 const HERE = dirname(fileURLToPath(import.meta.url));

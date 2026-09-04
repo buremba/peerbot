@@ -13,7 +13,7 @@ import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
 import { getDb } from '../db/client';
 import {
   bundledConnectorSourcePath,
-  compileConnectorFromFile,
+  compileConnectorForIsolateFromFile,
   findBundledConnectorFile,
 } from './connector-catalog';
 import {
@@ -109,7 +109,7 @@ export async function resolveConnectorCode(
           'Cloud superseded an organization-scoped connector artifact with the image file'
         );
       }
-      return compileConnectorFromFile(imagePath);
+      return compileConnectorForIsolateFromFile(imagePath);
     }
     if (stored?.compiled_code) {
       if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;
@@ -157,7 +157,7 @@ export async function resolveConnectorCode(
     // bundled on-disk source; the stale artifact itself must never execute.
   }
   const filePath = findBundledConnectorFile(connectorKey);
-  if (filePath) return compileConnectorFromFile(filePath);
+  if (filePath) return compileConnectorForIsolateFromFile(filePath);
   throw new Error(
     stored?.compiled_code
       ? `Compiled artifact for '${connectorKey}' predates the current compile configuration and no source is available to recompile — reinstall the connector.`
@@ -270,7 +270,7 @@ export async function upsertBundledConnectorForOrg(params: {
   if (!filePath) return null;
 
   // Compile to extract metadata (key, name, feeds, auth schema, etc.).
-  const compiledCode = await compileConnectorFromFile(filePath);
+  const compiledCode = await compileConnectorForIsolateFromFile(filePath);
   const metadata = await extractConnectorMetadata(compiledCode);
   validateConnectorMetadata(metadata);
 

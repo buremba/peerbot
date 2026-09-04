@@ -1,9 +1,8 @@
 /**
  * Runtime config merge shared by every executor lane.
  *
- * Lives in its own side-effect-free module because `child-runner.ts` runs
- * `main()` at import time and the isolate executor builds the same merged
- * config on the host before handing it to the guest.
+ * Lives in its own side-effect-free module so the host can build the merged
+ * config and hand it to the guest without importing the executor.
  */
 
 /**

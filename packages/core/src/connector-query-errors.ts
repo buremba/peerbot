@@ -39,7 +39,7 @@ export type ToolErrorCode =
   | "UPSTREAM_5XX"
   /** Network-level failure reaching the upstream (econnrefused/reset/dns/socket). */
   | "NETWORK"
-  /** Connector subprocess was unavailable (oom/crash) — retry once. */
+  /** Connector execution was unavailable (oom/crash) — retry once. */
   | "UPSTREAM_UNAVAILABLE"
   // ── fallback ──
   /** Unclassified failure. Non-retryable by default (don't mask real bugs behind retries). */
@@ -158,7 +158,7 @@ export function isToolError(error: unknown): error is ToolError {
 }
 
 /**
- * A structured signal describing an upstream/subprocess failure. Any field that is
+ * A structured signal describing an upstream/execution failure. Any field that is
  * present is trusted over the message string. `message` is the last-resort input:
  * keyword matching is fragile (a user's data can contain "429" or "timeout"), so it
  * only runs when no structured field classifies the error.
@@ -168,7 +168,7 @@ export interface ToolErrorSignal {
   httpStatus?: number;
   /** PostgreSQL SQLSTATE, e.g. "57014" (query_canceled / statement timeout). */
   pgCode?: string;
-  /** Connector subprocess exit reason, when the failure came from the executor. */
+  /** Connector run exit reason, when the failure came from the executor. */
   exitReason?: "timeout" | "oom" | "crash" | "error_message";
   /** Whether an upstream HTTP layer already judged this transient (from withHttpRetry). */
   transient?: boolean;
@@ -198,7 +198,7 @@ const NETWORK_MESSAGE_KEYWORDS = [
 /**
  * Map a structured signal (preferred) — or, as a last resort, a message string —
  * to a `ToolErrorCode`. Precedence: explicit `transient` HTTP judgment → HTTP
- * status → PG code → subprocess exit reason → message keywords → `INTERNAL`.
+ * status → PG code → run exit reason → message keywords → `INTERNAL`.
  *
  * This replaces the duplicated keyword lists in connector-sdk/src/retry.ts; those
  * should source their retry decision from `isRetryable(classifyToolError(...))`.

@@ -184,30 +184,30 @@ export interface SyncExecutor {
   ): Promise<ExecutorResult>;
 }
 
-export type SubprocessExitReason = 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
+export type ConnectorExitReason = 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
 
-export interface SubprocessDiagnostics {
+export interface ConnectorExecutionDiagnostics {
   exitCode: number | null;
   exitSignal: string | null;
   outputTail: string;
-  exitReason: SubprocessExitReason;
+  exitReason: ConnectorExitReason;
   httpStatus?: number;
 }
 
-export class SubprocessError extends Error implements SubprocessDiagnostics {
+export class ConnectorExecutionError extends Error implements ConnectorExecutionDiagnostics {
   exitCode: number | null;
   exitSignal: string | null;
   outputTail: string;
-  exitReason: SubprocessExitReason;
+  exitReason: ConnectorExitReason;
   httpStatus?: number;
 
   constructor(
     message: string,
-    diagnostics: SubprocessDiagnostics,
+    diagnostics: ConnectorExecutionDiagnostics,
     options?: { cause?: unknown }
   ) {
     super(message, options);
-    this.name = 'SubprocessError';
+    this.name = 'ConnectorExecutionError';
     this.exitCode = diagnostics.exitCode;
     this.exitSignal = diagnostics.exitSignal;
     this.outputTail = diagnostics.outputTail;

@@ -3,7 +3,7 @@
  *
  * `readSourceFeed` (connector-pushdown.ts) reads a feed by resolving the
  * connector's COMPILED code and running its per-feed `read()` handler in the
- * connector subprocess. A device-manifest connector (`apple.*`, `os.shell`,
+ * connector isolate. A device-manifest connector (`apple.*`, `os.shell`,
  * `chrome.*`, …) has no compiled code at all — it is metadata-only
  * on the server and implemented natively on the paired device — so that path
  * cannot serve it.

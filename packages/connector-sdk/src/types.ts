@@ -21,7 +21,7 @@ export interface Env {
   // defaults this on; multi-user deployments leave it unset.
   LOBU_SINGLE_USER?: string;
 
-  // DB-connector egress policy delivered into the connector subprocess.
+  // DB-connector egress policy delivered into the connector run.
   // "block-private" (injected under cloud mode) makes a DB connector reject
   // internal/metadata hosts; anything else ⇒ trusted "allow-private".
   LOBU_DB_EGRESS_POLICY?: string;

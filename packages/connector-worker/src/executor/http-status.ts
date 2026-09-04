@@ -1,8 +1,8 @@
 /**
  * Extract a structured HTTP status from a connector-thrown error (lobu#2051 Item 2).
  *
- * Lives in its own side-effect-free module (child-runner.ts runs `main()` at import
- * time, so it's not a safe import target for tests). The connector SDK's
+ * Lives in its own side-effect-free module so tests can import it without
+ * pulling in the executor. The connector SDK's
  * `HttpStatusError` sets a numeric `status`; carrying that number to the gateway
  * lets it classify 429/5xx honestly instead of keyword-matching the redacted
  * message string.

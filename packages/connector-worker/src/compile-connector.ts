@@ -7,7 +7,6 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  createConnectorCompiler,
   createIsolateConnectorCompiler,
   findBundledConnectorFile as findInDirs,
 } from './compile/index.js';
@@ -42,10 +41,6 @@ const WORKER_CONNECTOR_DIR_CANDIDATES = [
 export function findBundledConnectorFile(key: string): string | null {
   return findInDirs(key, WORKER_CONNECTOR_DIR_CANDIDATES);
 }
-
-const compiler = createConnectorCompiler();
-
-export const compileConnectorFromFile = compiler.compileConnectorFromFile;
 
 // Isolate-lane bundles inline the SDK and fail on a surviving Node builtin;
 // the only build `resolveJobCode` produces, because the isolate is the only

@@ -7,7 +7,7 @@ import type { getDb } from '../db/client';
 import { computeCodeHash } from './compiler-core';
 import { cancelResponseBody, readResponseTextWithLimit } from './bounded-response';
 import {
-  compileConnectorFromFile,
+  compileConnectorForIsolateFromFile,
   getDefaultConnectorCatalogDir,
   normalizeFileSourceUri,
   resolveFileSourcePath,
@@ -263,7 +263,7 @@ export async function resolveConnectorInstallSource(params: {
     compiledCode = sourceCode;
     compiledCodeHash = computeCodeHash(sourceCode);
   } else if (params.sourceUri && sourcePath) {
-    compiledCode = await compileConnectorFromFile(sourcePath);
+    compiledCode = await compileConnectorForIsolateFromFile(sourcePath);
     compiledCodeHash = computeCodeHash(compiledCode);
   } else {
     const compiled = await compileConnectorSource(sourceCode);

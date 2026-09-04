@@ -1,5 +1,5 @@
 /**
- * Redact secrets from connector subprocess output before it leaves the worker.
+ * Redact secrets from connector output before it leaves the worker.
  *
  * Patterns are deliberately broad — false positives are preferred to leaking a
  * real credential into the runs table. Add new patterns here when a connector

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-	compileConnectorFromFile,
+	compileConnectorForIsolateFromFile,
 	findBundledConnectorFile,
 } from "../../utils/connector-catalog";
 
@@ -65,7 +65,7 @@ describe("injected page programs survive bundling", () => {
 		it(`${program.connectorKey}: the compiled ${program.programFn} still installs`, async () => {
 			const file = findBundledConnectorFile(program.connectorKey);
 			expect(file, `${program.connectorKey} must ship in the image`).not.toBeNull();
-			const compiled = await compileConnectorFromFile(file as string);
+			const compiled = await compileConnectorForIsolateFromFile(file as string);
 
 			// A hoisted downlevel helper is the specific way bundling breaks this.
 			const source = extractFunction(compiled, program.programFn);

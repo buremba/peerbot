@@ -2,7 +2,7 @@
  * DB-egress hardening capability negotiation (PR #1896):
  *
  * A `postgres` (and future warehouse) run opens a raw tenant DB socket and
- * relies on the connector-worker subprocess enforcing block-private egress
+ * relies on the connector-worker isolate enforcing block-private egress
  * (resolve-then-pin IP, DNS-rebind guard, forced TLS). During a rolling deploy
  * a NEW gateway must NOT hand such a claimed run to an OLD fleet worker that
  * predates the hardening — that worker ignores `db_egress_policy` and would

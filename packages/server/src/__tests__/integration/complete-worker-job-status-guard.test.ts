@@ -333,7 +333,7 @@ describe('completeWorkerJob status guard (late-completion-after-timeout)', () =>
     expect(after[0].last_sync_at).toBeNull();
   });
 
-  it('strips NUL bytes from the subprocess output tail and error message', async () => {
+  it('strips NUL bytes from the run output tail and error message', async () => {
     const org = await createTestOrganization();
     const connId = await insertConnection(org.id);
     const feedId = await insertFeed(org.id, connId);

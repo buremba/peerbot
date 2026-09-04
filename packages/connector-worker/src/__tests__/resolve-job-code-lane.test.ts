@@ -6,7 +6,7 @@
  * of matching branches on `job.lane` — one choosing the executor, one choosing
  * the compiler — and when the process lane was deleted only the executor half
  * was collapsed. The compiler half then fell through to the SDK-EXTERNALIZED
- * ESM build for every job, because the gateway sends no `lane` at all.
+ * ESM build for every job, because no gateway ever sent a `lane` at all.
  *
  * That bundle cannot run in an isolate: it has bare imports and no module
  * loader to resolve them. It reaches production on the FLEET worker path, where
@@ -29,7 +29,7 @@ function sourceBackedJob(overrides: Partial<PollResponse> = {}): PollResponse {
 }
 
 describe('resolveJobCode', () => {
-  it('compiles an isolate-loadable bundle when the job carries no lane', async () => {
+  it('compiles an isolate-loadable bundle for a source-backed job', async () => {
     const result = await resolveJobCode(sourceBackedJob());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -39,11 +39,16 @@ describe('resolveJobCode', () => {
     expect(result.code).not.toMatch(/require\(\s*['"]@lobu\/connector-sdk['"]\s*\)/);
   }, 120_000);
 
-  it('ignores a stale lane on the job rather than compiling a bundle it cannot run', async () => {
-    // An older gateway may still stamp the retired value. The worker must not
-    // change what it builds because of it.
-    const stale = await resolveJobCode(sourceBackedJob({ lane: 'process' } as Partial<PollResponse>));
-    const current = await resolveJobCode(sourceBackedJob({ lane: 'isolate' } as Partial<PollResponse>));
+  it('ignores a retired lane field rather than compiling a bundle it cannot run', async () => {
+    // `lane` is gone from the poll contract, but a worker image rolls
+    // independently of the gateway image: an older gateway can still stamp the
+    // retired value on the wire. The worker must not change what it builds.
+    const stale = await resolveJobCode(
+      sourceBackedJob({ lane: 'process' } as unknown as Partial<PollResponse>)
+    );
+    const current = await resolveJobCode(
+      sourceBackedJob({ lane: 'isolate' } as unknown as Partial<PollResponse>)
+    );
     expect(stale.ok).toBe(true);
     expect(current.ok).toBe(true);
     if (!stale.ok || !current.ok) return;

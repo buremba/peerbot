@@ -1,7 +1,7 @@
 /**
  * Run Executor
  *
- * Executes sync and action runs via subprocess execution with compiled connector code.
+ * Executes sync and action runs in a V8 isolate from compiled connector code.
  * Generates embeddings and streams results.
  */
 
@@ -60,9 +60,9 @@ export async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> 
     // ALWAYS the isolate build: a self-contained CJS bundle with the SDK inlined
     // and Node builtins rejected. `selectExecutor` returns an IsolateExecutor
     // for every job, so compiling anything else hands the isolate a bundle it
-    // cannot load -- bare imports with no module loader behind them. `job.lane`
-    // is deliberately not consulted: an older gateway may still stamp the
-    // retired value, and there is no second lane to send it to.
+    // cannot load -- bare imports with no module loader behind them. A retired
+    // `lane` field an older gateway may still stamp is deliberately ignored:
+    // there is no second lane to send the job to.
     const code = await compileConnectorForIsolateFromFile(localPath);
     return { ok: true, code };
   } catch (err) {
@@ -450,7 +450,7 @@ async function executeSyncRun(
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.info(`[executor] Sync run ${run_id} failed:`, errorMessage);
 
-    const diag = extractSubprocessDiagnostics(error);
+    const diag = extractExecutionDiagnostics(error);
 
     await client.complete({
       run_id,
@@ -486,11 +486,11 @@ function partialFetchFailureMessage(
 }
 
 /**
- * Pull diagnostic fields off a SubprocessError-shaped error so the worker
+ * Pull diagnostic fields off a ConnectorExecutionError-shaped error so the worker
  * can persist them on the failed run row. Returns `undefined` when the
- * thrown value isn't a subprocess failure (e.g. a stream/HTTP error).
+ * thrown value isn't an execution failure (e.g. a stream/HTTP error).
  */
-function extractSubprocessDiagnostics(error: unknown):
+function extractExecutionDiagnostics(error: unknown):
   | {
       output_tail?: string;
       exit_code?: number | null;
@@ -829,7 +829,7 @@ async function executeAuthRun(
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.info(`[executor] Auth run ${run_id} failed:`, errorMessage);
 
-    const diag = extractSubprocessDiagnostics(error);
+    const diag = extractExecutionDiagnostics(error);
 
     try {
       await client.completeAuth({

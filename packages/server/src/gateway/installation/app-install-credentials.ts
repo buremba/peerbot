@@ -29,7 +29,7 @@ import {
 	normalizeConnectorAuthSchema,
 } from "../../utils/connector-auth.js";
 import {
-	compileConnectorFromFile,
+	compileConnectorForIsolateFromFile,
 	findBundledConnectorFile,
 	listCatalogConnectorDefinitions,
 } from "../../utils/connector-catalog.js";
@@ -86,7 +86,7 @@ async function resolveBundledMethod(
 		bundledMethodCache.set(cacheKey, null);
 		return null;
 	}
-	const code = await compileConnectorFromFile(file);
+	const code = await compileConnectorForIsolateFromFile(file);
 	const metadata = await extractConnectorMetadata(code);
 	const method = pickMethod(metadata.authSchema, provider);
 	bundledMethodCache.set(cacheKey, method);
@@ -184,7 +184,7 @@ export async function primeBundledIntegrationConnectors(): Promise<
 		let webhookSchema: ConnectorWebhookSchema | null = null;
 		let method: ConnectorAuthAppInstallation | null = null;
 		try {
-			const code = await compileConnectorFromFile(file);
+			const code = await compileConnectorForIsolateFromFile(file);
 			const metadata = await extractConnectorMetadata(code);
 			webhookSchema =
 				(metadata.webhook as ConnectorWebhookSchema | null) ?? null;

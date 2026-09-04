@@ -117,7 +117,7 @@ export async function resolveBundledAgentToolingMetadata(
 
 	let value: BundledAgentToolingMetadata | null = null;
 	try {
-		const compiledCode = await compileConnectorFromFile(filePath);
+		const compiledCode = await compileConnectorForIsolateFromFile(filePath);
 		const metadata = await extractConnectorMetadata(compiledCode);
 		if (metadata.key === connectorKey && metadata.version === selectedVersion) {
 			value = {
@@ -242,12 +242,12 @@ export function resolveFileSourcePath(value: string): string | null {
 	return fileURLToPath(normalized);
 }
 
-// `compileConnectorFromFile` is owned by `@lobu/connector-worker/compile`
-// (LRU-capped at 8 entries, keyed by file mtime, identical to the previous
-// implementation that lived here — see lobu#771 for the cap rationale).
-// Re-exported here so existing server callers keep their import paths.
-export const compileConnectorFromFile =
-	connectorCompiler.compileConnectorFromFile;
+// `compileConnectorForIsolateFromFile` is owned by `@lobu/connector-worker/compile`
+// (LRU-capped at 8 entries, keyed by file mtime — see lobu#771 for the cap
+// rationale). Re-exported here so the gateway's candidate-dir configuration of
+// the compiler is the single instance every server caller shares.
+export const compileConnectorForIsolateFromFile =
+	connectorCompiler.compileConnectorForIsolateFromFile;
 
 async function extractConnectorCatalogMetadata(
 	filePath: string,
@@ -260,7 +260,7 @@ async function extractConnectorCatalogMetadata(
 	}
 
 	try {
-		const compiledCode = await compileConnectorFromFile(filePath);
+		const compiledCode = await compileConnectorForIsolateFromFile(filePath);
 		const metadata = await extractConnectorMetadata(compiledCode);
 
 		if (!metadata.key || !metadata.name || !metadata.version) {

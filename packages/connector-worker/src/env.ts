@@ -34,9 +34,9 @@ export function buildConnectorWorkerEnv(): Env {
     REDDIT_CLIENT_SECRET: isCloud ? undefined : process.env.REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT: process.env.REDDIT_USER_AGENT,
     // WORKER_API_TOKEN is deliberately absent. Everything returned here reaches
-    // connector code — `subprocess.ts` spreads `job.env` into the child process
-    // environment and `buildConnectorConfig()` merges it into the connector's
-    // config — and a request bearing this token authenticates as a TRUSTED
+    // connector code — `buildConnectorConfig()` merges `job.env` into the
+    // connector's config — and a request bearing this token authenticates as a
+    // TRUSTED
     // FLEET worker, which can claim and complete runs across tenants. The
     // daemon authenticates via `DaemonConfig.workerApiToken` instead, which
     // never enters this Env.

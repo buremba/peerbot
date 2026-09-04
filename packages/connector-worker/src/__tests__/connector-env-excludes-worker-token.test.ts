@@ -10,8 +10,7 @@
  * (`bin.ts`) and the in-process embedded worker
  * (`server/src/scheduled/embedded-connector-worker.ts`) build the connector-
  * facing `Env` through it, precisely so gateway secrets stay out of connector
- * runs. Everything it returns reaches connector code two ways —
- * `subprocess.ts` spreads `job.env` into the child process environment, and
+ * runs. Everything it returns reaches connector code, because
  * `buildConnectorConfig()` merges `job.env` into the connector's own config
  * object — so exclusion here is what keeps it unreachable.
  *

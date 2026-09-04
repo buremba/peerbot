@@ -3,8 +3,8 @@
  *
  * One shared function run from BOTH entrypoints — the worker Docker image
  * (`node dist/bin.js self-check`) and the built CLI (`lobu connector
- * runtime-self-check`) — so both assert the identical compile + default
- * `SubprocessExecutor` path. The only per-surface difference is the connector
+ * runtime-self-check`) — so both assert the identical compile + isolate
+ * execution path. The only per-surface difference is the connector
  * source discovery roots (monorepo vs worker image vs npm-installed CLI).
  *
  * The result also reports the isolate lane (`isolate_lane`): whether this
@@ -241,8 +241,9 @@ interface DiscoveredConnector {
 
 /**
  * Compile a connector, import the resulting bundle, and read its `definition`.
- * Importing a runtime-compiled bundle is inherently dynamic — the same pattern
- * `child-runner.ts` uses, not a new lazy-load codepath. Returns `null` for
+ * Importing a runtime-compiled bundle is inherently dynamic — reading a
+ * connector's `definition` requires evaluating it — not a new lazy-load
+ * codepath. Returns `null` for
  * files carrying no ConnectorRuntime class (index/util files).
  */
 async function instantiateConnector(
@@ -318,7 +319,7 @@ async function runSyntheticConnector(
 	}
 	if (eventCount < 1) {
 		throw new Error(
-			"Ran but emitted no events — compile/subprocess event stream is broken.",
+			"Ran but emitted no events — the compile/execute event stream is broken.",
 		);
 	}
 }
@@ -357,7 +358,7 @@ export async function probeIsolateLane(): Promise<SelfCheckIsolateLane> {
 /**
  * Fast boot gate for a worker that is about to advertise connector
  * capabilities. It compiles and executes the synthetic connector through the
- * real subprocess path, so a runtime that cannot load the SDK fails before its
+ * real isolate path, so a runtime that cannot load the SDK fails before its
  * first poll can claim production work.
  */
 export async function assertConnectorRuntimeLoadable(): Promise<void> {

@@ -1165,7 +1165,7 @@ Memory:
     });
   // Hidden internal command: the CLI side of the connector-runtime parity
   // smoke gate. Runs the SAME runConnectorRuntimeSelfCheck() the worker image
-  // runs (compile + default SubprocessExecutor), so a packaging/parity drift
+  // runs (compile + isolate execution), so a packaging/parity drift
   // (e.g. a missing `COPY packages/core`) is caught by RUNNING the artifact,
   // not just building it. CI-only — hidden from help.
   connector

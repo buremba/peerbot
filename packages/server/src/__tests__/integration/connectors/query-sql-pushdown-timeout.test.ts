@@ -1,9 +1,9 @@
 /**
  * Pushdown wall-clock budget.
  *
- * `runConnectorQuery` forks a connector subprocess to run SQL live against a
- * connection's source. `SubprocessExecutor` defaults to a 600_000ms kill
- * timeout, so a gateway read path that passes none can hold a subprocess for
+ * `runConnectorQuery` runs a connector in an isolate to run SQL live against a
+ * connection's source. `IsolateExecutor` defaults to a 600_000ms kill
+ * timeout, so a gateway read path that passes none can hold a connector run for
  * ten minutes on one request.
  *
  * Deliberately mock-free. `vitest.config.ts` sets `isolate: false` for a true

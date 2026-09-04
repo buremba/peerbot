@@ -7,9 +7,9 @@
  *   - `findBundledConnectorFile(key)` — walks a list of candidate dirs
  *     trying both filename conventions (`browser.evaluate → browser/evaluate.ts`
  *     and `chrome.tabs → chrome_tabs.ts`).
- *   - `compileConnectorFromFile(filePath)` — esbuild bundle with the
- *     `npm:` specifier plugin, the `lobu` / `@lobu/connector-sdk` aliases,
- *     `EXTERNAL_RUNTIME_DEPS` externalised, and an mtime-keyed LRU cache.
+ *   - a connector compile step — esbuild bundle with the `npm:` specifier
+ *     plugin, the `lobu` / `@lobu/connector-sdk` aliases, and an mtime-keyed
+ *     LRU cache.
  *   - The `npm:` specifier resolver plugin.
  *   - The `EXTERNAL_RUNTIME_DEPS` constant.
  *
@@ -118,31 +118,6 @@ export const ISOLATE_LANE_BUILD_OPTIONS = {
   supported: { 'dynamic-import': false },
   external: [],
 } as const satisfies Partial<BuildOptions>;
-
-/**
- * esbuild plugin that marks the connector SDK as **external** (runtime-provided)
- * rather than bundling it in. The SDK pulls a large infra graph transitively
- * (Sentry, OpenTelemetry, grpc, isomorphic-git, …); bundling it inflated every
- * connector to multiple MB. The runtime that executes the connector already has
- * `@lobu/connector-sdk` installed (it's a dependency of `@lobu/connector-worker`),
- * so the bundle leaves it as a bare import and Node resolves it from the runtime's
- * node_modules at load time — the standard "externalize the framework, bundle the
- * user code" pattern (cf. AWS Lambda not bundling `@aws-sdk`).
- *
- * The `lobu` alias specifier is normalized to `@lobu/connector-sdk` so the emitted
- * import resolves to a real package the runtime provides.
- */
-function createSdkExternalPlugin(): Plugin {
-  return {
-    name: 'sdk-external',
-    setup(b) {
-      b.onResolve({ filter: SDK_SPECIFIER_RE }, (args) => ({
-        path: normalizeSdkSpecifier(args.path),
-        external: true,
-      }));
-    },
-  };
-}
 
 export interface NpmSpecifierPluginOptions {
   /**
@@ -270,102 +245,19 @@ export async function flattenConnectorSourceFromFile(filePath: string): Promise<
   }
 }
 
-interface CompileOptions {
+interface IsolateCompileOptions {
   /**
-   * Max entries kept in the mtime-keyed LRU. Each entry is the compiled
-   * bundle — now just the connector's own code + its bundled npm deps,
-   * since the SDK and its infra graph are externalised. Cap default 8
-   * keeps memory bounded; pass a smaller value in memory-constrained
-   * environments.
+   * Max entries kept in the mtime-keyed LRU. Each entry is a self-contained
+   * bundle — the connector's own code plus the SDK and every npm dep inlined,
+   * since the isolate has no module loader to resolve anything at run time.
+   * Cap default 8 keeps memory bounded; pass a smaller value in
+   * memory-constrained environments.
    * @default 8
    */
   cacheMax?: number;
-  /**
-   * Hook fired when `npm:` specifiers fail to resolve and the import is
-   * externalised. Forwarded to `createNpmSpecifierPlugin`.
-   */
-  onUnresolvedNpm?: NpmSpecifierPluginOptions['onUnresolved'];
 }
 
 const DEFAULT_CACHE_MAX = 8;
-
-/**
- * Compile a single connector source file to an ESM bundle string,
- * suitable for the executor's subprocess `import()` step.
- *
- * The returned bundle:
- *   - is ESM (`format: 'esm'`, `target: 'node20'`);
- *   - externalises the connector SDK (`lobu` / `@lobu/connector-sdk`) — the
- *     runtime provides it, keeping bundles to the connector's own code + deps;
- *   - has a banner injecting a CJS-compatible `require` shim;
- *   - externalises `EXTERNAL_RUNTIME_DEPS` (native deps + Playwright);
- *   - emits an inline source map (`sourcesContent: false`) so connector stack
- *     traces map to source lines without embedding the source in the artifact;
- *   - is mtime-cached: a repeat call with the same `filePath` whose
- *     mtime hasn't changed returns the cached bundle without hitting
- *     esbuild.
- */
-export function createConnectorCompiler(options?: CompileOptions) {
-  const cacheMax = options?.cacheMax ?? DEFAULT_CACHE_MAX;
-  const compiledFileCache = new Map<string, { mtimeMs: number; code: string }>();
-  const npmPlugin = createNpmSpecifierPlugin({ onUnresolved: options?.onUnresolvedNpm });
-  const sdkExternalPlugin = createSdkExternalPlugin();
-
-  function touchCacheEntry(filePath: string, entry: { mtimeMs: number; code: string }): void {
-    compiledFileCache.delete(filePath);
-    compiledFileCache.set(filePath, entry);
-    while (compiledFileCache.size > cacheMax) {
-      const oldest = compiledFileCache.keys().next().value;
-      if (oldest === undefined) break;
-      compiledFileCache.delete(oldest);
-    }
-  }
-
-  async function compileConnectorFromFile(filePath: string): Promise<string> {
-    let mtimeMs: number | null = null;
-    try {
-      mtimeMs = (await stat(filePath)).mtimeMs;
-      const cached = compiledFileCache.get(filePath);
-      if (cached && cached.mtimeMs === mtimeMs) {
-        touchCacheEntry(filePath, cached);
-        return cached.code;
-      }
-    } catch {
-      // stat failed — let the build surface the real error.
-    }
-
-    const tmpDir = await mkdtemp(join(tmpdir(), 'lobu-connector-'));
-    const outPath = join(tmpDir, 'out.mjs');
-
-    try {
-      await build({
-        entryPoints: [filePath],
-        outfile: outPath,
-        bundle: true,
-        format: 'esm',
-        platform: 'node',
-        target: 'node20',
-        banner: {
-          js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`,
-        },
-        plugins: [sdkExternalPlugin, npmPlugin],
-        external: [...EXTERNAL_RUNTIME_DEPS],
-        write: true,
-        minify: false,
-        sourcemap: 'inline',
-        sourcesContent: false,
-      });
-
-      const code = await readFile(outPath, 'utf-8');
-      if (mtimeMs !== null) touchCacheEntry(filePath, { mtimeMs, code });
-      return code;
-    } finally {
-      await rm(tmpDir, { recursive: true, force: true });
-    }
-  }
-
-  return { compileConnectorFromFile };
-}
 
 const workerRequire = createRequire(import.meta.url);
 
@@ -471,7 +363,7 @@ function builtinsFromMetafile(metafile: Metafile): string[] {
  * reports which Node builtins survive as bare requires, which is how a bundle
  * is found to be unloadable before it ever reaches an isolate.
  */
-export function createIsolateConnectorCompiler(options?: Pick<CompileOptions, 'cacheMax'>) {
+export function createIsolateConnectorCompiler(options?: IsolateCompileOptions) {
   const cacheMax = options?.cacheMax ?? DEFAULT_CACHE_MAX;
   const cache = new Map<string, { mtimeMs: number; bundle: IsolateBundle }>();
   const plugins: Plugin[] = [
@@ -565,9 +457,7 @@ export function createIsolateConnectorCompiler(options?: Pick<CompileOptions, 'c
   return {
     bundleConnectorForIsolate,
     compileConnectorForIsolateFromFile,
-    compileConnectorFromFile: compileConnectorForIsolateFromFile,
     bundleConnectorForIsolateFromSource,
     compileConnectorForIsolateFromSource,
-    compileConnectorFromSource: compileConnectorForIsolateFromSource,
   };
 }

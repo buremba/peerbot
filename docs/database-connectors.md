@@ -64,12 +64,12 @@ export default async (_ctx, client) => {
 `{ ok: true, rows, columns, next_cursor? }` or
 `{ ok: false, error, error_code, retryable }`, so a missing or visibility-fenced
 feed does not fail the whole batch. The per-feed timeout defaults to 10s and
-clamps at 30s. It aborts device and HTTP transports and kills compiled connector
-subprocesses at the deadline.
+clamps at 30s. It aborts device and HTTP transports and tears down compiled
+connector runs at the deadline.
 
 ## SSRF / egress trust model
 
-The DB socket lives in the **connector subprocess**, behind the worker egress
+The DB socket lives in the **connector isolate**, behind the worker egress
 controls — not the gateway. The dogfood reaches Lobu's own private PG, so the HTTP
 scrapers' block-all-private-IPs rule can't be reused.
 

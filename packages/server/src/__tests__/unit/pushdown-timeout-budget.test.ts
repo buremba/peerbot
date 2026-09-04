@@ -33,7 +33,7 @@ describe('resolvePushdownTimeoutMs', () => {
   });
 
   it('stays under the executor default it exists to replace', () => {
-    // SubprocessExecutor defaults to 600_000ms; a cap at or above that is no cap.
+    // IsolateExecutor defaults to 600_000ms; a cap at or above that is no cap.
     expect(PUSHDOWN_QUERY_TIMEOUT_MS).toBeLessThan(600_000);
   });
 });

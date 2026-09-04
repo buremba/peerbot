@@ -2,7 +2,7 @@
  * Pushdown: run a read-only query LIVE against a connection's source by invoking
  * its connector in `query` mode — no copy, no events. Used by query_sql when a
  * `connection` is given.
- * The DB socket lives in the connector subprocess (behind the worker egress
+ * The DB socket lives in the connector isolate (behind the worker egress
  * controls), never in the gateway. Feed source reads use the separate
  * per-feed `read` capability below. Reuses the same inline-run path as
  * operations.execute (feed-sync.ts).
@@ -56,9 +56,9 @@ interface ConnectorQueryResult {
 }
 
 /**
- * Hard wall-clock cap on ONE pushdown query. Without it `SubprocessExecutor`'s
+ * Hard wall-clock cap on ONE pushdown query. Without it `IsolateExecutor`'s
  * 600_000ms default applies, so a slow source could pin a gateway-forked
- * subprocess for ten minutes per request.
+ * connector run for ten minutes per request.
  *
  * 30s matches what the request path already promises elsewhere:
  * `manage_feeds`'s batch read cap and the postgres connector's own

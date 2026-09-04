@@ -28,7 +28,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createConnectorCompiler, createIsolateConnectorCompiler } from "@lobu/connector-worker/compile";
+import { createIsolateConnectorCompiler } from "@lobu/connector-worker/compile";
 import type { ExecutionHooks, ExecutorJob, ExecutorResult } from "@lobu/connector-worker/executor/interface";
 import {
 	IsolateExecutor,

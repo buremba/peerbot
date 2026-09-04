@@ -265,11 +265,51 @@ function personLabel(
  * is still returned by an unqualified query and would otherwise resurface on
  * every full sync as if it were live.
  */
+/**
+ * Drive models a folder as a file with a reserved MIME type, so an unfiltered
+ * `files.list` returns the directory tree interleaved with the documents. A
+ * folder carries no content and no `size`, so every one of them lands as a
+ * name-only event: on a real Drive that measured 8,258 of 9,200 rows — 90%
+ * noise that costs an embedding each, dilutes search, and stretches the
+ * bootstrap over ten times as many runs as the documents alone need.
+ *
+ * Excluded at the QUERY, not after the fetch, so the pages Drive returns are
+ * documents and the per-run cap counts things worth storing.
+ */
+const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
+
+/**
+ * Wall-clock budget for one sync run, tested at page boundaries.
+ *
+ * The host kills a feed run at 600s, and a killed run persists NO checkpoint.
+ * So a traversal that overruns does not merely stall: it throws away the work
+ * it just did, and the next run repeats it and overruns again — a bootstrap
+ * that can never finish. Measured on a real Drive at ~0.86s per exported file,
+ * so a few hundred content-bearing files is already the whole budget; the item
+ * cap alone cannot bound a run because it cannot see how expensive an item is.
+ *
+ * Set well under the host limit to leave room for the page still in flight
+ * plus persisting everything collected so far.
+ */
+const SYNC_TIME_BUDGET_MS = 4 * 60 * 1000;
+
+/**
+ * Escapes a value for a single-quoted Drive query literal.
+ *
+ * Backslashes go FIRST: escaping quotes first would then double-escape the
+ * backslashes it just introduced. Escaping only quotes — as this did — leaves
+ * a value ending in a backslash able to escape its own closing quote and run
+ * on into query syntax (`js/incomplete-sanitization`).
+ */
+function escapeQueryLiteral(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 function buildListQuery(config: DriveConfig): string | undefined {
-  const clauses: string[] = [];
+  const clauses: string[] = [`mimeType != '${FOLDER_MIME_TYPE}'`];
   if (!config.include_trashed) clauses.push('trashed = false');
   if (typeof config.folder_id === 'string' && config.folder_id.trim()) {
-    clauses.push(`'${config.folder_id.trim().replace(/'/g, "\\'")}' in parents`);
+    clauses.push(`'${escapeQueryLiteral(config.folder_id.trim())}' in parents`);
   }
   const raw = typeof config.query === 'string' ? config.query.trim() : '';
   if (raw) clauses.push(`(${raw})`);
@@ -554,13 +594,14 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
         const cursor = pageToken ?? seededCursor;
         seededCursor = undefined;
         const params = new URLSearchParams({
-          // Sized to the cap so the two coincide. Drive's list cursor
-          // addresses PAGES, not offsets: stopping mid-page and resuming at
-          // the next cursor drops the rest of that page permanently, because
-          // the change feed only ever replays what changes after the
-          // bootstrap. Above 1000 the cap becomes a soft floor instead —
-          // overshooting by part of a page is safe, skipping one is not.
-          pageSize: String(Math.min(1000, Math.max(1, maxResults))),
+          // Drive's list cursor addresses PAGES, not offsets: stopping
+          // mid-page and resuming at the next cursor drops the rest of that
+          // page permanently, because the change feed only ever replays what
+          // changes after the bootstrap. So the page is the unit for BOTH the
+          // item cap and the time budget, and its size tracks what an item
+          // costs — a content-fetching run does real work per file and must
+          // re-check the clock often; a metadata-only run does not.
+          pageSize: String(Math.min(includeContent ? 100 : 1000, Math.max(1, maxResults))),
           fields: `files(${FILE_FIELDS}),nextPageToken,incompleteSearch`,
           orderBy: 'modifiedTime desc',
           supportsAllDrives: 'true',
@@ -588,6 +629,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       { maxPages: MAX_PAGES }
     );
 
+    const deadline = this.now() + SYNC_TIME_BUDGET_MS;
     let capped = false;
     for await (const items of pages) {
       for (const file of items) {
@@ -595,7 +637,8 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       }
       // Tested only BETWEEN pages: a page is consumed whole or not at all, so
       // `nextListPageToken` always addresses the first file we have not read.
-      if (events.length >= maxResults) {
+      // Stopping on the clock parks a checkpoint; being killed on it does not.
+      if (events.length >= maxResults || this.now() >= deadline) {
         capped = true;
         break;
       }
@@ -659,8 +702,11 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
         const params = new URLSearchParams({
           pageToken: cursor ?? pageToken,
           // Aligned to the cap so a bounded run does not overshoot by most of
-          // a 1000-change page; floored so a tiny cap cannot thrash the API.
-          pageSize: String(Math.min(1000, Math.max(100, maxResults))),
+          // a 1000-change page, and capped tighter when each change carries a
+          // content fetch so the time budget is re-checked often enough.
+          pageSize: String(
+            Math.min(includeContent ? 100 : 1000, Math.max(includeContent ? 1 : 100, maxResults))
+          ),
           fields: `changes(fileId,removed,time,file(${FILE_FIELDS})),nextPageToken,newStartPageToken`,
           supportsAllDrives: 'true',
           includeItemsFromAllDrives: 'true',
@@ -690,6 +736,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     // Bounded at PAGE boundaries, never mid-page: `resumeCursor` addresses the
     // start of the next page, so stopping part-way through one would skip the
     // changes still in it.
+    const deadline = this.now() + SYNC_TIME_BUDGET_MS;
     let stoppedEarly = false;
     for await (const items of pages) {
       for (const change of items) {
@@ -704,7 +751,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
         if (envelope) events.push(envelope);
       }
       if (rejected) break;
-      if (events.length >= maxResults && resumeCursor) {
+      if ((events.length >= maxResults || this.now() >= deadline) && resumeCursor) {
         stoppedEarly = true;
         break;
       }
@@ -938,6 +985,13 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       };
     }
 
+    // `changes.list` has no query parameter, so the folder exclusion the
+    // bootstrap applies at the listing has to be re-applied here or folders
+    // would leak back in one edit at a time. Checked before the trashed
+    // branch: a trashed folder is still a folder, and tombstoning one we
+    // never stored would write a row for something that was never there.
+    if (change.file.mimeType === FOLDER_MIME_TYPE) return null;
+
     if (change.file.trashed && !includeTrashed) {
       const trashedAt = change.time ? new Date(change.time) : new Date();
       return {
@@ -1126,6 +1180,11 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
         ...(searchIncomplete ? { search_incomplete: true } : {}),
       },
     };
+  }
+
+  /** Overridable so a test can drive the time budget without sleeping. */
+  protected now(): number {
+    return Date.now();
   }
 
   // Auth-aware client (Bearer + retry/backoff on transient 429/5xx). Built per

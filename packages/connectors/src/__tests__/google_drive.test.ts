@@ -599,7 +599,7 @@ describe('GoogleDriveConnector query construction', () => {
 
     const listUrl = drive.urls.find((u) => u.includes('/files?'))!;
     const q = new URL(listUrl).searchParams.get('q');
-    expect(q).toBe("trashed = false and (mimeType = 'application/pdf')");
+    expect(q).toBe("mimeType != 'application/vnd.google-apps.folder' and trashed = false and (mimeType = 'application/pdf')");
   });
 
   test('include_trashed drops the trashed filter', async () => {
@@ -614,8 +614,11 @@ describe('GoogleDriveConnector query construction', () => {
       checkpoint: {},
     });
 
+    // The folder exclusion is unconditional, so the query never empties out.
     const listUrl = drive.urls.find((u) => u.includes('/files?'))!;
-    expect(new URL(listUrl).searchParams.get('q')).toBeNull();
+    expect(new URL(listUrl).searchParams.get('q')).toBe(
+      "mimeType != 'application/vnd.google-apps.folder'"
+    );
   });
 
   test('folder_id scopes the query to that parent', async () => {
@@ -632,7 +635,7 @@ describe('GoogleDriveConnector query construction', () => {
 
     const listUrl = drive.urls.find((u) => u.includes('/files?'))!;
     expect(new URL(listUrl).searchParams.get('q')).toBe(
-      "trashed = false and 'FOLDER1' in parents"
+      "mimeType != 'application/vnd.google-apps.folder' and trashed = false and 'FOLDER1' in parents"
     );
   });
 });
@@ -896,6 +899,156 @@ describe('GoogleDriveConnector export ceiling', () => {
     // it is how a caller learns how much it did not get. Pinned so the two
     // never quietly collapse into the same number.
     expect(result.output.byte_count).toBe(EXPORT_CEILING + 1);
+  });
+});
+
+describe('GoogleDriveConnector time budget', () => {
+  const manyFiles = (prefix: string, n: number) =>
+    Array.from({ length: n }, (_, i) => driveFile(`${prefix}${i}`));
+
+  /**
+   * Jumps the clock past the budget once the first page has been consumed:
+   * 0 when the deadline is computed, then far past it at the first boundary.
+   * Patched on the instance rather than subclassed — the connector module is
+   * mocked, so a module-scope `extends` runs before the mock is installed.
+   */
+  const withExhaustedClock = (connector: GoogleDriveConnector) => {
+    let calls = 0;
+    (connector as unknown as { now: () => number }).now = () =>
+      calls++ === 0 ? 0 : 60 * 60 * 1000;
+    return connector;
+  };
+
+  test('a bootstrap that runs out of time PARKS a checkpoint instead of being killed', async () => {
+    const connector = withExhaustedClock(new GoogleDriveConnector());
+    const drive = fakeDrive([
+      startToken('TOK-1'),
+      filesList([
+        { files: manyFiles('a', 3), nextPageToken: 'PAGE-2' },
+        { files: manyFiles('b', 3) },
+      ]),
+    ]);
+    connector.client = () => drive.client;
+
+    // The cap is far away: only the clock can stop this run.
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { max_results: 2000, include_content: false },
+      checkpoint: {},
+      credentials: { accessToken: 'tok' },
+    });
+
+    expect(result.events).toHaveLength(3);
+    // The whole point: a run killed by the host persists nothing and repeats
+    // itself forever. Stopping ourselves leaves a resumable position.
+    expect(result.checkpoint.list_page_token).toBe('PAGE-2');
+    expect(result.checkpoint.pending_page_token).toBe('TOK-1');
+    expect(result.checkpoint.page_token).toBeUndefined();
+    expect(result.metadata?.bootstrap_complete).toBe(false);
+  });
+
+  test('an incremental run that runs out of time hands back its cursor', async () => {
+    const connector = withExhaustedClock(new GoogleDriveConnector());
+    const drive = fakeDrive([
+      changesList([
+        { changes: [{ fileId: 'x', time: '2026-01-01T00:00:00Z', file: { id: 'x', name: 'X', mimeType: 'text/plain' } }], nextPageToken: 'C2' },
+        { changes: [], newStartPageToken: 'DONE' },
+      ]),
+    ]);
+    connector.client = () => drive.client;
+
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { max_results: 2000, include_content: false },
+      checkpoint: { page_token: 'C1', last_sync_at: '2026-01-01T00:00:00.000Z' },
+      credentials: { accessToken: 'tok' },
+    });
+
+    // Discarding the cursor would silently demote the next run to a full
+    // re-list and restart the whole bootstrap.
+    expect(result.checkpoint.page_token).toBe('C2');
+    expect(result.metadata?.changes_pending).toBe(true);
+  });
+});
+
+describe('GoogleDriveConnector query escaping', () => {
+  test('a folder_id ending in a backslash cannot escape its own quote', async () => {
+    // Escaping only `'` leaves the trailing backslash to escape the closing
+    // quote, letting the rest of the value run on as query syntax.
+    const connector = new GoogleDriveConnector();
+    const drive = fakeDrive([startToken('T'), filesList([{ files: [] }])]);
+    connector.client = () => drive.client;
+
+    await connector.sync({
+      feedKey: 'files',
+      config: { folder_id: "EVIL\\", include_content: false },
+      credentials: { accessToken: 'tok' },
+      checkpoint: {},
+    });
+
+    const q = new URL(drive.urls.find((u) => u.includes('/files?'))!).searchParams.get('q')!;
+    expect(q).toContain("'EVIL\\\\' in parents");
+    // The literal closes where it should: an even number of backslashes runs
+    // up to the quote, so the quote is a delimiter and not escaped content.
+    expect(q.endsWith("in parents")).toBe(true);
+  });
+
+  test("a folder_id containing a quote stays inside its literal", async () => {
+    const connector = new GoogleDriveConnector();
+    const drive = fakeDrive([startToken('T'), filesList([{ files: [] }])]);
+    connector.client = () => drive.client;
+
+    await connector.sync({
+      feedKey: 'files',
+      config: { folder_id: "a' or '1'='1", include_content: false },
+      credentials: { accessToken: 'tok' },
+      checkpoint: {},
+    });
+
+    const q = new URL(drive.urls.find((u) => u.includes('/files?'))!).searchParams.get('q')!;
+    expect(q).toContain("'a\\' or \\'1\\'=\\'1' in parents");
+  });
+});
+
+describe('GoogleDriveConnector folder exclusion', () => {
+  test('a folder arriving through changes.list is dropped, not stored', async () => {
+    // `changes.list` takes no query, so the bootstrap's folder filter has to be
+    // re-applied here or folders leak back in one edit at a time.
+    const connector = new GoogleDriveConnector();
+    const drive = fakeDrive([
+      changesList([
+        {
+          changes: [
+            {
+              fileId: 'FOLD',
+              time: '2026-01-01T00:00:00Z',
+              file: {
+                id: 'FOLD',
+                name: 'Some Folder',
+                mimeType: 'application/vnd.google-apps.folder',
+              },
+            },
+            {
+              fileId: 'DOC',
+              time: '2026-01-01T00:00:00Z',
+              file: { id: 'DOC', name: 'Real Doc', mimeType: 'text/plain' },
+            },
+          ],
+          newStartPageToken: 'TOK-2',
+        },
+      ]),
+      contentBody('hello'),
+    ]);
+    connector.client = () => drive.client;
+
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { include_content: false },
+      checkpoint: { page_token: 'TOK-1' },
+      credentials: { accessToken: 'tok' },
+    });
+
+    expect(result.events.map((e) => e.origin_id)).toEqual(['DOC']);
   });
 });
 

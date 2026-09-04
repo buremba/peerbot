@@ -147,10 +147,14 @@ describe('search_memory > recall contract', () => {
     });
     exactMemoryId = exactMemory.id;
 
+    // The fixture user is an org OWNER (see addUserToOrganization above), and
+    // the empty-result guidance is tier-aware, so the shared context must carry
+    // the role it actually has.
     ctx = {
       organizationId: org.id,
       userId: user.id,
       tokenType: 'session',
+      memberRole: 'owner',
     } as ToolContext;
   });
 
@@ -452,5 +456,97 @@ describe('search_memory > recall contract', () => {
     expect(suggestion).toContain('`readable-feed/default`');
     expect(suggestion).toContain('feed_id');
     expect(suggestion).toContain('client.feeds.readMany({ reads: [{ feed_id }] })');
+  });
+
+  // ── Tier-aware persist guidance ─────────────────────────────────────────
+  // `entitySchema.createType` is admin-tier, `entities.create` is write, and
+  // `run_sdk`/`save_memory` are write-tier. The guidance must name only what
+  // the caller can reach. The admin and member variants both still name
+  // `entities.create`, which is why the general empty-result case above cannot
+  // tell those two apart.
+  it('offers createType only to an admin-tier caller', async () => {
+    const result = await search(
+      { query: 'zzzz-tier-probe-admin' },
+      env,
+      {
+        organizationId: org.id,
+        userId: user.id,
+        tokenType: 'session',
+        memberRole: 'owner',
+        scopes: ['*'],
+      } as ToolContext
+    );
+
+    const suggestion = result.suggestion ?? '';
+    expect(suggestion).toContain('client.entitySchema.createType(...)');
+    expect(suggestion).not.toContain('needs admin access');
+  });
+
+  it('sends a member to the existing types instead of a call that would deny', async () => {
+    const result = await search(
+      { query: 'zzzz-tier-probe-member' },
+      env,
+      {
+        organizationId: org.id,
+        userId: user.id,
+        tokenType: 'session',
+        memberRole: 'member',
+        scopes: ['*'],
+      } as ToolContext
+    );
+
+    const suggestion = result.suggestion ?? '';
+    expect(suggestion).not.toContain('client.entitySchema.createType(...)');
+    expect(suggestion).toContain('Creating a brand-new entity type needs admin access');
+    // The reachable half is still offered — a member CAN create an entity of a
+    // type that already exists.
+    expect(suggestion).toContain('client.entitySchema.listTypes()');
+    expect(suggestion).toContain('client.entities.create');
+  });
+
+  it('names the boundary instead of write calls for a read-only caller', async () => {
+    const result = await search(
+      { query: 'zzzz-tier-probe-read' },
+      env,
+      {
+        organizationId: org.id,
+        userId: user.id,
+        tokenType: 'session',
+        memberRole: 'member',
+        scopes: ['mcp:read'],
+      } as ToolContext
+    );
+
+    const suggestion = result.suggestion ?? '';
+    // The read steps above the persist block stay — they are all read-tier.
+    expect(suggestion).toContain('Additional steps to read relevant data:');
+    expect(suggestion).toContain('this caller has read-only access to the workspace');
+    expect(suggestion).not.toContain('client.entities.create');
+    expect(suggestion).not.toContain('client.entitySchema.createType(...)');
+  });
+  // An automation reaction has no user identity, so the tier resolver floors it
+  // at read — but `save_content` bypasses its write gate for exactly this
+  // context (`isSystemContext`), so read-only copy would be a lie to a caller
+  // that CAN persist. It gets the write-tier block, minus the admin-only hop.
+  it('does not call an in-process system caller read-only when it can write', async () => {
+    const result = await search(
+      { query: 'zzzz-tier-probe-system' },
+      env,
+      {
+        organizationId: org.id,
+        userId: null,
+        memberRole: null,
+        isAuthenticated: true,
+        tokenType: 'session',
+        scopes: ['*'],
+      } as ToolContext
+    );
+
+    const suggestion = result.suggestion ?? '';
+    expect(suggestion).not.toContain('this caller has read-only access to the workspace');
+    expect(suggestion).toContain('save_memory');
+    expect(suggestion).toContain('client.entities.create');
+    // Still not admin: type creation stays behind the admin gate.
+    expect(suggestion).not.toContain('client.entitySchema.createType(...)');
   });
 });

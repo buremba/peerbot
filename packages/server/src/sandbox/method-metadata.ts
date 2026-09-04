@@ -312,7 +312,7 @@ export default async (_ctx, client) => {
 			"Read knowledge events by id (`content_ids`, an array — there is no singular `content_id` arg), or Automation-window context. Pass automation_id with run_id to bind the read to that queued run's persisted version, window, and trigger inputs.",
 		access: "read",
 		signature:
-			"knowledge.read(input: { content_ids?: number[]; automation_id?: number; run_id?: number; ... }): Promise<unknown>",
+			"knowledge.read(input: { content_ids?: number[]; automation_id?: number; run_id?: number; semantic_type?: string | string[]; entity_id?: number; entity_types?: string[]; query?: string; since?: string; until?: string; limit?: number; ... }): Promise<unknown>",
 		example: "await client.knowledge.read({ content_ids: [2321593] });",
 	},
 	"knowledge.delete": {

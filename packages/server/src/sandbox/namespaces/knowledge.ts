@@ -8,7 +8,7 @@
 
 import type { Env } from "../../index";
 import { deleteContent } from "../../tools/delete_content";
-import { getContent } from "../../tools/get_content";
+import { getContent, type PublicGetContentArgs } from "../../tools/get_content";
 import type { ToolContext } from "../../tools/registry";
 import { saveContent } from "../../tools/save_content";
 import { search } from "../../tools/search";
@@ -61,20 +61,15 @@ export type KnowledgeSaveInput =
 			content?: string;
 	  });
 
-export interface KnowledgeReadInput {
-	/** Fetch specific content events by id. */
-	content_ids?: number[];
-	/** Fetch structured knowledge for an Automation window. */
-	automation_id?: number;
-	/** Bind an Automation read to the queued run's version, window, and trigger inputs. */
-	run_id?: number;
-	since?: string;
-	until?: string;
-	limit?: number;
-	before_occurred_at?: string;
-	before_id?: number;
-	entity_ids?: number[];
-}
+/**
+ * `client.knowledge.read` forwards straight to `getContent`, so its input IS
+ * the tool's public schema. Hand-listing the fields drifted: it had grown to
+ * omit real filters the handler accepts (`semantic_type`, `entity_types`,
+ * `query`, …) while advertising `entity_ids`, which `getContent` never read as
+ * an input — a caller filtering by it silently got unfiltered results. Deriving
+ * the type keeps the two in lockstep.
+ */
+export type KnowledgeReadInput = PublicGetContentArgs;
 
 export type KnowledgeDeleteInput =
 	| number

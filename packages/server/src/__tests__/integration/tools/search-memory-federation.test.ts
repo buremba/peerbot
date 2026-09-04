@@ -12,6 +12,7 @@ import {
   mergeFederatedSearchResults,
   UnifiedSearchResultSchema,
   search,
+  highestGrantedRole,
 } from '../../../tools/search';
 import type { ToolContext } from '../../../tools/registry';
 import { initWorkspaceProvider } from '../../../workspace';
@@ -276,6 +277,57 @@ describe('search_memory direct OAuth workspace federation', () => {
     expect(suggestion).toContain('client.feeds.readMany');
     expect(suggestion).toContain('query_sql');
     expectValidSearchResult(merged);
+  });
+
+  // The federated tier comes from the SHARD roles, not the outer context: a
+  // bare cross-workspace grant carries no role on `ctx`, so scoring it directly
+  // would floor every federated caller at read, and coercing it to 'owner'
+  // offers admin-only type creation to a plain member. Member in both here.
+  it('does not offer admin-only type creation to a member of every granted workspace', async () => {
+    const targets = [
+      { id: orgA.id, slug: orgA.slug, name: orgA.name, role: 'member', personal: false },
+      { id: orgB.id, slug: orgB.slug, name: orgB.name, role: 'member', personal: false },
+    ];
+    const args = {
+      query: 'zzzz-absent-federated-tier-probe-qqqq',
+      fuzzy: false,
+      include_content: false,
+    };
+    const shard = async (slug: string) =>
+      await search({ ...args, workspace: slug, include_public_catalogs: false }, {} as Env, {
+        ...context(),
+        memberRole: 'member',
+        scopes: ['mcp:write'],
+      } as ToolContext);
+
+    const merged = mergeFederatedSearchResults(
+      args,
+      targets,
+      [
+        { status: 'fulfilled', value: await shard(orgA.slug) },
+        { status: 'fulfilled', value: await shard(orgB.slug) },
+      ],
+      'write'
+    );
+
+    expect(merged.discovery_status).toBe('not_found');
+    const suggestion = merged.suggestion ?? '';
+    expect(suggestion).not.toContain('client.entitySchema.createType(...)');
+    expect(suggestion).toContain('Creating a brand-new entity type needs admin access');
+    // The write-tier half a member CAN reach is still offered.
+    expect(suggestion).toContain('client.entities.create');
+    expectValidSearchResult(merged);
+  });
+
+  // The tier the federated merge is handed comes from this: strongest role
+  // wins, so an admin in ANY granted workspace can still reach createType
+  // somewhere, while a member everywhere cannot.
+  it('scores the federated tier from the strongest role across granted workspaces', () => {
+    const at = (role: string) => ({ id: 1, slug: 's', name: 'n', role, personal: false });
+    expect(highestGrantedRole([at('member'), at('admin')])).toBe('admin');
+    expect(highestGrantedRole([at('admin'), at('owner')])).toBe('owner');
+    expect(highestGrantedRole([at('member'), at('member')])).toBe('member');
+    expect(highestGrantedRole([])).toBeNull();
   });
 
   it('narrows through the grant resolver and makes unknown, ungranted, and revoked identical', async () => {

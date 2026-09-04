@@ -256,7 +256,7 @@ export const GetContentSchema = Type.Object({
   ),
 });
 
-const GET_CONTENT_INTERNAL_FIELDS = ['mcp_activity_id'];
+const GET_CONTENT_INTERNAL_FIELDS = ['mcp_activity_id'] as const;
 // The Connected App UI receives this exact pair from an authenticated internal
 // endpoint. It is accepted by the REST/tool boundary but is not an MCP or SDK
 // discovery affordance: external callers have no route that constructs it.
@@ -265,12 +265,23 @@ markAcceptedInternalFields(GetContentSchema, GET_CONTENT_INTERNAL_FIELDS);
 export const PublicGetContentSchema = Type.Object(
   Object.fromEntries(
     Object.entries(GetContentSchema.properties).filter(
-      ([key]) => !GET_CONTENT_INTERNAL_FIELDS.includes(key)
+      ([key]) => !(GET_CONTENT_INTERNAL_FIELDS as readonly string[]).includes(key)
     )
   )
 );
 
 export type GetContentArgs = Static<typeof GetContentSchema>;
+
+/**
+ * The `get_content` input an external caller may actually construct: every
+ * declared filter minus the accepted-but-unadvertised internal fields. SDK
+ * surfaces that forward straight to `getContent` derive their input type from
+ * this so the declared shape cannot drift from the schema the handler enforces.
+ */
+export type PublicGetContentArgs = Omit<
+  GetContentArgs,
+  (typeof GET_CONTENT_INTERNAL_FIELDS)[number]
+>;
 
 export function getIncludeSupersededValidationErrors(args: Partial<GetContentArgs>): string[] {
   const errors: string[] = [];

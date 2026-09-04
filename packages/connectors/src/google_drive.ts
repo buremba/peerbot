@@ -133,7 +133,6 @@ const EXPORT_MIME_TYPES: Record<string, string> = {
 };
 
 /** MIME types we will inline as `payload_text` when they are not Google-native. */
-const TEXTUAL_MIME_PREFIXES = ['text/'];
 const TEXTUAL_MIME_TYPES = new Set([
   'application/json',
   'application/xml',
@@ -226,7 +225,10 @@ function decodeTruncated(encoded: Uint8Array, maxBytes: number): string {
       // Slice ended mid-sequence — drop a byte and retry.
     }
   }
-  return new TextDecoder().decode(encoded.slice(0, Math.max(0, maxBytes - 3)));
+  // Unreachable: `encoded` always comes from TextEncoder, so one of the four
+  // slices above lands on a character boundary. Returning lossily here would
+  // manufacture the very U+FFFD this function exists to prevent.
+  return '';
 }
 
 function exportMimeTypeFor(mimeType: string | undefined): string | undefined {
@@ -241,8 +243,7 @@ function isGoogleNative(mimeType: string | undefined): boolean {
 function isTextualMimeType(mimeType: string | undefined): boolean {
   if (!mimeType) return false;
   const base = mimeType.split(';')[0]!.trim().toLowerCase();
-  if (TEXTUAL_MIME_TYPES.has(base)) return true;
-  return TEXTUAL_MIME_PREFIXES.some((prefix) => base.startsWith(prefix));
+  return TEXTUAL_MIME_TYPES.has(base) || base.startsWith('text/');
 }
 
 /** Drive reports size as a decimal string, and omits it entirely for native files. */
@@ -258,13 +259,6 @@ function personLabel(
   return person?.displayName || person?.emailAddress || undefined;
 }
 
-/**
- * Build the `q` for files.list.
- *
- * `trashed = false` is applied unless the feed opts in, because a trashed file
- * is still returned by an unqualified query and would otherwise resurface on
- * every full sync as if it were live.
- */
 /**
  * Drive models a folder as a file with a reserved MIME type, so an unfiltered
  * `files.list` returns the directory tree interleaved with the documents. A
@@ -303,15 +297,23 @@ const SYNC_TIME_BUDGET_MS = HOST_RUN_TIMEOUT_MS * 0.4;
  * Escapes a value for a single-quoted Drive query literal.
  *
  * Backslashes go FIRST: escaping quotes first would then double-escape the
- * backslashes it just introduced. Escaping only quotes — as this did — leaves
- * a value ending in a backslash able to escape its own closing quote and run
- * on into query syntax (`js/incomplete-sanitization`).
+ * backslashes it just introduced. Escaping quotes ALONE is not enough — a value
+ * ending in a backslash would escape its own closing quote and run on into
+ * query syntax (`js/incomplete-sanitization`).
  */
 function escapeQueryLiteral(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-function buildListQuery(config: DriveConfig): string | undefined {
+/**
+ * Build the `q` for files.list.
+ *
+ * Always non-empty: the folder exclusion is unconditional. `trashed = false` is
+ * applied on top unless the feed opts in, because a trashed file is still
+ * returned by an unqualified query and would otherwise resurface on every full
+ * sync as if it were live.
+ */
+function buildListQuery(config: DriveConfig): string {
   const clauses: string[] = [`mimeType != '${FOLDER_MIME_TYPE}'`];
   if (!config.include_trashed) clauses.push('trashed = false');
   if (typeof config.folder_id === 'string' && config.folder_id.trim()) {
@@ -319,7 +321,7 @@ function buildListQuery(config: DriveConfig): string | undefined {
   }
   const raw = typeof config.query === 'string' ? config.query.trim() : '';
   if (raw) clauses.push(`(${raw})`);
-  return clauses.length > 0 ? clauses.join(' and ') : undefined;
+  return clauses.join(' and ');
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +415,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
                 trashed: { type: 'boolean' },
                 content_included: { type: 'boolean' },
                 content_truncated: { type: 'boolean' },
+                content_error: { type: 'string' },
                 change_type: { type: 'string' },
               },
             },
@@ -474,17 +477,18 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
 
     const http = this.client(token);
     const config = (ctx.config ?? {}) as DriveConfig;
-    const limit = Math.min((config.max_results as number) ?? 100, 1000);
 
     const params = new URLSearchParams({
-      pageSize: String(Math.max(1, Math.min(1000, limit))),
+      // Nothing materialises configSchema defaults, so the fallback here is
+      // what `max_results` actually defaults to and must match what the schema
+      // advertises. 1000 is Drive's own pageSize ceiling.
+      pageSize: String(Math.max(1, Math.min(config.max_results ?? 500, 1000))),
       fields: `files(${FILE_FIELDS}),nextPageToken,incompleteSearch`,
       orderBy: 'modifiedTime desc',
       supportsAllDrives: 'true',
       includeItemsFromAllDrives: 'true',
+      q: buildListQuery(config),
     });
-    const q = buildListQuery(config);
-    if (q) params.set('q', q);
     if (ctx.cursor) params.set('pageToken', ctx.cursor);
 
     const response = await http.raw(`${this.BASE_URL}/files?${params.toString()}`);
@@ -544,7 +548,8 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
         return this.buildResult(
           result.events,
           result.nextPageToken,
-          result.partial ? checkpoint.last_sync_at : undefined
+          result.partial ? checkpoint.last_sync_at : undefined,
+          { changesPending: result.partial }
         );
       }
       // Token rejected (see isPageTokenRejection). Fall through to ONE full
@@ -579,7 +584,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     // edit would land as metadata with stale text behind it.
     const bootstrapStartedAt = resume?.startedAt ?? new Date().toISOString();
 
-    const maxResults = Math.min((config.max_results as number) ?? 500, 2000);
+    const maxResults = Math.min(config.max_results ?? 500, 2000);
     const includeContent = config.include_content !== false;
     const q = buildListQuery(config);
     const events: EventEnvelope[] = [];
@@ -592,13 +597,10 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     // Where the traversal stopped, so the next run can pick it up. `undefined`
     // once the listing is exhausted — that is what completes the bootstrap.
     let nextListPageToken: string | undefined;
-    let seededCursor: string | undefined = resume?.listPageToken;
     let searchIncomplete = false;
 
     const pages = paginateByCursor<DriveFile, string>(
-      async (pageToken) => {
-        const cursor = pageToken ?? seededCursor;
-        seededCursor = undefined;
+      async (cursor) => {
         const params = new URLSearchParams({
           // Drive's list cursor addresses PAGES, not offsets: stopping
           // mid-page and resuming at the next cursor drops the rest of that
@@ -612,8 +614,8 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
           orderBy: 'modifiedTime desc',
           supportsAllDrives: 'true',
           includeItemsFromAllDrives: 'true',
+          q,
         });
-        if (q) params.set('q', q);
         if (cursor) params.set('pageToken', cursor);
 
         const response = await http.raw(`${this.BASE_URL}/files?${params.toString()}`);
@@ -632,7 +634,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
         if (data.incompleteSearch) searchIncomplete = true;
         return { items: data.files ?? [], nextCursor: data.nextPageToken };
       },
-      { maxPages: MAX_PAGES }
+      { maxPages: MAX_PAGES, initialCursor: resume?.listPageToken ?? null }
     );
 
     const deadline = this.now() + SYNC_TIME_BUDGET_MS;
@@ -650,12 +652,10 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       }
     }
 
-    // Stopping on the cap with pages still unread means the bootstrap is
-    // unfinished: park the change token and resume the listing next run.
-    // Without a start token there is nothing to park — fall through, which
-    // leaves `page_token` unset and re-lists next run rather than going
-    // incremental over a traversal that never finished.
-    if (capped && nextListPageToken && startToken) {
+    // Stopping on the cap or the clock with pages still unread means the
+    // bootstrap is unfinished: park the change token and resume the listing
+    // next run.
+    if (capped && nextListPageToken) {
       return this.buildBootstrapResult(
         events,
         startToken,
@@ -665,12 +665,9 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       );
     }
 
-    return this.buildResult(
-      events,
-      startToken,
-      bootstrapStartedAt,
-      searchIncomplete
-    );
+    return this.buildResult(events, startToken, bootstrapStartedAt, {
+      searchIncomplete,
+    });
   }
 
   /**
@@ -691,7 +688,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
   } | null> {
     const includeContent = config.include_content !== false;
     const includeTrashed = Boolean(config.include_trashed);
-    const maxResults = Math.min((config.max_results as number) ?? 500, 2000);
+    const maxResults = Math.min(config.max_results ?? 500, 2000);
     const events: EventEnvelope[] = [];
     let nextPageToken: string | undefined;
     // The cursor for the page AFTER the one just consumed. A run that stops
@@ -746,7 +743,6 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     let stoppedEarly = false;
     for await (const items of pages) {
       for (const change of items) {
-        if (rejected) break;
         const envelope = await this.changeToEnvelope(
           http,
           change,
@@ -777,7 +773,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     return { events, nextPageToken, partial: false };
   }
 
-  private async fetchStartPageToken(http: HttpClient): Promise<string | undefined> {
+  private async fetchStartPageToken(http: HttpClient): Promise<string> {
     const params = new URLSearchParams({ supportsAllDrives: 'true' });
     const response = await http.raw(
       `${this.BASE_URL}/changes/startPageToken?${params.toString()}`
@@ -788,6 +784,12 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       );
     }
     const data = (await response.json()) as DriveStartPageTokenResponse;
+    // Failing here is the honest outcome: without a token the traversal cannot
+    // hand off to the change stream, and reporting it as a finished bootstrap
+    // would hide a broken feed behind a permanent full re-list.
+    if (!data.startPageToken) {
+      throw new Error('Drive changes.getStartPageToken returned no startPageToken.');
+    }
     return data.startPageToken;
   }
 
@@ -1049,25 +1051,23 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     }
 
     const sizeBytes = parseSize(file.size);
+    const owner = personLabel(file.owners?.[0]);
+    const lastModifiedBy = personLabel(file.lastModifyingUser);
 
     return {
       origin_id: file.id,
       origin_type: 'drive_file',
       title: file.name ?? '(untitled)',
       payload_text: payloadText,
-      author_name: personLabel(file.owners?.[0]),
+      author_name: owner,
       source_url: file.webViewLink,
       occurred_at: Number.isNaN(occurredAt.getTime()) ? new Date() : occurredAt,
       metadata: {
         change_type: changeType,
         ...(file.mimeType ? { mime_type: file.mimeType } : {}),
         ...(sizeBytes !== undefined ? { size_bytes: sizeBytes } : {}),
-        ...(personLabel(file.owners?.[0])
-          ? { owner: personLabel(file.owners?.[0]) }
-          : {}),
-        ...(personLabel(file.lastModifyingUser)
-          ? { last_modified_by: personLabel(file.lastModifyingUser) }
-          : {}),
+        ...(owner ? { owner } : {}),
+        ...(lastModifiedBy ? { last_modified_by: lastModifiedBy } : {}),
         ...(file.createdTime ? { created_at: file.createdTime } : {}),
         ...(file.modifiedTime ? { modified_at: file.modifiedTime } : {}),
         trashed: Boolean(file.trashed),
@@ -1162,9 +1162,9 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
   private buildResult(
     events: EventEnvelope[],
     pageToken: string | undefined,
-    /** Preserved stamp for a partial run; omit to advance to now. */
-    keepLastSyncAt?: string,
-    searchIncomplete = false
+    /** Stamp to persist as-is; omit to advance `last_sync_at` to now. */
+    keepLastSyncAt: string | undefined,
+    flags: { changesPending?: boolean; searchIncomplete?: boolean } = {}
   ): SyncResult {
     events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
 
@@ -1182,8 +1182,8 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       metadata: {
         items_found: events.length,
         bootstrap_complete: true,
-        ...(keepLastSyncAt ? { changes_pending: true } : {}),
-        ...(searchIncomplete ? { search_incomplete: true } : {}),
+        ...(flags.changesPending ? { changes_pending: true } : {}),
+        ...(flags.searchIncomplete ? { search_incomplete: true } : {}),
       },
     };
   }

@@ -912,10 +912,10 @@ describe('GoogleDriveConnector time budget', () => {
    * Patched on the instance rather than subclassed — the connector module is
    * mocked, so a module-scope `extends` runs before the mock is installed.
    */
-  const withExhaustedClock = (connector: GoogleDriveConnector) => {
+  // biome-ignore lint/suspicious/noExplicitAny: the class is imported after the mock
+  const withExhaustedClock = (connector: any) => {
     let calls = 0;
-    (connector as unknown as { now: () => number }).now = () =>
-      calls++ === 0 ? 0 : 60 * 60 * 1000;
+    connector.now = () => (calls++ === 0 ? 0 : 60 * 60 * 1000);
     return connector;
   };
 
@@ -1260,6 +1260,30 @@ describe('GoogleDriveConnector bounded incremental sync', () => {
 
     expect(result.checkpoint.page_token).toBe('FINAL');
     expect(result.checkpoint.last_sync_at).not.toBe('2026-01-01T00:00:00Z');
+    expect(result.metadata?.changes_pending).toBeUndefined();
+  });
+
+  test('a completed bootstrap keeps its stamp WITHOUT claiming changes are pending', async () => {
+    const connector = new GoogleDriveConnector();
+    const drive = fakeDrive([
+      startToken('TOK-1'),
+      filesList([{ files: [driveFile('u0')] }]),
+    ]);
+    connector.client = () => drive.client;
+
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { max_results: 100, include_content: false },
+      checkpoint: {},
+      credentials: { accessToken: 'tok' },
+    });
+
+    // A bootstrap pins `last_sync_at` to the moment it began so the view-churn
+    // guard cannot skip edits made while it ran. That is a stamp decision, not
+    // a backlog: nothing is left unread, so the pending flag must stay off or
+    // an operator reads a finished feed as perpetually behind.
+    expect(result.checkpoint.page_token).toBe('TOK-1');
+    expect(result.metadata?.bootstrap_complete).toBe(true);
     expect(result.metadata?.changes_pending).toBeUndefined();
   });
 

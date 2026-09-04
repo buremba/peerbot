@@ -278,20 +278,26 @@ function personLabel(
  */
 const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
 
+/** Where the host kills a feed run, discarding its checkpoint with it. */
+const HOST_RUN_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Wall-clock budget for one sync run, tested at page boundaries.
  *
- * The host kills a feed run at 600s, and a killed run persists NO checkpoint.
- * So a traversal that overruns does not merely stall: it throws away the work
- * it just did, and the next run repeats it and overruns again — a bootstrap
- * that can never finish. Measured on a real Drive at ~0.86s per exported file,
- * so a few hundred content-bearing files is already the whole budget; the item
- * cap alone cannot bound a run because it cannot see how expensive an item is.
+ * A killed run persists NO checkpoint, so a traversal that overruns does not
+ * merely stall: it throws away the work it just did, the next run repeats it
+ * and overruns again — a bootstrap that can never finish. The item cap cannot
+ * prevent that, because it cannot see what an item costs. Measured per item on
+ * one real Drive: 0.61-0.86s when a content export is involved, 0.01-0.03s for
+ * metadata only. A 30x spread means the same cap is either wasteful or fatal.
  *
- * Set well under the host limit to leave room for the page still in flight
- * plus persisting everything collected so far.
+ * The budget cannot stop a page already in flight, so the true worst case is
+ * budget + one page. At the slowest rate observed and a 100-item content page
+ * that is 240s + 86s = 326s, ~54% of the host limit, leaving the rest as
+ * headroom for the client's 429/5xx backoff — which is unbounded in principle
+ * and is why this keeps a wide margin rather than creeping toward the limit.
  */
-const SYNC_TIME_BUDGET_MS = 4 * 60 * 1000;
+const SYNC_TIME_BUDGET_MS = HOST_RUN_TIMEOUT_MS * 0.4;
 
 /**
  * Escapes a value for a single-quoted Drive query literal.

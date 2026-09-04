@@ -636,9 +636,33 @@ function unavailableWorkspaceCoverage(workspace: GrantedMemberWorkspace): Worksp
  * copy would state a falsehood to a caller that CAN persist. Treat them as
  * write: they get the persist block, without the admin-only type-creation hop.
  */
-function guidanceAccessTier(ctx: ToolContext): ToolAccessLevel {
+function guidanceAccessTier(
+  ctx: ToolContext,
+  memberRole: string | null = ctx.memberRole ?? null
+): ToolAccessLevel {
   if (isInProcessSystemCall(ctx)) return 'write';
-  return resolveSdkMaxAccessLevel(ctx.allowCrossOrg ? 'owner' : ctx.memberRole, ctx.scopes);
+  return resolveSdkMaxAccessLevel(memberRole, ctx.scopes);
+}
+
+/**
+ * Best role the caller actually holds across the workspaces a federated merge
+ * covers. The outer context carries no role on a bare cross-workspace grant, so
+ * scoring it directly would floor every federated caller at read; coercing it to
+ * 'owner' — as this did first — went the other way and offered admin-only type
+ * creation to a caller who is merely a member everywhere. The real roles are on
+ * the shard targets, so use the strongest one: if any workspace makes them an
+ * admin, `entitySchema.createType` is reachable in at least one place.
+ */
+export function highestGrantedRole(
+  targets: readonly GrantedMemberWorkspace[]
+): string | null {
+  let best: string | null = null;
+  for (const target of targets) {
+    if (target.role === 'owner') return 'owner';
+    if (target.role === 'admin') best = 'admin';
+    else if (target.role && best === null) best = target.role;
+  }
+  return best;
 }
 
 function buildEmptySearchSuggestion(
@@ -1475,7 +1499,12 @@ async function searchImpl(
       logger.warn({ err: getErrorMessage(item.reason) }, '[search] workspace shard failed');
     }
   }
-  return mergeFederatedSearchResults(args, targets, settled, guidanceAccessTier(ctx));
+  return mergeFederatedSearchResults(
+    args,
+    targets,
+    settled,
+    guidanceAccessTier(ctx, highestGrantedRole(targets))
+  );
 }
 
 /**

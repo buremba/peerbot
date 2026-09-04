@@ -26,7 +26,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, extname, join, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	createIsolateConnectorCompiler,
@@ -249,7 +249,6 @@ async function instantiateConnector(
 	sourcePath: string,
 	compile: (filePath: string) => Promise<string>,
 ): Promise<DiscoveredConnector | null> {
-	if (basename(sourcePath) === "os_shell.ts") return null;
 	const compiled = await compile(sourcePath);
 	return withRuntimeTempFile(".cjs", compiled, async (tmpFile) => {
 		const mod = (await import(pathToFileURL(tmpFile).href)) as Record<

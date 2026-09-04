@@ -1207,65 +1207,6 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId)).not.toBeNull();
   });
 
-  it('ships bundled os.shell code to the headless daemon that advertises its manifest', async () => {
-    const { userId, orgId, workerId } = await seedDeviceOwner('headless');
-    // The exact manifest the connector-worker daemon sends on poll - not a
-    // synthetic fixture - so the test validates what herdr actually declares.
-    const res = await poll(
-      workerId,
-      [HEADLESS_OS_SHELL_MANIFEST],
-      'headless',
-      { 'os.shell': true },
-      { capacityAvailable: 0 },
-    );
-    expect(res.status).toBe(200);
-
-    // The manifest was admitted and stored on the device row (the headless
-    // shell connector is what makes a connection pinned to this device able to
-    // run commands). Feedless, so no definition materialization is asserted.
-    const sql = getTestDb();
-    const rows = (await sql`
-      SELECT connector_manifests FROM device_workers
-      WHERE user_id = ${userId} AND worker_id = ${workerId}
-    `) as unknown as Array<{ connector_manifests: unknown }>;
-    const stored = rows[0]?.connector_manifests as Record<string, unknown> | undefined;
-    expect(stored?.['os.shell']).toBeDefined();
-
-    const [connection] = (await sql`
-      SELECT id FROM connections
-      WHERE organization_id = ${orgId}
-        AND connector_key = 'os.shell'
-        AND deleted_at IS NULL
-      LIMIT 1
-    `) as unknown as Array<{ id: number }>;
-    const [run] = (await sql`
-      INSERT INTO runs (
-        organization_id, run_type, connection_id, connector_key,
-        connector_version, action_key, action_input, approval_status, status,
-        created_at
-      ) VALUES (
-        ${orgId}, 'action', ${connection.id}, 'os.shell', '0.1.0', 'run',
-        ${sql.json({ command: 'hostname' })}, 'auto', 'pending', NOW()
-      )
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
-
-    const claimingPoll = await poll(
-      workerId,
-      [HEADLESS_OS_SHELL_MANIFEST],
-      'headless',
-      { 'os.shell': true },
-      { capacityAvailable: 1 },
-    );
-    expect(claimingPoll.status).toBe(200);
-    const body = (await claimingPoll.json()) as Record<string, unknown>;
-    expect(body.run_id).toBe(Number(run.id));
-    expect(body.connector_key).toBe('os.shell');
-    expect(body.execution_backend).toBeUndefined();
-    expect(typeof body.compiled_code).toBe('string');
-    expect((body.compiled_code as string).length).toBeGreaterThan(0);
-  });
-
   it('routes an os.shell run to the daemon builtin on builtin capacity alone', async () => {
     const { orgId, workerId } = await seedDeviceOwner('headless');
     // The daemon declares os.shell as `runtime.execution: 'daemon_builtin'`, so

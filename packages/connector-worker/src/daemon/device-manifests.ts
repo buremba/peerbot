@@ -8,8 +8,11 @@
 /**
  * os.shell manifest for headless platforms. Mirrors the macOS manifest's
  * run action (packages/owletto/apps/mac/.../os_shell.json) but targets
- * headless workers, where the connector-worker daemon (not a native bridge or
- * dynamically compiled connector) serves it.
+ * headless workers, where the connector-worker daemon's builtin serves it.
+ *
+ * This manifest and `builtins/os-shell.ts` are the whole of os.shell: there is
+ * no bundled connector for the gateway to compile, so a device that advertises
+ * neither backend has no shell at all.
  */
 export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
   key: 'os.shell',

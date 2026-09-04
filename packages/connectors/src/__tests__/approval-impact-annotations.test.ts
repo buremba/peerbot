@@ -16,20 +16,16 @@ type ConnectorDefinition = {
 let github: ConnectorDefinition;
 let googleCalendar: ConnectorDefinition;
 let googleGmail: ConnectorDefinition;
-let osShell: ConnectorDefinition;
 
 beforeAll(async () => {
-	const [githubModule, calendarModule, gmailModule, shellModule] =
-		await Promise.all([
-			import("../github"),
-			import("../google_calendar"),
-			import("../google_gmail"),
-			import("../os_shell"),
-		]);
+	const [githubModule, calendarModule, gmailModule] = await Promise.all([
+		import("../github"),
+		import("../google_calendar"),
+		import("../google_gmail"),
+	]);
 	github = new githubModule.default().definition;
 	googleCalendar = new calendarModule.default().definition;
 	googleGmail = new gmailModule.default().definition;
-	osShell = new shellModule.default().definition;
 });
 
 function expectApprovalImpact(
@@ -67,9 +63,6 @@ describe("built-in connector approval impact annotations", () => {
 		expectApprovalImpact(googleGmail, {
 			send_email: "normal",
 			reply: "normal",
-		});
-		expectApprovalImpact(osShell, {
-			run: "high",
 		});
 	});
 });

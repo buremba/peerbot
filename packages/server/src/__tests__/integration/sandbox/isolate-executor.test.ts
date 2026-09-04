@@ -48,13 +48,12 @@ const CONNECTORS_DIR = join(PACKAGES_DIR, "connectors/src");
 const FIXTURE_PATH = join(HERE, "fixtures/isolate-fixture-connector.ts");
 
 /**
- * Bundled connectors whose own imports need a Node process, by the builtins
- * their isolate bundle still requires. Mirrors the pin in
- * `connector-isolate-lane.test.ts`; both are edited by hand on purpose.
+ * Bundled connectors the isolate cannot load, by the Node builtins their bundle
+ * still requires. EMPTY on purpose: a connector listed here is one the gateway
+ * silently drops from the catalog. Mirrors the pin in
+ * `connector-isolate-lane.test.ts`; both are edited by hand.
  */
-const PROCESS_LANE_CONNECTORS: Record<string, string[]> = {
-	os_shell: ["child_process", "fs", "os", "path"],
-};
+const ISOLATE_INELIGIBLE_CONNECTORS: Record<string, string[]> = {};
 
 function listBundledConnectors(): string[] {
 	return readdirSync(CONNECTORS_DIR)
@@ -310,8 +309,8 @@ describe("isolate lane: bundled connectors", () => {
 			expect(key, `${stem} definition.key`).toEqual(expect.any(String));
 			loaded.push(stem);
 		}
-		expect(ineligible).toEqual(PROCESS_LANE_CONNECTORS);
-		expect(loaded.length).toBe(files.length - Object.keys(PROCESS_LANE_CONNECTORS).length);
+		expect(ineligible).toEqual(ISOLATE_INELIGIBLE_CONNECTORS);
+		expect(loaded.length).toBe(files.length - Object.keys(ISOLATE_INELIGIBLE_CONNECTORS).length);
 		expect(loaded.length).toBeGreaterThan(15);
 	}, 180_000);
 });

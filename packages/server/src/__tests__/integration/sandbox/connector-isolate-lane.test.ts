@@ -51,8 +51,6 @@ const CONNECTOR_BUILTIN_IMPORTS: Record<string, string[]> = {
 	github: ["crypto"],
 	jira: ["crypto"],
 	linear: ["crypto"],
-	// Spawns local commands by design — the only genuinely ineligible connector.
-	os_shell: ["child_process", "fs", "os", "path"],
 	// Reaches its database over the isolate's Direct Sockets bridge, so it needs
 	// no transport builtin; what is left is all prelude-provided.
 	postgres: ["buffer", "events", "module", "stream"],
@@ -223,8 +221,11 @@ describe("connector isolate lane", () => {
 		const eligible = all.filter((f) => !ISOLATE_INELIGIBLE.includes(f.replace(/\.ts$/, "")));
 		// Every ineligible entry must name a real connector file.
 		expect(eligible.length).toBe(all.length - ISOLATE_INELIGIBLE.length);
-		// Only `os_shell` may sit out; anything else joining it is a regression.
-		expect(ISOLATE_INELIGIBLE).toEqual(["os_shell"]);
+		// EVERY bundled connector is isolate-eligible. `os_shell` was the last
+		// exception and it is gone: shell execution belongs to the device daemon
+		// builtin, which the gateway never compiled. Anything appearing here is a
+		// connector that would be silently dropped from the catalog.
+		expect(ISOLATE_INELIGIBLE).toEqual([]);
 		expect(eligible.length).toBeGreaterThan(15);
 		for (const file of eligible) {
 			const report = await bundle(join(CONNECTORS_DIR, file));

@@ -283,6 +283,23 @@ async function invokeAdapter<T extends object>(
 }
 
 const LOGGED_OUT_PATTERN = /logged_out|qr_code_visible/;
+const TRANSIENT_READINESS_PATTERN = /hydrating|stores_settling/i;
+const DEPENDENCY_UNAVAILABLE_PREFIX =
+  "[lobu:dependency_unavailable:browser_source_hydrating]";
+
+/**
+ * Only readiness-phase WhatsApp failures are transient. Authentication, adapter
+ * corruption, unsupported operations, and collection errors remain ordinary
+ * connector failures and still count toward source health.
+ */
+function classifyWhatsAppReadinessFailure(error: unknown): string | null {
+  if (!(error instanceof Error)) return null;
+  // MAIN-world adapter failures may cross the extension/worker boundary without
+  // preserving their prototype, so classify on the connector-owned message.
+  if (!error.message.startsWith("WhatsApp Web ")) return null;
+  if (!TRANSIENT_READINESS_PATTERN.test(error.message)) return null;
+  return `${DEPENDENCY_UNAVAILABLE_PREFIX} ${error.message}`;
+}
 
 /**
  * Open the persistent tab, install the adapter, and poll `probe` until
@@ -312,6 +329,8 @@ async function readyWhatsAppTab(
     }
     await new Promise((resolve) => setTimeout(resolve, READY_POLL_INTERVAL_MS));
   } while (Date.now() < deadline);
+  const transient = classifyWhatsAppReadinessFailure(lastError);
+  if (transient) throw new Error(transient);
   throw (
     lastError ??
     new Error("WhatsApp Web did not become ready within the run budget")
@@ -559,7 +578,7 @@ export default class WhatsAppWebConnector extends ConnectorRuntime<
     name: "WhatsApp",
     description:
       "Personal WhatsApp messages read from WhatsApp Web in the paired Owletto Chrome. Syncs one-to-one and group chats, progressively hydrates history, and can search, draft, send, edit, react to, and revoke messages.",
-    version: "1.0.0",
+    version: "1.0.1",
     faviconDomain: "whatsapp.com",
     // Implicit auth: the user is already signed into WhatsApp Web in the
     // paired Chrome. There is no artifact to relay — the QR is rendered by

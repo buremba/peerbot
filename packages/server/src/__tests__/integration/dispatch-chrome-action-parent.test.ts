@@ -49,7 +49,9 @@ describe('dispatchChromeAction parent run authorization', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       status: 'failed',
-      error_message: expect.stringContaining('No online paired Owletto'),
+      error_message: expect.stringMatching(
+        /^\[lobu:dependency_unavailable:browser_offline\].*No online paired Owletto/,
+      ),
     });
   });
 
@@ -349,8 +351,8 @@ describe('dispatchChromeAction target browser routing', () => {
 
     const body = await dispatchWithTarget(runId, Number(conn.id));
     expect(body.status).toBe('failed');
-    expect(body.error_message).toContain(
-      'The browser this action is set to open in is offline'
+    expect(body.error_message).toMatch(
+      /^\[lobu:dependency_unavailable:browser_offline\].*The browser this action is set to open in is offline/
     );
   });
 

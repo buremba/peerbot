@@ -157,6 +157,60 @@ describe('feed failure backoff + auto-pause (#2033)', () => {
     await cleanupTestDatabase();
   });
 
+  it('does not charge a temporarily unavailable browser dependency to source-health failures', async () => {
+    const org = await createTestOrganization();
+    const connId = await insertConnection(org.id);
+    const feedId = await insertFeed(org.id, connId, PAUSE_THRESHOLD - 1);
+    const runId = await insertRunningRun(org.id, connId, feedId);
+    const sql = getTestDb();
+
+    await sql`
+      UPDATE feeds
+      SET last_sync_status = 'success',
+          last_sync_at = current_timestamp - INTERVAL '5 minutes',
+          first_failure_at = NULL
+      WHERE id = ${feedId}
+    `;
+    const before = (await sql`
+      SELECT last_sync_at FROM feeds WHERE id = ${feedId}
+    `) as Array<{ last_sync_at: Date | string | null }>;
+
+    const { ctx, result } = mockWorkerCtx({
+      run_id: runId,
+      worker_id: WORKER_ID,
+      status: 'failed',
+      items_collected: 0,
+      error_message:
+        '[lobu:dependency_unavailable:browser_offline] The selected browser is offline.',
+    });
+    await completeWorkerJob(ctx);
+    expect(result().body).toEqual({ success: true });
+
+    const after = (await sql`
+      SELECT status, consecutive_failures, last_sync_status, last_sync_at,
+             first_failure_at, last_error, next_run_at
+      FROM feeds WHERE id = ${feedId}
+    `) as Array<{
+      status: string;
+      consecutive_failures: number;
+      last_sync_status: string | null;
+      last_sync_at: Date | string | null;
+      first_failure_at: Date | string | null;
+      last_error: string | null;
+      next_run_at: Date | string | null;
+    }>;
+
+    expect(after[0].status).toBe('active');
+    expect(Number(after[0].consecutive_failures)).toBe(PAUSE_THRESHOLD - 1);
+    expect(after[0].last_sync_status).toBe('success');
+    expect(new Date(String(after[0].last_sync_at)).getTime()).toBe(
+      new Date(String(before[0].last_sync_at)).getTime(),
+    );
+    expect(after[0].first_failure_at).toBeNull();
+    expect(after[0].last_error).toBe('The selected browser is offline.');
+    expect(after[0].next_run_at).not.toBeNull();
+  });
+
   it('5a: a failed completion backs off next_run_at beyond the plain cadence', async () => {
     const org = await createTestOrganization();
     const connId = await insertConnection(org.id);

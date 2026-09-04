@@ -473,6 +473,34 @@ describe("sync over the generic chrome bridge", () => {
     ]);
   });
 
+  it("marks persistent store hydration as a transient dependency failure", async () => {
+    const realNow = Date.now;
+    let calls = 0;
+    const { dispatcher } = makeDispatcher({
+      probe: () => {
+        calls += 1;
+        if (calls === 1) Date.now = () => realNow() + 60_000;
+        return {
+          ok: false,
+          error: { state: "hydrating", reason: "stores_settling" },
+        };
+      },
+    });
+    try {
+      await expect(
+        messagesFeed().sync(syncCtx(null, dispatcher))
+      ).rejects.toThrow(
+        /^\[lobu:dependency_unavailable:browser_source_hydrating\] WhatsApp Web hydrating: stores_settling/
+      );
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("bumps the WhatsApp connector version for readiness semantics", () => {
+    expect(connector.definition.version).toBe("1.0.1");
+  });
+
   it("names the remedy when WhatsApp Web is signed out", async () => {
     const { dispatcher } = makeDispatcher({
       probe: {

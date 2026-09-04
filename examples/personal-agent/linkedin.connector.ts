@@ -2879,7 +2879,7 @@ export default class LinkedInConnector extends ConnectorRuntime<
     name: "LinkedIn",
     description:
       "Scrapes LinkedIn (home feed, company pages, hiring signals) via the paired Owletto Chrome extension, and ingests local LinkedIn Data Export CSV files. prepare_comment stages a draft for the human to Post; verify_staged_comment checks whether that draft appeared as a comment.",
-    version: "3.11.8",
+    version: "3.11.9",
     faviconDomain: "linkedin.com",
     // Auth is `none`: every live feed authenticates implicitly through the
     // paired Owletto Chrome extension (the user's own signed-in linkedin.com
@@ -3534,21 +3534,6 @@ export default class LinkedInConnector extends ConnectorRuntime<
     }
 
     const commentCoverage = summarizeHomeFeedCommentCoverage(resolvedRows);
-    if (commentCoverage.incomplete > 0) {
-      const hints: string[] = [];
-      if (commentCoverage.unsupported)
-        hints.push(
-          `The paired Owletto extension omitted expansion coverage for ${commentCoverage.unsupported} thread${commentCoverage.unsupported === 1 ? "" : "s"}; reload the current extension build.`
-        );
-      if (commentCoverage.timedOut)
-        hints.push(
-          `Expansion hit its ${HOME_FEED_SCRAPE_CONFIG.expandRows.maxDurationMs / 1000}s budget on ${commentCoverage.timedOut} thread${commentCoverage.timedOut === 1 ? "" : "s"}; retry with fewer scrolls so each thread gets more of the run.`
-        );
-      const runtimeHint = hints.length ? ` ${hints.join(" ")}` : "";
-      throw new Error(
-        `LinkedIn captured ${commentCoverage.collected} of ${commentCoverage.expected} advertised comments across ${commentCoverage.incomplete} incomplete post thread${commentCoverage.incomplete === 1 ? "" : "s"} (advertised/runtime/collected: ${commentCoverage.details.join(", ")}).${runtimeHint} No partial home-feed batch was persisted.`
-      );
-    }
 
     const events = buildHomeFeedEvents(resolvedRows, new Date());
     if (events.length === 0) {
@@ -3574,8 +3559,12 @@ export default class LinkedInConnector extends ConnectorRuntime<
         scrolls_this_run: maxScrolls,
         backend: "extension-cs-scrape",
         object_all_supported: objectAllSupported,
-        comment_threads_complete: true,
+        comment_threads_complete: commentCoverage.incomplete === 0,
         comment_threads_checked: commentCoverage.threads,
+        comment_threads_incomplete: commentCoverage.incomplete,
+        comment_threads_unsupported: commentCoverage.unsupported,
+        comment_threads_timed_out: commentCoverage.timedOut,
+        comment_coverage_details: commentCoverage.details,
         comments_expected: commentCoverage.expected,
         comments_collected: commentCoverage.collected,
       },

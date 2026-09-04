@@ -1509,3 +1509,152 @@ describe("validateConnectorState — feed-scoped key demotion is gated to the pr
     });
   });
 });
+
+// The apply payload is built from the diff's changedFields — the same rule the
+// Automation update path uses. Re-listing every field at the call site was the
+// second place to get "the config did not declare this" wrong, and it got it
+// wrong twice: `schedule: feed.schedule ?? null` cleared crons the config had
+// never been told about, and `config: desired.config ?? {}` replaced UI-set
+// connection settings with `{}`. Asserting on the wire payload keeps a future
+// field from reintroducing it.
+describe("executePlan — an update writes only the fields the diff flagged", () => {
+  function planFor(
+    kind: "connection" | "feed",
+    changedFields: string[]
+  ): DiffPlan {
+    const row =
+      kind === "connection"
+        ? {
+            kind: "connection" as const,
+            verb: "update" as const,
+            id: "gmail",
+            changedFields,
+          }
+        : {
+            kind: "feed" as const,
+            verb: "update" as const,
+            id: "gmail/threads",
+            connectionSlug: "gmail",
+            desired: {
+              feedKey: "threads",
+              name: "Threads",
+              config: { labels: ["INBOX"] },
+            },
+            changedFields,
+          };
+    return {
+      rows: [row as DiffPlan["rows"][number]],
+      counts: { create: 0, update: 1, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+  }
+
+  function remoteWithGmail(): RemoteSnapshot {
+    return {
+      agents: [],
+      agentSettings: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      automations: [],
+      connectorDefinitions: [
+        { key: "google.gmail", installed: true } as RemoteConnectorDefinition,
+      ],
+      authProfiles: [],
+      connections: [
+        {
+          id: 3,
+          slug: "gmail",
+          connector_key: "google.gmail",
+          display_name: "Gmail",
+          status: "active",
+          auth_profile_slug: null,
+          app_auth_profile_slug: null,
+          config: { action_modes: { send: "auto" } },
+        },
+      ],
+      feedsByConnectionId: new Map([
+        [
+          3,
+          [
+            {
+              id: 9,
+              connection_id: 3,
+              feed_key: "threads",
+              status: "active",
+              schedule: "9,39 * * * *",
+              config: { labels: ["INBOX"] },
+            },
+          ],
+        ],
+      ]),
+      inferenceProviders: [],
+    };
+  }
+
+  const gmailConnection: DesiredConnection = {
+    slug: "gmail",
+    connector: "google.gmail",
+    name: "Gmail",
+    feeds: [
+      { feedKey: "threads", name: "Threads", config: { labels: ["INBOX"] } },
+    ],
+    sourceFile: "lobu.config.ts",
+  };
+
+  test("a name-only feed change never sends schedule or config", async () => {
+    const updateFeed = mock(async () => ({}) as never);
+    const client = { updateFeed } as unknown as ApplyClient;
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [gmailConnection],
+    });
+
+    await executePlan(
+      {
+        client,
+        state,
+        plan: planFor("feed", ["name"]),
+        remote: remoteWithGmail(),
+      },
+      []
+    );
+
+    expect(updateFeed).toHaveBeenCalledTimes(1);
+    const payload = updateFeed.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.keys(payload)).toEqual(["name"]);
+    // The cron the config never declared is not in the payload at all, so the
+    // server's tri-state leaves it alone.
+    expect("schedule" in payload).toBe(false);
+  });
+
+  test("a name-only connection change never sends config", async () => {
+    const updateConnection = mock(async () => ({ id: 3 }) as never);
+    const client = { updateConnection } as unknown as ApplyClient;
+    const state = stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [gmailConnection],
+    });
+
+    await executePlan(
+      {
+        client,
+        state,
+        plan: planFor("connection", ["name"]),
+        remote: remoteWithGmail(),
+      },
+      []
+    );
+
+    expect(updateConnection).toHaveBeenCalledTimes(1);
+    const payload = updateConnection.mock.calls[0]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(payload)).toEqual(["name"]);
+    // action_modes rides in connection config; sending `{}` here made the
+    // server's human-only gate fail the whole apply.
+    expect("config" in payload).toBe(false);
+  });
+});

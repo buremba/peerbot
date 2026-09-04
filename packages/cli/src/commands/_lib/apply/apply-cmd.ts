@@ -1139,20 +1139,29 @@ export async function executePlan(
       });
       connectionIdBySlug.set(desired.slug, result.id);
     } else if (existing && row.verb === "update") {
+      // Send only what the diff actually flagged, exactly as the Automation
+      // update above does. The diff is then the single source of truth for what
+      // an apply writes: a field this config does not declare produces no
+      // changed-field, so it is never in the payload and the server leaves it
+      // alone. Re-listing every field here was the second place to get
+      // "undeclared" wrong, and it got it wrong for `config` (replaced UI-set
+      // connection settings with `{}`) and, on feeds below, for `schedule`.
+      const changed = new Set(row.changedFields ?? []);
       const updated = await ctx.client.updateConnection(existing.id, {
-        name: desired.name,
-        authProfileSlug: desired.authProfileSlug ?? null,
-        appAuthProfileSlug: desired.appAuthProfileSlug ?? null,
-        // Declared config still REPLACES (a removed key must disappear
-        // remotely), but an undeclared one is omitted so the server leaves the
-        // stored settings alone. Sending `{}` with `replace_config` wiped
-        // UI-set connection settings, and on a connection carrying
-        // `action_modes` it made the whole apply fail closed on the server's
-        // human-only gate.
-        ...(desired.config !== undefined ? { config: desired.config } : {}),
-        // Always pass — server treats undefined as "leave alone", null as
-        // "unpin to server", and a uuid as "move to that device".
-        deviceWorkerId: desired.deviceWorkerId ?? null,
+        ...(changed.has("name") ? { name: desired.name } : {}),
+        ...(changed.has("auth")
+          ? { authProfileSlug: desired.authProfileSlug ?? null }
+          : {}),
+        ...(changed.has("app_auth")
+          ? { appAuthProfileSlug: desired.appAuthProfileSlug ?? null }
+          : {}),
+        // A declared config still REPLACES — a key removed from the config must
+        // disappear remotely.
+        ...(changed.has("config") ? { config: desired.config } : {}),
+        // null unpins to the server, a uuid moves it to that device.
+        ...(changed.has("device_worker_id")
+          ? { deviceWorkerId: desired.deviceWorkerId ?? null }
+          : {}),
       });
       connectionIdBySlug.set(desired.slug, updated.id);
     } else {
@@ -1192,14 +1201,15 @@ export async function executePlan(
         )
       : undefined;
     if (remoteFeed && row.verb === "update") {
+      // Same rule as connections and Automations: the diff decides what gets
+      // written. An undeclared cadence or config produces no changed-field, so
+      // it never reaches the wire and the server keeps what the feed has. An
+      // explicit `schedule: null` IS a declared change and still clears it.
+      const changed = new Set(row.changedFields ?? []);
       await ctx.client.updateFeed(remoteFeed.id, {
-        name: feed.name,
-        // Only forward what the config declared. `updateFeed` omits an
-        // undefined field from the wire payload, so an undeclared cadence or
-        // config is left exactly as the feed already has it; an explicit
-        // `null` schedule still clears it.
-        ...(feed.schedule !== undefined ? { schedule: feed.schedule } : {}),
-        ...(feed.config !== undefined ? { config: feed.config } : {}),
+        ...(changed.has("name") ? { name: feed.name } : {}),
+        ...(changed.has("schedule") ? { schedule: feed.schedule ?? null } : {}),
+        ...(changed.has("config") ? { config: feed.config } : {}),
       });
     } else {
       await ctx.client.createFeed({

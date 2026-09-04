@@ -2109,41 +2109,62 @@ describe("LinkedInConnector home_feed", () => {
     });
   });
 
-  test("fails the batch when an advertised comment thread remains incomplete", async () => {
-    await expect(
-      syncHomeFeedDom(`
-        <div componentkey="expandedincomplete_threadFeedType_MAIN_FEED_RELEVANCE">
-          <button aria-label="Open control menu for post by Incomplete Thread Author"></button>
-          <span id="translatable-commentary-urn:li:activity:8333333333333333333"></span>
-          <p>An incomplete-thread home-feed post with enough useful text to pass the filter</p>
-          <div role="button" class="comment-count">4 comments</div>
-          <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444441)"><p>Commenter One • First rendered fixture comment</p></div>
-          <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444442)"><p>Commenter Two • Second rendered fixture comment</p></div>
-          <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444443)"><p>Commenter Three • Third rendered fixture comment</p></div>
-        </div>`)
-    ).rejects.toThrow(/captured 3 of 4 advertised comments/i);
+  test("persists durable posts when advertised comment coverage remains incomplete", async () => {
+    const res = await syncHomeFeedDom(`
+      <div componentkey="expandedincomplete_threadFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Incomplete Thread Author"></button>
+        <span id="translatable-commentary-urn:li:activity:8333333333333333333"></span>
+        <p>An incomplete-thread home-feed post with enough useful text to pass the filter</p>
+        <div role="button" class="comment-count">4 comments</div>
+        <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444441)"><p>Commenter One • First rendered fixture comment</p></div>
+        <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444442)"><p>Commenter Two • Second rendered fixture comment</p></div>
+        <div id="replaceableComment_urn:li:comment:(urn:li:activity:8333333333333333333,8444444444444444443)"><p>Commenter Three • Third rendered fixture comment</p></div>
+      </div>`);
+
+    expect(res.events.map((event: any) => event.origin_id)).toEqual([
+      "li_home_activity_8333333333333333333",
+      "li_comment_8444444444444444441",
+      "li_comment_8444444444444444442",
+      "li_comment_8444444444444444443",
+    ]);
+    expect(res.metadata).toMatchObject({
+      comment_threads_complete: false,
+      comment_threads_checked: 1,
+      comment_threads_incomplete: 1,
+      comments_expected: 4,
+      comments_collected: 3,
+    });
+    expect(res.metadata.comment_coverage_details).toEqual(["4/4/3"]);
   });
 
-  test("names the expansion budget when a thread times out mid-expansion", async () => {
+  test("surfaces expansion timeout as incomplete coverage metadata", async () => {
     const activityId = "8555555555555555555";
-    // `more` never resolves the thread, so expansion can only end on its
-    // deadline — the branch that must be reported as a budget timeout rather
-    // than as a stale-extension or wrong-selector failure.
-    await expect(
-      syncHomeFeedDom(
-        `
-        <div componentkey="expandedtimeout_threadFeedType_MAIN_FEED_RELEVANCE">
-          <button aria-label="Open control menu for post by Timed Out Thread Author"></button>
-          <span id="translatable-commentary-urn:li:activity:${activityId}"></span>
-          <p>A timed-out-thread home-feed post with enough useful text to pass the filter</p>
-          <div role="button" class="comment-count">4 comments</div>
-          <div id="replaceableComment_urn:li:comment:(urn:li:activity:${activityId},8666666666666666661)"><p>Commenter One • First rendered fixture comment</p></div>
-          <div role="button" class="more-comments">See 3 more comments</div>
-        </div>`,
-        undefined,
-        { maxDurationMs: 1, waitMs: 5 }
+    const res = await syncHomeFeedDom(
+      `
+      <div componentkey="expandedtimeout_threadFeedType_MAIN_FEED_RELEVANCE">
+        <button aria-label="Open control menu for post by Timed Out Thread Author"></button>
+        <span id="translatable-commentary-urn:li:activity:${activityId}"></span>
+        <p>A timed-out-thread home-feed post with enough useful text to pass the filter</p>
+        <div role="button" class="comment-count">4 comments</div>
+        <div id="replaceableComment_urn:li:comment:(urn:li:activity:${activityId},8666666666666666661)"><p>Commenter One • First rendered fixture comment</p></div>
+        <div role="button" class="more-comments">See 3 more comments</div>
+      </div>`,
+      undefined,
+      { maxDurationMs: 1, waitMs: 5 }
+    );
+
+    expect(
+      res.events.some(
+        (event: any) => event.origin_id === `li_home_activity_${activityId}`
       )
-    ).rejects.toThrow(/Expansion hit its 55s budget on 1 thread/i);
+    ).toBe(true);
+    expect(res.metadata).toMatchObject({
+      comment_threads_complete: false,
+      comment_threads_incomplete: 1,
+      comment_threads_timed_out: 1,
+      comments_expected: 4,
+      comments_collected: 1,
+    });
   });
 
   test("ignores FeedType helper rows nested inside a real post", async () => {
@@ -3090,7 +3111,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.8");
+    expect(c.definition.version).toBe("3.11.9");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

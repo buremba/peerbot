@@ -28,6 +28,7 @@ import type { Env } from '../index';
 import { waitForDeviceActionRun } from '../tools/admin/device-action-wait';
 import { DEVICE_ONLINE_WINDOW_SECONDS } from '../utils/device-liveness';
 import { DEVICE_PIN_TOMBSTONE_MESSAGES } from '../utils/device-pin-tombstones';
+import { dependencyUnavailableError } from '../connectors/dependency-unavailable';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
@@ -760,11 +761,14 @@ export async function dispatchChromeActionToExtension(params: {
   if (!chromeConnection) {
     return {
       status: 'failed',
-      error_message: targetedBrowser
-        ? 'The browser this action is set to open in is offline. Open Chrome with the Owletto extension on that machine and try again.'
-        : preferredDeviceWorkerId
-          ? 'The Chrome extension selected for this connection is offline. Open Owletto in that browser (and stay signed in) to continue.'
-          : 'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).',
+      error_message: dependencyUnavailableError(
+        'browser_offline',
+        targetedBrowser
+          ? 'The browser this action is set to open in is offline. Open Chrome with the Owletto extension on that machine and try again.'
+          : preferredDeviceWorkerId
+            ? 'The Chrome extension selected for this connection is offline. Open Owletto in that browser (and stay signed in) to continue.'
+            : 'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).',
+      ),
     };
   }
 

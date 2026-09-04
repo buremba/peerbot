@@ -31,6 +31,7 @@ import {
 } from "../automations/connector-derived";
 import { materializeConnectorAutomationSignal } from "../automations/connector-signal";
 import { feedBackoff } from "../connectors/feed-backoff";
+import { parseDependencyUnavailableError } from "../connectors/dependency-unavailable";
 import { maybeEmitFeedAutoPausedAfterFailure } from "../automations/platform-events";
 import { getDb, parsePgNumberArray } from "../db/client";
 import { eventArtifactBinding } from "../gateway/files/artifact-store";
@@ -916,6 +917,11 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 			>;
 		}
 		if (req.error_message) req.error_message = stripNul(req.error_message);
+		const dependencyUnavailable =
+			req.status === "failed"
+				? parseDependencyUnavailableError(req.error_message)
+				: null;
+		if (dependencyUnavailable) req.error_message = dependencyUnavailable.message;
 		if (req.output_tail) req.output_tail = stripNul(req.output_tail);
 
 		const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
@@ -1040,6 +1046,19 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 				: null;
 			const isSuccess = req.status === "success";
 
+			// A connector that could not reach a required execution dependency never
+			// reached the source. Preserve the last real source-health result, do not
+			// consume the hard-pause budget, and keep the ordinary schedule armed.
+			if (dependencyUnavailable) {
+				await sql`
+          UPDATE feeds
+          SET last_error = ${req.error_message ?? null},
+              next_run_at = ${nextRun},
+              updated_at = current_timestamp
+          WHERE id = ${feedId}
+        `;
+			} else {
+
 			// Failure rescheduling (item 5, #2033):
 			//  - On success: reset consecutive_failures to 0 and use the plain cron
 			//    next_run_at so a recovered feed immediately resumes normal cadence.
@@ -1113,6 +1132,7 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 						"[completeWorkerJob] maybeEmitFeedAutoPausedAfterFailure threw"
 					);
 				}
+			}
 			}
 		}
 

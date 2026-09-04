@@ -234,6 +234,29 @@ export interface RemoteFeed {
   config?: Record<string, unknown> | null;
 }
 
+/**
+ * The mutable fields of a connection update. Every key is optional and a key
+ * that is ABSENT is not written — the server leaves that column alone. This is
+ * what makes "undeclared means unmanaged" expressible on the wire, so the
+ * builders in `diff.ts` construct these payloads a key at a time from the
+ * diff's changed-field list rather than listing every field unconditionally.
+ */
+export interface UpdateConnectionPayload {
+  name?: string;
+  authProfileSlug?: string | null;
+  appAuthProfileSlug?: string | null;
+  config?: Record<string, unknown>;
+  deviceWorkerId?: string | null;
+}
+
+/** The mutable fields of a feed update — same absent-means-unwritten rule. */
+export interface UpdateFeedPayload {
+  name?: string;
+  /** Cron string, or null to clear (manual-only). */
+  schedule?: string | null;
+  config?: Record<string, unknown>;
+}
+
 interface InstallConnectorResult {
   connectorKey: string;
   updated: boolean;
@@ -1585,13 +1608,7 @@ export class ApplyClient {
 
   async updateConnection(
     connectionId: number,
-    payload: {
-      name?: string;
-      authProfileSlug?: string | null;
-      appAuthProfileSlug?: string | null;
-      config?: Record<string, unknown>;
-      deviceWorkerId?: string | null;
-    }
+    payload: UpdateConnectionPayload
   ): Promise<RemoteConnection> {
     const body = await this.connectionsTool<{ connection?: RemoteConnection }>({
       action: "update",
@@ -1659,12 +1676,7 @@ export class ApplyClient {
 
   async updateFeed(
     feedId: number,
-    payload: {
-      name?: string;
-      /** Cron string, or null to clear (manual-only). */
-      schedule?: string | null;
-      config?: Record<string, unknown>;
-    }
+    payload: UpdateFeedPayload
   ): Promise<RemoteFeed> {
     const body = await this.feedsTool<{ feed?: RemoteFeed }>({
       action: "update_feed",

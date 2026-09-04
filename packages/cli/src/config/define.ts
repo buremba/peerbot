@@ -431,7 +431,22 @@ export interface ConnectionFeed {
   /** Feed key from the connector definition. */
   feed: string;
   name?: string;
-  schedule?: string;
+  /**
+   * Sync cadence, with three distinct states:
+   *   - a cron string — this config owns the cadence and sets it
+   *   - `null`        — this config owns the cadence and clears it (manual-only)
+   *   - omitted       — this config does NOT manage the cadence; apply leaves
+   *                     whatever the feed already has, including a cron set in
+   *                     the UI
+   * Omitting used to collapse to `null`, so every apply silently wiped crons it
+   * had never been told about.
+   */
+  schedule?: string | null;
+  /**
+   * Feed instance settings. Declaring this key REPLACES the remote config, so a
+   * key you remove disappears; omitting it means this config does not manage
+   * the settings and apply leaves the feed's stored config alone.
+   */
   config?: Record<string, unknown>;
 }
 
@@ -469,6 +484,11 @@ export interface Connection {
   authProfile?: AuthProfile | string;
   /** OAuth-app auth profile (handle or slug). */
   appAuthProfile?: AuthProfile | string;
+  /**
+   * Connection settings — same rule as a feed's `config`: declaring this key
+   * REPLACES the remote config, omitting it leaves the connection's stored
+   * settings (including anything set in the UI) alone.
+   */
   config?: Record<string, unknown>;
   /**
    * Where this connection's credential lives:

@@ -36,10 +36,12 @@ import {
   validateConnectionAgainstConnector,
 } from "./desired-state.js";
 import {
+  buildUpdatePayload,
   computeDiff,
   type DiffPlan,
   type DiffRow,
   type RemoteSnapshot,
+  UPDATE_FIELD_TABLES,
 } from "./diff.js";
 import {
   confirmCustomConnectors,
@@ -1139,15 +1141,21 @@ export async function executePlan(
       });
       connectionIdBySlug.set(desired.slug, result.id);
     } else if (existing && row.verb === "update") {
-      const updated = await ctx.client.updateConnection(existing.id, {
-        name: desired.name,
-        authProfileSlug: desired.authProfileSlug ?? null,
-        appAuthProfileSlug: desired.appAuthProfileSlug ?? null,
-        config: desired.config ?? {},
-        // Always pass — server treats undefined as "leave alone", null as
-        // "unpin to server", and a uuid as "move to that device".
-        deviceWorkerId: desired.deviceWorkerId ?? null,
-      });
+      // Send only what the diff actually flagged, exactly as the Automation
+      // update above does. The diff is then the single source of truth for what
+      // an apply writes: a field this config does not declare produces no
+      // changed-field, so it is never in the payload and the server leaves it
+      // alone. Re-listing every field here was the second place to get
+      // "undeclared" wrong, and it got it wrong for `config` (replaced UI-set
+      // connection settings with `{}`) and, on feeds below, for `schedule`.
+      const updated = await ctx.client.updateConnection(
+        existing.id,
+        buildUpdatePayload(
+          UPDATE_FIELD_TABLES.connection,
+          row.changedFields,
+          desired
+        )
+      );
       connectionIdBySlug.set(desired.slug, updated.id);
     } else {
       const created = await ctx.client.createConnection({
@@ -1186,17 +1194,22 @@ export async function executePlan(
         )
       : undefined;
     if (remoteFeed && row.verb === "update") {
-      await ctx.client.updateFeed(remoteFeed.id, {
-        name: feed.name,
-        // null clears remote cron (manual-only); string sets it.
-        schedule: feed.schedule ?? null,
-        config: feed.config ?? {},
-      });
+      // Same rule as connections and Automations: the diff decides what gets
+      // written. An undeclared cadence or config produces no changed-field, so
+      // it never reaches the wire and the server keeps what the feed has. An
+      // explicit `schedule: null` IS a declared change and still clears it.
+      await ctx.client.updateFeed(
+        remoteFeed.id,
+        buildUpdatePayload(UPDATE_FIELD_TABLES.feed, row.changedFields, feed)
+      );
     } else {
       await ctx.client.createFeed({
         connectionId,
         feedKey: feed.feedKey,
         name: feed.name,
+        // A brand-new feed has no cadence to preserve, so undeclared and
+        // explicit-null both mean manual-only here. The platform still never
+        // invents a default cron.
         schedule: feed.schedule ?? null,
         config: feed.config,
       });

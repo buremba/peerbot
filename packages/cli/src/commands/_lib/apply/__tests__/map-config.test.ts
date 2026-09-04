@@ -949,7 +949,19 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/connection slug/);
   });
 
-  test("omitted feed schedule maps to null (manual-only, no platform default)", () => {
+  // Three states, not two. Omitting `schedule` means "this config does not
+  // manage the cadence" — apply must leave whatever the feed already has. Only
+  // an explicit `null` clears it. Collapsing omitted to null made every apply
+  // silently wipe crons set in the UI, and a DB-side backfill could never
+  // survive the next run.
+  //
+  // Measured in prod from the config audit trail (`events` rows with
+  // metadata.category='config', resource_kind='feed', changed_fields ?
+  // 'schedule', actor_source='cli'): 41 feed-schedule writes across 2026-08-11
+  // and 2026-08-12, and the 08-11 batch of 23 all carry ONE apply_id — a single
+  // `lobu apply` rewrote 23 feeds' cadence in one run. 29 of the 31 feeds that
+  // batch touched are still manual-only today.
+  test("an omitted feed schedule is left undeclared, not collapsed to null", () => {
     const conn = defineConnection({
       slug: "gh",
       connector: "github",
@@ -958,9 +970,54 @@ describe("mapProjectToDesiredState", () => {
     const state = mapProjectToDesiredState(
       defineConfig({ agents: [], connections: [conn] })
     );
+    const feed = state.connectors.connections[0]?.feeds[0];
+    expect(feed).toEqual({ feedKey: "stars" });
+    expect("schedule" in (feed ?? {})).toBe(false);
+  });
+
+  // `schedule: process.env.FEED_CRON` with the var unset is the same bug
+  // through a different door: the key is present but the value is undefined,
+  // which is a config that declared nothing, not a clear.
+  test("an undefined schedule value is undeclared, not a clear", () => {
+    const conn = defineConnection({
+      slug: "gh",
+      connector: "github",
+      feeds: [{ feed: "stars", schedule: undefined }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    const feed = state.connectors.connections[0]?.feeds[0];
+    expect("schedule" in (feed ?? {})).toBe(false);
+  });
+
+  test("an explicit null schedule stays expressible as a deliberate clear", () => {
+    const conn = defineConnection({
+      slug: "gh",
+      connector: "github",
+      feeds: [{ feed: "stars", schedule: null }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
     expect(state.connectors.connections[0]?.feeds).toEqual([
       { feedKey: "stars", schedule: null },
     ]);
+  });
+
+  // Same class as schedule: an omitted `config` must not wipe the remote one.
+  test("an omitted feed config is left undeclared", () => {
+    const conn = defineConnection({
+      slug: "gh",
+      connector: "github",
+      feeds: [{ feed: "stars" }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    expect("config" in (state.connectors.connections[0]?.feeds[0] ?? {})).toBe(
+      false
+    );
   });
 
   test("rejects an invalid cron schedule", () => {

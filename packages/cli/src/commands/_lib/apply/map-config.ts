@@ -838,8 +838,13 @@ function mapConnection(
     return {
       feedKey: feed.feed,
       ...(feed.name ? { name: feed.name } : {}),
-      // Omit in config → manual-only (null). Never invent a default cron.
-      schedule: feed.schedule ?? null,
+      // Undeclared — omitted, or `undefined` from something like
+      // `schedule: process.env.FEED_CRON` — carries through unset, exactly like
+      // `name` and `config`, and apply then leaves the remote cadence alone.
+      // Only an explicit `null` is a deliberate clear. Still never invents a
+      // default cron: an undeclared schedule on a NEW feed creates it
+      // manual-only.
+      ...(feed.schedule !== undefined ? { schedule: feed.schedule } : {}),
       ...(feed.config ? { config: feed.config } : {}),
     };
   });

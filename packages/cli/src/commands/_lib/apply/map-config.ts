@@ -29,7 +29,7 @@ import {
  * `updatedAt` is excluded (store-owned, set by the DB).
  *
  * This is the compile-time drift guarantee: the declarative mapper cannot
- * forget a field. See /tmp/lobu-spike-4b-finding.md for the proof.
+ * forget a field.
  */
 type AgentSettingsProjection = {
   [K in Exclude<keyof AgentSettingsStored, "updatedAt" | "authProfiles">]-?:

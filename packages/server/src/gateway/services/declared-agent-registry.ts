@@ -6,7 +6,8 @@ import { buildProviderCatalog } from "../auth/provider-catalog.js";
 import type { AgentConfig } from "../config/index.js";
 
 /**
- * Compile-time exhaustiveness guard (see /tmp/lobu-spike-4b-finding.md).
+ * Compile-time exhaustiveness guard, the same `-?` projection the CLI's
+ * `AgentSettingsProjection` uses (packages/cli/src/commands/_lib/apply/map-config.ts).
  * Adding a field to AgentSettingsStoredSchema that this converter doesn't
  * handle is a compile error, not a silent drop. `authProfiles` excluded
  * (separate-store), `updatedAt` excluded (store-owned).

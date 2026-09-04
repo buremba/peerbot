@@ -12,6 +12,13 @@
  *     await client.knowledge.save({ content: "...", semantic_type: "digest" });
  *   };
  */
+// Type-only imports: they erase at compile time, so nothing new enters the
+// isolate bundle. Core SUBPATH imports are permitted here; the root is not
+// (see AGENTS.md).
+import type { PublicGetContentArgs } from "@lobu/core/contracts/tools/read-knowledge";
+import type { PublicSearchArgs } from "@lobu/core/contracts/tools/search-memory";
+import type {} from "./reaction-client-types.typecheck";
+
 /**
  * A rich card for chat delivery, as a plain serializable object — a `chat`
  * `CardElement` built with the card primitives (`Card`, `Section`, `Field`,
@@ -24,14 +31,13 @@ export type CardElement = Record<string, unknown>;
 
 // ── Knowledge ────────────────────────────────────────────────────────────────
 
-export interface KnowledgeSearchInput {
-  query?: string;
-  entity_type?: string;
-  entity_id?: number;
-  fuzzy?: boolean;
-  min_similarity?: number;
-  limit?: number;
-}
+/**
+ * Derived from the `search_memory` contract rather than re-declared: the
+ * hand-written copy listed 6 of the 16 filters the handler accepts, so ten
+ * were undiscoverable from the published types. Pinned by
+ * `ReactionKnowledgeSearchContract` in `./reaction-client-types.typecheck`.
+ */
+export type KnowledgeSearchInput = PublicSearchArgs;
 
 export interface KnowledgeSaveInput {
   entity_ids?: number[];
@@ -53,17 +59,16 @@ export interface KnowledgeSaveInput {
   automation_source?: { automation_id: number; run_id: number };
 }
 
-export interface KnowledgeReadInput {
-  /** Fetch specific content events by id (read_knowledge takes an array). */
-  content_ids?: number[];
-  automation_id?: number;
-  /** Bind the read to the exact queued Automation run and trigger snapshot. */
-  run_id?: number;
-  since?: string;
-  until?: string;
-  limit?: number;
-  entity_ids?: number[];
-}
+/**
+ * Derived from the `read_knowledge` contract rather than re-declared. The
+ * hand-written copy named 6 of the 36 filters the handler accepts, hiding 30
+ * (`semantic_type`, `entity_types`, `query`, `entity_id`, cursor pagination,
+ * …), and its seventh field was `entity_ids`, which `getContent` only ever
+ * reads off the ROW — never off the input — so filtering by it was a hard
+ * `unknown argument(s)` error from the server's argument validator. Pinned by
+ * `ReactionKnowledgeReadContract` in `./reaction-client-types.typecheck`.
+ */
+export type KnowledgeReadInput = PublicGetContentArgs;
 
 export interface KnowledgeSaveResult {
   id: number;

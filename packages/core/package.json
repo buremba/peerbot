@@ -176,6 +176,18 @@
       "bun": "./src/refs.ts",
       "import": "./dist/refs.js",
       "require": "./dist/refs.js"
+    },
+    "./contracts/tools/read-knowledge": {
+      "types": "./dist/contracts/tools/read-knowledge.d.ts",
+      "bun": "./src/contracts/tools/read-knowledge.ts",
+      "import": "./dist/contracts/tools/read-knowledge.js",
+      "require": "./dist/contracts/tools/read-knowledge.js"
+    },
+    "./contracts/tools/search-memory": {
+      "types": "./dist/contracts/tools/search-memory.d.ts",
+      "bun": "./src/contracts/tools/search-memory.ts",
+      "import": "./dist/contracts/tools/search-memory.js",
+      "require": "./dist/contracts/tools/search-memory.js"
     }
   },
   "scripts": {

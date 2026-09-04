@@ -45,155 +45,38 @@ import { getContent } from './get_content';
 import type { ToolContext } from './registry';
 import { markAcceptedInternalFields, withValidatedArgs } from './validate-args';
 import { getErrorMessage } from '@lobu/core';
+import {
+  PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS,
+  type SearchArgs,
+  SearchSchema,
+} from '@lobu/core/contracts/tools/search-memory';
 
 // ============================================
 // Typebox Schema
 // ============================================
+//
+// `SearchSchema` lives in `@lobu/core/contracts/tools/search-memory` so the
+// connector SDK can derive its published input type from the SAME declaration
+// this handler enforces. Re-exported below because `registry.ts` imports it
+// from this module.
+//
+// Inside the server, always import these from here rather than reaching for
+// the core contract directly: the `markAcceptedInternalFields` stamp runs on
+// THIS module's load, so a caller that bypasses it can validate against a
+// schema that has not been stamped yet.
 
-export const SearchSchema = Type.Object({
-  title: Type.Optional(
-    Type.String({
-      description:
-        'Optional human-friendly heading for this result (e.g. "What we know about Acme"). When set, the UI renders it above the search result.',
-      maxLength: 200,
-    })
-  ),
-  query: Type.Optional(
-    Type.String({
-      description: 'Search query (entity name). Required unless entity_id is provided.',
-      minLength: 1,
-    })
-  ),
-  entity_type: Type.Optional(
-    Type.String({
-      description: 'Entity type filter. If not provided, searches all entities.',
-    })
-  ),
-  entity_id: Type.Optional(
-    Type.Number({
-      description: 'Entity ID for direct lookup. Can be used instead of query for exact fetch.',
-    })
-  ),
-  parent_id: Type.Optional(
-    Type.Number({
-      description: 'Filter by parent entity ID.',
-    })
-  ),
-  market: Type.Optional(
-    Type.String({
-      description: 'Market/region code (ISO 3166-1 alpha-2)',
-    })
-  ),
-  category: Type.Optional(
-    Type.String({
-      description: 'Filter by category metadata field',
-    })
-  ),
-  fuzzy: Type.Optional(
-    Type.Boolean({
-      description: 'Enable fuzzy name matching',
-      default: true,
-    })
-  ),
-  min_similarity: Type.Optional(
-    Type.Number({
-      description:
-        'Minimum similarity threshold (0.0-1.0) applied to BOTH fuzzy entity-name matching and recalled content. Raise it to cut weak matches, lower it to widen recall.',
-      default: 0.3,
-      minimum: 0,
-      maximum: 1,
-    })
-  ),
-  include_connections: Type.Optional(
-    Type.Boolean({
-      description: 'Include connection details in response (max 20, active first)',
-      default: true,
-    })
-  ),
-  include_content: Type.Optional(
-    Type.Boolean({
-      description:
-        'Include semantic content search results alongside entity matches (default: true). Uses the query for vector similarity search across all content in the organization.',
-      default: true,
-    })
-  ),
-  content_limit: Type.Optional(
-    Type.Number({
-      description: 'Max content results when include_content is enabled (default: 5, max: 50)',
-      default: 5,
-      minimum: 1,
-      maximum: 50,
-    })
-  ),
-  query_embedding: Type.Optional(
-    Type.Array(Type.Number(), {
-      description:
-        'Embedding vector for semantic similarity search. When provided, results are ranked by cosine similarity.',
-    })
-  ),
-  metadata_filter: Type.Optional(
-    Type.Record(Type.String(), Type.String(), {
-      description: 'Filter entities by metadata key-value pairs (e.g. {"category": "preference"})',
-    })
-  ),
-  agent_id: Type.Optional(
-    Type.String({
-      description:
-        "Scope recalled CONTENT to memory written by this agent — filters events where `metadata.agent_id` matches the given id. Entity resolution is NOT filtered by it: entities are workspace nouns with no writing agent, so scoping them here would report an existing entity as not-found.",
-    })
-  ),
-  limit: Type.Optional(
-    Type.Number({
-      description: 'Max results (default: 5, max: 100)',
-      minimum: 1,
-      maximum: 100,
-    })
-  ),
-  include_public_catalogs: Type.Optional(
-    Type.Boolean({
-      description:
-        'Also search public-catalog orgs (visibility=public) — canonical world entities like HMRC, banks, currencies. Defaults to true so agents can discover entities to reference cross-org.',
-      default: true,
-    })
-  ),
-  workspace: Type.Optional(
-    Type.String({
-      description:
-        'Narrow this read to one workspace granted to the connection. Omit it on a direct bare OAuth search to search every currently accessible granted workspace.',
-      minLength: 1,
-      maxLength: 200,
-    })
-  ),
-});
-
-/**
- * Accepted by the handler, but NOT advertised on `tools/list` (see
- * {@link PublicSearchSchema}). Listed here so the arg validator keeps them
- * VALID while omitting them from the "valid arguments are: …" text of an
- * unknown-argument error — otherwise a mistyped arg teaches an agent that
- * `agent_id` / `query_embedding` exist, which is exactly the accepted-but-
- * unadvertised trap this split is meant to close.
- */
-const PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS = ['query_embedding', 'agent_id'];
+// Keeps `query_embedding` / `agent_id` VALID for the argument validator while
+// omitting them from its "valid arguments are: …" error text — otherwise a
+// mistyped arg teaches an agent that they exist. Which fields those are is
+// contract data and lives with the schema; stamping them on is the
+// validator's job and stays here.
 markAcceptedInternalFields(SearchSchema, PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS);
 
-/**
- * Schema advertised on `tools/list`. Drops the server-internal fields that
- * `SearchSchema` still accepts (so validation passes for internal callers and
- * tests): `query_embedding` (a pre-computed vector the content-search layer
- * re-derives itself when absent) and `agent_id` (the caller's bound agent,
- * resolved from auth context — clients asserting it cross-agent within an org
- * is a footgun, not an affordance). See `ToolDefinition.publicInputSchema`.
- */
-export const PublicSearchSchema = Type.Object(
-  Object.fromEntries(
-    Object.entries(SearchSchema.properties).filter(
-      ([key]) => !PUBLIC_SEARCH_SCHEMA_INTERNAL_FIELDS.includes(key)
-    )
-  )
-);
-
-type SearchArgs = Static<typeof SearchSchema>;
+export {
+  PublicSearchSchema,
+  type PublicSearchArgs,
+  SearchSchema,
+} from '@lobu/core/contracts/tools/search-memory';
 
 export function resolveEntityLimit(args: SearchArgs): number {
   const defaultLimit = args.query_embedding?.length ? 20 : (args.fuzzy ?? true) ? 5 : 1;

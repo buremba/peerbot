@@ -11,23 +11,18 @@ import { deleteContent } from "../../tools/delete_content";
 import { getContent, type PublicGetContentArgs } from "../../tools/get_content";
 import type { ToolContext } from "../../tools/registry";
 import { saveContent } from "../../tools/save_content";
-import { search } from "../../tools/search";
+import { type PublicSearchArgs, search } from "../../tools/search";
 import { createValidatedSdkMethod } from "../sdk-preflight";
 import type {} from "./knowledge.typecheck";
 
-export interface KnowledgeSearchInput {
-	query?: string;
-	entity_type?: string;
-	entity_id?: number;
-	parent_id?: number;
-	market?: string;
-	category?: string;
-	fuzzy?: boolean;
-	min_similarity?: number;
-	include_connections?: boolean;
-	include_content?: boolean;
-	limit?: number;
-}
+/**
+ * Derived from `SearchSchema`, not hand-listed: the hand-written version had
+ * dropped `title`, `content_limit`, `metadata_filter`,
+ * `include_public_catalogs` and `workspace`, advertising a narrower filter set
+ * than `search_memory` actually accepts. Pinned by
+ * `KnowledgeSearchInputContract` in `./knowledge.typecheck`.
+ */
+export type KnowledgeSearchInput = PublicSearchArgs;
 
 interface KnowledgeSaveBase {
 	entity_ids?: number[];
@@ -65,9 +60,10 @@ export type KnowledgeSaveInput =
  * `client.knowledge.read` forwards straight to `getContent`, so its input IS
  * the tool's public schema. Hand-listing the fields drifted: it had grown to
  * omit real filters the handler accepts (`semantic_type`, `entity_types`,
- * `query`, …) while advertising `entity_ids`, which `getContent` never read as
- * an input — a caller filtering by it silently got unfiltered results. Deriving
- * the type keeps the two in lockstep.
+ * `query`, …) while advertising `entity_ids`, which `getContent` only ever
+ * reads off the ROW — never off the input — so a caller filtering by it got a
+ * hard `unknown argument(s)` error from the argument validator, not unfiltered
+ * results. Deriving the type keeps the two in lockstep.
  */
 export type KnowledgeReadInput = PublicGetContentArgs;
 

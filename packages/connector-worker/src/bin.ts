@@ -37,6 +37,7 @@ Options:
                      e.g. os.files. The server drops anything the platform's
                      allowlist does not grant.
   --label <name>     Human-readable device name shown on the Devices page
+  --active-org <slug> Org slug used for the action-permissions link printed in device mode
   --debug            Log poll/heartbeat/retry detail (default: one line per run)
   --json             (self-check) Emit machine-readable JSON to stdout
   --help             Show this help message
@@ -52,6 +53,7 @@ Environment Variables:
   WORKER_PLATFORM   Host platform (same as --platform)
   WORKER_CAPABILITIES Comma-separated capabilities (same as --capabilities)
   WORKER_LABEL      Human-readable device name (same as --label)
+  LOBU_ORG          Active org slug (same as --active-org)
 
 Examples:
   # Worker daemon
@@ -138,6 +140,7 @@ async function main(): Promise<void> {
           platform,
           label,
           capabilities: declared,
+          activeOrg: (options['active-org'] || process.env.LOBU_ORG)?.trim() || undefined,
           workerApiToken: process.env.WORKER_API_TOKEN,
           debug: options.debug === 'true',
         });

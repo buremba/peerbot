@@ -110,6 +110,23 @@ describe("lobu daemon", () => {
     expect(start.mock.calls[0]?.[0]?.apiUrl).toBe("https://app.lobu.ai");
   });
 
+  test("forwards activeOrg to startDaemonCommand for permission management link", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: "prod",
+      url: "https://app.lobu.ai/api/v1",
+      source: "config",
+    });
+    spyOn(context, "getActiveOrg").mockResolvedValue("test-org");
+    spyOn(deviceState, "loadDeviceState").mockResolvedValue(null);
+    const start = spyOn(daemonModule, "startDaemonCommand").mockResolvedValue(
+      undefined as never
+    );
+
+    await daemonCommand({});
+
+    expect(start.mock.calls[0]?.[0]?.activeOrg).toBe("test-org");
+  });
+
   test("an explicit --api-url passes through without context-backed setup", async () => {
     (process.stdin as { isTTY?: boolean }).isTTY = true;
     (process.stdout as { isTTY?: boolean }).isTTY = true;

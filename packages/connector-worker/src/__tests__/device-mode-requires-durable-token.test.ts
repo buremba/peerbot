@@ -41,6 +41,7 @@ async function runDaemon(
       OPENCODE_SESSION_ID: undefined,
       LOBU_OPENCODE_BRIDGE_SOCKET: undefined,
       LOBU_OPENCODE_BRIDGE_TOKEN: undefined,
+      LOBU_ORG: undefined,
       ...env,
     },
     stderr: "pipe",
@@ -90,12 +91,28 @@ describe("device mode requires a durable token", () => {
     // Pins the guard as targeted — rejecting everything would satisfy both
     // assertions above while making device mode unusable.
     const stderr = await runDaemon(
-      { WORKER_API_TOKEN: "owl_pat_durabletoken0123456789" },
+      {
+        WORKER_API_TOKEN: "owl_pat_durabletoken0123456789",
+        LOBU_ORG: "test-org",
+      },
       DEVICE_ARGS
     );
     expect(stderr).not.toContain("device mode requires a durable");
     expect(stderr).toContain("Starting worker daemon");
     expect(stderr).toContain("device mode: platform=macos");
+    expect(stderr).toContain(
+      "Manage action permissions (Approval vs Auto) at: http://127.0.0.1:1/test-org/connectors"
+    );
+  }, 20000);
+
+  test("device mode without active org omits permission management link", async () => {
+    const stderr = await runDaemon(
+      { WORKER_API_TOKEN: "owl_pat_durabletoken0123456789" },
+      DEVICE_ARGS
+    );
+    expect(stderr).toContain("Starting worker daemon");
+    expect(stderr).toContain("device mode: platform=macos");
+    expect(stderr).not.toContain("Manage action permissions");
   }, 20000);
 
   test("a fleet worker with no PAT is unaffected", async () => {

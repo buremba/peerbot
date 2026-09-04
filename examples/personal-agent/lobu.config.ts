@@ -1483,10 +1483,9 @@ const duplicateEntityResolution = defineAutomation({
   // OUT does not mean "unmanaged" the way an omitted feed `schedule` does — it
   // projects to `[]` and would clear the cron, leaving the Automation
   // unreachable. `execution`, `active_run` and `skip_if_unchanged` are omitted
-  // because their schema defaults already match what prod stores.
-  triggers: [
-    { kind: "schedule", cron: "0 6 * * *", timezone: "Europe/London" },
-  ],
+  // because the stored row carries exactly the schema defaults (verified:
+  // execution=window, active_run=coalesce, skip_if_unchanged=true).
+  triggers: [every("0 6 * * *", { timezone: "Europe/London" })],
   sources: {
     // context-only: duplicate candidates for analysis (not window body)
     people: context(

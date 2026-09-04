@@ -1,0 +1,29 @@
+import { describe, expect, test } from "bun:test";
+import config from "../lobu.config";
+
+describe("duplicate entity resolution configuration", () => {
+  // Automation `triggers` are always-managed by apply: an omitted key projects
+  // to `[]` and CLEARS the stored cron, unlike an omitted feed `schedule`.
+  // Dropping this declaration would silently strand the Automation with no
+  // cadence, so assert the whole trigger list rather than just its presence.
+  test("declares the daily cadence apply would otherwise strip", () => {
+    const automation = config.automations?.find(
+      (candidate) =>
+        candidate.slug === "duplicate-entity-resolution-real-v3-final"
+    );
+    expect(automation).toBeDefined();
+    expect(automation?.triggers).toEqual([
+      { kind: "schedule", cron: "0 6 * * *", timezone: "Europe/London" },
+    ]);
+  });
+
+  // Every Automation this config declares needs a reachable trigger for the
+  // same reason. Naming only the one Automation above would let the next
+  // trigger-less declaration through — the guard has to cover the class.
+  test("every declared Automation has at least one trigger", () => {
+    const triggerless = (config.automations ?? [])
+      .filter((automation) => (automation.triggers ?? []).length === 0)
+      .map((automation) => automation.slug);
+    expect(triggerless).toEqual([]);
+  });
+});

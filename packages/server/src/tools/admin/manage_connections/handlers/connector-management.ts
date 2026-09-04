@@ -35,7 +35,6 @@ import {
 	maybeUpsertAuthAfterInstall,
 	upsertConnectorAuthProfiles,
 } from "../../helpers/connection-helpers";
-import { assertCustomConnectorInstallAllowed } from "../../../../utils/custom-connector-cloud-gate";
 import type { ConnectionsArgs, ManageConnectionsResult } from "../schemas";
 
 // ============================================
@@ -47,7 +46,6 @@ export async function handleInstallConnector(
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
 	if (args.source_url || args.source_uri || args.source_code || args.compiled) {
-		assertCustomConnectorInstallAllowed();
 	}
 	try {
 		const connectorId = args.connector_id?.trim();
@@ -192,7 +190,6 @@ export async function handleValidateConnectorSource(
 	args: Extract<ConnectionsArgs, { action: "validate_connector_source" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
-	assertCustomConnectorInstallAllowed();
 	const result = await validateConnectorSource({
 		organizationId: ctx.organizationId,
 		sourceCode: args.source_code,
@@ -228,7 +225,6 @@ export async function handleUpdateConnectorSource(
 	args: Extract<ConnectionsArgs, { action: "update_connector_source" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
-	assertCustomConnectorInstallAllowed();
 	try {
 		const updated = await updateInstalledConnectorSource({
 			organizationId: ctx.organizationId,
@@ -271,7 +267,6 @@ export async function handleRollbackConnectorVersion(
 	args: Extract<ConnectionsArgs, { action: "rollback_connector_version" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
-	assertCustomConnectorInstallAllowed();
 	try {
 		const rolled = await rollbackConnectorVersion({
 			organizationId: ctx.organizationId,

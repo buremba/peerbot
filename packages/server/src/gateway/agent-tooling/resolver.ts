@@ -25,7 +25,6 @@ import type {
 import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
 import { resolveBundledAgentToolingMetadata } from "../../utils/connector-catalog";
 import { isCloudMode } from "../../utils/cloud-mode";
-import { isCloudConnectorArtifactTrusted } from "../../utils/custom-connector-cloud-gate";
 import { getDb } from "../../db/client.js";
 import {
   getAppInstallationAuthMethods,
@@ -350,22 +349,9 @@ async function resolveToolingMetadata(
     return { tooling: parseAgentTooling(row.agent_tooling), authSchema: row.auth_schema };
   }
 
-  // Cloud never trusts connector_definitions JSON for a shared artifact: the
-  // packages, domains and auth method an agent runs under come from the image
-  // file itself. An org-supplied, ambiguous or unattested artifact contributes
-  // no tooling at all rather than falling back to the stored declaration.
-  const trusted = isCloudConnectorArtifactTrusted({
-    connectorKey: row.connector_key,
-    facts: {
-      organizationId: row.artifact_organization_id,
-      rowCount: row.artifact_id == null ? 0 : row.artifact_row_count,
-      hasCompiledCode: row.artifact_has_compiled_code,
-      hasSourceCode: row.artifact_has_source_code,
-      sourcePath: row.artifact_source_path,
-    },
-  });
-  if (!trusted) return null;
-
+  // Cloud never trusts connector_definitions JSON: the packages, domains and
+  // auth method an agent runs under come from the image file itself, resolved
+  // below. The stored declaration is never a fallback.
   // Deliberately stricter than run admission, which is version-agnostic:
   // pinning admission to an exact key@version broke version-pinned runs and
   // pre-refresh drift. Tooling can afford the opposite trade-off because a

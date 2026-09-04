@@ -2,7 +2,6 @@ import { EXECUTION_BACKENDS } from '@lobu/core/contracts/worker/protocol';
 import type { DbClient } from '../db/client';
 import { pgTextArray } from '../db/client';
 import { isCloudMode } from '../utils/cloud-mode';
-import { DB_EGRESS_HARDENED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import {
   delegatedBrowserAffinitySql,
   chromeNamespaceConnectorSql,
@@ -10,6 +9,22 @@ import {
 import type { ManifestClaimAuthorization } from './device-manifests';
 
 type SqlFragment = ReturnType<DbClient>;
+
+/**
+ * Connectors that open a raw tenant-supplied DB socket and depend on the worker
+ * folding in the gateway's authoritative `db_egress_policy`. In cloud mode a
+ * FLEET worker may CLAIM one of these runs only if it advertises the
+ * `db_egress_hardening` capability, which closes the rolling-deploy gap where a
+ * new gateway hands a claimed run to an old worker that would reopen
+ * private-IP or plaintext egress. Self-hosted is unaffected.
+ *
+ * Lives here, next to its only consumer, rather than in a gate module: it is a
+ * claim-eligibility rule, not an admission decision.
+ */
+export const DB_EGRESS_HARDENED_CONNECTOR_KEYS: ReadonlySet<string> = new Set([
+  'postgres',
+]);
+
 
 export interface ConnectorClaimContext {
   isUserScopedWorker: boolean;

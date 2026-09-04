@@ -42,16 +42,15 @@ describe("connector catalog installability", () => {
 	it("keeps PostgreSQL installable in cloud now that its egress is hardened", () => {
 		process.env.LOBU_CLOUD_MODE = "1";
 
-		// `postgres` graduated out of CLOUD_RESTRICTED_CONNECTOR_KEYS: the
-		// db-egress-guard (block-private + resolve-then-pin IP + forced TLS) is
-		// the platform boundary, so it is installable by cloud tenants like any
-		// other connector. CLOUD_RESTRICTED_CONNECTOR_KEYS is now empty and
-		// stays as the kill-switch for future warehouse connectors.
-		expect(
-			connectorDetail(connectorEntry("postgres", "PostgreSQL"))
-		).toMatchObject({
-			installable: true,
-		});
+		// There is no per-connector cloud restriction list any more: the isolate
+		// is the execution boundary and the DB egress policy is enforced host
+		// side when a connector dials, so postgres is installable by cloud
+		// tenants like any other connector. `installability_reason` is asserted
+		// undefined so a reintroduced per-connector gate surfaces here; the
+		// stale-source case below still covers catalog rejection via spotify.
+		const detail = connectorDetail(connectorEntry("postgres", "PostgreSQL"));
+		expect(detail.installable).toBe(true);
+		expect(detail.installability_reason).toBeUndefined();
 	});
 
 	it("marks the bundled PostgreSQL connector installable when self-hosted", () => {
@@ -69,27 +68,6 @@ describe("connector catalog installability", () => {
 				installability_reason: "bundled_source_unavailable",
 			}
 		);
-	});
-
-	it("no longer blocks PostgreSQL install in cloud at the capability gate", async () => {
-		process.env.LOBU_CLOUD_MODE = "1";
-
-		// With CLOUD_RESTRICTED_CONNECTOR_KEYS empty, postgres is no longer
-		// rejected at the cloud capability gate. Installation now proceeds past
-		// that gate (and fails later for an unrelated reason — a bogus org — not
-		// with a `cloud_restricted` message). Assert it does NOT throw the
-		// cloud-restriction message. The stale-source case below still covers the
-		// catalog-rejection-message-on-install path via spotify.
-		const detail = connectorDetail(connectorEntry("postgres", "PostgreSQL"));
-		expect(detail.installable).toBe(true);
-		expect(detail.installability_reason).toBeUndefined();
-
-		await expect(
-			installCatalogConnectorDefinition({
-				organizationId: "unused-before-capability-gate",
-				connectorId: "postgres",
-			})
-		).rejects.not.toThrow("cloud_restricted");
 	});
 
 	it("uses the catalog's stale-source rejection message when installation is attempted", async () => {

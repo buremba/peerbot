@@ -362,7 +362,7 @@ export class IsolateExecutor implements SyncExecutor {
     }
     const domains = merged.allowedDomains.map(normalizeDomain);
     if (domains.some((d) => d.length === 0)) {
-      throw new RangeError('allowedDomains entries must be hosts; pass an empty list to close egress');
+      throw new RangeError('allowedDomains entries must be non-empty hosts');
     }
     merged.allowedDomains = domains;
     this.options = merged;
@@ -607,6 +607,20 @@ export class IsolateExecutor implements SyncExecutor {
             secureTransport?: 'off' | 'on' | 'starttls';
           };
 
+          // A NON-EMPTY allowlist binds raw sockets exactly as it binds
+          // `hostFetch` -- otherwise a run restricted to `api.example.com`
+          // could still reach anything over TCP. The empty case is skipped on
+          // purpose rather than delegated to `hostAllowed`: that helper denies
+          // loopback and internal names when nothing lists them, which is the
+          // normal shape of a self-hosted database. With no allowlist the DB
+          // egress policy below is the only rule, as it has always been.
+          if (
+            this.options.allowedDomains.length > 0 &&
+            !hostAllowed(hostname, this.options.allowedDomains)
+          ) {
+            throw new Error(`EgressDenied: socket to ${hostname} is not in the connector's allowed domains`);
+          }
+
           const mergedConfig = buildConnectorConfig(job);
           // The literal is a fallback for a MALFORMED job, not the shipped
           // default: both job producers always populate the key --
@@ -615,9 +629,11 @@ export class IsolateExecutor implements SyncExecutor {
           // resolving to 'allow-private' off cloud. Verified live: a postgres
           // feed against a loopback DB syncs under EITHER literal, because the
           // key is set before it is read. So the fallback only decides a job
-          // that arrived without one, and the host socket is now the only
-          // enforcement point left (`postgres.ts` short-circuits
-          // `buildDbEgressHardening` in the isolate) -- it fails closed.
+          // that arrived without one, and this is the only place the ADDRESS
+          // half of the policy is enforced on this lane (`postgres.ts` skips
+          // `buildDbEgressHardening`'s resolve-and-pin in the isolate because
+          // the guest cannot resolve a name; it still applies the TLS half) --
+          // so it fails closed.
           // `||` not `??` on purpose: an empty string is absent, not a choice.
           const policy =
             (job.env?.LOBU_DB_EGRESS_POLICY as string) ||
@@ -661,6 +677,10 @@ export class IsolateExecutor implements SyncExecutor {
           const isTls = options?.secureTransport === 'on';
 
           if (isTls) {
+            // Direct TLS keeps Node's strict default, unlike the `startTls`
+            // upgrade below: that one is relaxed for postgres' BYO-CA reality
+            // and nothing dials `secureTransport: 'on'` today, so there is no
+            // legitimate certificate this would break.
             sock = tls.connect({
               host: targetIp,
               port,
@@ -759,6 +779,9 @@ export class IsolateExecutor implements SyncExecutor {
           const opts = (optionsJson ? parseGuestJson(optionsJson, 'socketStartTls') : {}) as {
             servername?: string;
           };
+          // `servername` is the ORIGINAL hostname the connector configured, not
+          // the address we dialled, so SNI routing still works after the host
+          // resolved the name.
           const oldSock = active.sock;
           oldSock.removeAllListeners('data');
           oldSock.removeAllListeners('end');
@@ -768,6 +791,15 @@ export class IsolateExecutor implements SyncExecutor {
             const tlsSock = tls.connect({
               socket: oldSock,
               servername: opts?.servername,
+              // Encrypt without verifying the chain — the same floor
+              // `requiredTlsMode` documents (`connectors/src/db-egress-guard.ts`):
+              // tenant databases routinely present self-signed or private-CA
+              // certificates (RDS regional bundles, on-prem), and there is no
+              // per-connection CA upload yet, so verifying here would hard-break
+              // most legitimate BYO databases. The guest cannot raise this: the
+              // WinterCG `startTls` contract carries only `servername`, so a
+              // stricter mode has to arrive with CA upload, as one change.
+              rejectUnauthorized: false,
             });
             tlsSock.once('secureConnect', () => {
               active.sock = tlsSock;

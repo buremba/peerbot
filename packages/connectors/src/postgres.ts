@@ -44,7 +44,12 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import postgres from 'postgres';
-import { buildDbEgressHardening, parseAllowedHosts, readEgressPolicy } from './db-egress-guard.js';
+import {
+  buildDbEgressHardening,
+  parseAllowedHosts,
+  readEgressPolicy,
+  requiredTlsMode,
+} from './db-egress-guard.js';
 
 interface PgQueryConfig {
   /** ONE read-only base SELECT. No WHERE-cursor / ORDER BY / top-level LIMIT — the connector wraps it. */
@@ -284,13 +289,30 @@ const POOL_OPTS = {
  * allow-private the overrides are empty. They land after POOL_OPTS so nothing
  * can shadow them. `socket` isn't in postgres.js's published Options type
  * (supported since 3.4: connection.js `options.socket`), hence the cast.
+ *
+ * ON THE ISOLATE LANE (`globalThis.connect` installed) the ADDRESS half of the
+ * hardening is the host's job, not ours: the guest cannot resolve a name, and
+ * `socketOpen` (`connector-worker/src/executor/isolate.ts`) resolves once,
+ * applies the same policy to every resolved address, and dials the address it
+ * validated — so the pre-flight and the pinned socket factory would both be
+ * duplicate work on a lookup the guest can't even perform. The TLS half is
+ * NOT the host's job: nothing on the wire tells `socketOpen` whether this
+ * connection must be encrypted, and postgres.js only upgrades when the pool
+ * was given `ssl`. So block-private still resolves `requiredTlsMode` here and
+ * passes it through — without this the cloud lane would send credentials in
+ * cleartext, which is exactly what the process lane it replaced never did.
  */
 async function openGuardedPool(
   connectionString: string,
   config: Record<string, unknown>,
 ): Promise<postgres.Sql> {
   if (typeof (globalThis as unknown as { connect?: unknown }).connect === 'function') {
-    return postgres(connectionString, POOL_OPTS as unknown as postgres.Options<Record<string, never>>);
+    const isolatePolicy = readEgressPolicy(config.LOBU_DB_EGRESS_POLICY);
+    const isolateSsl = isolatePolicy === 'block-private' ? requiredTlsMode(connectionString) : undefined;
+    return postgres(connectionString, {
+      ...POOL_OPTS,
+      ...(isolateSsl ? { ssl: isolateSsl } : {}),
+    } as unknown as postgres.Options<Record<string, never>>);
   }
   const hardening = await buildDbEgressHardening(
     connectionString,

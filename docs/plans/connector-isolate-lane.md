@@ -1,7 +1,12 @@
 # Connector isolate lane: action plan
 
-Status: PR 1 (the SDK split) is implemented in the PR that adds this document; PRs 2 to 6 are
-proposals. The owner confirmed the direction on 2026-09-02 after the experiment below.
+Status: SUPERSEDED. PR 1 (the SDK split) and PR 3 (the isolate executor) shipped as written.
+PRs 2, 4, 5 and 6 below are the original proposals and did NOT ship in this shape: the follow-up
+consolidation removed the subprocess lane outright, so there is no `lane` routing key, no
+`process` fallback, and no per-provenance Cloud gate to extend -- every connector runs in the
+isolate and egress policy is the boundary. Read the sections below as the reasoning that led
+there, not as a description of the code. The owner confirmed the direction on 2026-09-02 after
+the experiment below.
 
 ## Problem
 

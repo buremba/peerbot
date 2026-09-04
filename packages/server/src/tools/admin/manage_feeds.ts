@@ -1356,7 +1356,7 @@ async function handleTriggerFeed(
       action: 'trigger_feed',
       triggered: false,
       reason: created.reason,
-      message: describeSyncRunSkip(created.reason, created.detail),
+      message: describeSyncRunSkip(created.reason),
     };
   }
   const runId = created.runId;

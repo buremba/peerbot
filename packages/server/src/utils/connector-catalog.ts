@@ -7,7 +7,6 @@ import {
 	findBundledConnectorFile as findInDirs,
 } from "@lobu/connector-worker/compile";
 import { getErrorMessage } from "@lobu/core";
-import { getConnectorCloudAvailability } from "./connector-cloud-gate";
 import {
 	extractConnectorMetadata,
 	NO_CONNECTOR_RUNTIME_ERROR,
@@ -168,7 +167,7 @@ export type CatalogConnectorInstallability =
 	| { installable: true }
 	| {
 			installable: false;
-			reason: "cloud_restricted" | "bundled_source_unavailable";
+			reason: "bundled_source_unavailable";
 			message: string;
 	  };
 
@@ -180,14 +179,6 @@ export type CatalogConnectorInstallability =
 export function getCatalogConnectorInstallability(
 	connectorKey: string,
 ): CatalogConnectorInstallability {
-	const cloud = getConnectorCloudAvailability(connectorKey);
-	if (!cloud.allowed) {
-		return {
-			installable: false,
-			reason: cloud.reason,
-			message: cloud.message,
-		};
-	}
 	if (!findBundledConnectorFile(connectorKey)) {
 		return {
 			installable: false,

@@ -74,10 +74,10 @@ export async function resolveConnectorCode(
   connectorKey: string,
   stored: StoredConnectorVersion | null
 ): Promise<string> {
-  // Cloud prefers the running image's own bytes, but no longer REFUSES a
-  // stored artifact when the image ships no source for the key: the isolate is
-  // the boundary that makes organization-supplied code runnable. Admission is
-  // still the caller's job (custom-connector-cloud-gate).
+  // Cloud prefers the running image's own bytes, but does not REFUSE a stored
+  // artifact when the image ships no source for the key: the isolate is the
+  // boundary that makes organization-supplied code runnable, so there is no
+  // separate admission step to defer to.
   if (isCloudMode()) {
     // Image first, whatever the stored row's scope. An org-scoped row for a key
     // the image ships is the common shadow shape (readers select ORDER BY

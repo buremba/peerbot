@@ -60,7 +60,6 @@ import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execut
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { selectedConnectorVersionArtifactSql } from '../utils/connector-execution-placement';
-import { assertCloudConnectorArtifactTrusted } from '../utils/custom-connector-cloud-gate';
 import {
   classifySelectedConnectorExecution,
   deviceExecutesConnectorNatively,
@@ -1661,34 +1660,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //     worker image — see worker-side resolver in
   //     connector-worker/src/compile-connector.ts) to decide whether the
   //     fleet path applies.
-  // Cloud admission for the artifact this run selected. Same classification
-  // the queue-time gate and the agent-tooling resolver use, so a run can never
-  // be admitted by one reader and rejected by another.
-  if (row.connector_key) {
-    try {
-      assertCloudConnectorArtifactTrusted({
-        connectorKey: row.connector_key,
-        facts: {
-          organizationId: row.artifact_organization_id,
-          rowCount:
-            row.connector_version_row_id == null ? 0 : Number(row.artifact_row_count),
-          hasCompiledCode: row.compiled_code != null,
-          hasSourceCode: row.artifact_has_source_code,
-          sourcePath: row.artifact_source_path,
-        },
-      });
-    } catch (err) {
-      const message = errorMessage(err);
-      await failClaimedWorkerRun({ runId: row.run_id, workerId: worker_id, errorMessage: message });
-      return c.json({
-        next_poll_seconds: 1,
-        skipped_run_id: row.run_id,
-        error: message,
-        ...pollMetadata,
-      });
-    }
-  }
-
   let compiledCode: string | undefined;
   const gatewayHasLocalSource = row.connector_key
     ? findBundledConnectorFile(row.connector_key) !== null

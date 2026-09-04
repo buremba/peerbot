@@ -183,8 +183,8 @@ describe('query_sql connection pushdown', () => {
   }, 60_000);
 
   it('under LOBU_CLOUD_MODE the gate is open but block-private egress fails an internal host closed', async () => {
-    // postgres graduated out of CLOUD_RESTRICTED_CONNECTOR_KEYS, so pushdown is
-    // no longer refused up front ("not available on Lobu Cloud"). Instead the
+    // No per-connector cloud restriction list exists, so pushdown is no longer
+    // refused up front ("not available on Lobu Cloud"). Instead the
     // injected block-private policy takes over — and the test DB is on loopback
     // (and/or sslmode=disable), so egress is rejected before any socket opens.
     // That is the cloud security boundary now. A pushdown failure surfaces as a

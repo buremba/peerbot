@@ -79,13 +79,13 @@ scrapers' block-all-private-IPs rule can't be reused.
   IPs, internal CIDRs, another tenant's DB) is an exfil/scan vector. **Allowed,
   hardened.** Under `LOBU_CLOUD_MODE=1` the server injects the `block-private`
   egress policy on every run path, which classifies + rejects internal hosts,
-  pins the socket to the validated IP, and forces TLS (below). The
-  `CLOUD_RESTRICTED_CONNECTOR_KEYS` set in `connector-cloud-gate.ts` is now an
-  empty kill-switch, still enforced at connection-create, catalog, scheduled-sync
-  run creation (`runs/queue-service.ts`), the production worker poll
-  (`worker-api.ts`), the dev-CLI sync (`feed-sync.ts`), and the live pushdown
-  (`connector-pushdown.ts`) — future warehouse connectors (Snowflake, BigQuery)
-  sit in it until they ship equivalent hardening.
+  pins the socket to the validated IP, and forces TLS (below). There is no
+  per-connector cloud allow/deny list: every connector runs inside the isolate,
+  so the egress policy is the boundary. The one connector-keyed registry left is
+  `DB_EGRESS_HARDENED_CONNECTOR_KEYS` (`worker-api/connector-claim-lanes.ts`),
+  which records who has shipped the hardening above so claim eligibility can
+  require it — a future warehouse connector (Snowflake, BigQuery) joins it when
+  it ships the same pre-connect check.
 
 **Egress guard (`packages/connectors/src/db-egress-guard.ts`).** The connector
 runs a pre-connect host check on `sync()`, `read()`, and `query()`. Policy comes from

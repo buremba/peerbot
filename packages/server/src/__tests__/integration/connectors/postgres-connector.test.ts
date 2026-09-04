@@ -230,12 +230,17 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
 
     const executor = new IsolateExecutor({ timeoutMs: 10000, memoryMb: 512 });
 
+    // The TLS gate runs before the host classifier on this lane too (case 4),
+    // so strip any `sslmode=disable` off the test URL to reach the address
+    // checks -- the same strip the direct-drive cases above use.
+    const baseUrl = (process.env.DATABASE_URL ?? '').replace(/[?&]sslmode=[^&]*/, '');
+
     // 1. Under block-private policy in env, connection to 127.0.0.1 test DB is blocked by SSRF egress guard
     await expect(
       executor.execute(code, {
         mode: 'query',
         query: 'SELECT 1 AS n',
-        config: { DATABASE_URL: process.env.DATABASE_URL },
+        config: { DATABASE_URL: baseUrl },
         checkpoint: null,
         credentials: null,
         sessionState: null,
@@ -249,7 +254,7 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
         mode: 'query',
         query: 'SELECT 1 AS n',
         config: {
-          DATABASE_URL: process.env.DATABASE_URL,
+          DATABASE_URL: baseUrl,
           LOBU_DB_EGRESS_POLICY: 'block-private',
         },
         checkpoint: null,
@@ -298,5 +303,45 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     );
     expect(syncRes).toMatchObject({ mode: 'sync' });
     expect(emittedEvents.map((e: any) => e.origin_id)).toEqual(['query:1', 'query:2', 'query:3']);
+
+    // 4. block-private forces TLS on the isolate lane too. The guest cannot
+    // resolve a name, so the HOST owns the address half of the policy (cases 1
+    // and 1b above) -- but nothing on the wire tells the host that THIS socket
+    // carries database credentials, and postgres.js only upgrades a connection
+    // when the pool was handed `ssl`. So the connector still resolves
+    // `requiredTlsMode` in the isolate, and `sslmode=disable` is refused before
+    // any socket opens. Without that the cloud lane would send credentials in
+    // cleartext -- proven by mutation: dropping the `ssl` option lets a
+    // block-private run with `127.0.0.1` allowlisted sync happily unencrypted.
+    const disabledTls = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}sslmode=disable`;
+    await expect(
+      executor.execute(code, {
+        mode: 'query',
+        query: 'SELECT 1 AS n',
+        config: {
+          DATABASE_URL: disabledTls,
+          LOBU_DB_EGRESS_POLICY: 'block-private',
+          LOBU_DB_EGRESS_ALLOW_HOSTS: '127.0.0.1',
+        },
+        checkpoint: null,
+        credentials: null,
+        sessionState: null,
+        env: {},
+      })
+    ).rejects.toThrow(/TLS is required/i);
+
+    // 5. ...and self-hosted is untouched: the same URL under allow-private
+    // still connects in cleartext, so the floor is a CLOUD rule, not a new
+    // requirement on every install.
+    const selfHosted = await executor.execute(code, {
+      mode: 'query',
+      query: 'SELECT 1 AS n',
+      config: { DATABASE_URL: disabledTls },
+      checkpoint: null,
+      credentials: null,
+      sessionState: null,
+      env: { LOBU_DB_EGRESS_POLICY: 'allow-private' },
+    });
+    expect((selfHosted as any).rows[0].n).toBe(1);
   });
 });

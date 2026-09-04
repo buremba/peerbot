@@ -1121,6 +1121,34 @@ describe('GoogleDriveConnector resumable bootstrap', () => {
     expect(result.metadata?.bootstrap_complete).toBe(false);
   });
 
+  test('a listing stopped by MAX_PAGES parks the token instead of completing', async () => {
+    const connector = new GoogleDriveConnector();
+    // Endless listing: every page yields one file and another cursor, so the
+    // traversal is bounded by the paginator's MAX_PAGES rather than by
+    // max_results or the clock. That is still an unfinished bootstrap — the
+    // only proof of exhaustion is Drive withholding a nextPageToken.
+    let page = 0;
+    const endlessFiles: Route = (url) =>
+      url.pathname.endsWith('/files')
+        ? { body: { files: [driveFile(`f${page}`)], nextPageToken: `P${++page}` } }
+        : undefined;
+    const drive = fakeDrive([startToken('TOK-1'), endlessFiles]);
+    connector.client = () => drive.client;
+
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { max_results: 2000, include_content: false },
+      checkpoint: {},
+      credentials: { accessToken: 'tok' },
+    });
+
+    expect(result.events).toHaveLength(200);
+    expect(result.checkpoint.page_token).toBeUndefined();
+    expect(result.checkpoint.pending_page_token).toBe('TOK-1');
+    expect(result.checkpoint.list_page_token).toBe('P200');
+    expect(result.metadata?.bootstrap_complete).toBe(false);
+  });
+
   test('the next run resumes the listing instead of re-minting a token', async () => {
     const connector = new GoogleDriveConnector();
     const drive = fakeDrive([

@@ -638,7 +638,6 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     );
 
     const deadline = this.now() + SYNC_TIME_BUDGET_MS;
-    let capped = false;
     for await (const items of pages) {
       for (const file of items) {
         events.push(await this.driveFileToEnvelope(http, file, includeContent, 'upserted'));
@@ -646,16 +645,15 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       // Tested only BETWEEN pages: a page is consumed whole or not at all, so
       // `nextListPageToken` always addresses the first file we have not read.
       // Stopping on the clock parks a checkpoint; being killed on it does not.
-      if (events.length >= maxResults || this.now() >= deadline) {
-        capped = true;
-        break;
-      }
+      if (events.length >= maxResults || this.now() >= deadline) break;
     }
 
-    // Stopping on the cap or the clock with pages still unread means the
-    // bootstrap is unfinished: park the change token and resume the listing
-    // next run.
-    if (capped && nextListPageToken) {
+    // Unread pages mean the bootstrap is unfinished, and WHY it stopped is
+    // irrelevant: the item cap, the clock, and the paginator's own MAX_PAGES
+    // ceiling all leave files the change feed will never replay. Only Drive
+    // withholding a nextPageToken proves the traversal exhausted, so that —
+    // not the reason for stopping — is what may promote the change token.
+    if (nextListPageToken) {
       return this.buildBootstrapResult(
         events,
         startToken,
@@ -981,6 +979,12 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     // in the change record. Emit a tombstone that supersedes the prior version
     // on origin_id rather than dropping it, so a deleted file stops looking
     // live in memory.
+    //
+    // Accepted noise: with no `file` on the change record, a removed FOLDER is
+    // indistinguishable from a removed file, so deleting one writes a tombstone
+    // for an origin_id we never stored. Suppressing it would need prior state
+    // the connector cannot see. The row supersedes nothing and is bounded by
+    // the deletion rate, which is why this is tolerated rather than guessed at.
     if (change.removed || !change.file) {
       const removedAt = change.time ? new Date(change.time) : new Date();
       return {

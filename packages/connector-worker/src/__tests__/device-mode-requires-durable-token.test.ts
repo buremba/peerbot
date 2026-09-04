@@ -41,6 +41,7 @@ async function runDaemon(
       OPENCODE_SESSION_ID: undefined,
       LOBU_OPENCODE_BRIDGE_SOCKET: undefined,
       LOBU_OPENCODE_BRIDGE_TOKEN: undefined,
+      LOBU_ORG: undefined,
       ...env,
     },
     stderr: "pipe",

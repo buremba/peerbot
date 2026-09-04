@@ -968,6 +968,22 @@ describe("mapProjectToDesiredState", () => {
     expect("schedule" in (feed ?? {})).toBe(false);
   });
 
+  // `schedule: process.env.FEED_CRON` with the var unset is the same bug
+  // through a different door: the key is present but the value is undefined,
+  // which is a config that declared nothing, not a clear.
+  test("an undefined schedule value is undeclared, not a clear", () => {
+    const conn = defineConnection({
+      slug: "gh",
+      connector: "github",
+      feeds: [{ feed: "stars", schedule: undefined }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    const feed = state.connectors.connections[0]?.feeds[0];
+    expect("schedule" in (feed ?? {})).toBe(false);
+  });
+
   test("an explicit null schedule stays expressible as a deliberate clear", () => {
     const conn = defineConnection({
       slug: "gh",

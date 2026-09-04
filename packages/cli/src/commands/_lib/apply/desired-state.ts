@@ -170,8 +170,10 @@ export interface DesiredFeed {
   feedKey: string;
   name?: string;
   /**
-   * Cron for automatic sync. `null` / omitted after map-config means manual-only
-   * (no platform default).
+   * Cron for automatic sync, tri-state after map-config: a string sets the
+   * cadence, `null` clears it (manual-only), and omitted means the config does
+   * not manage it — an update leaves the feed's remote cadence alone, and a
+   * create gets no cron (the platform never invents a default).
    */
   schedule?: string | null;
   config?: Record<string, unknown>;

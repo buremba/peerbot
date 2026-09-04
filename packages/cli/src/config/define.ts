@@ -442,6 +442,11 @@ export interface ConnectionFeed {
    * had never been told about.
    */
   schedule?: string | null;
+  /**
+   * Feed instance settings. Declaring this key REPLACES the remote config, so a
+   * key you remove disappears; omitting it means this config does not manage
+   * the settings and apply leaves the feed's stored config alone.
+   */
   config?: Record<string, unknown>;
 }
 
@@ -479,6 +484,11 @@ export interface Connection {
   authProfile?: AuthProfile | string;
   /** OAuth-app auth profile (handle or slug). */
   appAuthProfile?: AuthProfile | string;
+  /**
+   * Connection settings — same rule as a feed's `config`: declaring this key
+   * REPLACES the remote config, omitting it leaves the connection's stored
+   * settings (including anything set in the UI) alone.
+   */
   config?: Record<string, unknown>;
   /**
    * Where this connection's credential lives:

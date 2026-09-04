@@ -96,6 +96,7 @@ describe("device mode requires a durable token", () => {
     expect(stderr).not.toContain("device mode requires a durable");
     expect(stderr).toContain("Starting worker daemon");
     expect(stderr).toContain("device mode: platform=macos");
+    expect(stderr).toContain("Manage action permissions (Approval vs Auto) at:");
   }, 20000);
 
   test("a fleet worker with no PAT is unaffected", async () => {

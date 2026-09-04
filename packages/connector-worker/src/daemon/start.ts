@@ -50,6 +50,8 @@ export interface DaemonStartOptions {
   /** False only when the operator explicitly disables inherited-session delivery. */
   interactiveSession?: false;
   workerCredentialMaintenance?: (activate: (workerApiToken: string) => void) => Promise<void>;
+  /** Active organization slug for action permission management URL. */
+  activeOrg?: string;
 }
 
 export function resolveDaemonWorkerId(
@@ -193,6 +195,11 @@ export async function startDaemonCommand(
   if (platform) {
     log.info(
       `[cli] device mode: platform=${platform} capabilities=${capabilities.join(',') || '(none)'}`
+    );
+    const connectorsPath = opts.activeOrg ? `${opts.activeOrg}/connectors` : 'connectors';
+    const connectorsUrl = `${opts.apiUrl.replace(/\/+$/, '')}/${connectorsPath}`;
+    log.info(
+      `[cli] Manage action permissions (Approval vs Auto) at: ${connectorsUrl}`
     );
   }
   if (detected) {

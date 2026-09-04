@@ -8,6 +8,7 @@ import {
   addContext,
   apiUrlToGatewayOrigin,
   findContextByOrigin,
+  getActiveOrg,
   loadContextConfig,
   type ResolvedContext,
   resolveContext,
@@ -257,6 +258,8 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
         })
       : undefined;
 
+  const activeOrg = await getActiveOrg(contextName);
+
   await startDaemonCommand({
     apiUrl: target.gatewayOrigin,
     version: options.cliVersion,
@@ -269,6 +272,7 @@ export async function daemonCommand(options: DaemonOptions): Promise<void> {
       .map((entry) => entry.trim())
       .filter(Boolean),
     workerApiToken,
+    activeOrg,
     ...(workerCredentialMaintenance ? { workerCredentialMaintenance } : {}),
     debug: options.debug === true,
     ...(options.interactiveSession === false

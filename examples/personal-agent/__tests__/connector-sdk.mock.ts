@@ -124,7 +124,19 @@ export function connectorSdkMock() {
       json: notUsed("http.json"),
       request: notUsed("http.request"),
     }),
-    requireBearerClient: notUsed("requireBearerClient"),
+    // The real helper wraps stored credentials into a bearer HttpClient. Tests
+    // that exercise a sync path pass their fake client AS the credentials and
+    // get it straight back; anything else still throws, so a connector that
+    // reaches the network unintentionally fails loudly.
+    requireBearerClient: (credentials: unknown) => {
+      if (
+        credentials &&
+        typeof (credentials as { get?: unknown }).get === "function"
+      ) {
+        return credentials;
+      }
+      return notUsed("requireBearerClient")();
+    },
     paginateByCursor,
     paginateByOffset,
     // Generic identity namespaces (real values — connectors read IDENTITY.EMAIL

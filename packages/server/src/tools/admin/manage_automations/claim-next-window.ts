@@ -75,11 +75,15 @@ export function isExternalAutomationClaimOwner(value: string): boolean {
           Object.hasOwn(record, key) &&
           (record[key] == null || typeof record[key] === 'string')
       ) ||
-      Object.keys(record).some((key) => !keys.includes(key) && !optional.includes(key))
+      Object.keys(record).some((key) => !keys.includes(key) && !optional.includes(key)) ||
+      optional.some((key) => Object.hasOwn(record, key) && record[key] != null && typeof record[key] !== 'string')
     ) {
       return false;
     }
-    return keys.some((key) => record[key] != null);
+    // `optional` counts here too: a legacy row whose only non-null field was
+    // `mcp_session_id` is still an external claim, and must read as one so
+    // `trigger` does not mistake it for a worker claim.
+    return [...keys, ...optional].some((key) => record[key] != null);
   } catch {
     return false;
   }

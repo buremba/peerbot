@@ -16,5 +16,6 @@ export {
   PublicGetContentSchema,
   getIncludeSupersededValidationErrors,
 } from './get_content/schema';
+export type { PublicGetContentArgs } from './get_content/schema';
 export { GetContentResultSchema } from './get_content/types';
 export type { ContentItem } from './get_content/types';

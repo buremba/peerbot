@@ -8,7 +8,11 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
-import { hasRequiredMcpScope } from '../auth/tool-access';
+import {
+  hasRequiredMcpScope,
+  resolveSdkMaxAccessLevel,
+  type ToolAccessLevel,
+} from '../auth/tool-access';
 import {
   type GrantedMemberWorkspace,
   listLiveGrantedMemberWorkspaces,
@@ -626,7 +630,8 @@ function unavailableWorkspaceCoverage(workspace: GrantedMemberWorkspace): Worksp
 function buildEmptySearchSuggestion(
   query: string | null,
   args: SearchArgs,
-  coverage?: SearchCoverage
+  coverage?: SearchCoverage,
+  callerMax?: ToolAccessLevel
 ): string {
   const isFederated = coverage?.scope === 'all_granted';
   const queryLabel = !isFederated && query ? ` for "${query}"` : '';
@@ -677,6 +682,18 @@ function buildEmptySearchSuggestion(
   );
 
   lines.push('');
+  // Every line below is write-tier: `save_memory` is a member-write action and
+  // `run_sdk` — the only route to `entities.create` — requires write access
+  // too, so a read-tier caller would be denied on both. Name the boundary
+  // instead of handing it two calls that cannot run. An absent tier (the
+  // exported merge helper called without one) keeps the write-tier text.
+  if (callerMax === 'read') {
+    lines.push(
+      '**If this is new knowledge to persist:** this caller has read-only access to the workspace, so `save_memory` and entity creation would be denied. Reconnect with write access, or ask a workspace member to persist it.'
+    );
+    return lines.join('\n');
+  }
+
   lines.push('**If this is new knowledge to persist:**');
   lines.push('- To save facts or notes: call `save_memory` with content and semantic_type.');
   // Only a single-workspace text search names one entity worth pre-filling:
@@ -684,8 +701,14 @@ function buildEmptySearchSuggestion(
   // text at all. Both fall back to a placeholder in the SAME angle-bracket
   // shape as `<entity_type>` below — a bare `...` reads as copyable literal.
   const newEntityName = !isFederated && query ? query : '<entity_name>';
+  // `entitySchema.createType` is admin-tier while `entities.create` is write.
+  // Telling a member to create the type sends them at a call that will deny,
+  // so below admin we name the reachable half and say who can do the rest.
+  const canCreateEntityType = callerMax === 'admin';
   lines.push(
-    `- To create a new entity: its type must exist first (\`client.entitySchema.listTypes()\` to check, \`client.entitySchema.createType(...)\` for a type new to this workspace), then call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${newEntityName}' })\`.`
+    canCreateEntityType
+      ? `- To create a new entity: its type must exist first (\`client.entitySchema.listTypes()\` to check, \`client.entitySchema.createType(...)\` for a type new to this workspace), then call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${newEntityName}' })\`.`
+      : `- To create a new entity: pick a type that already exists (\`client.entitySchema.listTypes()\`), then call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${newEntityName}' })\`. Creating a brand-new entity type needs admin access, so ask a workspace admin if none of the existing types fit.`
   );
 
   return lines.join('\n');
@@ -694,7 +717,8 @@ function buildEmptySearchSuggestion(
 export function mergeFederatedSearchResults(
   args: SearchArgs,
   targets: readonly GrantedMemberWorkspace[],
-  settled: readonly PromiseSettledResult<UnifiedSearchResult>[]
+  settled: readonly PromiseSettledResult<UnifiedSearchResult>[],
+  callerMax?: ToolAccessLevel
 ): UnifiedSearchResult {
   const fulfilled = settled.flatMap((item) => (item.status === 'fulfilled' ? [item.value] : []));
   if (fulfilled.length === 0) {
@@ -819,7 +843,7 @@ export function mergeFederatedSearchResults(
       : status === 'partial'
         ? 'Search returned partial results; one or more granted workspaces was temporarily unavailable.'
         : matches.length === 0 && !hasAnyRecall
-          ? buildEmptySearchSuggestion(args.query ?? null, args, coverage)
+          ? buildEmptySearchSuggestion(args.query ?? null, args, coverage, callerMax)
           : selectedResult?.suggestion,
     ...(entity && selectedResult?.view_url ? { view_url: selectedResult.view_url } : {}),
     metadata: {
@@ -1437,7 +1461,12 @@ async function searchImpl(
       logger.warn({ err: getErrorMessage(item.reason) }, '[search] workspace shard failed');
     }
   }
-  return mergeFederatedSearchResults(args, targets, settled);
+  return mergeFederatedSearchResults(
+    args,
+    targets,
+    settled,
+    resolveSdkMaxAccessLevel(ctx.allowCrossOrg ? 'owner' : ctx.memberRole, ctx.scopes)
+  );
 }
 
 /**
@@ -1733,7 +1762,12 @@ async function searchWorkspaceImpl(
 
   const suggestionText = hasRecallHits
     ? 'No matching entities found, but related memory content was recalled below.'
-    : buildEmptySearchSuggestion(query, args, recall.coverage);
+    : buildEmptySearchSuggestion(
+        query,
+        args,
+        recall.coverage,
+        resolveSdkMaxAccessLevel(ctx.allowCrossOrg ? 'owner' : ctx.memberRole, ctx.scopes)
+      );
 
   const result = withRecall(
     emptyResult({

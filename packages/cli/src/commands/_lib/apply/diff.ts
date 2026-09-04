@@ -1668,10 +1668,14 @@ function diffConnection(
         // changed so the row reaches the idempotent chat-upsert, which does the
         // secret-aware comparison server-side under an advisory lock and no-ops
         // when nothing actually changed. Data connectors deep-equal as before.
+        // Undeclared is not a difference, same rule as `name` and the feed
+        // fields. A connection block with no `config` key does not manage the
+        // connection's settings, so a config set in the UI is left alone
+        // instead of being replaced with `{}`.
         changed: (d, r) =>
           d.credentialMode === "byo"
             ? true
-            : !deepEqual(d.config ?? {}, r.config ?? {}),
+            : d.config !== undefined && !deepEqual(d.config, r.config ?? {}),
       },
       {
         name: "device_worker_id",

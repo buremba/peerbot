@@ -1143,7 +1143,13 @@ export async function executePlan(
         name: desired.name,
         authProfileSlug: desired.authProfileSlug ?? null,
         appAuthProfileSlug: desired.appAuthProfileSlug ?? null,
-        config: desired.config ?? {},
+        // Declared config still REPLACES (a removed key must disappear
+        // remotely), but an undeclared one is omitted so the server leaves the
+        // stored settings alone. Sending `{}` with `replace_config` wiped
+        // UI-set connection settings, and on a connection carrying
+        // `action_modes` it made the whole apply fail closed on the server's
+        // human-only gate.
+        ...(desired.config !== undefined ? { config: desired.config } : {}),
         // Always pass — server treats undefined as "leave alone", null as
         // "unpin to server", and a uuid as "move to that device".
         deviceWorkerId: desired.deviceWorkerId ?? null,

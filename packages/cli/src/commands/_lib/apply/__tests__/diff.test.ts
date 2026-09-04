@@ -1326,6 +1326,25 @@ describe("apply diff — connectors", () => {
     ]);
   });
 
+  // A connection block with no `config` key does not manage the connection's
+  // settings. Sending `{}` with replace_config wiped UI-set settings, and on a
+  // connection carrying `action_modes` the server's human-only gate rejected
+  // the write, failing the whole apply.
+  test("an undeclared connection config does not diff against a remote config", () => {
+    const state = connectorState();
+    const conn = state.connectors.connections[0];
+    if (conn) delete (conn as { config?: unknown }).config;
+
+    const remote = remoteWithFeedCron("0 * * * *");
+    const remoteConn = remote.connections[0];
+    if (remoteConn) {
+      remoteConn.config = { action_modes: { evaluate: "auto" } };
+    }
+
+    const plan = computeDiff(state, remote);
+    expect(plan.rows.find((r) => r.kind === "connection")?.verb).toBe("noop");
+  });
+
   // Same class: an undeclared config must not diff against a remote one.
   test("an undeclared feed config does not diff against a remote config", () => {
     const state = connectorState();

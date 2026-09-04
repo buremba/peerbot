@@ -1,19 +1,73 @@
 /**
  * Glassdoor Connector (V1 runtime)
  *
- * Scrapes employee reviews from Glassdoor using Playwright.
+ * Reads employee reviews through the paired Owletto Chrome extension.
+ *
+ * Glassdoor sits behind bot protection that a headless browser does not get
+ * past, and connector code runs in a V8 isolate with no browser in it at all.
+ * `extensionDomScrape` reads the DOM in the user's own signed-in Chrome via a
+ * content script — declarative selectors in, rows out — which is the only path
+ * to this page that both works and stays inside the isolate.
  */
 
 import { createHash } from "node:crypto";
 import {
   type RuntimeConnectorDefinition,
+  type ChromeActionDispatcher,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
+  extensionDomScrape,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
-import { runReviewScrape } from "@lobu/connector-sdk/browser";
+
+const GLASSDOOR_ALLOWED_ORIGINS = ["glassdoor.com", "*.glassdoor.com"];
+
+// Derived from the live Glassdoor review DOM. Glassdoor rotates its class
+// names, so every field lists the stable `data-test` hook first and falls back
+// to the older class selectors the previous Playwright extract also carried.
+const REVIEW_SCRAPE_CONFIG = {
+  scroll: { max: 6, stall: 3, waitMs: 1200, deep: true },
+  loggedOutWhen: { pathRegex: "/(profile/login|member/login)\\b" },
+  rowSelector:
+    '[data-test="review-list-item"], .empReview, [data-test="employerReview"]',
+  requireFields: ["body"],
+  fields: {
+    // No selector ⇒ read the row element itself. `id` is derived from whichever
+    // identity attribute the card carries.
+    id: { take: "attr", attr: "data-review-id" },
+    rating: {
+      selector: '[data-test="overall-rating"], .rating, [class*="rating"]',
+      take: "text",
+      firstLine: true,
+    },
+    title: {
+      selector: '[data-test="review-title"], .reviewLink, [class*="title"]',
+      take: "text",
+      firstLine: true,
+    },
+    pros: { selector: '[data-test="pros"], [data-pros], .pros', take: "text" },
+    cons: { selector: '[data-test="cons"], [data-cons], .cons', take: "text" },
+    date: {
+      selector: '[data-test="review-date"], .date, time',
+      take: "attr",
+      attr: "datetime",
+    },
+    dateText: {
+      selector: '[data-test="review-date"], .date, time',
+      take: "text",
+      firstLine: true,
+    },
+    author: {
+      selector: '[data-test="employee-info"], .authorInfo, [class*="author"]',
+      take: "text",
+      firstLine: true,
+    },
+    // Whole-card text, so `requireFields` can reject an empty shell row.
+    body: { take: "text" },
+  },
+} as const;
 
 /**
  * Generates a deterministic external ID for a Glassdoor review.
@@ -65,8 +119,9 @@ export default class GlassdoorConnector extends ConnectorRuntime {
   readonly definition: RuntimeConnectorDefinition = {
     key: "glassdoor",
     name: "Glassdoor",
-    description: "Scrapes employee reviews from Glassdoor.",
-    version: "1.0.0",
+    description:
+      "Reads employee reviews from Glassdoor through the paired Chrome extension.",
+    version: "2.0.0",
     faviconDomain: "glassdoor.com",
     authSchema: {
       methods: [{ type: "none" }],
@@ -76,7 +131,7 @@ export default class GlassdoorConnector extends ConnectorRuntime {
         sync: (ctx) => this.syncFeed(ctx),
         key: "reviews",
         name: "Employee Reviews",
-        description: "Scrapes employee reviews for a given company.",
+        description: "Reads employee reviews for a given company.",
         configSchema: {
           type: "object",
           required: ["company_name"],
@@ -134,135 +189,101 @@ export default class GlassdoorConnector extends ConnectorRuntime {
       ? `https://www.glassdoor.com/Reviews/company-reviews-${company_id}.htm`
       : `https://www.glassdoor.com/Reviews/${company_name}-reviews-SRCH_KE0.htm`;
 
-    return runReviewScrape(ctx, {
-      connectorKey: "glassdoor-sync",
-      baseUrl,
-      expectedDomain: "glassdoor.com",
-      cookieConsentSelector: "#onetrust-accept-btn-handler",
-      reviewCardSelector:
-        '[data-test="review-list-item"], .empReview, [data-test="employerReview"]',
-      gotoTimeoutMs: 30000,
-      // Human-like delay before interacting with the page.
-      postConsentDelayMs: 2000,
-      // Configure viewport and user-agent to mimic a real browser.
-      prepare: async (page) => {
-        await page.setViewportSize({ width: 1920, height: 1080 });
-        await page.setExtraHTTPHeaders({
-          "User-Agent":
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        });
-      },
-      extract: async (page) => {
-        // Extract raw reviews from the page DOM
-        const rawReviews = await page.evaluate((): GlassdoorReview[] => {
-          // Try multiple selector strategies as Glassdoor frequently changes their HTML
-          const reviewElements =
-            Array.from(
-              document.querySelectorAll('[data-test="review-list-item"]')
-            ).length > 0
-              ? Array.from(
-                  document.querySelectorAll('[data-test="review-list-item"]')
-                )
-              : Array.from(document.querySelectorAll(".empReview")).length > 0
-                ? Array.from(document.querySelectorAll(".empReview"))
-                : Array.from(
-                    document.querySelectorAll('[data-test="employerReview"]')
-                  );
-
-          return reviewElements.map((el: Element) => {
-            // Try multiple selector patterns for each field
-            const ratingEl =
-              el.querySelector('[data-test="overall-rating"]') ||
-              el.querySelector(".rating") ||
-              el.querySelector('[class*="rating"]');
-
-            const titleEl =
-              el.querySelector('[data-test="review-title"]') ||
-              el.querySelector(".reviewLink") ||
-              el.querySelector('[class*="title"]');
-
-            const prosEl =
-              el.querySelector('[data-test="pros"]') ||
-              el.querySelector("[data-pros]") ||
-              el.querySelector(".pros");
-
-            const consEl =
-              el.querySelector('[data-test="cons"]') ||
-              el.querySelector("[data-cons]") ||
-              el.querySelector(".cons");
-
-            const dateEl =
-              el.querySelector('[data-test="review-date"]') ||
-              el.querySelector(".date") ||
-              el.querySelector("time");
-
-            const authorEl =
-              el.querySelector('[data-test="employee-info"]') ||
-              el.querySelector(".authorInfo") ||
-              el.querySelector('[class*="author"]');
-
-            // Try to get review ID from various attributes
-            const reviewId =
-              (el as HTMLElement).getAttribute("data-review-id") ||
-              (el as HTMLElement).getAttribute("id") ||
-              (el as HTMLElement).getAttribute("data-id") ||
-              "";
-
-            return {
-              id: reviewId,
-              rating: parseFloat(ratingEl?.textContent?.trim() || "0"),
-              title: titleEl?.textContent?.trim() || "",
-              pros: prosEl?.textContent?.trim() || "",
-              cons: consEl?.textContent?.trim() || "",
-              date:
-                dateEl?.getAttribute("datetime") ||
-                dateEl?.textContent?.trim() ||
-                "",
-              author: authorEl?.textContent?.trim() || "",
-            };
-          });
-        });
-
-        // Filter reviews that have at least pros or cons
-        const validReviews = rawReviews.filter((r) =>
-          Boolean(r.pros || r.cons)
-        );
-
-        // Transform to EventEnvelope format
-        const events: EventEnvelope[] = validReviews.map((review) => {
-          const externalId = deriveReviewExternalId(company_name, review);
-          const content = `${review.title}\n\nPros: ${review.pros}\n\nCons: ${review.cons}`;
-
-          return {
-            origin_id: externalId,
-            payload_text: content,
-            author_name: review.author || undefined,
-            occurred_at: review.date ? new Date(review.date) : new Date(),
-            origin_type: "review",
-            score: calculateEngagementScore("glassdoor", {
-              rating: review.rating,
-            }),
-            source_url: `${baseUrl}#review_${review.id}`,
-            metadata: {
-              rating: review.rating,
-              title: review.title,
-              pros: review.pros,
-              cons: review.cons,
-            },
-          };
-        });
-
-        const itemsSkipped = rawReviews.length - validReviews.length;
-
-        return {
-          events,
-          checkpointExtra: {},
-          metadata: (finalEvents) => ({
-            items_found: finalEvents.length,
-            items_skipped: itemsSkipped,
-          }),
-        };
-      },
+    const dispatcher = requireExtensionDispatcher(ctx);
+    const { items: rows, loggedIn } = await extensionDomScrape<GlassdoorRow>({
+      dispatcher,
+      url: baseUrl,
+      config: REVIEW_SCRAPE_CONFIG,
+      parseRows: (raw) => raw as GlassdoorRow[],
+      allowedOrigins: GLASSDOOR_ALLOWED_ORIGINS,
+      // Reviews render for signed-out visitors too, but a signed-in tab sees
+      // the full list rather than the teaser, so prefer one the user has open.
+      existingTabMatch: "glassdoor.com/Reviews",
     });
+
+    if (!loggedIn) {
+      throw new Error(
+        "Glassdoor reviews could not be read — a login or bot wall blocked the page. Open glassdoor.com in the paired Chrome profile, sign in, then re-run."
+      );
+    }
+
+    const reviews = rows
+      .map((row) => normalizeReview(row))
+      .filter((review) => Boolean(review.pros || review.cons));
+    const itemsSkipped = rows.length - reviews.length;
+
+    const events: EventEnvelope[] = reviews.map((review) => {
+      const externalId = deriveReviewExternalId(company_name, review);
+      const content = `${review.title}\n\nPros: ${review.pros}\n\nCons: ${review.cons}`;
+
+      return {
+        origin_id: externalId,
+        payload_text: content,
+        author_name: review.author || undefined,
+        occurred_at: review.date ? new Date(review.date) : new Date(),
+        origin_type: "review",
+        score: calculateEngagementScore("glassdoor", { rating: review.rating }),
+        source_url: `${baseUrl}#review_${review.id}`,
+        metadata: {
+          rating: review.rating,
+          title: review.title,
+          pros: review.pros,
+          cons: review.cons,
+        },
+      };
+    });
+
+    return {
+      events,
+      checkpoint: ctx.checkpoint,
+      metadata: { items_found: events.length, items_skipped: itemsSkipped },
+    };
   }
+}
+
+/**
+ * One scraped row, as the extension's declarative engine returns it: every
+ * field is a string or absent, so the numeric rating and the date are parsed
+ * here rather than in the page.
+ */
+interface GlassdoorRow {
+  id?: string;
+  rating?: string;
+  title?: string;
+  pros?: string;
+  cons?: string;
+  date?: string;
+  dateText?: string;
+  author?: string;
+}
+
+function normalizeReview(row: GlassdoorRow): GlassdoorReview {
+  return {
+    id: row.id ?? "",
+    rating: Number.parseFloat(row.rating ?? "0") || 0,
+    title: row.title?.trim() ?? "",
+    pros: row.pros?.trim() ?? "",
+    cons: row.cons?.trim() ?? "",
+    date: (row.date || row.dateText || "").trim(),
+    author: row.author?.trim() ?? "",
+  };
+}
+
+/**
+ * Pull the chrome action dispatcher off the sync context. The connector-worker
+ * splices a live `chrome_dispatcher` onto `sessionState`; with no online paired
+ * Owletto extension in the connection's org there is nothing to splice.
+ */
+function requireExtensionDispatcher(ctx: {
+  sessionState?: Record<string, unknown> | null;
+}): ChromeActionDispatcher {
+  const handle = ctx.sessionState?.chrome_dispatcher as
+    | ChromeActionDispatcher
+    | undefined;
+  if (!handle || typeof handle.dispatch !== "function") {
+    throw new Error(
+      "Glassdoor connector requires a paired Owletto Chrome extension. No chrome_dispatcher was injected into sessionState — run on a connector-worker with the dispatcher bridge and an online extension."
+    );
+  }
+  return handle;
 }

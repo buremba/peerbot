@@ -478,7 +478,12 @@ export async function runConnectorRuntimeSelfCheck(
 			actionKey: "run",
 			input: { command: "printf 'lobu-shell-self-check\\n'", cwd: process.cwd() },
 		});
-		if (!result.ok) throw new Error(`${result.code}: ${result.error}`);
+		if (!result.ok) {
+			const output = result.output
+				? `; output=${JSON.stringify(result.output)}`
+				: "";
+			throw new Error(`${result.code}: ${result.error}${output}`);
+		}
 		if (result.output.stdout !== "lobu-shell-self-check\n") {
 			throw new Error(`Unexpected stdout: ${JSON.stringify(result.output.stdout)}.`);
 		}

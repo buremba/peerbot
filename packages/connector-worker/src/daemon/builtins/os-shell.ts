@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 import {
+  type TargetExit,
   releaseSupervisor,
   signalOwnedPosixProcessGroup,
   spawnSupervisedCli,
@@ -33,9 +34,21 @@ export interface ShellRunOutput {
   stdout: string;
   stderr: string;
   exit_code: number;
+  exit_signal?: NodeJS.Signals;
+  process_error?: string;
+  process_error_code?: string;
+  process_stage?: TargetExit['stage'] | 'timeout' | 'shutdown';
   success: boolean;
   timed_out: boolean;
   duration_ms: number;
+}
+
+interface TerminatedShellOutcome {
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  error: string | null;
+  errorCode: string | null;
+  stage: 'timeout' | 'shutdown';
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -96,9 +109,29 @@ export async function runShellBuiltin(
 
   const startedAt = Date.now();
   return await new Promise<ShellRunOutput>((resolve) => {
-    const supervised = spawnSupervisedCli(
-      'bash', ['--noprofile', '--norc', '-c', command], shellEnvironment(), { stdin: 'pipe', cwd },
-    );
+    let supervised: ReturnType<typeof spawnSupervisedCli>;
+    try {
+      supervised = spawnSupervisedCli(
+        'bash',
+        ['--noprofile', '--norc', '-c', command],
+        shellEnvironment(),
+        { stdin: 'pipe', cwd }
+      );
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      resolve({
+        stdout: '',
+        stderr: '',
+        exit_code: -1,
+        process_error: error instanceof Error ? error.message : String(error),
+        ...(typeof code === 'string' ? { process_error_code: code } : {}),
+        process_stage: 'supervisor_spawn',
+        success: false,
+        timed_out: false,
+        duration_ms: Date.now() - startedAt,
+      });
+      return;
+    }
     const child = supervised.supervisor;
     let stdout = '';
     let stderr = '';
@@ -107,8 +140,13 @@ export async function runShellBuiltin(
     let finishing = false;
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 
-    const waitForClose = (stream: NodeJS.ReadableStream | null | undefined): Promise<void> => {
-      if (!stream || (stream as NodeJS.ReadableStream & { destroyed?: boolean }).destroyed) {
+    const waitForClose = (
+      stream: NodeJS.ReadableStream | null | undefined
+    ): Promise<void> => {
+      if (
+        !stream ||
+        (stream as NodeJS.ReadableStream & { destroyed?: boolean }).destroyed
+      ) {
         return Promise.resolve();
       }
       return new Promise((resolve) => stream.once('close', resolve));
@@ -116,54 +154,95 @@ export async function runShellBuiltin(
     const stdoutClosed = waitForClose(child.stdout);
     const stderrClosed = waitForClose(child.stderr);
 
-    // Only the group this daemon owns. A command that deliberately detaches a
-    // new session is outside that ownership contract and belongs to whoever
-    // created it: signalling a numeric PGID we no longer own risks hitting a
-    // reused one, so ownership ending is the end of our reach.
-    const killOwnedProcessGroup = (signal: NodeJS.Signals): void => {
-      try {
-        if (child.pid != null) {
-          if (signalOwnedPosixProcessGroup(child, signal)) return;
-        }
-      } catch {}
-      try { child.kill(signal); } catch {}
-    };
-
-    const abortHandler = () => {
-      if (!settled) void terminateChild(child).finally(() => finishAfterOutputDrain(child.exitCode ?? -1));
-    };
-    // Let the finish closure initialize before handling an already-aborted
-    // signal; this path is common during daemon shutdown.
-    if (shutdownSignal?.aborted) queueMicrotask(abortHandler);
-    else shutdownSignal?.addEventListener('abort', abortHandler, { once: true });
-
-    // Synchronous by construction: the only caller drains and destroys both
-    // pipes before calling this, so there is nothing left to await here.
-    const finish = (exitCode: number): void => {
-      if (settled || finishing) return;
+    const reserveFinish = (): boolean => {
+      if (settled || finishing) return false;
       finishing = true;
       if (timeoutTimer) clearTimeout(timeoutTimer);
       shutdownSignal?.removeEventListener('abort', abortHandler);
+      return true;
+    };
+
+    const finish = (outcome: TargetExit | TerminatedShellOutcome): void => {
+      if (settled) return;
       settled = true;
       resolve({
         stdout,
         stderr,
-        exit_code: exitCode,
-        success: !timedOut && exitCode === 0,
+        exit_code: outcome.exitCode ?? -1,
+        ...(outcome.signalCode ? { exit_signal: outcome.signalCode } : {}),
+        ...(outcome.error ? { process_error: outcome.error } : {}),
+        ...(outcome.errorCode
+          ? { process_error_code: outcome.errorCode }
+          : {}),
+        ...(outcome.stage !== 'target_exit' ||
+        outcome.signalCode ||
+        outcome.error
+          ? { process_stage: outcome.stage }
+          : {}),
+        success:
+          !timedOut &&
+          outcome.exitCode === 0 &&
+          outcome.signalCode === null &&
+          outcome.error === null,
         timed_out: timedOut,
         duration_ms: Date.now() - startedAt,
       });
     };
 
-    const finishAfterOutputDrain = async (exitCode: number): Promise<void> => {
+    const finishAfterOutputDrain = async (
+      outcome: TargetExit | TerminatedShellOutcome
+    ): Promise<void> => {
       await Promise.race([
         Promise.all([stdoutClosed, stderrClosed]),
-        new Promise((resolve) => setTimeout(resolve, OUTPUT_DRAIN_GRACE_MS).unref()),
+        new Promise((resolve) =>
+          setTimeout(resolve, OUTPUT_DRAIN_GRACE_MS).unref()
+        ),
       ]);
       if (!settled) child.stdout?.destroy();
       if (!settled) child.stderr?.destroy();
-      finish(exitCode);
+      finish(outcome);
     };
+
+    const terminateAndFinish = (
+      stage: TerminatedShellOutcome['stage'],
+      error: string | null
+    ): void => {
+      if (!reserveFinish()) return;
+      void terminateChild(child)
+        .then((signal) =>
+          finishAfterOutputDrain({
+            exitCode: child.exitCode,
+            signalCode: child.signalCode ?? signal,
+            error,
+            errorCode: null,
+            stage,
+          })
+        )
+        .catch((terminationError) => {
+          const code = (terminationError as NodeJS.ErrnoException).code;
+          return finishAfterOutputDrain({
+            exitCode: child.exitCode,
+            signalCode: child.signalCode,
+            error:
+              terminationError instanceof Error
+                ? terminationError.message
+                : String(terminationError),
+            errorCode: typeof code === 'string' ? code : null,
+            stage,
+          });
+        });
+    };
+
+    const abortHandler = () => {
+      terminateAndFinish(
+        'shutdown',
+        'shell execution aborted during daemon shutdown'
+      );
+    };
+    // Let all finish closures initialize before handling an already-aborted
+    // signal; this path is common during daemon shutdown.
+    if (shutdownSignal?.aborted) queueMicrotask(abortHandler);
+    else shutdownSignal?.addEventListener('abort', abortHandler, { once: true });
 
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
@@ -174,23 +253,45 @@ export async function runShellBuiltin(
       stderr = appendCapped(stderr, chunk);
     });
     child.stdin?.on('error', (error: NodeJS.ErrnoException) => {
-      if (error.code !== 'EPIPE') stderr = appendCapped(stderr, `stdin error: ${error.message}\n`);
+      if (error.code !== 'EPIPE')
+        stderr = appendCapped(stderr, `stdin error: ${error.message}\n`);
     });
     child.stdin?.end(stdin);
 
     timeoutTimer = setTimeout(() => {
       timedOut = true;
-      void terminateChild(child).finally(() => finishAfterOutputDrain(child.exitCode ?? -1));
+      terminateAndFinish('timeout', null);
     }, timeoutMs);
 
     supervised.targetExit.then((target) => {
-      if (process.platform !== 'win32') killOwnedProcessGroup('SIGKILL');
-      else void terminateChild(child);
-      void releaseSupervisor(child).finally(() => finishAfterOutputDrain(target.exitCode ?? -1));
-    });
-    child.on('error', (error) => {
-      stderr = appendCapped(stderr, `spawn error: ${error.message}`);
-      void finishAfterOutputDrain(-1);
+      if (!reserveFinish()) return;
+      if (target.stage === 'supervisor_spawn') {
+        void finishAfterOutputDrain(target);
+        return;
+      }
+      // Only the group this daemon owns. A command that deliberately detaches a
+      // new session is outside that ownership contract and belongs to whoever
+      // created it: signalling a numeric PGID we no longer own risks hitting a
+      // reused one, so ownership ending is the end of our reach.
+      if (process.platform !== 'win32') {
+        try {
+          if (
+            child.pid == null ||
+            !signalOwnedPosixProcessGroup(child, 'SIGKILL')
+          ) {
+            child.kill('SIGKILL');
+          }
+        } catch {
+          try {
+            child.kill('SIGKILL');
+          } catch {}
+        }
+      } else {
+        void terminateChild(child);
+      }
+      void releaseSupervisor(child).finally(() =>
+        finishAfterOutputDrain(target)
+      );
     });
   });
 }

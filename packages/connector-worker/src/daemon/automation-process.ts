@@ -36,11 +36,14 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
   const finish = (
     code: number | null,
     signal: NodeJS.Signals | null,
-    error: string | null
+    error: string | null,
+    errorCode: string | null,
+    stage: TargetExitStage
   ) => {
     if (targetFinished) return;
     targetFinished = true;
-    if (!parentLost) send({ type: 'target-exit', code, signal, error });
+    if (!parentLost)
+      send({ type: 'target-exit', code, signal, error, errorCode, stage });
   };
   const stopAfterParentLoss = () => {
     if (parentLost) return;
@@ -101,7 +104,7 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
     process.exit(0);
   });
   if (!binary) {
-    finish(127, null, 'automation supervisor missing target binary');
+    finish(127, null, 'automation supervisor missing target binary', null, 'target_spawn');
   } else {
     try {
       target = spawnChild(binary, args, {
@@ -114,12 +117,28 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
         process.stdin.pipe(target.stdin);
       }
     } catch (error) {
-      finish(127, null, error instanceof Error ? error.message : String(error));
+      const code = (error as NodeJS.ErrnoException).code;
+      finish(
+        127,
+        null,
+        error instanceof Error ? error.message : String(error),
+        typeof code === 'string' ? code : null,
+        'target_spawn'
+      );
     }
     target?.once('error', (error) => {
-      finish(127, null, error instanceof Error ? error.message : String(error));
+      const code = (error as NodeJS.ErrnoException).code;
+      finish(
+        127,
+        null,
+        error.message,
+        typeof code === 'string' ? code : null,
+        'target_spawn'
+      );
     });
-    target?.once('exit', (code, signal) => finish(code, signal, null));
+    target?.once('exit', (code, signal) =>
+      finish(code, signal, null, null, 'target_exit')
+    );
   }
   setImmediate(() => {
     if (!process.connected) stopAfterParentLoss();
@@ -128,10 +147,18 @@ function runCliSupervisor(spawnChild: typeof spawn, treeTermGraceMs: number): vo
 
 export const CLI_SUPERVISOR_SOURCE = `(${runCliSupervisor.toString()})(require('node:child_process').spawn, ${TREE_TERM_GRACE_MS});`;
 
-interface TargetExit {
+export type TargetExitStage =
+  | 'target_exit'
+  | 'target_spawn'
+  | 'supervisor_spawn'
+  | 'supervisor_exit';
+
+export interface TargetExit {
   exitCode: number | null;
   signalCode: NodeJS.Signals | null;
   error: string | null;
+  errorCode: string | null;
+  stage: TargetExitStage;
 }
 
 interface SupervisedCli {
@@ -361,20 +388,40 @@ export function spawnSupervisedCli(
       if (typeof message !== 'object' || message == null) return;
       const value = message as Record<string, unknown>;
       if (value.type !== 'target-exit') return;
+      const stage =
+        value.stage === 'target_exit' || value.stage === 'target_spawn'
+          ? value.stage
+          : 'target_exit';
       settle({
         exitCode: typeof value.code === 'number' ? value.code : null,
-        signalCode: typeof value.signal === 'string' ? (value.signal as NodeJS.Signals) : null,
+        signalCode:
+          typeof value.signal === 'string'
+            ? (value.signal as NodeJS.Signals)
+            : null,
         error: typeof value.error === 'string' ? value.error : null,
+        errorCode:
+          typeof value.errorCode === 'string' ? value.errorCode : null,
+        stage,
       });
     });
     supervisor.once('error', (error) => {
-      settle({ exitCode: null, signalCode: null, error: error.message });
+      const code = (error as NodeJS.ErrnoException).code;
+      settle({
+        exitCode: null,
+        signalCode: null,
+        error: error.message,
+        errorCode: typeof code === 'string' ? code : null,
+        stage: 'supervisor_spawn',
+      });
     });
     supervisor.once('exit', (code, signal) => {
       settle({
         exitCode: code,
         signalCode: signal,
-        error: 'automation process supervisor exited before reporting the CLI outcome',
+        error:
+          'automation process supervisor exited before reporting the CLI outcome',
+        errorCode: null,
+        stage: 'supervisor_exit',
       });
     });
   });

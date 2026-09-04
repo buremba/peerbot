@@ -1,4 +1,4 @@
-import { ShellInputError, runShellBuiltin } from './os-shell.js';
+import { ShellInputError, type ShellRunOutput, runShellBuiltin } from './os-shell.js';
 
 export type DaemonBuiltinErrorCode =
   | 'invalid_operation_input'
@@ -8,6 +8,32 @@ export type DaemonBuiltinErrorCode =
 export type DaemonBuiltinResult =
   | { ok: true; output: Record<string, unknown> }
   | { ok: false; code: DaemonBuiltinErrorCode; error: string; output?: Record<string, unknown> };
+
+function describeShellFailure(output: ShellRunOutput): string {
+  if (output.timed_out) {
+    return `Shell command timed out after ${output.duration_ms}ms`;
+  }
+  if (output.process_error) {
+    const code = output.process_error_code
+      ? ` (${output.process_error_code})`
+      : '';
+    const prefix =
+      output.process_stage === 'supervisor_spawn'
+        ? 'Shell supervisor failed to start'
+        : output.process_stage === 'target_spawn'
+          ? 'Shell command failed to start'
+          : output.process_stage === 'supervisor_exit'
+            ? 'Shell supervisor exited before reporting the command outcome'
+            : output.process_stage === 'shutdown'
+              ? 'Shell command was aborted during daemon shutdown'
+              : 'Shell execution failed';
+    return `${prefix}${code}: ${output.process_error}`;
+  }
+  if (output.exit_signal) {
+    return `Shell command terminated by ${output.exit_signal}`;
+  }
+  return `Shell command exited with code ${output.exit_code}`;
+}
 
 export async function executeDaemonBuiltin(params: {
   connectorKey: string;
@@ -29,9 +55,7 @@ export async function executeDaemonBuiltin(params: {
       return {
         ok: false,
         code: 'operation_execution_failed',
-        error: output.timed_out
-          ? `Shell command timed out after ${output.duration_ms}ms`
-          : `Shell command exited with code ${output.exit_code}`,
+        error: describeShellFailure(output),
         output: { ...output },
       };
     }

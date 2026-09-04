@@ -8,7 +8,7 @@
  * source discovery roots (monorepo vs worker image vs npm-installed CLI).
  *
  * The result also reports the isolate lane (`isolate_lane`): whether this
- * runtime can load `isolated-vm`, the V8 addon behind `lane: 'isolate'` runs.
+ * runtime can load `isolated-vm`, the V8 addon every connector run needs.
  * That section never flips `ok` — a Bun or Node 25 host legitimately lacks the
  * addon and simply runs no connector code — but the worker
  * image smoke asserts `isolate_lane.available` separately, because the image
@@ -220,16 +220,21 @@ function findConnectorRuntimeClass(
 		!!(val as any).prototype?.sync &&
 		// biome-ignore lint/suspicious/noExplicitAny: duck-typing the runtime contract
 		!!(val as any).prototype?.execute;
-	const target =
+	// A `.cjs` bundle imported from ESM arrives as `{ default: module.exports }`,
+	// so the connector class sits one level down; a real ESM module has it at
+	// the top. Search the inner namespace first, then the outer one -- and only
+	// once when they are the same object.
+	const inner =
 		mod.default && typeof mod.default === "object"
 			? (mod.default as Record<string, unknown>)
-			: mod;
-	return (
-		Object.values(target).find(looksLikeConnector) ??
-		(looksLikeConnector(target.default) ? target.default : null) ??
-		Object.values(mod).find(looksLikeConnector) ??
-		(looksLikeConnector(mod.default) ? mod.default : null)
-	);
+			: null;
+	for (const scope of inner ? [inner, mod] : [mod]) {
+		const found =
+			Object.values(scope).find(looksLikeConnector) ??
+			(looksLikeConnector(scope.default) ? scope.default : null);
+		if (found) return found;
+	}
+	return null;
 }
 
 interface DiscoveredConnector {

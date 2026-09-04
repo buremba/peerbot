@@ -7,7 +7,7 @@
  * feed/action keys are taken from the record keys, so they're never repeated.
  *
  * It LOWERS to a real `ConnectorRuntime` subclass so the existing
- * connector-worker runs it unchanged: `child-runner` detects a connector by
+ * connector-worker runs it unchanged: the isolate guest detects a connector by
  * looking for a constructor whose prototype has `sync()` and `execute()`, then
  * instantiates it and reads `instance.definition`. The class returned here
  * satisfies that contract exactly.
@@ -111,7 +111,7 @@ export interface ConnectorSpec
   unregisterWebhook?(ctx: WebhookRegistrationContext): Promise<void>;
 }
 
-/** Constructor shape the connector-worker's `child-runner` detects and instantiates. */
+/** Constructor shape the connector-worker's isolate guest detects and instantiates. */
 export type ConnectorClass = new () => ConnectorRuntime;
 
 /** Build the executable runtime definition; metadata extraction strips handlers. */

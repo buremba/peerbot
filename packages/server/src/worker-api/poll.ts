@@ -1823,7 +1823,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_type: row.run_type,
     connector_key: row.connector_key ?? undefined,
     connector_version: row.connector_version ?? undefined,
-    lane: 'isolate',
     // The routing marker the worker switches on: `daemon_builtin` selects the
     // daemon's supervised built-in, `native_bridge` the native bridge daemon.
     // Every classified backend has to reach the worker -- emitting only one of

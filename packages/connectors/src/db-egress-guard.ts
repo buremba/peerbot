@@ -40,6 +40,15 @@
 import { createRequire } from 'node:module';
 import type net from 'node:net';
 
+/**
+ * `node:dns` and `node:net` are reached through a RUNTIME require, not a static
+ * import, on purpose: this module is bundled into the isolate artifact, and a
+ * static import would leave a bare `require('node:dns')` in the bundle that
+ * `findIsolateIneligibleBuiltins` rejects before the connector ever loads. The
+ * two lookups below are the only uses, and neither runs in the isolate — a
+ * connector there dials through the host's `connect`, which enforces the same
+ * policy host-side (`executor/isolate.ts` `socketOpen`).
+ */
 const dynamicRequire = typeof require === 'function' ? require : createRequire(import.meta.url);
 import {
   ipFamily,

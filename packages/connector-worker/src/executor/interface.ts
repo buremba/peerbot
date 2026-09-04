@@ -168,9 +168,6 @@ export interface ExecutionHooks {
   ) => Promise<Record<string, unknown>>;
 }
 
-/** Per-run execution options independent of the job payload. */
-export interface ExecutionOptions {}
-
 /**
  * Pluggable executor interface. The canonical implementation is `IsolateExecutor`;
  * the seam stays around so tests can stub it.
@@ -179,8 +176,7 @@ export interface SyncExecutor {
   execute(
     compiledCode: string,
     job: ExecutorJob,
-    hooks?: ExecutionHooks,
-    options?: ExecutionOptions
+    hooks?: ExecutionHooks
   ): Promise<ExecutorResult>;
 }
 
@@ -243,4 +239,3 @@ export class RingBuffer {
     return this.chunks.join('');
   }
 }
-

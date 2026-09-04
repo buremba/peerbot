@@ -5,9 +5,7 @@
  * and metadata extraction (finds ConnectorRuntime subclass with sync()+execute()).
  */
 
-import {
-  createIsolateConnectorCompiler,
-} from '@lobu/connector-worker/compile';
+import { createIsolateConnectorCompiler } from '@lobu/connector-worker/compile';
 import type { ConnectorAgentTooling } from '@lobu/connector-sdk';
 import { type CompileResult, computeCodeHash, extractMetadata } from './compiler-core';
 import { isReservedConnectorKey } from './reserved';
@@ -82,6 +80,7 @@ import { pathToFileURL } from 'node:url';
 async function main() {
   try {
     const mod = await import(pathToFileURL(process.argv[2]).href);
+    // A CJS bundle imported from ESM arrives as { default: module.exports }.
     const target = (mod.default && typeof mod.default === 'object') ? mod.default : mod;
 
     let RuntimeClass = null;
@@ -100,18 +99,6 @@ async function main() {
 
     if (!RuntimeClass && target.default) {
       const val = target.default;
-      if (
-        typeof val === 'function' &&
-        val.prototype &&
-        typeof val.prototype.sync === 'function' &&
-        typeof val.prototype.execute === 'function'
-      ) {
-        RuntimeClass = val;
-      }
-    }
-
-    if (!RuntimeClass && mod.default) {
-      const val = mod.default;
       if (
         typeof val === 'function' &&
         val.prototype &&

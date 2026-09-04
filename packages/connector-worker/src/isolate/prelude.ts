@@ -7,7 +7,11 @@
  * connectors touch (measured by loading and running them, not by emulating a
  * browser):
  *
- *  - CJS shell (`module`/`exports`) and a `require` that fails closed.
+ *  - CJS shell (`module`/`exports`) and a `require` that answers a fixed
+ *    builtin map (`node:crypto`, `node:buffer`, `node:events`, `node:stream`,
+ *    `node:module`, `cloudflare:sockets`) and fails closed on everything else.
+ *    `node:stream` is admitted so postgres.js loads; its constructors throw,
+ *    because an isolate has no Node streams to give.
  *  - `console.*` to the host `log` capability (the host redacts).
  *  - Timers, `setImmediate` and `queueMicrotask` over the host `sleep`
  *    capability; a callback that throws ends the run through `fatal`, the way
@@ -293,7 +297,12 @@ var exports = module.exports;
     if (specifier === 'crypto' || specifier === 'node:crypto') return global.__lobuNodeCrypto;
     if (specifier === 'buffer' || specifier === 'node:buffer') return { Buffer: global.Buffer };
     if (specifier === 'events' || specifier === 'node:events') return { EventEmitter: global.EventEmitter, default: global.EventEmitter };
-    if (specifier === 'stream' || specifier === 'node:stream') return { Readable: global.ReadableStream, Writable: global.WritableStream, default: { Readable: global.ReadableStream, Writable: global.WritableStream } };
+    // node:stream is ADMITTED, not implemented. postgres.js reads Readable,
+    // Writable and Duplex off the module at load time (only its COPY helpers
+    // construct them), so throwing here would make the DB connectors
+    // unloadable -- but Node streams are not web streams, and handing back a
+    // web ReadableStream produced a silently wrong object instead of an error.
+    if (specifier === 'stream' || specifier === 'node:stream') return global.__lobuNodeStream;
     if (specifier === 'cloudflare:sockets') return { connect: global.connect };
     if (specifier === 'module' || specifier === 'node:module') return { createRequire: function () { return global.require; } };
     var err = new Error(
@@ -1521,11 +1530,33 @@ var exports = module.exports;
   global.WritableStream = WritableStream;
 
   // ---------------------------------------------------------------------------
+  // node:stream -- present so a bundle that reads it at load time can load,
+  // and loud so nothing quietly gets a web stream where a Node stream is meant.
+  // ---------------------------------------------------------------------------
+  function nodeStreamAbsent(name) {
+    return function () {
+      throw new Error(
+        "node:stream." + name + " is not available in the connector isolate. " +
+          "Use the web streams (ReadableStream/WritableStream) or a host capability instead."
+      );
+    };
+  }
+  var nodeStream = {
+    Readable: nodeStreamAbsent('Readable'),
+    Writable: nodeStreamAbsent('Writable'),
+    Duplex: nodeStreamAbsent('Duplex')
+  };
+  nodeStream.default = nodeStream;
+  global.__lobuNodeStream = nodeStream;
+
+  // ---------------------------------------------------------------------------
   // WinterCG Direct Sockets (connect)
   // ---------------------------------------------------------------------------
   global.connect = function connect(address, options) {
     var host = '';
-    var port = 5432;
+    // No default port: this is the generic WinterCG entry point, so guessing
+    // one would silently dial some other connector's service.
+    var port = NaN;
     if (typeof address === 'string') {
       var idx = address.lastIndexOf(':');
       if (idx !== -1) {
@@ -1536,7 +1567,10 @@ var exports = module.exports;
       }
     } else if (address && typeof address === 'object') {
       host = address.hostname || '';
-      port = address.port || 5432;
+      port = address.port;
+    }
+    if (!(port > 0 && port < 65536)) {
+      throw new Error('connect() requires a port; got ' + JSON.stringify(address));
     }
 
     var socketId = null;

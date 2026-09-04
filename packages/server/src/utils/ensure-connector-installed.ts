@@ -74,10 +74,10 @@ export async function resolveConnectorCode(
   connectorKey: string,
   stored: StoredConnectorVersion | null
 ): Promise<string> {
-  // Cloud executes only bytes the running image attests. Admission of the
-  // artifact happens in the caller (custom-connector-cloud-gate); resolution
-  // refuses every stored-byte fallback below, so an admission gap can still
-  // never put organization-supplied code on a runtime.
+  // Cloud prefers the running image's own bytes, but no longer REFUSES a
+  // stored artifact when the image ships no source for the key: the isolate is
+  // the boundary that makes organization-supplied code runnable. Admission is
+  // still the caller's job (custom-connector-cloud-gate).
   if (isCloudMode()) {
     // Image first, whatever the stored row's scope. An org-scoped row for a key
     // the image ships is the common shadow shape (readers select ORDER BY
@@ -111,23 +111,22 @@ export async function resolveConnectorCode(
       }
       return compileConnectorForIsolateFromFile(imagePath);
     }
-    if (stored?.compiled_code) {
-      if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;
-      if (stored.id != null) {
-        try {
-          const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.id);
-          if (recompiled) return recompiled;
-        } catch {
-          // fall through
-        }
-      }
+    if (stored?.compiled_code && stored.compile_config_hash === COMPILE_CONFIG_HASH) {
       return stored.compiled_code;
     }
+    // A stale artifact is NEVER returned, here or on the self-hosted path
+    // below: `COMPILE_PIPELINE_VERSION` moved because every artifact built
+    // before it is shaped for a module loader the isolate does not have, so
+    // handing one back trades a clear error for an unloadable bundle.
     if (stored?.id != null) {
       const recompiled = await recompileStoredConnectorVersion(connectorKey, stored.id);
       if (recompiled) return recompiled;
     }
-    throw new Error(`No bundled source or stored compiled code for '${connectorKey}'.`);
+    throw new Error(
+      stored?.compiled_code
+        ? `Compiled artifact for '${connectorKey}' predates the current compile configuration and no source is available to recompile — reinstall the connector.`
+        : `No bundled source or stored compiled code for '${connectorKey}'.`
+    );
   }
   if (stored?.compiled_code) {
     if (stored.compile_config_hash === COMPILE_CONFIG_HASH) return stored.compiled_code;

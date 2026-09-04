@@ -301,8 +301,13 @@ function createSdkInlinePlugin(): Plugin {
         const specifier = normalizeSdkSpecifier(args.path);
         const resolved = resolveSdkFile(specifier);
         if (resolved) return { path: resolved };
+        // `bundleConnectorForIsolateFromSource` writes its entry point into a
+        // temp dir, which has no node_modules above it. Fall back to this
+        // module's own directory so esbuild walks up into the workspace the
+        // worker was installed from.
+        const fromTmp = args.resolveDir.startsWith(tmpdir());
         return b.resolve(specifier, {
-          resolveDir: args.resolveDir.startsWith(tmpdir()) ? (process.env.LOBU_ROOT ?? resolve(import.meta.dirname ?? __dirname, '../../..')) : args.resolveDir,
+          resolveDir: fromTmp ? import.meta.dirname : args.resolveDir,
           kind: args.kind,
           importer: args.importer,
         });
@@ -457,7 +462,6 @@ export function createIsolateConnectorCompiler(options?: IsolateCompileOptions) 
   return {
     bundleConnectorForIsolate,
     compileConnectorForIsolateFromFile,
-    bundleConnectorForIsolateFromSource,
     compileConnectorForIsolateFromSource,
   };
 }

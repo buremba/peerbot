@@ -1,8 +1,8 @@
 /**
  * Connector-runtime env whitelist.
  *
- * Connector isolate execution inherits
- * `context.env`, which becomes `process.env` inside the connector isolate.
+ * A connector run receives `context.env`, which the prelude installs as
+ * `process.env` inside the isolate guest.
  * The standalone `connector-worker` CLI builds this set deliberately so
  * connectors only see the env vars they actually need (GitHub token,
  * provider API keys, etc.) — never the host process's secrets.
@@ -36,8 +36,7 @@ export function buildConnectorWorkerEnv(): Env {
     // WORKER_API_TOKEN is deliberately absent. Everything returned here reaches
     // connector code — `buildConnectorConfig()` merges `job.env` into the
     // connector's config — and a request bearing this token authenticates as a
-    // TRUSTED
-    // FLEET worker, which can claim and complete runs across tenants. The
+    // TRUSTED FLEET worker, which can claim and complete runs across tenants. The
     // daemon authenticates via `DaemonConfig.workerApiToken` instead, which
     // never enters this Env.
     // WORKER-DERIVED DEFAULT egress policy. The gateway ships its OWN

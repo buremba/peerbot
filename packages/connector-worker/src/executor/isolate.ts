@@ -4,14 +4,16 @@
  * Runs a compiled pure-JS connector bundle inside a V8 isolate in the worker
  * process (`isolated-vm`), speaking the `SyncExecutor` contract: `ExecutorJob`
  * in, `ExecutorResult` out, SDK context calls mapped onto `ExecutionHooks`.
- * Unlike the forked child this replaced, the connector
- * gets no filesystem, no sockets and no module loader: every effect crosses
- * the boundary as a named host capability, so the host holds the network and
- * can enforce a domain allowlist and a body cap on `fetch`.
+ * Unlike the forked child this replaced, the connector gets no filesystem and
+ * no module loader, and it opens nothing itself: every effect crosses the
+ * boundary as a named host capability, so the host owns the network. `fetch`
+ * carries a domain allowlist and a body cap; `socketOpen` (the WinterCG
+ * `connect` the DB connectors need) is a real TCP socket the HOST dials, after
+ * resolving the name and applying the DB egress policy.
  *
- * The only executor (`executor/select.ts`);
- * a bundle that still requires a Node builtin is rejected before any isolate
- * work with `IsolateLaneIneligibleError`.
+ * This is the only executor `executor/select.ts` builds; a bundle that still
+ * requires a Node builtin is rejected before any isolate work with
+ * `IsolateLaneIneligibleError`.
  */
 
 import dns from 'node:dns';
@@ -26,7 +28,6 @@ import { isolatedVmUnavailableReason, loadIsolatedVm } from '../isolate/load.js'
 import { buildConnectorConfig } from './connector-config.js';
 import type {
   ExecutionHooks,
-  ExecutionOptions,
   ExecutorJob,
   ExecutorResult,
   SyncExecutor,
@@ -49,10 +50,10 @@ export interface IsolateExecutorOptions {
   logBytes: number;
   /**
    * Hosts the connector may fetch: exact host or any subdomain. Empty (the
-   * default) closes egress: every fetch is denied before a request leaves the
-   * host. There is no unrestricted mode. The gateway supplies the connector's
-   * declared domains once the wire carries them; until then an isolate-lane
-   * run has no network.
+   * default) means the public internet, NOT a closed door — see `hostAllowed`
+   * for why. Reserved and internal addresses are denied either way, and
+   * nothing on the wire populates this yet, so every production run today
+   * takes the empty-list path.
    */
   allowedDomains: readonly string[];
   /** Where redacted console lines go (default: the worker's stdout/stderr). */
@@ -376,8 +377,7 @@ export class IsolateExecutor implements SyncExecutor {
   async execute(
     compiledCode: string,
     job: ExecutorJob,
-    hooks?: ExecutionHooks,
-    options?: ExecutionOptions
+    hooks?: ExecutionHooks
   ): Promise<ExecutorResult> {
     assertIsolateEligible(compiledCode);
     const ivm = await this.requireIsolatedVm();
@@ -608,10 +608,21 @@ export class IsolateExecutor implements SyncExecutor {
           };
 
           const mergedConfig = buildConnectorConfig(job);
+          // The literal is a fallback for a MALFORMED job, not the shipped
+          // default: both job producers always populate the key --
+          // `dbEgressConfig()` (server: `feed-sync.ts`, `connector-pushdown.ts`)
+          // and `resolveEffectiveEnv` (standalone daemon: `env.ts`), each
+          // resolving to 'allow-private' off cloud. Verified live: a postgres
+          // feed against a loopback DB syncs under EITHER literal, because the
+          // key is set before it is read. So the fallback only decides a job
+          // that arrived without one, and the host socket is now the only
+          // enforcement point left (`postgres.ts` short-circuits
+          // `buildDbEgressHardening` in the isolate) -- it fails closed.
+          // `||` not `??` on purpose: an empty string is absent, not a choice.
           const policy =
-            ((job.env?.LOBU_DB_EGRESS_POLICY as string) ||
-              (mergedConfig.LOBU_DB_EGRESS_POLICY as string) ||
-              'block-private');
+            (job.env?.LOBU_DB_EGRESS_POLICY as string) ||
+            (mergedConfig.LOBU_DB_EGRESS_POLICY as string) ||
+            'block-private';
           const allowHostsRaw = String(
             job.env?.LOBU_DB_EGRESS_ALLOW_HOSTS ||
               mergedConfig.LOBU_DB_EGRESS_ALLOW_HOSTS ||

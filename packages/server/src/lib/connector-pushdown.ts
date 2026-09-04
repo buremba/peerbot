@@ -143,7 +143,8 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       // credentials + caller overrides (any connector-level config).
       // ONLY the connection's own credentials reach ctx.config — deliberately NOT
       // the gateway's process.env, so a connection missing DATABASE_URL fails
-      // one non-credential we inject: under cloud mode a DB connector must reject
+      // cleanly instead of falling back to Lobu's own DB. The egress policy is
+      // the one non-credential we inject: under cloud mode a DB connector must reject
       // internal/metadata hosts (block-private); self-hosted reaches its own
       // private DB (allow-private). The egress policy rides on both config and env
       // so the isolate's socketOpen and hostFetch enforce it. Injected LAST so
@@ -475,7 +476,7 @@ export async function readSourceFeed(p: ReadSourceFeedParams): Promise<ReadSourc
       query: p.query,
       cursor: p.cursor,
       config,
-      env: { ...dbEgressConfig() },
+      env: dbEgressConfig(),
       sessionState,
       credentials,
       limit: p.limit,

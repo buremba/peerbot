@@ -606,7 +606,7 @@ describe("media", () => {
    * catch a cap shorter than the delay chosen. Guard the shape instead — no
    * timer may race a dispatch, whatever its constant.
    */
-  it("still matches the child-runner timeout message it depends on", () => {
+  it("still matches the executor timeout message it depends on", () => {
     // `whatsapp_web.ts` decides "retryable" vs "this media is gone" by matching
     // the dispatch backstop's free-text message, which is produced in another
     // package. Nothing links the two, so a reword there would silently
@@ -633,7 +633,7 @@ describe("media", () => {
     for (const marker of matched.filter((m) => m !== "timed out")) {
       expect(
         producer.includes(marker),
-        `child-runner.ts no longer emits "${marker}"; whatsapp_web.ts would downgrade a retryable timeout to unavailable`,
+        `isolate.ts no longer emits "${marker}"; whatsapp_web.ts would downgrade a retryable timeout to unavailable`,
       ).toBe(true);
     }
   });

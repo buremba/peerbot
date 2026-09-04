@@ -33,14 +33,12 @@ const GATEWAY_AUTHORITATIVE_CONFIG_KEYS = [
  * gateway-injected control (e.g. flipping block-private → allow-private).
  */
 export function buildConnectorConfig(job: {
-  env?: Record<string, string | undefined>;
-  config?: Record<string, unknown>;
+  env: Record<string, string | undefined>;
+  config: Record<string, unknown>;
 }): Record<string, unknown> {
-  const env = job.env ?? {};
-  const config = job.config ?? {};
-  const merged: Record<string, unknown> = { ...env, ...config };
+  const merged: Record<string, unknown> = { ...job.env, ...job.config };
   for (const key of GATEWAY_AUTHORITATIVE_CONFIG_KEYS) {
-    if (key in env && env[key] !== undefined) merged[key] = env[key];
+    if (key in job.env && job.env[key] !== undefined) merged[key] = job.env[key];
   }
   return merged;
 }

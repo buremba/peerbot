@@ -220,7 +220,7 @@ app.post("/api/embeddings", async (c) => {
 // dies without a graceful teardown — otherwise the child is orphaned and leaks
 // until killed by hand. Standalone `npm start` has no IPC channel, so
 // process.send is undefined and this never fires. Same pattern as
-// connector-worker child-runner.ts installParentDeathHandlers().
+// connector-worker daemon installParentDeathHandlers().
 //
 // Register the listener BEFORE checking process.connected: Node does not
 // replay a 'disconnect' emitted before a listener exists, and the parent can

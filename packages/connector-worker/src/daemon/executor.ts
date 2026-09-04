@@ -104,7 +104,6 @@ async function resolveJobExecution(
   select: typeof import('../executor/select.js'),
   job: PollResponse,
   timeoutMs: number,
-  maxOldSpaceSize: number,
   customExecutor?: SyncExecutor
 ): Promise<JobExecution> {
   const codeResult = await resolveJobCode(job);
@@ -113,7 +112,6 @@ async function resolveJobExecution(
     return { ok: true, code: codeResult.code, executor: customExecutor };
   }
   try {
-    // Isolate executor enforces SSRF protection and domain allowlist restrictions.
     const executor = await select.selectExecutor({ timeoutMs });
     return { ok: true, code: codeResult.code, executor };
   } catch (err) {
@@ -128,7 +126,6 @@ export interface ExecutorConfig {
   terminalHeartbeatGraceMs?: number;
   generateEmbeddings: boolean;
   timeoutMs: number;
-  maxOldSpaceSize: number;
   /** Optional executor override (tests / custom runner). */
   executor?: SyncExecutor;
   /** Daemon lifecycle signal used only by pending interactive handoffs. */
@@ -148,7 +145,6 @@ const DEFAULT_CONFIG: ExecutorConfig = {
   heartbeatIntervalMs: 30000,
   generateEmbeddings: true,
   timeoutMs: 600000,
-  maxOldSpaceSize: 1024,
 };
 
 /**
@@ -291,7 +287,6 @@ async function executeSyncRun(
     select,
     job,
     cfg.timeoutMs,
-    cfg.maxOldSpaceSize,
     cfg.executor
   );
   if (!execution.ok) {
@@ -539,7 +534,6 @@ async function executeActionRun(
     select,
     job,
     cfg.timeoutMs,
-    cfg.maxOldSpaceSize,
     cfg.executor
   );
   if (!execution.ok) {
@@ -734,7 +728,6 @@ async function executeAuthRun(
     select,
     job,
     0,
-    cfg.maxOldSpaceSize,
     cfg.executor
   );
   if (!execution.ok) {

@@ -176,7 +176,12 @@ export async function startDaemonCommand(
     assertExternalDepsResolvable(createRequire(import.meta.url).resolve);
     await assertConnectorRuntimeLoadable();
   } catch (error) {
-    if (!platform && typeof (process.versions as { bun?: string }).bun !== 'string') throw error;
+    // Second exception: under Bun `isolate/load.ts` returns null, so the only
+    // executor there is cannot load however healthy the compile graph is. A
+    // Bun-hosted daemon therefore boots with the compiled lane closed rather
+    // than refusing to start. Every other platform still crashes loud.
+    const bunHost = typeof (process.versions as { bun?: string }).bun === 'string';
+    if (platform !== 'headless' && !bunHost) throw error;
     compiledRuntimeReady = false;
     log.info(
       '[cli] compiled-connector runtime unavailable; this daemon will advertise built-in operations only:',

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ConnectorRuntime } from "../connector-runtime.js";
 import { defineConnector } from "../define-connector.js";
 
-// Mirrors connector-worker/src/executor/child-runner.ts `findRuntimeClass`: a
+// Mirrors the isolate guest runner in connector-worker/src/executor/isolate.ts: a
 // connector is detected by a constructor whose prototype has sync() + execute().
 // If this passes, an esbuild-bundled `export default defineConnector(...)` is
 // picked up by the worker unchanged.

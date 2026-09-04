@@ -128,7 +128,7 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
     expect(runs.length).toBe(1);
   });
 
-  it('worker dispatch admits claimed run on isolate lane', async () => {
+  it('worker dispatch admits a claimed run and no longer names a lane', async () => {
     const sql = getTestDb();
     const { feedId, connId, orgId } = await setupFeed(UNATTESTED_KEY);
     const runId = await insertPendingRun(orgId, feedId, connId, UNATTESTED_KEY);
@@ -144,10 +144,15 @@ describe('organization-supplied connector code under LOBU_CLOUD_MODE', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       run_id?: number;
+      connector_key?: string;
       lane?: string;
     };
     expect(body.run_id).toBe(runId);
-    expect(body.lane).toBe('isolate');
+    expect(body.connector_key).toBe(UNATTESTED_KEY);
+    // `lane` left the poll response with the process lane it used to select.
+    // Asserting its ABSENCE is the guard: a re-added field would mean a second
+    // execution path came back, which is the thing this consolidation removed.
+    expect(body.lane).toBeUndefined();
   });
 
   /**

@@ -44,6 +44,7 @@ import { normalizeExtractedData, parseJson, requireAutomationAccess } from './sh
 import { getErrorMessage } from '@lobu/core';
 import { classifyRunOutcome } from "../../../runs/run-outcome";
 import { claimPendingAutomationRun } from '../../../runs/queue-service';
+import { encodeExternalAutomationClaimOwner } from './claim-next-window';
 import { AUTOMATION_EVAL_RUN_TYPE, AUTOMATION_RUN_TYPE } from "../../../runs/run-types.js";
 import {
   advanceAutomationArrivalMark,
@@ -576,18 +577,12 @@ export async function handleCompleteWindow(
   // cannot strand the durable run in running state.
   let externalClaimedBy: string | null = null;
   if (manualOpenRun) {
-    const claimedBy = ctx.clientId
-      ? `mcp:${ctx.clientId}`
-      : ctx.userId
-        ? `user:${ctx.userId}`
-        : null;
-    if (!claimedBy) {
-      throw new ToolUserError(
-        `Automation run ${runId} requires an authenticated MCP client or user to claim it.`,
-        401
-      );
-    }
-    externalClaimedBy = claimedBy;
+    // Must use the SAME encoding `claim_next_window` wrote, or a run this very
+    // caller claimed reads back as owned by someone else and the ownership
+    // fence below rejects every completion with a 409 — the lease then expires,
+    // the run times out, the arrival mark never moves, and the identical window
+    // is served again forever.
+    externalClaimedBy = encodeExternalAutomationClaimOwner(ctx, 'complete_window');
   }
 
   // ============================================

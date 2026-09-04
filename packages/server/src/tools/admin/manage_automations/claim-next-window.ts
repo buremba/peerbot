@@ -21,7 +21,10 @@ const DEFAULT_LEASE_SECONDS = 900;
 const MIN_LEASE_SECONDS = 30;
 const MAX_LEASE_SECONDS = 3600;
 
-export function encodeExternalAutomationClaimOwner(ctx: ToolContext): string {
+export function encodeExternalAutomationClaimOwner(
+  ctx: ToolContext,
+  action: 'claim_next_window' | 'complete_window' = 'claim_next_window'
+): string {
   const identity = {
     user_id: ctx.userId ?? null,
     agent_id: ctx.agentId ?? null,
@@ -30,7 +33,7 @@ export function encodeExternalAutomationClaimOwner(ctx: ToolContext): string {
   };
   if (Object.values(identity).every((value) => value == null)) {
     throw new ToolUserError(
-      'claim_next_window requires an identified caller to own the window lease.',
+      `${action} requires an identified caller to own the window lease.`,
       403
     );
   }

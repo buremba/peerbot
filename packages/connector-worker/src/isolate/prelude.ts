@@ -23,6 +23,11 @@
  *  - `Headers`, `Response` and `fetch` over the host `fetch` capability. The
  *    host performs the network call and returns status, headers and a bounded
  *    body; there are no streams on this lane (`Response.body` is null).
+ *  - `crypto`: `getRandomValues`/`randomUUID`, plus the `subtle` operations
+ *    postgres.js needs to answer an md5 or SCRAM-SHA-256 challenge, all
+ *    computed by Node on the host.
+ *  - `Buffer`, `EventEmitter`, `ReadableStream`/`WritableStream` and
+ *    `connect` (WinterCG Direct Sockets), which the DB connectors need.
  *
  * The guest talks to the host through two `ivm.Reference`s captured at the
  * top of the prelude and removed from the global: `__host_sync(name, ...args)`
@@ -32,12 +37,14 @@
  * in the host process.
  *
  * Deliberately absent (no bundled isolate-eligible connector or SDK root path
- * uses them): `Request`, `crypto`, `structuredClone`, `Buffer`, streams,
- * `FormData`, `Blob`. Add one only with a real connector that needs it.
+ * uses them): `Request`, `structuredClone`, `FormData`, `Blob`. Add one only
+ * with a real connector that needs it.
  *
  * Written as sloppy-mode ES2020 with no template literals so the string can
  * live in this module verbatim. `String.raw` keeps the regex escapes intact.
  */
+
+import { createHash, createHmac, pbkdf2Sync } from 'node:crypto';
 
 /** Names the prelude defines on the guest global. */
 export const PRELUDE_GLOBALS = [
@@ -112,6 +119,21 @@ function asBytes(value: unknown, what: string): Uint8Array {
   throw new TypeError(`${what}: expected an ArrayBuffer or ArrayBufferView`);
 }
 
+/**
+ * Node's name for a WebCrypto digest label. `md5` is deliberately accepted even
+ * though WebCrypto does not define it: postgres.js asks for it by that name to
+ * answer an `AuthenticationMD5Password` challenge, and Node's hash registry
+ * has it. A future workerd backend has no md5 and reaches scram-sha-256 servers
+ * only.
+ */
+function nodeHashName(algorithm: unknown, what: string): string {
+  const name = String(
+    algorithm && typeof algorithm === 'object' ? (algorithm as { name?: unknown }).name : algorithm
+  ).toLowerCase().replace('-', '');
+  if (name === 'md5' || name === 'sha1' || name === 'sha256' || name === 'sha384' || name === 'sha512') return name;
+  throw new TypeError(`${what}: unsupported algorithm '${String(algorithm)}'`);
+}
+
 function asPairs(value: unknown): [string, string][] {
   if (!Array.isArray(value)) throw new TypeError('formUrlencodedSerialize: expected a list of [name, value] pairs');
   return value.map((pair) => [String((pair as unknown[])[0]), String((pair as unknown[])[1])]);
@@ -154,6 +176,46 @@ export const PRELUDE_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> 
       globalThis.crypto.getRandomValues(buf);
     }
     return buf;
+  },
+  /**
+   * WebCrypto primitives behind the guest's `crypto.subtle`. postgres.js's
+   * workerd build drives BOTH md5 and SCRAM-SHA-256 authentication entirely
+   * through `crypto.subtle`, so without these a DB connector cannot
+   * authenticate against any server that is not on cleartext `password` auth.
+   * Node does the work; the guest only marshals bytes.
+   */
+  cryptoDigest: (algorithm: unknown, data: unknown): Uint8Array =>
+    new Uint8Array(createHash(nodeHashName(algorithm, 'cryptoDigest')).update(asBytes(data, 'cryptoDigest')).digest()),
+  cryptoHmac: (hash: unknown, key: unknown, data: unknown): Uint8Array =>
+    new Uint8Array(
+      createHmac(nodeHashName(hash, 'cryptoHmac'), asBytes(key, 'cryptoHmac'))
+        .update(asBytes(data, 'cryptoHmac'))
+        .digest()
+    ),
+  /**
+   * Bounded because this runs SYNCHRONOUSLY on the host event loop: a guest
+   * that asked for a billion rounds would wedge the worker. SCRAM negotiates
+   * its own count (postgres sends 4096), so the ceiling is never reached by an
+   * honest server.
+   */
+  cryptoPbkdf2: (hash: unknown, password: unknown, salt: unknown, iterations: unknown, byteLength: unknown): Uint8Array => {
+    const rounds = Number(iterations);
+    const length = Number(byteLength);
+    if (!Number.isInteger(rounds) || rounds < 1 || rounds > 100_000) {
+      throw new RangeError(`cryptoPbkdf2: iterations must be an integer in 1..100000, got ${String(iterations)}`);
+    }
+    if (!Number.isInteger(length) || length < 1 || length > 1024) {
+      throw new RangeError(`cryptoPbkdf2: byteLength must be an integer in 1..1024, got ${String(byteLength)}`);
+    }
+    return new Uint8Array(
+      pbkdf2Sync(
+        asBytes(password, 'cryptoPbkdf2'),
+        asBytes(salt, 'cryptoPbkdf2'),
+        rounds,
+        length,
+        nodeHashName(hash, 'cryptoPbkdf2')
+      )
+    );
   },
 };
 
@@ -962,6 +1024,107 @@ var exports = module.exports;
       );
     }
   };
+  // WebCrypto, delegated to Node through the bridge rather than reimplemented
+  // here. postgres.js answers BOTH an md5 challenge and a SCRAM-SHA-256
+  // exchange through crypto.subtle, so a DB connector that reaches any server
+  // not on cleartext password auth needs this. Only the operations those
+  // exchanges use are implemented; anything else throws by name rather than
+  // returning a wrong answer.
+  function subtleBytes(data, what) {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (data && data.buffer instanceof ArrayBuffer) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    throw new TypeError(what + ': expected an ArrayBuffer or ArrayBufferView');
+  }
+
+  function subtleAlgorithm(algorithm) {
+    return typeof algorithm === 'string' ? { name: algorithm } : (algorithm || {});
+  }
+
+  // WebCrypto hands back an ArrayBuffer; the bridge hands back a view.
+  function subtleBuffer(u8) {
+    return u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength
+      ? u8.buffer
+      : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+  }
+
+  // Every subtle method is async, so a bad argument must reject rather than
+  // throw synchronously: postgres.js drives auth from an async handler with no
+  // catcher, and a synchronous throw there is swallowed as an unhandled
+  // rejection that stalls the connection until its connect_timeout.
+  function subtleCall(fn) {
+    try {
+      return Promise.resolve(fn());
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  function subtleKeyBytes(key, what) {
+    if (!key || !(key.__rawKey instanceof Uint8Array)) {
+      throw new TypeError(what + ': expected a key from crypto.subtle.importKey');
+    }
+    return key.__rawKey;
+  }
+
+  crypto.subtle = {
+    digest: function (algorithm, data) {
+      return subtleCall(function () {
+        return subtleBuffer(
+          hostSync('cryptoDigest', subtleAlgorithm(algorithm).name, subtleBytes(data, 'crypto.subtle.digest'))
+        );
+      });
+    },
+    importKey: function (format, keyData, algorithm, extractable, usages) {
+      return subtleCall(function () {
+        if (String(format).toLowerCase() !== 'raw') {
+          throw new TypeError("crypto.subtle.importKey: only the 'raw' format is supported, not '" + String(format) + "'");
+        }
+        return {
+          type: 'secret',
+          extractable: !!extractable,
+          algorithm: subtleAlgorithm(algorithm),
+          usages: usages ? Array.prototype.slice.call(usages) : [],
+          __rawKey: subtleBytes(keyData, 'crypto.subtle.importKey')
+        };
+      });
+    },
+    sign: function (algorithm, key, data) {
+      return subtleCall(function () {
+        var name = String(subtleAlgorithm(algorithm).name).toUpperCase();
+        if (name !== 'HMAC') {
+          throw new TypeError("crypto.subtle.sign: only HMAC is supported, not '" + name + "'");
+        }
+        var raw = subtleKeyBytes(key, 'crypto.subtle.sign');
+        var hash = subtleAlgorithm(key.algorithm && key.algorithm.hash ? key.algorithm.hash : 'SHA-256').name;
+        return subtleBuffer(hostSync('cryptoHmac', hash, raw, subtleBytes(data, 'crypto.subtle.sign')));
+      });
+    },
+    deriveBits: function (algorithm, key, length) {
+      return subtleCall(function () {
+        var algo = subtleAlgorithm(algorithm);
+        if (String(algo.name).toUpperCase() !== 'PBKDF2') {
+          throw new TypeError("crypto.subtle.deriveBits: only PBKDF2 is supported, not '" + String(algo.name) + "'");
+        }
+        var raw = subtleKeyBytes(key, 'crypto.subtle.deriveBits');
+        var bits = Number(length);
+        if (!isFinite(bits) || bits <= 0 || bits % 8 !== 0) {
+          throw new TypeError('crypto.subtle.deriveBits: length must be a positive multiple of 8, got ' + String(length));
+        }
+        return subtleBuffer(
+          hostSync(
+            'cryptoPbkdf2',
+            subtleAlgorithm(algo.hash ? algo.hash : 'SHA-256').name,
+            raw,
+            subtleBytes(algo.salt, 'crypto.subtle.deriveBits'),
+            algo.iterations,
+            bits / 8
+          )
+        );
+      });
+    }
+  };
+
   global.crypto = crypto;
 
   var Buffer = function Buffer(arg, enc) {

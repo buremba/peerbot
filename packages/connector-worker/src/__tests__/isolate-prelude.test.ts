@@ -4,7 +4,8 @@ import {
   findIsolateIneligibleBuiltins,
   IsolateLaneIneligibleError,
 } from '../isolate/eligibility.js';
-import { GUEST_PRELUDE, PRELUDE_GLOBALS } from '../isolate/prelude.js';
+import { createHash, createHmac, pbkdf2Sync } from 'node:crypto';
+import { GUEST_PRELUDE, PRELUDE_GLOBALS, PRELUDE_HOST_SYNC } from '../isolate/prelude.js';
 
 describe('guest prelude text', () => {
   it('installs every advertised global', () => {
@@ -77,6 +78,112 @@ describe('guest prelude text', () => {
     const base64url = 'aGVsbG8td29ybGRfc3Ry'; // "hello-world_str"
     const decodedUrl = mockGlobal.Buffer.from(base64url, 'base64url').toString('utf8');
     expect(decodedUrl).toBe('hello-world_str');
+  });
+});
+
+/**
+ * A guest whose `__host_sync` dispatches into the REAL host halves, so these
+ * assertions cover both sides of the bridge rather than a stub's idea of them.
+ */
+function instantiateGuest(): any {
+  const guest: any = {
+    __host_sync: {
+      applySync: (_receiver: unknown, args: any[]) => {
+        const [name, ...rest] = args;
+        const fn = PRELUDE_HOST_SYNC[String(name)];
+        if (!fn) return { __lobu: 1, ok: true, value: null };
+        try {
+          return { __lobu: 1, ok: true, value: fn(...rest) };
+        } catch (error) {
+          const err = error as Error;
+          return { __lobu: 1, ok: false, error: { name: err.name, message: err.message } };
+        }
+      },
+    },
+    __host_async: { applyAsync: () => Promise.resolve({ __lobu: 1, ok: true, value: null }) },
+    __host_env_json: '{}',
+    atob: (x: string) => Buffer.from(x, 'base64').toString('binary'),
+    btoa: (x: string) => Buffer.from(x, 'binary').toString('base64'),
+    TextEncoder,
+    TextDecoder,
+  };
+  new Function('globalThis', GUEST_PRELUDE)(guest);
+  return guest;
+}
+
+/**
+ * Enumerated as OPERATIONS, not as one connector: a database driver on this
+ * lane answers its authentication challenge entirely through `crypto.subtle`,
+ * and a guest that is merely missing one of these does not fail loudly. The
+ * rejection is swallowed inside the driver's async auth handler and the
+ * connection stalls until its own connect timeout, which reads as a network
+ * fault rather than a missing shim. Every case below pins the guest's answer
+ * to Node's for the same input.
+ */
+describe('guest crypto.subtle', () => {
+  const enc = new TextEncoder();
+
+  it('digests SHA-256 and md5 exactly as Node does', async () => {
+    const guest = instantiateGuest();
+    for (const [label, nodeName] of [
+      ['SHA-256', 'sha256'],
+      ['SHA-1', 'sha1'],
+      // Not a WebCrypto algorithm. A driver answering an md5 password
+      // challenge asks for it by this name, and the host has it.
+      ['md5', 'md5'],
+    ] as const) {
+      const digest = Buffer.from(await guest.crypto.subtle.digest(label, enc.encode('lobu')));
+      expect(digest.toString('hex')).toBe(createHash(nodeName).update('lobu').digest('hex'));
+    }
+  });
+
+  it('signs HMAC-SHA-256 over a raw imported key', async () => {
+    const guest = instantiateGuest();
+    const key = await guest.crypto.subtle.importKey(
+      'raw',
+      enc.encode('salted password'),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+    const mac = Buffer.from(await guest.crypto.subtle.sign('HMAC', key, enc.encode('Client Key')));
+    expect(mac.toString('hex')).toBe(
+      createHmac('sha256', 'salted password').update('Client Key').digest('hex')
+    );
+  });
+
+  it('derives PBKDF2-SHA-256 bits, the SCRAM salted password', async () => {
+    const guest = instantiateGuest();
+    const key = await guest.crypto.subtle.importKey('raw', enc.encode('pw'), 'PBKDF2', false, ['deriveBits']);
+    const bits = Buffer.from(
+      await guest.crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode('salt'), iterations: 4096 },
+        key,
+        32 * 8
+      )
+    );
+    expect(bits.toString('hex')).toBe(pbkdf2Sync('pw', 'salt', 4096, 32, 'sha256').toString('hex'));
+  });
+
+  it('rejects rather than throws synchronously, so a guest await sees the failure', async () => {
+    const guest = instantiateGuest();
+    // A synchronous throw here is swallowed by an async auth handler and the
+    // caller hangs; the rejection is what surfaces the fault.
+    await expect(guest.crypto.subtle.digest('SHA-3', enc.encode('x'))).rejects.toThrow(/unsupported algorithm/);
+    await expect(guest.crypto.subtle.importKey('jwk', enc.encode('k'), 'PBKDF2', false, [])).rejects.toThrow(/raw/);
+    await expect(guest.crypto.subtle.sign('RSASSA-PKCS1-v1_5', {}, enc.encode('x'))).rejects.toThrow(/only HMAC/);
+  });
+
+  it('bounds PBKDF2 rounds, which run synchronously on the host event loop', async () => {
+    const guest = instantiateGuest();
+    const key = await guest.crypto.subtle.importKey('raw', enc.encode('pw'), 'PBKDF2', false, ['deriveBits']);
+    await expect(
+      guest.crypto.subtle.deriveBits(
+        { name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode('salt'), iterations: 1_000_000_000 },
+        key,
+        256
+      )
+    ).rejects.toThrow(/iterations/);
   });
 });
 

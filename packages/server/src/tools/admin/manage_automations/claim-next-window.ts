@@ -21,16 +21,34 @@ const DEFAULT_LEASE_SECONDS = 900;
 const MIN_LEASE_SECONDS = 30;
 const MAX_LEASE_SECONDS = 3600;
 
-export function encodeExternalAutomationClaimOwner(ctx: ToolContext): string {
+/**
+ * The durable owner of an Automation window claim.
+ *
+ * Deliberately excludes `mcp_session_id`. An MCP session is a transport
+ * artifact, not an identity: ChatGPT opens a NEW session per tool call (75
+ * sessions in 24 minutes, each used exactly once), so a session-scoped owner
+ * makes `claim_next_window` -> `complete_window` structurally impossible — the
+ * completion never matches the claim, the lease expires, and the same window is
+ * re-served forever. Ownership is the caller, and the caller outlives the
+ * session.
+ *
+ * What still fences a completion: the signed `window_token` binds the exact run,
+ * attempt and lease; claims serialize per Automation; and the lease expires. So
+ * the narrowing this drops is only "a different session of the SAME user, agent
+ * and OAuth client", which is the same principal by every other measure.
+ */
+export function encodeExternalAutomationClaimOwner(
+  ctx: ToolContext,
+  action: 'claim_next_window' | 'complete_window' = 'claim_next_window'
+): string {
   const identity = {
     user_id: ctx.userId ?? null,
     agent_id: ctx.agentId ?? null,
     client_id: ctx.clientId ?? null,
-    mcp_session_id: ctx.mcpSessionId ?? null,
   };
   if (Object.values(identity).every((value) => value == null)) {
     throw new ToolUserError(
-      'claim_next_window requires an identified caller to own the window lease.',
+      `${action} requires an identified caller to own the window lease.`,
       403
     );
   }
@@ -45,18 +63,27 @@ export function isExternalAutomationClaimOwner(value: string): boolean {
       return false;
     }
     const record = identity as Record<string, unknown>;
-    const keys = ['user_id', 'agent_id', 'client_id', 'mcp_session_id'];
+    const keys = ['user_id', 'agent_id', 'client_id'];
+    // Rows claimed before `mcp_session_id` left the identity still carry it.
+    // They can no longer be completed (the owner will not match), but they must
+    // still READ as external so `trigger` routes them to the external lane
+    // instead of mistaking them for a worker claim.
+    const optional = ['mcp_session_id'];
     if (
-      Object.keys(record).length !== keys.length ||
       !keys.every(
         (key) =>
           Object.hasOwn(record, key) &&
           (record[key] == null || typeof record[key] === 'string')
-      )
+      ) ||
+      Object.keys(record).some((key) => !keys.includes(key) && !optional.includes(key)) ||
+      optional.some((key) => Object.hasOwn(record, key) && record[key] != null && typeof record[key] !== 'string')
     ) {
       return false;
     }
-    return keys.some((key) => record[key] != null);
+    // `optional` counts here too: a legacy row whose only non-null field was
+    // `mcp_session_id` is still an external claim, and must read as one so
+    // `trigger` does not mistake it for a worker claim.
+    return [...keys, ...optional].some((key) => record[key] != null);
   } catch {
     return false;
   }

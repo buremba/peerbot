@@ -21,6 +21,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { DbClient } from "../../../db/client";
 import type { Env } from "../../../index";
 import { formatToolResult } from "../../../formatting/markdown-formatter";
+import { encodeExternalAutomationClaimOwner } from "../../../tools/admin/manage_automations/claim-next-window";
 import { manageAutomations } from "../../../tools/admin/manage_automations";
 import { handleAutomationMode } from "../../../tools/get_content/automation-mode";
 import { createAutomationRun } from "../../../runs/queue-service";
@@ -146,7 +147,7 @@ describe("Automation arrival lag is visible and actionable", () => {
 		});
 		await sql`
 			UPDATE runs
-			SET status = 'running', claimed_at = NOW(), claimed_by = ${`user:${userId}`}
+			SET status = 'running', claimed_at = NOW(), claimed_by = ${encodeExternalAutomationClaimOwner(ctx)}
 			WHERE id = ${run.runId}
 		`;
 		const bound = await read({ run_id: run.runId });

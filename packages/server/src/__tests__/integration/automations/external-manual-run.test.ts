@@ -2,6 +2,7 @@ import type { AutomationTriggerResult } from '@lobu/core/contracts/tools/manage-
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import { createAutomationRun } from '../../../runs/queue-service';
+import { encodeExternalAutomationClaimOwner } from '../../../tools/admin/manage_automations/claim-next-window';
 import { handleCompleteWindow } from '../../../tools/admin/manage_automations/complete-window';
 import { handleAutomationMode } from '../../../tools/get_content/automation-mode';
 import type { ToolContext } from '../../../tools/registry';
@@ -46,6 +47,14 @@ const TEST_ENV: Env = {
   JWT_SECRET: 'test-jwt-secret-for-testing-only',
   BETTER_AUTH_SECRET: 'test-auth-secret-for-testing-only',
 };
+
+/**
+ * The claim owner both `claim_next_window` and `complete_window` encode for a
+ * plain user caller. Built through the production encoder so a change to that
+ * encoding fails here instead of silently fencing real claimants out.
+ */
+const claimOwnerForUser = (userId: string): string =>
+  encodeExternalAutomationClaimOwner({ userId } as ToolContext);
 
 describe('external manual Automation execution', () => {
   beforeEach(async () => {
@@ -286,7 +295,7 @@ describe('external manual Automation execution', () => {
         TEST_ENV,
         identitylessContext
       )
-    ).rejects.toThrow(/requires an authenticated MCP client or user/);
+    ).rejects.toThrow(/complete_window requires an identified caller/);
     const [stillUnclaimed] = await sql<{ status: string; claimed_by: string | null }>`
       SELECT status, claimed_by FROM runs WHERE id = ${triggered.run_id}
     `;
@@ -316,7 +325,9 @@ describe('external manual Automation execution', () => {
     `;
     expect(completed).toMatchObject({
       status: 'completed',
-      claimed_by: `user:${workspace.users.owner.id}`,
+      // complete_window must persist the SAME owner encoding claim_next_window
+      // writes, so a claimed run stays completable by its own claimant.
+      claimed_by: claimOwnerForUser(workspace.users.owner.id),
       model_used: 'chatgpt/test',
     });
     expect(completed.approved_input.granularity).toBeUndefined();
@@ -539,7 +550,7 @@ describe('external manual Automation execution', () => {
     // Retrying a claim already durably owned by this caller remains valid.
     await sql`
       UPDATE runs
-      SET claimed_by = ${`user:${workspace.users.owner.id}`}
+      SET claimed_by = ${claimOwnerForUser(workspace.users.owner.id)}
       WHERE id = ${secondRun.runId}
     `;
     const sameClaimRetry = (await workspace.owner.automations.completeWindow({

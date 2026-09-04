@@ -5,6 +5,7 @@ const EXPECTED_BUNDLED_CONNECTORS = [
 	"discord",
 	"github",
 	"google.calendar",
+	"google.drive",
 	"google.gmail",
 	"gchat",
 	"hackernews",
@@ -77,6 +78,7 @@ describe("bundled connector lifecycle matrix", () => {
 		expect(actionCounts).toEqual({
 			github: 6,
 			"google.calendar": 4,
+			"google.drive": 2,
 			"os.shell": 1,
 			"google.gmail": 5,
 			"market.quotes": 1,

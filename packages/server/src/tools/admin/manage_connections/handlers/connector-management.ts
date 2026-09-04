@@ -45,8 +45,6 @@ export async function handleInstallConnector(
 	args: Extract<ConnectionsArgs, { action: "install_connector" }>,
 	ctx: ToolContext,
 ): Promise<ManageConnectionsResult> {
-	if (args.source_url || args.source_uri || args.source_code || args.compiled) {
-	}
 	try {
 		const connectorId = args.connector_id?.trim();
 		const mcpUrl = args.mcp_url?.trim();

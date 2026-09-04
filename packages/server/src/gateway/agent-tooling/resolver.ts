@@ -141,12 +141,6 @@ interface ToolingConnectionRow {
   installation_provider_instance: string | null;
   installation_app_id: string | null;
   installation_tenant: string | null;
-  artifact_organization_id: string | null;
-  artifact_id: string | number | null;
-  artifact_row_count: number;
-  artifact_has_compiled_code: boolean;
-  artifact_has_source_code: boolean;
-  artifact_source_path: string | null;
   definition_version: string;
 }
 
@@ -235,12 +229,6 @@ async function loadToolingConnections(
            cd.agent_tooling,
            cd.auth_schema,
            cd.version AS definition_version,
-           cv.id AS artifact_id,
-           cv.artifact_row_count,
-           cv.organization_id AS artifact_organization_id,
-           cv.has_compiled_code AS artifact_has_compiled_code,
-           cv.has_source_code AS artifact_has_source_code,
-           cv.source_path AS artifact_source_path,
            -- Lease AUTHORITY, joined only for the fingerprint: revoking or
            -- transferring an installation must invalidate a warm worker that
            -- is still holding a token minted under it. These fields do not
@@ -255,23 +243,6 @@ async function loadToolingConnections(
       ON cd.key = c.connector_key
      AND cd.organization_id = c.organization_id
      AND cd.status = 'active'
-    -- Only the PRESENCE of bytes is needed, never the bytes: a connector
-    -- bundle is megabytes, and this join runs once per connection row.
-    LEFT JOIN LATERAL (
-      SELECT *
-      FROM (
-        SELECT id, organization_id, source_path,
-               (compiled_code IS NOT NULL) AS has_compiled_code,
-               (source_code IS NOT NULL) AS has_source_code,
-               COUNT(*) OVER ()::int AS artifact_row_count,
-               ROW_NUMBER() OVER (ORDER BY organization_id NULLS LAST) AS artifact_rank
-        FROM connector_versions
-        WHERE connector_key = cd.key
-          AND version = cd.version
-          AND (organization_id = cd.organization_id OR organization_id IS NULL)
-      ) candidates
-      WHERE artifact_rank = 1
-    ) cv ON TRUE
     LEFT JOIN app_installations ai
       -- connections.config is a jsonb blob written by the install path, not a
       -- typed column, so a malformed installation_ref is representable. A bare
@@ -352,12 +323,11 @@ async function resolveToolingMetadata(
   // Cloud never trusts connector_definitions JSON: the packages, domains and
   // auth method an agent runs under come from the image file itself, resolved
   // below. The stored declaration is never a fallback.
-  // Deliberately stricter than run admission, which is version-agnostic:
-  // pinning admission to an exact key@version broke version-pinned runs and
-  // pre-refresh drift. Tooling can afford the opposite trade-off because a
-  // near-miss here would widen a worker's egress allowlist to another
-  // version's domains. Contributing nothing until the definition re-syncs is
-  // the safe direction; a wrong declaration is not.
+  //
+  // Resolution is pinned to an exact key@version: a near-miss here would widen
+  // a worker's egress allowlist to another version's domains. Contributing
+  // nothing until the definition re-syncs is the safe direction; a wrong
+  // declaration is not.
   try {
     const metadata = await resolveBundledAgentToolingMetadata(
       row.connector_key,

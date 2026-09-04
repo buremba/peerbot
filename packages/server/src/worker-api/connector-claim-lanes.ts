@@ -25,7 +25,6 @@ export const DB_EGRESS_HARDENED_CONNECTOR_KEYS: ReadonlySet<string> = new Set([
   'postgres',
 ]);
 
-
 export interface ConnectorClaimContext {
   isUserScopedWorker: boolean;
   deviceWorkerId: string | null;

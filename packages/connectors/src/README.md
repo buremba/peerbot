@@ -476,8 +476,8 @@ Platform-specific logic:
 For headless public scraping, use `@lobu/connector-sdk/browser` (`launchBrowser`,
 `runReviewScrape`) together with the root's `validateUrlDomain` / `validatePublicUrl`. The
 browser helpers live behind that subpath because they need a Node process (Playwright, CDP);
-the package root stays loadable inside a V8 isolate, and importing the subpath is what routes a
-connector to the process lane. Bundled connectors import timing/checkpoint helpers
+the package root stays loadable inside a V8 isolate, and a connector that imports the subpath
+cannot run there at all. Bundled connectors import timing/checkpoint helpers
 from `./scraper-utils.ts` (re-exports from the SDK).
 
 Review-site scrapers (Trustpilot, G2, etc.) live in `examples/brand-intelligence/` — they are

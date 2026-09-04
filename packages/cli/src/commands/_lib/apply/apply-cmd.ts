@@ -517,11 +517,13 @@ async function installConnectorDefinitions(
       const { ensureProjectDepsInstalled } = await import(
         "../ensure-deps-installed.js"
       );
-      const { compileConnectorFromFile } = await import(
+      const { compileConnectorForIsolateFromFile } = await import(
         "../connector-loader.js"
       );
       ensureProjectDepsInstalled(def.sourcePath, printText);
-      const compiledCode = await compileConnectorFromFile(def.sourcePath);
+      const compiledCode = await compileConnectorForIsolateFromFile(
+        def.sourcePath
+      );
       result = await client.installConnector({
         sourceCode: compiledCode,
         compiled: true,

@@ -42,7 +42,10 @@ mock.module('../embeddings.js', () => ({
 }));
 
 mock.module('../compile-connector.js', () => ({
-  compileConnectorFromFile: async () => 'compiled-code',
+  // `resolveJobCode` compiles for the isolate and nothing else; a mock that
+  // still names the retired non-isolate build would let a real compile run
+  // here, and bun's module mocks are process-wide.
+  compileConnectorForIsolateFromFile: async () => 'compiled-code',
   findBundledConnectorFile: () => '/fake/path',
 }));
 

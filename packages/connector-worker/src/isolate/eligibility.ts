@@ -5,7 +5,7 @@
  * except Node builtins, which esbuild leaves as bare `require()` calls because
  * `platform: 'node'` marks them external. An isolate has no module loader, so
  * a surviving builtin `require` is the fail-closed signal that the connector
- * needs the process lane. The compiler reports it from the esbuild metafile;
+ * cannot run at all. The compiler reports it from the esbuild metafile;
  * this scan is the same check for bundles that arrive already compiled (the
  * gateway ships `compiled_code` to device workers), so the executor can refuse
  * at init with the builtin named instead of failing at the connector's first
@@ -63,7 +63,9 @@ export class IsolateLaneIneligibleError extends Error {
     const subject = label ? `Connector '${label}'` : 'Connector bundle';
     super(
       `${subject} requires Node builtin${builtins.length === 1 ? '' : 's'} ` +
-        `[${builtins.join(', ')}] and cannot run on the isolate lane; route it to the process lane.`
+        `[${builtins.join(', ')}], which the isolate does not provide. There is no other ` +
+        `lane: either drop the dependency, or serve the capability from a device backend ` +
+        `the way os.shell does.`
     );
     this.name = 'IsolateLaneIneligibleError';
     this.builtins = builtins;

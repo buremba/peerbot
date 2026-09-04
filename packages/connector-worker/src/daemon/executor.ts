@@ -38,11 +38,12 @@ import type { SyncExecutor, ExecutorResult } from '../executor/interface.js';
  */
 type JobCodeResult = { ok: true; code: string } | { ok: false; error: string };
 
-async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
+export async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
   if (job.compiled_code) return { ok: true, code: job.compiled_code };
   // Inline compiled jobs must not load the optional compiler/SDK graph.
-  const { compileConnectorFromFile, compileConnectorForIsolateFromFile, findBundledConnectorFile } =
-    await import('../compile-connector.js');
+  const { compileConnectorForIsolateFromFile, findBundledConnectorFile } = await import(
+    '../compile-connector.js'
+  );
   if (!job.connector_key) {
     return { ok: false, error: 'No compiled_code and no connector_key — gateway sent neither.' };
   }
@@ -56,12 +57,13 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
     };
   }
   try {
-    // The isolate lane needs a self-contained CJS bundle (SDK inlined, Node
-    // builtins rejected); the process lane keeps its SDK-externalized ESM.
-    const code =
-      job.lane === 'isolate'
-        ? await compileConnectorForIsolateFromFile(localPath)
-        : await compileConnectorFromFile(localPath);
+    // ALWAYS the isolate build: a self-contained CJS bundle with the SDK inlined
+    // and Node builtins rejected. `selectExecutor` returns an IsolateExecutor
+    // for every job, so compiling anything else hands the isolate a bundle it
+    // cannot load -- bare imports with no module loader behind them. `job.lane`
+    // is deliberately not consulted: an older gateway may still stamp the
+    // retired value, and there is no second lane to send it to.
+    const code = await compileConnectorForIsolateFromFile(localPath);
     return { ok: true, code };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -94,9 +96,9 @@ type JobExecution =
 
 /**
  * Resolve the code and the executor for a claimed run, or the reason it cannot
- * run here. `lane: 'isolate'` is a requirement (the isolate is the security
- * boundary for organization-supplied code), so a host without `isolated-vm`
- * fails the run instead of forking a child.
+ * run here. The isolate is the security boundary for organization-supplied
+ * code and the only executor, so a host without `isolated-vm` fails the run
+ * outright; there is nothing to fall back to.
  */
 async function resolveJobExecution(
   select: typeof import('../executor/select.js'),
@@ -112,10 +114,7 @@ async function resolveJobExecution(
   }
   try {
     // Isolate executor enforces SSRF protection and domain allowlist restrictions.
-    const executor = await select.selectExecutor({
-      lane: job.lane,
-      timeoutMs,
-    });
+    const executor = await select.selectExecutor({ timeoutMs });
     return { ok: true, code: codeResult.code, executor };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

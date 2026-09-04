@@ -14,7 +14,7 @@
  */
 import { resolve } from "node:path";
 import {
-  createConnectorCompiler,
+  createIsolateConnectorCompiler,
   findBundledConnectorFile as findInDirs,
 } from "@lobu/connector-worker/compile";
 
@@ -38,6 +38,11 @@ export function findBundledConnectorFile(key: string): string | null {
   return found;
 }
 
-const compiler = createConnectorCompiler();
+// The isolate build, because the isolate is what runs the artifact -- both in
+// production and under `lobu connector run`. The other build externalized the
+// SDK as ESM for a forked Node child to resolve at runtime; that child is gone,
+// and a bundle shaped for it cannot load in an isolate at all.
+const compiler = createIsolateConnectorCompiler();
 
-export const compileConnectorFromFile = compiler.compileConnectorFromFile;
+export const compileConnectorForIsolateFromFile =
+  compiler.compileConnectorForIsolateFromFile;

@@ -33,7 +33,7 @@ import { fetchWithRetry } from "../../internal/http.js";
 import { printText } from "../../internal/output.js";
 import { getUsableToken, resolveOrg } from "../memory/_lib/memory-auth.js";
 import {
-  compileConnectorFromFile,
+  compileConnectorForIsolateFromFile,
   findBundledConnectorFile,
 } from "./connector-loader.js";
 
@@ -305,7 +305,7 @@ export async function connectorRun(
     );
   }
   printText(`Compiling ${connectorKey} from ${sourcePath}...`);
-  const compiledCode = await compileConnectorFromFile(sourcePath);
+  const compiledCode = await compileConnectorForIsolateFromFile(sourcePath);
 
   // The connector subprocess attaches over CDP when cdp_url is set — the
   // profile row carries the --remote-debugging-port endpoint the user pinned

@@ -48,7 +48,8 @@ const compiler = createConnectorCompiler();
 export const compileConnectorFromFile = compiler.compileConnectorFromFile;
 
 // Isolate-lane bundles inline the SDK and fail on a surviving Node builtin;
-// selected by `resolveJobCode` when the job carries `lane: 'isolate'`.
+// the only build `resolveJobCode` produces, because the isolate is the only
+// executor.
 const isolateCompiler = createIsolateConnectorCompiler();
 
 export const compileConnectorForIsolateFromFile = isolateCompiler.compileConnectorForIsolateFromFile;

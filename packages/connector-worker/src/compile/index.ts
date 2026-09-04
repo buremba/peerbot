@@ -397,9 +397,9 @@ function resolveSdkFile(specifier: string): string | null {
 
 /**
  * esbuild plugin that resolves the `lobu` alias and `@lobu/connector-sdk` so the
- * SDK is INLINED into the bundle. The isolate has no module loader, so unlike
- * the process lane nothing is externalized; the real package name falls
- * through to esbuild's own resolution.
+ * SDK is INLINED into the bundle. The isolate has no module loader, so nothing
+ * may be externalized; the real package name falls through to esbuild's own
+ * resolution.
  */
 function createSdkInlinePlugin(): Plugin {
   return {
@@ -469,7 +469,7 @@ function builtinsFromMetafile(metafile: Metafile): string[] {
  * dependency are inlined; `npm:` specifiers must resolve (`unresolved:
  * 'error'`) because the isolate cannot supply them at runtime. The metafile
  * reports which Node builtins survive as bare requires, which is how a bundle
- * is classified as needing the process lane.
+ * is found to be unloadable before it ever reaches an isolate.
  */
 export function createIsolateConnectorCompiler(options?: Pick<CompileOptions, 'cacheMax'>) {
   const cacheMax = options?.cacheMax ?? DEFAULT_CACHE_MAX;

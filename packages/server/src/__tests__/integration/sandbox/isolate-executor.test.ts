@@ -1,13 +1,16 @@
 /**
  * Connector isolate lane: `IsolateExecutor` end to end.
  *
- *  1. every isolate-eligible bundled connector passes the executor's init path
- *     (the eligibility check, then module init and construction in the host
- *     bridge), and the process-lane connectors are rejected at init with the
- *     offending Node builtin named;
- *  2. hackernews syncs against the live Algolia API through the isolate lane,
- *     producing events and a checkpoint via the hooks, and agrees with the
- *     process lane on the same config;
+ *  1. EVERY bundled connector passes the executor's init path (the eligibility
+ *     check, then module init and construction in the host bridge). Any that
+ *     cannot is rejected with the offending Node builtin named, and the pinned
+ *     set of those is empty;
+ *  2. hackernews syncs against the live Algolia API, producing events and a
+ *     checkpoint via the hooks, and `executeCompiledConnector` -- the entry
+ *     point the server actually calls -- agrees with a directly constructed
+ *     `IsolateExecutor` on the same config. There is one lane; what this pins
+ *     is that executor selection wires options, hooks and env through
+ *     unchanged;
  *  3. a fixture connector exercises each boundary: chunked emit, checkpoint
  *     hooks, chrome dispatch, auth artifacts/signals, domain-restricted fetch,
  *     the body cap, wall-clock and heap limits, error shape parity, redaction;
@@ -118,7 +121,6 @@ function emptyCapture(): Omit<Captured, "result"> {
 
 let ivm: IsolatedVm;
 let fixtureIsolateCode: string;
-let fixtureProcessCode: string;
 let server: Server;
 let baseUrl: string;
 let port: number;
@@ -153,7 +155,12 @@ async function failIsolate(
 	return failure;
 }
 
-async function runProcess(code: string, job: ExecutorJob, options: { allowedDomains?: readonly string[] } = {}): Promise<Captured> {
+/**
+ * Runs through `executeCompiledConnector`, the facade the server calls, which
+ * selects the executor itself. Paired with `runIsolate` (a directly built
+ * `IsolateExecutor`) so a divergence in option plumbing shows up as a diff.
+ */
+async function runViaRuntime(code: string, job: ExecutorJob, options: { allowedDomains?: readonly string[] } = {}): Promise<Captured> {
 	const captured = emptyCapture();
 	const result = await executeCompiledConnector({
 		compiledCode: code,
@@ -165,12 +172,12 @@ async function runProcess(code: string, job: ExecutorJob, options: { allowedDoma
 	return { ...captured, result };
 }
 
-async function failProcess(code: string, job: ExecutorJob): Promise<LaneError> {
-	const failure = await runProcess(code, job).then(
+async function failViaRuntime(code: string, job: ExecutorJob): Promise<LaneError> {
+	const failure = await runViaRuntime(code, job).then(
 		() => null,
 		(error: unknown) => error as LaneError,
 	);
-	if (!failure) throw new Error("expected the process run to fail");
+	if (!failure) throw new Error("expected the run to fail");
 	return failure;
 }
 
@@ -188,7 +195,6 @@ beforeAll(async () => {
 
 	const isolateCompiler = createIsolateConnectorCompiler();
 	fixtureIsolateCode = await isolateCompiler.compileConnectorForIsolateFromFile(FIXTURE_PATH);
-	fixtureProcessCode = fixtureIsolateCode;
 
 	server = createServer((req, res) => {
 		hits += 1;
@@ -275,7 +281,7 @@ async function loadInIsolate(code: string): Promise<string | null> {
 }
 
 describe("isolate lane: bundled connectors", () => {
-	it("loads every isolate-eligible connector and rejects the process-lane ones at init", async () => {
+	it("loads every bundled connector at init, with no ineligible ones left", async () => {
 		const compiler = createIsolateConnectorCompiler();
 		const files = listBundledConnectors();
 		expect(files.length).toBeGreaterThan(20);
@@ -316,10 +322,9 @@ describe("isolate lane: bundled connectors", () => {
 });
 
 describe("isolate lane: hackernews against the live API", () => {
-	it("syncs stories through the isolate lane and agrees with the process lane", async () => {
+	it("syncs stories live, and the runtime facade agrees with the executor built directly", async () => {
 		const path = join(CONNECTORS_DIR, "hackernews.ts");
 		const isolateCode = await createIsolateConnectorCompiler().compileConnectorForIsolateFromFile(path);
-		const processCode = isolateCode;
 		const config = {
 			search_query: "postgres",
 			story_type: "story",
@@ -331,7 +336,7 @@ describe("isolate lane: hackernews against the live API", () => {
 		const domains = ["hn.algolia.com", "news.ycombinator.com"];
 		const [isolate, proc] = await Promise.all([
 			runIsolate(isolateCode, job, { allowedDomains: domains }),
-			runProcess(processCode, job, { allowedDomains: domains }),
+			runViaRuntime(isolateCode, job, { allowedDomains: domains }),
 		]);
 
 		expect(isolate.result.mode).toBe("sync");
@@ -499,7 +504,7 @@ describe("isolate lane: fixture connector", () => {
 	});
 
 	it("denies reserved address space whether or not an allowlist is supplied, before a request leaves", async () => {
-		// An empty allowlist opens the PUBLIC internet (the process lane this
+		// An empty allowlist opens the PUBLIC internet (the deleted process lane
 		// replaced had no allowlist at all), but never reserved space — and the
 		// fixture server is on loopback, so both shapes still deny here. The
 		// public-open half is asserted exhaustively over `hostAllowed` in
@@ -632,11 +637,11 @@ describe("isolate lane: fixture connector", () => {
 		expect(fits.checkpoints).toEqual([{ blob: "x".repeat(1024) }]);
 	});
 
-	it("reports a thrown connector error in the same shape as the process lane", async () => {
+	it("reports a thrown connector error in the same shape through either entry point", async () => {
 		const job = syncJob({ scenario: "throw" });
 		const [isolate, proc] = await Promise.all([
 			failIsolate(fixtureIsolateCode, job),
-			failProcess(fixtureProcessCode, job),
+			failViaRuntime(fixtureIsolateCode, job),
 		]);
 		const shape = (e: LaneError) => ({
 			name: e.name,
@@ -660,9 +665,9 @@ describe("isolate lane: fixture connector", () => {
 		expect(run.logs.find((l) => l.level === "info")?.line).toBe("info line");
 	});
 
-	it("exposes only the job env to the guest and merges it into config like the process lane", async () => {
+	it("exposes only the job env to the guest and merges it into config, through either entry point", async () => {
 		const job = syncJob({ scenario: "env" }, { FIXTURE_ENV: "from-job" });
-		const [isolate, proc] = await Promise.all([runIsolate(fixtureIsolateCode, job), runProcess(fixtureProcessCode, job)]);
+		const [isolate, proc] = await Promise.all([runIsolate(fixtureIsolateCode, job), runViaRuntime(fixtureIsolateCode, job)]);
 		expect(checkpointOf(isolate.result)).toEqual({ fixture_env: "from-job", config_fixture_env: "from-job" });
 		expect(checkpointOf(isolate.result).config_fixture_env).toEqual(checkpointOf(proc.result).config_fixture_env);
 	});
@@ -681,7 +686,7 @@ describe("isolate lane: fixture connector", () => {
 
 	it("prelude globals behave like Node's for the fixture's mixed probe", async () => {
 		const job = syncJob({ scenario: "prelude" });
-		const [isolate, proc] = await Promise.all([runIsolate(fixtureIsolateCode, job), runProcess(fixtureProcessCode, job)]);
+		const [isolate, proc] = await Promise.all([runIsolate(fixtureIsolateCode, job), runViaRuntime(fixtureIsolateCode, job)]);
 		expect(checkpointOf(isolate.result)).toEqual(checkpointOf(proc.result));
 		expect(checkpointOf(isolate.result)).toMatchObject({
 			href: "https://example.com/a/c%20d?x=1&y=a%20b#frag%20ment",

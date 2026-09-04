@@ -2,14 +2,14 @@
  * Isolate Executor
  *
  * Runs a compiled pure-JS connector bundle inside a V8 isolate in the worker
- * process (`isolated-vm`), speaking the same `SyncExecutor` contract as
- * `SubprocessExecutor`: `ExecutorJob` in, `ExecutorResult` out, SDK context
- * calls mapped onto `ExecutionHooks`. Unlike the process lane the connector
+ * process (`isolated-vm`), speaking the `SyncExecutor` contract: `ExecutorJob`
+ * in, `ExecutorResult` out, SDK context calls mapped onto `ExecutionHooks`.
+ * Unlike the forked child this replaced, the connector
  * gets no filesystem, no sockets and no module loader: every effect crosses
  * the boundary as a named host capability, so the host holds the network and
  * can enforce a domain allowlist and a body cap on `fetch`.
  *
- * Selected only for jobs that carry `lane: 'isolate'` (`executor/select.ts`);
+ * The only executor (`executor/select.ts`);
  * a bundle that still requires a Node builtin is rejected before any isolate
  * work with `IsolateLaneIneligibleError`.
  */
@@ -827,7 +827,7 @@ export class IsolateExecutor implements SyncExecutor {
         );
       }
       // Wait for hooks the guest fired without awaiting (or whose promise the
-      // guest dropped) before reporting the result, as the process lane does.
+      // guest dropped) before reporting the result.
       await processingChain;
       if (hookFailure !== null) throw hookFailure;
       const outcome = parseGuestJson(raw, 'result') as GuestOutcome;

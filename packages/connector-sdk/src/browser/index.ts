@@ -4,8 +4,8 @@
  * Everything here needs a Node process — Playwright, CDP sockets, the
  * filesystem for error artifacts — so it is deliberately NOT re-exported from
  * the package root. The root stays loadable inside a V8 isolate; a connector
- * that drives a local browser imports this subpath, and that import is what
- * routes it to the process lane.
+ * that imports this subpath cannot run there, since connector code has no lane
+ * but the isolate.
  */
 export type { AcquireBrowserOptions, AcquiredBrowser } from './acquire.js';
 export { acquireBrowser, BrowserAuthCascadeError } from './acquire.js';

@@ -11,7 +11,7 @@ import {
 
 // One tiny connector so the full self-check exercises discovery + compile
 // without walking every bundled connector. No native deps: the isolate section
-// is what this suite pins, not the subprocess lane's dependency graph.
+// is what this suite pins, not the compiler's own dependency graph.
 const MINIMAL_CONNECTOR = `
 import { ConnectorRuntime } from '@lobu/connector-sdk';
 

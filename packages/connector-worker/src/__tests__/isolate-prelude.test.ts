@@ -216,6 +216,6 @@ describe('findIsolateIneligibleBuiltins', () => {
     expect(err.builtins).toEqual(['net', 'tls']);
     expect(err.message).toContain('net');
     expect(err.message).toContain('tls');
-    expect(err.message).toContain('process lane');
+    expect(err.message).toContain('the isolate does not provide');
   });
 });

@@ -10,8 +10,8 @@
  *  - CJS shell (`module`/`exports`) and a `require` that fails closed.
  *  - `console.*` to the host `log` capability (the host redacts).
  *  - Timers, `setImmediate` and `queueMicrotask` over the host `sleep`
- *    capability; a callback that throws ends the run through `fatal`, as an
- *    uncaught exception ends the process lane's child.
+ *    capability; a callback that throws ends the run through `fatal`, the way
+ *    an uncaught exception ended the forked child this replaced.
  *  - `process = { env }` from the job env.
  *  - `TextEncoder`/`TextDecoder` and `atob`/`btoa`: object shells whose
  *    byte-level work the host does with Node's own codecs.
@@ -275,8 +275,8 @@ var exports = module.exports;
   }
 
   // An exception escaping a timer callback has no catcher in the guest. The
-  // process lane's child treats the same case as uncaughtException and ends the
-  // run with that error; do the same through the host.
+  // forked child this replaced treated the same case as uncaughtException and
+  // ended the run with that error; do the same through the host.
   function reportFatal(error) {
     try { hostSync('fatal', describeError(error)); } catch (e) {}
   }
@@ -295,7 +295,7 @@ var exports = module.exports;
     if (specifier === 'cloudflare:sockets') return { connect: global.connect };
     if (specifier === 'module' || specifier === 'node:module') return { createRequire: function () { return global.require; } };
     var err = new Error(
-      "Module '" + specifier + "' is not available on the isolate lane: Node builtins and runtime-provided packages need the process lane."
+      "Module '" + specifier + "' is not available in the connector isolate. Node builtins and runtime-provided packages are not reachable here."
     );
     err.name = 'IsolateLaneIneligible';
     err.code = 'MODULE_NOT_FOUND';
@@ -616,9 +616,9 @@ var exports = module.exports;
   // ---------------------------------------------------------------------------
 
   // The guest holds a plain record of the components. Every parse and every
-  // setter is one synchronous host call into Node's own URL, so the isolate
-  // and process lanes agree on every input by construction, IDNA hosts and
-  // the percent-encode sets included (those have drifted between Node lines).
+  // setter is one synchronous host call into Node's own URL, so the guest and
+  // Node agree on every input by construction, IDNA hosts and the
+  // percent-encode sets included (those have drifted between Node lines).
 
   var URL_SETTABLE = ['href', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash'];
 

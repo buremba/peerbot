@@ -1357,7 +1357,7 @@ const socialSignal = defineEntityType({
   key: "social-signal",
   name: "Social Signal",
   description:
-    "Historical entity rows from the former Social Interest Radar output path.",
+    "Deprecated historical entity rows from the former Social Interest Radar output path.",
   metadata: { icon: "radar" },
   properties: {
     platform: {
@@ -1478,6 +1478,15 @@ const duplicateEntityResolution = defineAutomation({
   slug: "duplicate-entity-resolution-real-v3-final",
   name: "Duplicate entity resolution — real contacts",
   tags: ["identity", "deduplication", "world-model"],
+  // Adopted from prod, where this cadence was set outside the config. Apply
+  // treats Automation `triggers` as always-managed (diff.ts), so LEAVING THIS
+  // OUT does not mean "unmanaged" the way an omitted feed `schedule` does — it
+  // projects to `[]` and would clear the cron, leaving the Automation
+  // unreachable. `execution`, `active_run` and `skip_if_unchanged` are omitted
+  // because their schema defaults already match what prod stores.
+  triggers: [
+    { kind: "schedule", cron: "0 6 * * *", timezone: "Europe/London" },
+  ],
   sources: {
     // context-only: duplicate candidates for analysis (not window body)
     people: context(

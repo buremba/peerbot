@@ -952,8 +952,15 @@ describe("mapProjectToDesiredState", () => {
   // Three states, not two. Omitting `schedule` means "this config does not
   // manage the cadence" — apply must leave whatever the feed already has. Only
   // an explicit `null` clears it. Collapsing omitted to null made every apply
-  // silently wipe crons set in the UI (prod: 41 clears by actor `cli` over two
-  // days in 2026-08), and a DB-side backfill could never survive the next run.
+  // silently wipe crons set in the UI, and a DB-side backfill could never
+  // survive the next run.
+  //
+  // Measured in prod from the config audit trail (`events` rows with
+  // metadata.category='config', resource_kind='feed', changed_fields ?
+  // 'schedule', actor_source='cli'): 41 feed-schedule writes across 2026-08-11
+  // and 2026-08-12, and the 08-11 batch of 23 all carry ONE apply_id — a single
+  // `lobu apply` rewrote 23 feeds' cadence in one run. 29 of the 31 feeds that
+  // batch touched are still manual-only today.
   test("an omitted feed schedule is left undeclared, not collapsed to null", () => {
     const conn = defineConnection({
       slug: "gh",

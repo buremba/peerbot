@@ -15,6 +15,8 @@ import type {
   RemoteFeed,
   RemoteInferenceProvider,
   RemoteRelationshipType,
+  UpdateConnectionPayload,
+  UpdateFeedPayload,
 } from "./client.js";
 import type {
   DesiredAgent,
@@ -136,14 +138,6 @@ export interface AuthProfileDiffRow
  * a typo on EITHER side fails the build, instead of silently dropping the field
  * from the wire and leaving the remote value stale.
  */
-export type ConnectionField =
-  | "name"
-  | "auth"
-  | "app_auth"
-  | "config"
-  | "device_worker_id";
-
-export type FeedField = "name" | "schedule" | "config";
 
 export interface ConnectionDiffRow
   extends ResourceRow<DesiredConnection, RemoteConnection> {
@@ -326,6 +320,167 @@ function optionalNameChanged(
   if (desired == null || desired === "") return false;
   return stringChanged(desired, remote);
 }
+
+/**
+ * One updatable field of a resource: how to tell whether it changed, and how it
+ * appears in the update payload. Keeping both halves in one entry is the point
+ * — the diff's field list and the wire payload used to be two hand-maintained
+ * lists that had to agree by eye, and they silently disagreed for `schedule`
+ * and `config`.
+ */
+interface FieldSpec<D, R, P> {
+  changed: (desired: D, remote: R) => boolean;
+  /** The payload fragment this field contributes when it HAS changed. */
+  payload: (desired: D) => Partial<P>;
+}
+
+/**
+ * A resource's field table. The payload type `P` is carried on the table's own
+ * type rather than inferred from the entries, so {@link buildUpdatePayload}
+ * returns the real payload shape instead of whichever fragment happens to be
+ * declared first.
+ */
+interface FieldTable<D, R, P, F extends string> {
+  readonly fields: Record<F, FieldSpec<D, R, P>>;
+}
+
+/**
+ * Declares a field table with `D`/`R`/`P` pinned and the KEYS still inferred,
+ * so the field-name union stays derived from the entries — there is no second
+ * list to keep in sync, and a payload fragment that isn't part of `P` is a
+ * compile error at the entry that wrote it.
+ */
+function defineFieldTable<D, R, P>() {
+  return <T extends Record<string, FieldSpec<D, R, P>>>(
+    fields: T
+  ): FieldTable<D, R, P, Extract<keyof T, string>> => ({ fields });
+}
+
+/**
+ * Every updatable connection field. `ConnectionField` is derived from this
+ * object's keys, so the union and the table cannot drift: adding a key here
+ * adds it to the union, and there is nowhere else to add one.
+ *
+ * BYO chat connections never reach `updateConnection` (apply routes them to the
+ * secret-aware chat-upsert), so the BYO branches below only govern diffing.
+ */
+const CONNECTION_FIELDS = defineFieldTable<
+  DesiredConnection,
+  RemoteConnection,
+  UpdateConnectionPayload
+>()({
+  name: {
+    changed: (d, r) => optionalNameChanged(d.name, r.display_name),
+    payload: (d) => ({ name: d.name }),
+  },
+  // `auth`/`app_auth`/`device_worker_id` are not part of the chat-upsert
+  // payload (`apply_chat_connection` only persists slug/connector/name/config),
+  // and a BYO chat declaration can't even set them (map-config rejects them).
+  // Never diff them for BYO, or a remote row carrying a stray value would
+  // report a perpetual "update" that apply can't clear.
+  auth: {
+    changed: (d, r) =>
+      d.credentialMode === "byo"
+        ? false
+        : (d.authProfileSlug ?? null) !== (r.auth_profile_slug ?? null),
+    payload: (d) => ({ authProfileSlug: d.authProfileSlug ?? null }),
+  },
+  app_auth: {
+    changed: (d, r) =>
+      d.credentialMode === "byo"
+        ? false
+        : (d.appAuthProfileSlug ?? null) !== (r.app_auth_profile_slug ?? null),
+    payload: (d) => ({ appAuthProfileSlug: d.appAuthProfileSlug ?? null }),
+  },
+  config: {
+    // A BYO chat connection's config holds a resolved secret (plaintext) on the
+    // desired side, stored as a `secret://` ref remotely — the CLI can't compare
+    // them, so it can't detect a token rotation. Always mark it as changed so
+    // the row reaches the idempotent chat-upsert, which does the secret-aware
+    // comparison server-side under an advisory lock and no-ops when nothing
+    // actually changed. Data connectors deep-equal as before.
+    // Undeclared is not a difference, same rule as `name` and the feed fields. A
+    // connection block with no `config` key does not manage the connection's
+    // settings, so a config set in the UI is left alone instead of being
+    // replaced with `{}`.
+    changed: (d, r) =>
+      d.credentialMode === "byo"
+        ? true
+        : d.config !== undefined && !deepEqual(d.config, r.config ?? {}),
+    // A declared config still REPLACES — a key removed from the config must
+    // disappear remotely.
+    payload: (d) => ({ config: d.config }),
+  },
+  device_worker_id: {
+    changed: (d, r) =>
+      d.credentialMode === "byo"
+        ? false
+        : (d.deviceWorkerId ?? null) !== (r.device_worker_id ?? null),
+    // null unpins to the server, a uuid moves it to that device.
+    payload: (d) => ({ deviceWorkerId: d.deviceWorkerId ?? null }),
+  },
+});
+
+/** Every updatable feed field. See {@link CONNECTION_FIELDS}. */
+const FEED_FIELDS = defineFieldTable<
+  DesiredFeed,
+  RemoteFeed,
+  UpdateFeedPayload
+>()({
+  name: {
+    changed: (d, r) => optionalNameChanged(d.name, r.display_name),
+    payload: (d) => ({ name: d.name }),
+  },
+  schedule: {
+    // Undeclared is not a difference — the same rule `optionalNameChanged`
+    // applies to `name`. Only a declared value (a cron, or an explicit `null`
+    // meaning clear) can put this row into `update`.
+    changed: (d, r) =>
+      d.schedule !== undefined && (d.schedule ?? null) !== (r.schedule ?? null),
+    payload: (d) => ({ schedule: d.schedule ?? null }),
+  },
+  config: {
+    changed: (d, r) =>
+      d.config !== undefined && !deepEqual(d.config, r.config ?? {}),
+    payload: (d) => ({ config: d.config }),
+  },
+});
+
+export type ConnectionField = keyof typeof CONNECTION_FIELDS.fields;
+export type FeedField = keyof typeof FEED_FIELDS.fields;
+
+/** Adapts a field table to the `fields` array `buildDiffRow` consumes. */
+function tableToFields<D, R, P, F extends string>(
+  table: FieldTable<D, R, P, F>
+): ReadonlyArray<DiffField<D, R, F>> {
+  return (Object.keys(table.fields) as F[]).map((name) => ({
+    name,
+    changed: table.fields[name].changed,
+  }));
+}
+
+/**
+ * Builds an update payload from the diff's changed-field list: a field the
+ * config does not declare produces no changed-field, so it never appears as a
+ * key and the server leaves it alone.
+ */
+export function buildUpdatePayload<D, R, P, F extends string>(
+  table: FieldTable<D, R, P, F>,
+  changedFields: readonly F[] | undefined,
+  desired: D
+): Partial<P> {
+  let payload: Partial<P> = {};
+  for (const name of changedFields ?? []) {
+    payload = { ...payload, ...table.fields[name].payload(desired) };
+  }
+  return payload;
+}
+
+/** The connection and feed field tables, for apply to build payloads from. */
+export const UPDATE_FIELD_TABLES = {
+  connection: CONNECTION_FIELDS,
+  feed: FEED_FIELDS,
+} as const;
 
 /**
  * The shared create / noop / update shape behind most `diffX` functions.
@@ -1658,56 +1813,7 @@ function diffConnection(
     id: desired.slug,
     desired,
     remote,
-    fields: [
-      {
-        name: "name",
-        changed: (d, r) => optionalNameChanged(d.name, r.display_name),
-      },
-      {
-        name: "auth",
-        // `auth`/`app_auth`/`device_worker_id` are not part of the chat-upsert
-        // payload (`apply_chat_connection` only persists slug/connector/name/
-        // config), and a BYO chat declaration can't even set them (map-config
-        // rejects them). Never diff them for BYO, or a remote row carrying a
-        // stray value would report a perpetual "update" that apply can't clear.
-        changed: (d, r) =>
-          d.credentialMode === "byo"
-            ? false
-            : (d.authProfileSlug ?? null) !== (r.auth_profile_slug ?? null),
-      },
-      {
-        name: "app_auth",
-        changed: (d, r) =>
-          d.credentialMode === "byo"
-            ? false
-            : (d.appAuthProfileSlug ?? null) !==
-              (r.app_auth_profile_slug ?? null),
-      },
-      {
-        name: "config",
-        // A BYO chat connection's config holds a resolved secret (plaintext) on
-        // the desired side, stored as a `secret://` ref remotely — the CLI can't
-        // compare them, so it can't detect a token rotation. Always mark it as
-        // changed so the row reaches the idempotent chat-upsert, which does the
-        // secret-aware comparison server-side under an advisory lock and no-ops
-        // when nothing actually changed. Data connectors deep-equal as before.
-        // Undeclared is not a difference, same rule as `name` and the feed
-        // fields. A connection block with no `config` key does not manage the
-        // connection's settings, so a config set in the UI is left alone
-        // instead of being replaced with `{}`.
-        changed: (d, r) =>
-          d.credentialMode === "byo"
-            ? true
-            : d.config !== undefined && !deepEqual(d.config, r.config ?? {}),
-      },
-      {
-        name: "device_worker_id",
-        changed: (d, r) =>
-          d.credentialMode === "byo"
-            ? false
-            : (d.deviceWorkerId ?? null) !== (r.device_worker_id ?? null),
-      },
-    ],
+    fields: tableToFields(CONNECTION_FIELDS),
   }) as ConnectionDiffRow;
 }
 
@@ -1722,26 +1828,7 @@ function diffFeed(
     desired,
     remote,
     extras: { connectionSlug },
-    fields: [
-      {
-        name: "name",
-        changed: (d, r) => optionalNameChanged(d.name, r.display_name),
-      },
-      {
-        // Undeclared is not a difference — the same rule `optionalNameChanged`
-        // applies to `name`. Only a declared value (a cron, or an explicit
-        // `null` meaning clear) can put this row into `update`.
-        name: "schedule",
-        changed: (d, r) =>
-          d.schedule !== undefined &&
-          (d.schedule ?? null) !== (r.schedule ?? null),
-      },
-      {
-        name: "config",
-        changed: (d, r) =>
-          d.config !== undefined && !deepEqual(d.config, r.config ?? {}),
-      },
-    ],
+    fields: tableToFields(FEED_FIELDS),
   }) as unknown as FeedDiffRow;
 }
 

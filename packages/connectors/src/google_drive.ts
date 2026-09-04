@@ -49,13 +49,10 @@ interface DriveFile {
   size?: string;
   createdTime?: string;
   modifiedTime?: string;
-  viewedByMeTime?: string;
   trashed?: boolean;
   owners?: Array<{ emailAddress?: string; displayName?: string }>;
   lastModifyingUser?: { emailAddress?: string; displayName?: string };
   parents?: string[];
-  fileExtension?: string;
-  md5Checksum?: string;
 }
 
 interface DriveFileListResponse {
@@ -171,7 +168,7 @@ const MAX_EXPORT_BYTES = 10 * 1024 * 1024;
 
 /** Field mask for files.list / changes.list. Drive v3 returns almost nothing without it. */
 const FILE_FIELDS =
-  'id,name,mimeType,description,webViewLink,size,createdTime,modifiedTime,viewedByMeTime,trashed,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName),parents,fileExtension,md5Checksum';
+  'id,name,mimeType,description,webViewLink,size,createdTime,modifiedTime,trashed,owners(emailAddress,displayName),lastModifyingUser(emailAddress,displayName),parents';
 
 const DRIVE_FILE_COLUMNS = [
   { name: 'id', type: 'text' },
@@ -373,11 +370,12 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
             query: {
               type: 'string',
               description:
-                'Optional Drive query in Google\'s `q` syntax, e.g. "mimeType = \'application/pdf\'". Combined with the feed\'s own filters using AND.',
+                'Optional Drive query in Google\'s `q` syntax, e.g. "mimeType = \'application/pdf\'". Combined with the feed\'s own filters using AND. Drive cannot apply a query to its change log, so a feed that sets one keeps re-listing instead of switching to incremental sync.',
             },
             folder_id: {
               type: 'string',
-              description: 'Restrict to files whose parent is this folder ID.',
+              description:
+                'Restrict to files whose parent is this folder ID. Enforced on both the initial listing and every later change.',
             },
             include_trashed: {
               type: 'boolean',
@@ -663,9 +661,17 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
       );
     }
 
-    return this.buildResult(events, startToken, bootstrapStartedAt, {
-      searchIncomplete,
-    });
+    // A Drive `q` has no equivalent on `changes.list` and cannot be re-evaluated
+    // client-side against a change record, so the only way to keep honouring it
+    // is to keep listing. Withholding the token re-lists next run; promoting it
+    // would silently widen the feed to every changed file in the Drive.
+    const hasCustomQuery = typeof config.query === 'string' && config.query.trim() !== '';
+    return this.buildResult(
+      events,
+      hasCustomQuery ? undefined : startToken,
+      bootstrapStartedAt,
+      { searchIncomplete }
+    );
   }
 
   /**
@@ -686,6 +692,10 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
   } | null> {
     const includeContent = config.include_content !== false;
     const includeTrashed = Boolean(config.include_trashed);
+    const folderId =
+      typeof config.folder_id === 'string' && config.folder_id.trim()
+        ? config.folder_id.trim()
+        : undefined;
     const maxResults = Math.min(config.max_results ?? 500, 2000);
     const events: EventEnvelope[] = [];
     let nextPageToken: string | undefined;
@@ -746,6 +756,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
           change,
           includeContent,
           includeTrashed,
+          folderId,
           lastSyncAt
         );
         if (envelope) events.push(envelope);
@@ -970,6 +981,7 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     change: DriveChange,
     includeContent: boolean,
     includeTrashed: boolean,
+    folderId: string | undefined,
     lastSyncAt?: string
   ): Promise<EventEnvelope | null> {
     const fileId = change.fileId ?? change.file?.id;
@@ -1003,6 +1015,18 @@ export default class GoogleDriveConnector extends ConnectorRuntime<
     // branch: a trashed folder is still a folder, and tombstoning one we
     // never stored would write a row for something that was never there.
     if (change.file.mimeType === FOLDER_MIME_TYPE) return null;
+
+    // `changes.list` takes no `q`, so the feed's folder scope has to be
+    // re-applied here or the feed widens to the whole Drive the moment the
+    // bootstrap completes — quietly inlining the text of documents the
+    // operator never scoped it to. `parents` is already in FILE_FIELDS.
+    //
+    // Dropped, never tombstoned: a change for a file that MOVED OUT of the
+    // folder is indistinguishable from one that was never in it, so emitting a
+    // tombstone would write a row for every changed file in the Drive and leak
+    // the existence of out-of-scope files in the very corpus the scope exists
+    // to bound.
+    if (folderId && !change.file.parents?.includes(folderId)) return null;
 
     if (change.file.trashed && !includeTrashed) {
       const trashedAt = change.time ? new Date(change.time) : new Date();

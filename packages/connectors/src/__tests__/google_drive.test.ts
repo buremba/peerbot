@@ -1219,6 +1219,122 @@ describe('GoogleDriveConnector resumable bootstrap', () => {
   });
 });
 
+describe('GoogleDriveConnector feed scope on the incremental axis', () => {
+  // `changes.list` takes no `q`, so every filter the bootstrap applies at the
+  // listing has to be re-applied here or the feed silently widens to the whole
+  // Drive the moment the bootstrap completes.
+
+  test('a folder-scoped feed ignores changes outside that folder', async () => {
+    const connector = new GoogleDriveConnector();
+    const drive = fakeDrive([
+      changesList([
+        {
+          changes: [
+            {
+              fileId: 'outside',
+              time: '2026-02-01T10:00:00Z',
+              file: driveFile('outside', { parents: ['SOME_OTHER_FOLDER'] }),
+            },
+          ],
+          newStartPageToken: 'FINAL',
+        },
+      ]),
+    ]);
+    connector.client = () => drive.client;
+
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { folder_id: 'FOLDER1', include_content: false },
+      checkpoint: { page_token: 'T1', last_sync_at: '2026-01-01T00:00:00Z' },
+      credentials: { accessToken: 'tok' },
+    });
+
+    expect(result.events).toHaveLength(0);
+  });
+
+  test('a folder-scoped feed still collects changes inside that folder', async () => {
+    const connector = new GoogleDriveConnector();
+    const drive = fakeDrive([
+      changesList([
+        {
+          changes: [
+            {
+              fileId: 'inside',
+              time: '2026-02-01T10:00:00Z',
+              file: driveFile('inside', { parents: ['FOLDER1'] }),
+            },
+          ],
+          newStartPageToken: 'FINAL',
+        },
+      ]),
+    ]);
+    connector.client = () => drive.client;
+
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { folder_id: 'FOLDER1', include_content: false },
+      checkpoint: { page_token: 'T1', last_sync_at: '2026-01-01T00:00:00Z' },
+      credentials: { accessToken: 'tok' },
+    });
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]!.origin_id).toBe('inside');
+  });
+
+  test('an out-of-scope file is dropped WITHOUT a tombstone', async () => {
+    const connector = new GoogleDriveConnector();
+    const drive = fakeDrive([
+      changesList([
+        {
+          changes: [
+            {
+              fileId: 'moved',
+              time: '2026-02-01T10:00:00Z',
+              file: driveFile('moved', { parents: ['ELSEWHERE'] }),
+            },
+          ],
+          newStartPageToken: 'FINAL',
+        },
+      ]),
+    ]);
+    connector.client = () => drive.client;
+
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { folder_id: 'FOLDER1', include_content: false },
+      checkpoint: { page_token: 'T1', last_sync_at: '2026-01-01T00:00:00Z' },
+      credentials: { accessToken: 'tok' },
+    });
+
+    // No row at all, not even a tombstone: a file that moved OUT of the folder
+    // is indistinguishable from one that was never in it, so tombstoning would
+    // write a row for every changed file in the Drive and leak the existence of
+    // out-of-scope files into the corpus the scope exists to bound.
+    expect(result.events).toHaveLength(0);
+  });
+
+  test('a custom query feed never promotes to the change stream', async () => {
+    const connector = new GoogleDriveConnector();
+    const drive = fakeDrive([
+      startToken('TOK-1'),
+      filesList([{ files: [driveFile('q0')] }]),
+    ]);
+    connector.client = () => drive.client;
+
+    const result = await connector.sync({
+      feedKey: 'files',
+      config: { query: "mimeType = 'application/pdf'", include_content: false },
+      checkpoint: {},
+      credentials: { accessToken: 'tok' },
+    });
+
+    // A Drive `q` cannot be re-evaluated against a changes.list record, so the
+    // only way to keep honouring it is to keep listing. Promoting here would
+    // widen the feed to every changed file in the Drive.
+    expect(result.checkpoint.page_token).toBeUndefined();
+  });
+});
+
 describe('GoogleDriveConnector bounded incremental sync', () => {
   const changeFor = (id: string) => ({
     fileId: id,

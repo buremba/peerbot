@@ -31,6 +31,7 @@ import { requireExists } from "../helpers/db-helpers";
 import type { ManageAutomationsArgs } from "../manage_automations";
 import {
   encodeExternalAutomationClaimOwner,
+  expireExternalClaims,
   isExternalAutomationClaimOwner,
 } from "./claim-next-window";
 import { resolveAutomationExecutor } from "./executors";
@@ -192,6 +193,10 @@ export async function handleTrigger(
   const automationId = Number(automationIdString);
 
   const queued = await sql.begin(async (tx) => {
+    // Manual trigger recovery must reconcile an expired external window lease
+    // before enqueueing, otherwise the queue reuses that still-"active" run
+    // and loadTriggerExecution fails closed instead of creating fresh work.
+    await expireExternalClaims(tx, automationId);
     const run = await enqueueAutomationRunForAutomationInTransaction(
       automationId,
       "manual",

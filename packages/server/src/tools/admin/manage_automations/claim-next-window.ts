@@ -343,7 +343,7 @@ export async function handleClaimNextWindow(
   }
 }
 
-async function expireExternalClaims(tx: DbClient, automationId: number): Promise<void> {
+export async function expireExternalClaims(tx: DbClient, automationId: number): Promise<void> {
   await tx`
     UPDATE runs
     SET status = 'timeout', outcome = ${classifyRunOutcome({ status: 'timeout' })},

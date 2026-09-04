@@ -118,7 +118,7 @@ interface SpotifyCheckpoint {
   last_sync_at?: string;
   offset?: number;
   cursor?: string;
-  /** Per-playlist `snapshot_id` as of the last sync. See `syncPlaylists`. */
+  /** Per-playlist content key as of the last sync. See `syncPlaylists`. */
   playlist_snapshots?: Record<string, string>;
   /** Fingerprint of the last emitted top-tracks ranking. See `syncTopTracks`. */
   top_tracks_digest?: string;
@@ -157,6 +157,17 @@ export function topTracksLimit(raw: unknown): number {
   const parsed = typeof raw === "number" ? Math.floor(raw) : Number.NaN;
   if (!Number.isFinite(parsed) || parsed < 1) return 50;
   return Math.min(parsed, 1000);
+}
+
+/**
+ * Millisecond component for an origin_id. `new Date(bad).getTime()` is NaN, and
+ * every NaN entry would then collapse onto a single origin_id — the same
+ * collision class `trackKey` guards against. Falls back to the raw string, and
+ * is a no-op for well-formed timestamps so existing keys keep their shape.
+ */
+export function timestampKey(raw: string): string {
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? String(ms) : `raw_${raw}`;
 }
 
 /**
@@ -467,13 +478,24 @@ export default class SpotifyConnector extends ConnectorRuntime {
     }
 
     for (const pl of playlists) {
-      snapshots[pl.id] = pl.snapshot_id;
+      // Spotify hands us a content fingerprint for free, but `snapshot_id`
+      // versions the TRACK LIST only — renaming a playlist or editing its
+      // description or visibility does not bump it, and those fields are the
+      // emitted title and payload_text. Fold them in so an edit still re-emits
+      // instead of leaving the stored row stale forever.
+      const playlistKey = snapshotDigest([
+        pl.snapshot_id,
+        pl.name,
+        pl.description ?? "",
+        String(pl.public),
+        String(pl.collaborative),
+      ]);
+      snapshots[pl.id] = playlistKey;
 
-      // Spotify hands us a content fingerprint for free. An unchanged
-      // `snapshot_id` means nothing in this playlist moved, so there is nothing
-      // to emit AND nothing to fetch — the track request below is skipped too.
-      // An absent entry is the first run, so no backfill flag is needed.
-      if (lastSnapshots[pl.id] === pl.snapshot_id) continue;
+      // Unchanged means nothing to emit AND nothing to fetch — the per-playlist
+      // track request below is skipped too. An absent entry is the first run,
+      // so no backfill flag is needed.
+      if (lastSnapshots[pl.id] === playlistKey) continue;
 
       const trackEvents: EventEnvelope[] = [];
       const trackPages = paginateByOffset(
@@ -500,7 +522,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
             // origin_id, so within a single run they superseded each other down
             // to the last one — silent data loss, the same collision class the
             // `trackKey` doc warns about. Mirrors `recently_played`'s key.
-            origin_id: `spotify_pl_${pl.id}_track_${trackKey(track)}_${addedAt.getTime()}`,
+            origin_id: `spotify_pl_${pl.id}_track_${trackKey(track)}_${timestampKey(item.added_at)}`,
             title: track.name,
             payload_text: `${track.name} by ${artistNames(track.artists)}`,
             author_name: artistNames(track.artists),
@@ -593,7 +615,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
         const track = item.track;
         const playedAt = new Date(item.played_at);
         events.push({
-          origin_id: `spotify_play_${trackKey(track)}_${playedAt.getTime()}`,
+          origin_id: `spotify_play_${trackKey(track)}_${timestampKey(item.played_at)}`,
           title: track.name,
           payload_text: `${track.name} by ${artistNames(track.artists)}`,
           author_name: artistNames(track.artists),

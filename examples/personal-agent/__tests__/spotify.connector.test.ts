@@ -64,12 +64,14 @@ describe("trackKey", () => {
 // ---------------------------------------------------------------------------
 
 let snapshotDigest: any;
+let timestampKey: any;
 let topTracksLimit: any;
 let SpotifyConnector: any;
 
 beforeAll(async () => {
   const mod = await import("../spotify.connector");
   snapshotDigest = mod.snapshotDigest;
+  timestampKey = mod.timestampKey;
   topTracksLimit = mod.topTracksLimit;
   SpotifyConnector = mod.default;
 });
@@ -194,7 +196,9 @@ describe("playlists snapshot gate", () => {
 
     const first = await connector.sync(syncCtx("playlists", http));
     expect(first.events.length).toBeGreaterThan(0);
-    expect(first.checkpoint.playlist_snapshots).toEqual({ PL1: "snap-1" });
+    // The stored key is a composite (snapshot_id + the fields snapshot_id does
+    // not version), so assert it round-trips rather than pinning its value.
+    expect(Object.keys(first.checkpoint.playlist_snapshots)).toEqual(["PL1"]);
     expect(http.calls.some((u: string) => u.includes("/tracks"))).toBe(true);
 
     http.calls.length = 0;
@@ -206,7 +210,9 @@ describe("playlists snapshot gate", () => {
     // never even ask Spotify for its tracks.
     expect(second.events).toEqual([]);
     expect(http.calls.some((u: string) => u.includes("/tracks"))).toBe(false);
-    expect(second.checkpoint.playlist_snapshots).toEqual({ PL1: "snap-1" });
+    expect(second.checkpoint.playlist_snapshots).toEqual(
+      first.checkpoint.playlist_snapshots
+    );
   });
 
   test("a changed snapshot_id re-emits that playlist", async () => {
@@ -223,7 +229,7 @@ describe("playlists snapshot gate", () => {
     );
 
     expect(result.events.length).toBeGreaterThan(0);
-    expect(result.checkpoint.playlist_snapshots).toEqual({ PL1: "snap-2" });
+    expect(result.checkpoint.playlist_snapshots.PL1).not.toBe("snap-1");
   });
 
   // Regression: the same track can sit in a playlist several times, each entry
@@ -373,5 +379,84 @@ describe("no snapshot feed emits a volatile provider counter", () => {
         expect(Object.keys(event.metadata ?? {})).not.toContain(field);
       }
     }
+  });
+});
+
+describe("timestampKey", () => {
+  test("is a no-op for well-formed timestamps so existing keys keep their shape", () => {
+    expect(timestampKey("2025-06-22T17:27:32Z")).toBe(
+      String(new Date("2025-06-22T17:27:32Z").getTime())
+    );
+  });
+
+  // Without this, every entry with an unparseable timestamp keys on "NaN" and
+  // they collapse onto one origin_id — the collision this PR exists to fix.
+  test("malformed timestamps stay distinct instead of collapsing onto NaN", () => {
+    const a = timestampKey("not-a-date");
+    const b = timestampKey("also-not-a-date");
+    expect(a).not.toBe(b);
+    expect(a).not.toContain("NaN");
+    expect(b).not.toContain("NaN");
+  });
+});
+
+// Spotify bumps `snapshot_id` for track-list edits only. A rename or a
+// description edit leaves it untouched, so gating on it alone left the stored
+// title and payload_text stale forever.
+describe("playlists gate covers edits snapshot_id does not version", () => {
+  const tracksPage = {
+    items: [
+      {
+        added_at: "2025-06-22T17:27:32Z",
+        added_by: { id: "me" },
+        track: fakeTrack("t1"),
+      },
+    ],
+    total: 1,
+    limit: 50,
+    offset: 0,
+    next: null,
+    previous: null,
+  };
+
+  async function syncWith(page: any, checkpoint: unknown) {
+    const http = fakeSpotifyApi({
+      "/me/playlists": page,
+      "/playlists/PL1/tracks": tracksPage,
+    });
+    const connector = new SpotifyConnector();
+    return connector.sync(syncCtx("playlists", http, { checkpoint }));
+  }
+
+  test("a rename re-emits even though snapshot_id is unchanged", async () => {
+    const first = await syncWith(playlistPage("snap-1"), null);
+
+    const renamed = playlistPage("snap-1");
+    (renamed.items[0] as any).name = "hiphop (2026)";
+    const second = await syncWith(renamed, first.checkpoint);
+
+    const emitted = second.events.filter(
+      (e: any) => e.origin_type === "playlist"
+    );
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].title).toBe("hiphop (2026)");
+  });
+
+  test("a description edit re-emits too", async () => {
+    const first = await syncWith(playlistPage("snap-1"), null);
+
+    const edited = playlistPage("snap-1");
+    (edited.items[0] as any).description = "now with a description";
+    const second = await syncWith(edited, first.checkpoint);
+
+    expect(
+      second.events.filter((e: any) => e.origin_type === "playlist")
+    ).toHaveLength(1);
+  });
+
+  test("no edit at all still emits nothing", async () => {
+    const first = await syncWith(playlistPage("snap-1"), null);
+    const second = await syncWith(playlistPage("snap-1"), first.checkpoint);
+    expect(second.events).toEqual([]);
   });
 });

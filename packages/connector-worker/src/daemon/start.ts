@@ -196,11 +196,12 @@ export async function startDaemonCommand(
     log.info(
       `[cli] device mode: platform=${platform} capabilities=${capabilities.join(',') || '(none)'}`
     );
-    const connectorsPath = opts.activeOrg ? `${opts.activeOrg}/connectors` : 'connectors';
-    const connectorsUrl = `${opts.apiUrl.replace(/\/+$/, '')}/${connectorsPath}`;
-    log.info(
-      `[cli] Manage action permissions (Approval vs Auto) at: ${connectorsUrl}`
-    );
+    if (opts.activeOrg) {
+      const connectorsUrl = `${opts.apiUrl.replace(/\/+$/, '')}/${opts.activeOrg}/connectors`;
+      log.info(
+        `[cli] Manage action permissions (Approval vs Auto) at: ${connectorsUrl}`
+      );
+    }
   }
   if (detected) {
     log.info(

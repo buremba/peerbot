@@ -138,6 +138,7 @@ async function main(): Promise<void> {
           platform,
           label,
           capabilities: declared,
+          activeOrg: (options['active-org'] || process.env.LOBU_ORG)?.trim() || undefined,
           workerApiToken: process.env.WORKER_API_TOKEN,
           debug: options.debug === 'true',
         });

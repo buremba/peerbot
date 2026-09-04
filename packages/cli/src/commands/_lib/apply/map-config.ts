@@ -29,9 +29,7 @@ import {
  * `updatedAt` is excluded (store-owned, set by the DB).
  *
  * This is the compile-time drift guarantee: the declarative mapper cannot
- * forget a field. The proof is the `-?` above — it makes every key REQUIRED on
- * the projection, so a field added to the stored schema and not handled here
- * fails to typecheck at the object literal that builds it.
+ * forget a field.
  */
 type AgentSettingsProjection = {
   [K in Exclude<keyof AgentSettingsStored, "updatedAt" | "authProfiles">]-?:

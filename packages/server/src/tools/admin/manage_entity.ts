@@ -2055,16 +2055,18 @@ async function resolveRelationshipId(
 	ctx: ToolContext,
 	action: "unlink" | "update_link",
 ): Promise<number> {
-	if (args.relationship_id) return args.relationship_id;
-
+	const { relationship_id: namedId } = args;
 	const fromId = args.from_entity_id;
 	const toId = args.to_entity_id;
 	const typeSlug = args.relationship_type_slug;
-	if (!fromId || !toId || !typeSlug)
+
+	if (!fromId || !toId || !typeSlug) {
+		if (namedId) return namedId;
 		throw new ToolUserError(
 			`relationship_id, or from_entity_id + to_entity_id + relationship_type_slug, is required for ${action}`,
 			400,
 		);
+	}
 
 	// Same search path as `link`, so an edge minted against a canonical public
 	// type is addressable the way it was created.
@@ -2096,7 +2098,16 @@ async function resolveRelationshipId(
 			`No relationship of type "${typeSlug}" between entities ${fromId} and ${toId}`,
 			404,
 		);
-	return Number(rows[0].id);
+	const resolved = Number(rows[0].id);
+	// Both addressings supplied and they disagree. Letting the id win would
+	// have `unlink` delete an edge the caller never named, so refuse instead of
+	// picking one.
+	if (namedId && Number(namedId) !== resolved)
+		throw new ToolUserError(
+			`relationship_id ${namedId} is not the "${typeSlug}" relationship between entities ${fromId} and ${toId} (that is relationship ${resolved}); pass one or the other`,
+			400,
+		);
+	return resolved;
 }
 
 async function handleUnlink(

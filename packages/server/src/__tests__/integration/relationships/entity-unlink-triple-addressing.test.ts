@@ -152,6 +152,40 @@ describe('unlink/update_link addressed by relationship triple', () => {
     ).rejects.toThrow(/no relationship/i);
   });
 
+  it('accepts the id and the triple together when they name the same edge', async () => {
+    const { fromId, toId, relationshipId } = await seedEdge('Agreeing');
+
+    await workspace.owner.entities.manage({
+      action: 'unlink',
+      relationship_id: relationshipId,
+      from_entity_id: fromId,
+      to_entity_id: toId,
+      relationship_type_slug: slug,
+    });
+
+    expect(await listLinkIds(fromId)).not.toContain(relationshipId);
+  });
+
+  it('refuses an id and a triple that name different edges', async () => {
+    // Letting the id quietly win would delete an edge the caller never named.
+    const a = await seedEdge('ConflictA');
+    const b = await seedEdge('ConflictB');
+
+    await expect(
+      workspace.owner.entities.manage({
+        action: 'unlink',
+        relationship_id: a.relationshipId,
+        from_entity_id: b.fromId,
+        to_entity_id: b.toId,
+        relationship_type_slug: slug,
+      })
+    ).rejects.toThrow(/pass one or the other/);
+
+    // Neither edge was touched.
+    expect(await listLinkIds(a.fromId)).toContain(a.relationshipId);
+    expect(await listLinkIds(b.fromId)).toContain(b.relationshipId);
+  });
+
   it('still requires an identifier when neither the id nor the triple is given', async () => {
     await expect(
       workspace.owner.entities.manage({ action: 'unlink' })

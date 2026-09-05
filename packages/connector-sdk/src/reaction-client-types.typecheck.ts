@@ -21,6 +21,7 @@ import type { PublicSearchArgs } from "@lobu/core/contracts/tools/search-memory"
 import type {
   KnowledgeReadInput,
   KnowledgeSearchInput,
+  ReactionClient,
 } from "./reaction-client-types";
 
 type Assert<T extends true> = T;
@@ -74,4 +75,31 @@ type ExactKeys<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : fals
 export type ReactionKnowledgeKeysExhaustive = [
   Assert<ExactKeys<keyof KnowledgeReadInput, keyof PublicGetContentArgs>>,
   Assert<ExactKeys<keyof KnowledgeSearchInput, keyof PublicSearchArgs>>,
+];
+
+/**
+ * The entity methods take the `manage_entity` contract's per-action inputs.
+ * These pin the three shapes the hand-written predecessors got wrong:
+ *  - `unlink`/`update_link` accept `relationship_id` alone. The triple the old
+ *    declaration required does work, so this was undiscoverability, not a
+ *    rejection.
+ *  - `delete` takes the object form. The positional number the old declaration
+ *    advertised was never accepted: the namespace spreads its single argument
+ *    into the action payload, so a number arrived as `{}` and failed the
+ *    validator on a missing `entity_id`.
+ *  - `create` names the field `entity_type`, as the contract does. The runtime
+ *    alias table still accepts `type` on the wire; the published type should
+ *    not be the place that teaches the alias.
+ */
+type EntityInput<M extends keyof ReactionClient["entities"]> = Parameters<
+  ReactionClient["entities"][M]
+>[0];
+
+export type ReactionEntityInputsContract = [
+  Assert<{ relationship_id: number } extends EntityInput<"unlink"> ? true : false>,
+  Assert<{ relationship_id: number; confidence: number } extends EntityInput<"updateLink"> ? true : false>,
+  Assert<{ entity_id: number; dry_run: true } extends EntityInput<"delete"> ? true : false>,
+  Assert<number extends EntityInput<"delete"> ? false : true>,
+  Assert<{ type: string; name: string } extends EntityInput<"create"> ? false : true>,
+  Assert<{ entity_type: string; name: string; domain: string } extends EntityInput<"create"> ? true : false>,
 ];

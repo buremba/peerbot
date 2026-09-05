@@ -15,6 +15,23 @@
 // Type-only imports: they erase at compile time, so nothing new enters the
 // isolate bundle. Core SUBPATH imports are permitted here; the root is not
 // (see AGENTS.md).
+import type { ConnectionListInput } from "@lobu/core/contracts/tools/manage-connections";
+import type {
+  EntityCreateInput,
+  EntityDeleteInput,
+  EntityGetInput,
+  EntityLinkInput,
+  EntityListInput,
+  EntityListLinksInput,
+  EntityUnlinkInput,
+  EntityUpdateInput,
+  EntityUpdateLinkInput,
+} from "@lobu/core/contracts/tools/manage-entity";
+import type {
+  OperationExecuteInput,
+  OperationListAvailableInput,
+  OperationListRunsInput,
+} from "@lobu/core/contracts/tools/manage-operations";
 import type { PublicGetContentArgs } from "@lobu/core/contracts/tools/read-knowledge";
 import type { PublicSearchArgs } from "@lobu/core/contracts/tools/search-memory";
 import type {} from "./reaction-client-types.typecheck";
@@ -76,41 +93,7 @@ export interface KnowledgeSaveResult {
   metadata: Record<string, unknown>;
 }
 
-// ── Entities ─────────────────────────────────────────────────────────────────
-
-export interface EntityCreateInput {
-  type: string;
-  name: string;
-  slug?: string;
-  content?: string;
-  parent_id?: number;
-  metadata?: Record<string, unknown>;
-}
-
-export interface EntityUpdateInput {
-  entity_id: number;
-  name?: string;
-  slug?: string;
-  content?: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface EntityLinkInput {
-  from_entity_id: number;
-  to_entity_id: number;
-  relationship_type_slug: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface EntityListFilter {
-  entity_type?: string;
-  parent_id?: number;
-  search?: string;
-  limit?: number;
-  offset?: number;
-  sort_by?: string;
-  sort_order?: "asc" | "desc";
-}
+// ── Notifications ────────────────────────────────────────────────────────────
 
 export interface NotificationsSendInput {
   /** Notification title (≤200 chars). */
@@ -175,25 +158,6 @@ export interface NotificationsSendResult {
   run_id?: number;
 }
 
-export interface OperationsListRunsInput {
-  connection_id?: number;
-  connection_ids?: number[];
-  feed_ids?: number[];
-  device_worker_id?: string;
-  connector_key?: string;
-  operation_key?: string;
-  status?: string;
-  approval_status?: string;
-  run_types?: string[];
-  created_after?: string;
-  created_before?: string;
-  automation_ids?: number[];
-  limit?: number;
-  offset?: number;
-  before_id?: number;
-  before_created_at?: string;
-}
-
 // ── Client ───────────────────────────────────────────────────────────────────
 
 /**
@@ -211,48 +175,26 @@ export interface ReactionClient {
     search(input: KnowledgeSearchInput): Promise<unknown>;
     save(input: KnowledgeSaveInput): Promise<KnowledgeSaveResult>;
     read(input: KnowledgeReadInput): Promise<unknown>;
-    delete(input: number | { event_id?: number; event_ids?: number[]; reason?: string }): Promise<unknown>;
+    /** Tombstone content by id. `delete_content` names the ids `content_id(s)`. */
+    delete(input: number | { content_id?: number; content_ids?: number[]; reason?: string }): Promise<unknown>;
   };
 
   entities: {
-    list(filter?: EntityListFilter): Promise<unknown>;
-    get(input: { entity_id: number; include_deleted?: boolean }): Promise<unknown>;
+    list(filter?: EntityListInput): Promise<unknown>;
+    get(input: EntityGetInput): Promise<unknown>;
     create(input: EntityCreateInput): Promise<{ id: number }>;
     update(input: EntityUpdateInput): Promise<unknown>;
-    delete(entity_id: number, options?: { force_delete_tree?: boolean }): Promise<unknown>;
+    delete(input: EntityDeleteInput): Promise<unknown>;
     link(input: EntityLinkInput): Promise<unknown>;
-    unlink(input: {
-      from_entity_id: number;
-      to_entity_id: number;
-      relationship_type_slug: string;
-    }): Promise<unknown>;
-    updateLink(input: {
-      from_entity_id: number;
-      to_entity_id: number;
-      relationship_type_slug: string;
-      metadata?: Record<string, unknown>;
-    }): Promise<unknown>;
-    listLinks(input: {
-      entity_id: number;
-      relationship_type_slug?: string;
-      limit?: number;
-      offset?: number;
-    }): Promise<unknown>;
+    unlink(input: EntityUnlinkInput): Promise<unknown>;
+    updateLink(input: EntityUpdateLinkInput): Promise<unknown>;
+    listLinks(input: EntityListLinksInput): Promise<unknown>;
     search(query: string, options?: { limit?: number }): Promise<unknown>;
   };
 
   connections: {
     /** List configured connections; `device_online` is computed server-side. */
-    list(input?: {
-      connector_key?: string;
-      status?: string;
-      entity_id?: number;
-      created_by?: string;
-      connection_ids?: number[];
-      setup_attempt_id?: string;
-      limit?: number;
-      offset?: number;
-    }): Promise<unknown>;
+    list(input?: ConnectionListInput): Promise<unknown>;
     get(connection_id: number): Promise<unknown>;
   };
 
@@ -274,12 +216,9 @@ export interface ReactionClient {
    */
   operations: {
     /** List the operations available on a connection (or the whole org). */
-    listAvailable(input?: {
-      connection_id?: number;
-      entity_id?: number;
-    }): Promise<unknown>;
+    listAvailable(input?: OperationListAvailableInput): Promise<unknown>;
     /** Read operational runs, including questions and staged connector actions. */
-    listRuns(input?: OperationsListRunsInput): Promise<{
+    listRuns(input?: OperationListRunsInput): Promise<{
       runs: Array<Record<string, unknown>>;
       total: number;
       limit: number;
@@ -289,19 +228,7 @@ export interface ReactionClient {
     /** Read one durable run and its completed answer/rejection state. */
     getRun(run_id: number): Promise<{ run: Record<string, unknown> }>;
     /** Execute one operation and wait for its result. */
-    execute(input: {
-      connection_id: number;
-      operation_key: string;
-      input?: Record<string, unknown>;
-      /** Durable key for at-most-once execution across reaction retries. */
-      idempotency_key?: string;
-      activation?: {
-        kind: "page_visit";
-        urls: string[];
-        expires_in_seconds?: number;
-      };
-      automation_source?: { automation_id: number; run_id: number };
-    }): Promise<{
+    execute(input: OperationExecuteInput): Promise<{
       status?:
         | "completed"
         | "failed"

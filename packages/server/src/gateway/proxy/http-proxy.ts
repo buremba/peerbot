@@ -292,6 +292,12 @@ export const __testOnly = {
  * that flips between a public and an internal answer (DNS rebinding) cannot
  * slip past the blocklist. This function only maps the transport's typed
  * errors onto the proxy's status lines.
+ *
+ * Adopting the transport also adopts its pre-DNS name rules: `localhost`,
+ * `*.localhost`, `*.local` and `*.internal` are refused before a lookup
+ * instead of being resolved and then blocked on the answer. Same 403, one
+ * round trip earlier, and an internal name that happens to resolve publicly
+ * no longer gets through.
  */
 async function resolveAndValidateTarget(
   rawHostname: string

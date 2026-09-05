@@ -10,10 +10,11 @@ import { Agent, buildConnector } from 'undici';
  * Policy (which hosts a caller may name) is `@lobu/connector-sdk/egress-policy`
  * and the IP classifier is `@lobu/connector-sdk/ip-reachability`; both are
  * pure. This module is the Node layer above them: DNS resolution, socket
- * pinning, and the credential transport rule. The gateway (its worker egress
- * proxy, the MCP proxy, OAuth and connector-operation fetches) and the
- * connector isolate lane's host `fetch` all dial through here, so a DNS
- * rebinding gap closed once is closed for every caller.
+ * pinning, and the credential transport rule. The gateway dials through here
+ * for all of it — its worker egress proxy, the MCP proxy, OAuth and
+ * connector-operation fetches — so a DNS rebinding gap closed once is closed
+ * for every one of them. The connector isolate lane's host `fetch` is NOT a
+ * caller yet: it still uses a bare global `fetch` (see `egress-policy.ts`).
  *
  * `fetchPublicUrl` closes the check-then-fetch (TOCTOU) gap a plain predicate
  * leaves open: its connector resolves every hostname once, rejects the whole

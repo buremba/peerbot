@@ -38,7 +38,7 @@ also used by `@lobu/cli` and `@lobu/server`.
   in-process. There is no fallback — without `isolated-vm` the run fails.
   `redact.ts` removes recognized secret patterns from the output before it
   reaches logs.
-- `egress/` — the ONE Node egress transport (`@lobu/connector-worker/egress`): resolve-then-pin DNS, the pinned undici dispatcher behind `fetchPublicUrl`, `resolvePublicAddresses` for callers that dial their own socket, and the HTTPS-only credential rule. The gateway imports it too (its worker egress proxy, MCP proxy and OAuth fetches), so a hardening change here reaches every caller; policy is `@lobu/connector-sdk/egress-policy`, never re-implemented here.
+- `egress/` — the Node egress transport (`@lobu/connector-worker/egress`): resolve-then-pin DNS, the pinned undici dispatcher behind `fetchPublicUrl`, `resolvePublicAddresses` for callers that dial their own socket, and the HTTPS-only credential rule. The gateway imports it for all of its untrusted egress (worker egress proxy, MCP proxy, OAuth and connector-operation fetches), so a hardening change here reaches every one of those; policy is `@lobu/connector-sdk/egress-policy`, never re-implemented here. The isolate lane's `hostFetch` does not route through it yet.
 - `isolate/` — the isolate lane's host side: `load.ts` (Node-major gated
   `isolated-vm` loader, null under Bun), `bridge.ts` (`IsolateHost`: memory
   limit, wall clock, named sync/async capabilities as `ivm.Reference`s),

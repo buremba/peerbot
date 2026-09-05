@@ -201,7 +201,8 @@ interface SuppressedJudgedDomain {
 interface SuppressedJudgedDomainOptions {
   /**
    * Whether a `.suffix` allow pattern also covers its root host. The proxy's
-   * global allowlist matcher does (`matchesDomainPattern`); the per-agent
+   * global allowlist matcher does (`matchesDomainPattern` in
+   * `@lobu/connector-sdk/egress-policy`); the per-agent
    * `GrantStore.hasGrant` does not — it expands a hostname into its exact form
    * plus its wildcard PARENTS, so the root never sees its own wildcard row.
    * Defaults to grant semantics. Passed straight through to `patternReaches`

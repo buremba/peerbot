@@ -243,8 +243,9 @@ function normalizeAllowedDomain(domain: string): string | null {
  *
  * Compared in the shared `.suffix` grammar with any `:port` qualifier
  * stripped, so "evil.example.com:443" cannot dodge a deny on
- * "evil.example.com". Both sides are matched with apex-inclusive wildcards,
- * which is how the sandbox's own allow list is enforced.
+ * "evil.example.com". Both sides pass `wildcardCoversRoot: true`, which is the
+ * fail-closed choice here: it widens what counts as an overlap, and an overlap
+ * only ever drops an allow entry.
  */
 function overlapsDeny(entry: string, denied: string[]): boolean {
   const toPattern = (p: string) =>

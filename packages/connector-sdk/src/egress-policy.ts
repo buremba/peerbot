@@ -1,15 +1,20 @@
 /**
- * The one egress policy grammar for every Lobu HTTP egress decision.
+ * The one egress policy grammar for Lobu's gateway-mediated HTTP egress.
  *
- * Every place that decides "may this code reach that host?" evaluates the same
- * configured patterns with the functions in this file:
+ * Every place below decides "may this code reach that host?" by evaluating the
+ * same configured patterns with the functions in this file:
  *
  *  - the gateway's worker egress proxy (`packages/server/src/gateway/proxy/http-proxy.ts`)
  *  - the per-agent grant store and the judged-domain policy store
  *    (`packages/server/src/gateway/permissions/`)
- *  - the remote runtime providers' sandbox network policy
- *    (`packages/server/src/gateway/runtime/providers/`)
- *  - the connector isolate lane's host `fetch` (`@lobu/connector-worker`)
+ *  - the remote runtime provider's sandbox network policy
+ *    (`packages/server/src/gateway/runtime/providers/vercel.ts`)
+ *
+ * NOT yet a consumer: the connector isolate lane's host `fetch`
+ * (`IsolateExecutor.hostFetch` in `@lobu/connector-worker`) still carries its
+ * own `hostAllowed` matcher, whose bare `example.com` entry covers subdomains
+ * too. Moving it onto this grammar narrows what a run may reach, so it is a
+ * separate PR of its own.
  *
  * Pattern grammar (patterns are produced by `@lobu/core`'s
  * `normalizeDomainPattern`, which lowercases, punycodes, and rewrites
@@ -52,9 +57,11 @@ export function isUnrestrictedMode(allowedDomains: readonly string[]): boolean {
 }
 
 /**
- * Characters `domainToASCII` accepts in a host. Anything else (`%`, spaces,
- * `/`, `@`, ...) cannot be a DNS name, so it is returned lowercased and
- * unchanged: it will match no configured pattern and DNS will refuse it.
+ * Characters a DNS name (or an IDN label) can be built from. Anything else
+ * (`%`, spaces, `/`, `@`, `:`, `[`, ...) is a URL delimiter that `new URL()`
+ * would consume or truncate rather than report, so such a host is returned
+ * lowercased and unchanged instead: it will match no configured pattern and
+ * DNS will refuse it.
  */
 const HOST_CHARS = /^[A-Za-z0-9._\-\u0080-\uffff]+$/;
 
@@ -191,9 +198,11 @@ export function patternReaches(covering: string, allow: string, options?: Patter
   const c = wildcardSuffix(covering);
   const a = wildcardSuffix(allow);
   const under = (host: string, suffix: string) => host.endsWith(`.${suffix}`);
-  if (c === null && a === null) return covering === allow;
-  if (c === null) return ((options?.wildcardCoversRoot ?? false) && covering === a) || under(covering, a as string);
-  if (a === null) return allow === c || under(allow, c);
+  if (a === null) {
+    if (c === null) return covering === allow;
+    return allow === c || under(allow, c);
+  }
+  if (c === null) return ((options?.wildcardCoversRoot ?? false) && covering === a) || under(covering, a);
   return c === a || under(c, a) || under(a, c);
 }
 

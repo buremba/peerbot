@@ -18,9 +18,9 @@
  * NOTE: NAT64 address translation (64:ff9b::/96 prefix) IS handled. The IP
  * normalization + reserved-range matcher live in the shared
  * `@lobu/connector-sdk/ip-reachability` (`isReservedIp`), which the proxy
- * reaches through the shared `@lobu/connector-worker/egress` transport. A 64:ff9b::7f00:1 literal decodes to
- * 127.0.0.1 and is blocked — see http-proxy.test.ts and
- * ssrf-guard-matcher.test.ts.
+ * reaches through the shared `@lobu/connector-worker/egress` transport. A
+ * 64:ff9b::7f00:1 literal decodes to 127.0.0.1 and is blocked — see
+ * http-proxy.test.ts and ip-reachability-matcher.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -487,6 +487,24 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
     });
 
     const res = await connectRequest(proxyPort, "localhost", 443, auth());
+    expect(res.statusLine).toContain("403");
+  });
+
+  test("CONNECT to an internal-suffix name is blocked even when DNS answers public", async () => {
+    // The shared transport refuses `localhost`/`.localhost`/`.local`/
+    // `.internal` before it resolves them, so an internal name whose resolver
+    // hands back a public address no longer tunnels. Pin that: this DNS mock
+    // returns 8.8.8.8, which the answer-set check alone would let through.
+    process.env.WORKER_ALLOWED_DOMAINS = "*";
+    await startProxy();
+    __testOnly.setDnsLookup(async () => [{ address: "8.8.8.8", family: 4 }]);
+
+    const res = await connectRequest(
+      proxyPort,
+      "metadata.internal",
+      443,
+      auth()
+    );
     expect(res.statusLine).toContain("403");
   });
 

@@ -81,8 +81,9 @@ function buildGrantCandidates(pattern: string, kind: GrantKind): string[] {
   }
 
   // Domain wildcard: every ancestor suffix covers the host — "a.b.example.com"
-  // is covered by ".b.example.com" AND ".example.com", matching the proxy's
-  // `matchesDomainPattern` which suffix-matches at any depth. Candidates stay
+  // is covered by ".b.example.com" AND ".example.com", matching the shared
+  // `matchesDomainPattern` (`@lobu/connector-sdk/egress-policy`) that the
+  // proxy's global lists use, which suffix-matches at any depth. Candidates stay
   // most-specific-first so `hasGrant`'s precedence loop is deterministic, and
   // the literal "*." variant is kept for rows stored before write-normalization
   // collapsed it to the ".suffix" form. The apex's own wildcard is deliberately

@@ -247,10 +247,21 @@ jobs:
           fi
 
           # This version's changelog entry, not the head of the whole file:
-          # CHANGELOG.md is ~475KB and newest-first, so a plain truncation puts
+          # CHANGELOG.md is ~490KB and newest-first, so a plain truncation puts
           # several past releases in every release body.
-          changelog=$(git show "$ATTESTED_SHA:CHANGELOG.md" || echo "")
-          notes=$(jq -n --arg changelog "$changelog" --arg version "$VERSION" \
+          #
+          # Handed to jq through --rawfile, never --arg: Linux caps a SINGLE
+          # argv entry at MAX_ARG_STRLEN (128KB), and this file is nearly four
+          # times that, so passing it as an argument dies with "jq: Argument
+          # list too long" and no release is ever created. macOS has no
+          # per-argument cap, so it only ever fails in CI -- the same trap the
+          # paginated `gh api` reads already carry, in the one line that reads
+          # a file instead of an API page. It went unnoticed because the step
+          # exits early when the release already exists, so this line first ran
+          # for real at 19.0.0.
+          changelog_file="${RUNNER_TEMP}/release-changelog.md"
+          git show "$ATTESTED_SHA:CHANGELOG.md" > "$changelog_file" || : > "$changelog_file"
+          notes=$(jq -n --rawfile changelog "$changelog_file" --arg version "$VERSION" \
             '{changelog: $changelog, version: $version}' \
             | node scripts/release-provenance.mjs release-notes | jq -r '.notes')
           notes=${notes:0:60000}

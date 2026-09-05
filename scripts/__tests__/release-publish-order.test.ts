@@ -323,7 +323,13 @@ describe("the release is created bound to the attested commit", () => {
     // and kills the step before it creates anything.
     expect(body()).not.toContain("head -c");
     expect(body()).toContain("notes=${notes:0:60000}");
-    expect(body()).toContain('CHANGELOG.md" || echo ""');
+    // A repo with no CHANGELOG.md must still get a release. The redirect is
+    // tolerated and leaves an empty file behind for --rawfile to read, which
+    // replaced the old `|| echo ""` when the changelog stopped going through
+    // argv (see the --rawfile guard below).
+    expect(body()).toMatch(
+      /git show "\$ATTESTED_SHA:CHANGELOG\.md" > "\$changelog_file" \|\| : > "\$changelog_file"/
+    );
   });
 });
 
@@ -800,5 +806,28 @@ describe("a cut release clears the pending label off the PR that produced it", (
     expect(post).toContain(">/dev/null");
     expect(post).not.toContain("|| true");
     expect(del).toContain("|| true");
+  });
+});
+
+// `jq --arg` puts the whole value in ONE argv entry, and Linux caps a single
+// entry at MAX_ARG_STRLEN (128KB). CHANGELOG.md is ~490KB, so the release body
+// could never be built that way: the step died with "jq: Argument list too
+// long" and no release was created. It hid for weeks because the step exits
+// early when the release already exists, so the line first ran for real at
+// 19.0.0 -- and froze that release. macOS has no per-argument cap, so it is
+// unreproducible on a developer machine and only a guard keeps it out.
+describe("unbounded file payloads reach jq through --rawfile, never --arg", () => {
+  it.each(
+    names
+  )("%s never hands the changelog to jq as an argument", (name) => {
+    expect(read(name)).not.toMatch(/--arg\s+changelog\b/);
+  });
+
+  it("release-please builds the release body from a file", () => {
+    const body = shell("release-please.yml", "release-please-write");
+    expect(body).toMatch(/--rawfile\s+changelog\s/);
+    // The command substitution is the tell: slurping a file into a shell
+    // variable is what forces it through argv on the next line.
+    expect(body).not.toMatch(/changelog=\$\(\s*git show/);
   });
 });

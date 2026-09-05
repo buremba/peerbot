@@ -2,18 +2,24 @@
  * Tool: manage_view_templates
  *
  * Unified view template versioning for entity types and individual entities.
- * Actions: set, get, rollback, remove_tab
+ * Actions: set, get, rollback, remove_tab, clear
  */
 
 
 import { validateEntityRowPatch } from "../../authz/entity-row-validation";
 import {
+  ClearViewTemplateAction,
+  GetViewTemplateAction,
   ManageViewTemplatesResultSchema,
   ManageViewTemplatesSchema,
+  RemoveViewTemplateTabAction,
+  RollbackViewTemplateAction,
+  SetViewTemplateAction,
   type ManageViewTemplatesArgs,
   type ManageViewTemplatesResult,
   type ViewTemplateVersionRow,
 } from '@lobu/core/contracts/tools/manage-view-templates';
+import type { Static } from '@sinclair/typebox';
 import { type DbClient, getDb } from '../../db/client';
 import { emit } from '../../events/emitter';
 import { recordToolConfigChange } from './helpers/config-audit';
@@ -23,8 +29,7 @@ import { validateDataSourceQuery } from '../../utils/execute-data-sources';
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import { validateJsonTemplate } from '../../utils/validate-json-template';
 import type { ToolContext } from '../registry';
-import { withValidatedArgs } from '../validate-args';
-import { defineFlatActionTool, flatAction } from './action-tool';
+import { action, defineActionTool } from './action-tool';
 
 export { ManageViewTemplatesResultSchema, ManageViewTemplatesSchema };
 
@@ -50,20 +55,17 @@ function mapVersionRow(row: Record<string, unknown>): ViewTemplateVersionRow {
 // Main Function
 // ============================================
 
-export const manageViewTemplates = withValidatedArgs(
-  'manage_view_templates',
-  ManageViewTemplatesSchema,
-  defineFlatActionTool<ManageViewTemplatesArgs, ManageViewTemplatesResult>(
-    'manage_view_templates',
-    {
-      set: flatAction(handleSet),
-      get: flatAction(handleGet),
-      rollback: flatAction(handleRollback),
-      remove_tab: flatAction(handleRemoveTab),
-      clear: flatAction(handleClear),
-    }
-  )
-);
+// Variants in the contract's order, so the derived union matches the exposed
+// `ManageViewTemplatesSchema`. Each handler receives its own variant's args.
+const manageViewTemplatesTool = defineActionTool('manage_view_templates', {
+  set: action(SetViewTemplateAction, handleSet),
+  get: action(GetViewTemplateAction, handleGet),
+  rollback: action(RollbackViewTemplateAction, handleRollback),
+  remove_tab: action(RemoveViewTemplateTabAction, handleRemoveTab),
+  clear: action(ClearViewTemplateAction, handleClear),
+});
+
+export const manageViewTemplates = manageViewTemplatesTool.run;
 
 // ============================================
 // Helpers
@@ -231,11 +233,9 @@ function validateDataSources(dataSources: unknown): void {
 }
 
 async function handleSet(
-  args: ManageViewTemplatesArgs,
+  args: Static<typeof SetViewTemplateAction>,
   ctx: ToolContext
 ): Promise<ManageViewTemplatesResult> {
-  if (!args.json_template) throw new Error('json_template is required for set action');
-
   validateDataSources(args.json_template.data_sources);
   // Structural DSL validation: fail fast at authoring on a malformed node tree
   // (bad node shape / missing required field / unknown `format`) rather than
@@ -321,7 +321,7 @@ async function handleSet(
 }
 
 async function handleGet(
-  args: ManageViewTemplatesArgs,
+  args: Static<typeof GetViewTemplateAction>,
   ctx: ToolContext
 ): Promise<ManageViewTemplatesResult> {
   const sql = getDb();
@@ -400,7 +400,7 @@ async function handleGet(
  * template a pruning config no longer declares (named tabs use `remove_tab`).
  */
 async function handleClear(
-  args: ManageViewTemplatesArgs,
+  args: Static<typeof ClearViewTemplateAction>,
   ctx: ToolContext
 ): Promise<ManageViewTemplatesResult> {
   const sql = getDb();
@@ -427,11 +427,9 @@ async function handleClear(
 }
 
 async function handleRollback(
-  args: ManageViewTemplatesArgs,
+  args: Static<typeof RollbackViewTemplateAction>,
   ctx: ToolContext
 ): Promise<ManageViewTemplatesResult> {
-  if (args.version === undefined) throw new Error('version is required for rollback action');
-
   const sql = getDb();
   const rowId = await verifyAccess(sql, args, ctx, true);
   const resourceId = rid(args);
@@ -506,11 +504,9 @@ async function handleRollback(
 }
 
 async function handleRemoveTab(
-  args: ManageViewTemplatesArgs,
+  args: Static<typeof RemoveViewTemplateTabAction>,
   ctx: ToolContext
 ): Promise<ManageViewTemplatesResult> {
-  if (!args.tab_name) throw new Error('tab_name is required for remove_tab action');
-
   const sql = getDb();
   await verifyAccess(sql, args, ctx, true);
   const resourceId = rid(args);

@@ -7,43 +7,23 @@
  * inside it when they want SQL-backed sources.
  */
 
+import type {
+	ViewTemplateGetInput,
+	ViewTemplateRemoveTabInput,
+	ViewTemplateRollbackInput,
+	ViewTemplateSetInput,
+} from "@lobu/core/contracts/tools/manage-view-templates";
 import type { Env } from "../../index";
 import { manageViewTemplates } from "../../tools/admin/manage_view_templates";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
-type ResourceType = "entity_type" | "entity";
-type ResourceId = string | number;
-
-export interface ViewTemplateSetInput {
-	resource_type: ResourceType;
-	resource_id: ResourceId;
-	json_template: Record<string, unknown>;
-	tab_name?: string;
-	tab_order?: number;
-	change_notes?: string;
-}
-
 export interface ViewTemplatesNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	get(input: {
-		resource_type: ResourceType;
-		resource_id: ResourceId;
-		tab_name?: string;
-	}): Promise<unknown>;
+	get(input: ViewTemplateGetInput): Promise<unknown>;
 	set(input: ViewTemplateSetInput): Promise<unknown>;
-	rollback(input: {
-		resource_type: ResourceType;
-		resource_id: ResourceId;
-		/** Version number (not the row id) to roll back to. */
-		version: number;
-		tab_name?: string;
-	}): Promise<unknown>;
-	removeTab(input: {
-		resource_type: ResourceType;
-		resource_id: ResourceId;
-		tab_name: string;
-	}): Promise<unknown>;
+	rollback(input: ViewTemplateRollbackInput): Promise<unknown>;
+	removeTab(input: ViewTemplateRemoveTabInput): Promise<unknown>;
 }
 
 export function buildViewTemplatesNamespace(

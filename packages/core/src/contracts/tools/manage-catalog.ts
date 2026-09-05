@@ -95,3 +95,4 @@ export const ManageCatalogResultSchema = Type.Union([
 export type ManageCatalogResult = Static<typeof ManageCatalogResultSchema>;
 export type ListCatalogArgs = Static<typeof ListCatalogAction>;
 export type ListInstalledArgs = Static<typeof ListInstalledAction>;
+export type ManageCatalogArgs = Static<typeof ManageCatalogSchema>;

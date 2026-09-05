@@ -197,10 +197,10 @@ function scanTypeBoxSchemas(file: string, violations: Violation[]): void {
 /**
  * Workspace packages whose types are part of the agent-facing surface. A
  * namespace signature reaches into these directly — `listCatalog(input?:
- * Omit<ListCatalogArgs, "action">)` imports `ListCatalogArgs` from
- * `@lobu/core/...` — so treating "not relative" as "not ours" would skip a
- * live wire contract. Third-party packages stay out of scope: node_modules is
- * not our surface to police.
+ * CatalogListCatalogInput)` resolves through `ActionInput<ManageCatalogArgs,
+ * "list_catalog">`, both imported from `@lobu/core/...` — so treating "not
+ * relative" as "not ours" would skip a live wire contract. Third-party
+ * packages stay out of scope: node_modules is not our surface to police.
  */
 const WORKSPACE_ALIASES: ReadonlyArray<readonly [string, string]> = [
   ["@lobu/core/", join(REPO_ROOT, "packages/core/src/")],

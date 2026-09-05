@@ -7,10 +7,12 @@
  * follow the handler schema.
  */
 
+import type { ActionInput } from "@lobu/core/contracts/tools/action-input";
 import type {
 	ConnectionConnectInput,
 	ConnectionConnectManagedInput,
 	ConnectionCreateInput,
+	ConnectionsArgs,
 	ConnectionUpdateInput,
 	GetConnectorSourceInput,
 	InstallConnectorInput,
@@ -28,20 +30,24 @@ export type ConnectionsConnectManagedInput = ConnectionConnectManagedInput;
 export type ConnectionsCreateInput = ConnectionCreateInput;
 export type ConnectionsUpdateInput = ConnectionUpdateInput;
 export type ConnectionsInstallConnectorInput = InstallConnectorInput;
+export type ConnectionsListInput = ActionInput<ConnectionsArgs, "list">;
+export type ConnectionsToggleConnectorLoginInput = ActionInput<
+	ConnectionsArgs,
+	"toggle_connector_login"
+>;
+export type ConnectionsUpdateConnectorAuthInput = ActionInput<
+	ConnectionsArgs,
+	"update_connector_auth"
+>;
+export type ConnectionsUpdateConnectorDefaultConfigInput = ActionInput<
+	ConnectionsArgs,
+	"update_connector_default_config"
+>;
 
 export interface ConnectionsNamespace {
 	/** Raw escape hatch for any manage_connections action. Prefer named methods. */
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	list(input?: {
-		connector_key?: string;
-		status?: string;
-		entity_id?: number;
-		created_by?: string;
-		connection_ids?: number[];
-		setup_attempt_id?: string;
-		limit?: number;
-		offset?: number;
-	}): Promise<unknown>;
+	list(input?: ConnectionsListInput): Promise<unknown>;
 	get(connection_id: number): Promise<unknown>;
 	create(input: ConnectionsCreateInput): Promise<unknown>;
 	connect(input: ConnectionsConnectInput): Promise<unknown>;
@@ -60,18 +66,15 @@ export interface ConnectionsNamespace {
 	rollbackConnectorVersion(
 		input: RollbackConnectorVersionInput,
 	): Promise<unknown>;
-	toggleConnectorLogin(input: {
-		connector_key: string;
-		enabled: boolean;
-	}): Promise<unknown>;
-	updateConnectorAuth(input: {
-		connector_key: string;
-		auth_values: Record<string, string>;
-	}): Promise<unknown>;
-	updateConnectorDefaultConfig(input: {
-		connector_key: string;
-		default_connection_config: Record<string, unknown>;
-	}): Promise<unknown>;
+	toggleConnectorLogin(
+		input: ConnectionsToggleConnectorLoginInput,
+	): Promise<unknown>;
+	updateConnectorAuth(
+		input: ConnectionsUpdateConnectorAuthInput,
+	): Promise<unknown>;
+	updateConnectorDefaultConfig(
+		input: ConnectionsUpdateConnectorDefaultConfigInput,
+	): Promise<unknown>;
 }
 
 export function buildConnectionsNamespace(

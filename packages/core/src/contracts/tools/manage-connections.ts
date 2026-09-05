@@ -3,6 +3,7 @@
  */
 
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 import { paginationFields } from "./pagination";
 
 const ConnectionFacetsSchema = Type.Object({
@@ -949,35 +950,32 @@ export type ManageConnectionsResult = Static<
   typeof ManageConnectionsResultSchema
 >;
 
-export type ConnectionConnectInput = Omit<
-  Static<typeof ConnectAction>,
-  "action"
+export type ConnectionConnectInput = ActionInput<ConnectionsArgs, "connect">;
+export type ConnectionConnectManagedInput = ActionInput<
+  ConnectionsArgs,
+  "connect_managed"
 >;
-export type ConnectionConnectManagedInput = Omit<
-  Static<typeof ConnectManagedAction>,
-  "action"
+export type ConnectionCreateInput = ActionInput<ConnectionsArgs, "create">;
+export type ConnectionUpdateInput = ActionInput<ConnectionsArgs, "update">;
+export type InstallConnectorInput = ActionInput<
+  ConnectionsArgs,
+  "install_connector"
 >;
-export type ConnectionCreateInput = Omit<Static<typeof CreateAction>, "action">;
-export type ConnectionUpdateInput = Omit<Static<typeof UpdateAction>, "action">;
-export type InstallConnectorInput = Omit<
-  Static<typeof InstallConnectorAction>,
-  "action"
+export type GetConnectorSourceInput = ActionInput<
+  ConnectionsArgs,
+  "get_connector_source"
 >;
-export type GetConnectorSourceInput = Omit<
-  Static<typeof GetConnectorSourceAction>,
-  "action"
+export type ValidateConnectorSourceInput = ActionInput<
+  ConnectionsArgs,
+  "validate_connector_source"
 >;
-export type ValidateConnectorSourceInput = Omit<
-  Static<typeof ValidateConnectorSourceAction>,
-  "action"
+export type UpdateConnectorSourceInput = ActionInput<
+  ConnectionsArgs,
+  "update_connector_source"
 >;
-export type UpdateConnectorSourceInput = Omit<
-  Static<typeof UpdateConnectorSourceAction>,
-  "action"
->;
-export type RollbackConnectorVersionInput = Omit<
-  Static<typeof RollbackConnectorVersionAction>,
-  "action"
+export type RollbackConnectorVersionInput = ActionInput<
+  ConnectionsArgs,
+  "rollback_connector_version"
 >;
 
 /**

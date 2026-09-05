@@ -5,67 +5,30 @@
  * data surface this feed will sync.
  */
 
+import type { ActionInput } from "@lobu/core/contracts/tools/action-input";
+import type { ManageFeedsArgs } from "@lobu/core/contracts/tools/manage-feeds";
 import type { Env } from "../../index";
 import { manageFeeds } from "../../tools/admin/manage_feeds";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
-export interface FeedsCreateInput {
-	connection_id: number;
-	feed_key: string;
-	display_name?: string;
-	entity_ids?: number[];
-	config?: Record<string, unknown>;
-	schedule?: string | null;
-	/** IANA zone the schedule is evaluated in; omit for server time (UTC). */
-	timezone?: string;
-}
+export type FeedsListInput = ActionInput<ManageFeedsArgs, "list_feeds">;
+export type FeedsGetInput = ActionInput<ManageFeedsArgs, "read_feed">;
+export type FeedsReadManyInput = ActionInput<ManageFeedsArgs, "read_feeds">;
+export type FeedsCreateInput = ActionInput<ManageFeedsArgs, "create_feed">;
+export type FeedsUpdateInput = ActionInput<ManageFeedsArgs, "update_feed">;
+export type FeedsDeleteInput = ActionInput<ManageFeedsArgs, "delete_feed">;
+export type FeedsTriggerInput = ActionInput<ManageFeedsArgs, "trigger_feed">;
 
 export interface FeedsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	list(input?: {
-		connection_id?: number;
-		feed_ids?: number[];
-		entity_id?: number;
-		status?: "active" | "paused";
-		health?: "healthy" | "failing";
-		limit?: number;
-		offset?: number;
-	}): Promise<unknown>;
-	get(input: { feed_id: number }): Promise<unknown>;
-	readMany(input: {
-		reads: Array<{
-			feed_id: number;
-			query?: string;
-			limit?: number;
-			cursor?: string;
-			sort?: { column: string; order: "asc" | "desc" };
-		}>;
-		timeout_ms?: number;
-	}): Promise<unknown>;
+	list(input?: FeedsListInput): Promise<unknown>;
+	get(input: FeedsGetInput): Promise<unknown>;
+	readMany(input: FeedsReadManyInput): Promise<unknown>;
 	create(input: FeedsCreateInput): Promise<unknown>;
-	update(input: {
-		feed_id: number;
-		display_name?: string;
-		status?: "active" | "paused";
-		entity_ids?: number[];
-		config?: Record<string, unknown>;
-		replace_config?: boolean;
-		schedule?: string | null;
-		/** IANA zone for the schedule; null clears it (server time). */
-		timezone?: string | null;
-	}): Promise<unknown>;
-	delete(input: { feed_id: number }): Promise<unknown>;
-	trigger(input: {
-		feed_id: number;
-		/**
-		 * Run the connector for real but persist nothing — no events, entities or
-		 * attachments, and the feed's checkpoint and sync state stay put. Once the
-		 * run completes, a capped preview of what would have been ingested is on
-		 * its `dry_run_preview`, readable via `feeds.get`.
-		 */
-		dry_run?: boolean;
-	}): Promise<unknown>;
+	update(input: FeedsUpdateInput): Promise<unknown>;
+	delete(input: FeedsDeleteInput): Promise<unknown>;
+	trigger(input: FeedsTriggerInput): Promise<unknown>;
 }
 
 export function buildFeedsNamespace(

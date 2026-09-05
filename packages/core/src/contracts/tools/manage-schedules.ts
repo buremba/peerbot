@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { type Static, Type } from "@sinclair/typebox";
 
 // ============================================
 // Schema
@@ -153,3 +153,5 @@ export const ManageSchedulesSchema = Type.Union([
   PauseAction,
   CancelAction,
 ]);
+
+export type ManageSchedulesArgs = Static<typeof ManageSchedulesSchema>;

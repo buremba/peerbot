@@ -953,7 +953,7 @@ export default async (_ctx, client) => {
 		summary: "List reusable auth profiles.",
 		access: "read",
 		signature:
-			"authProfiles.list(input?: { connector_key?: string; provider?: string; profile_kind?: AuthProfileKind }): Promise<unknown> // not paginated",
+			"authProfiles.list(input?: { connector_key?: string; provider?: string; profile_kind?: 'env' | 'oauth_app' | 'oauth_account' | 'browser_session' }): Promise<unknown> // not paginated",
 	},
 	"authProfiles.get": {
 		summary:

@@ -11,53 +11,44 @@
  *     session state).
  */
 
+import type { ActionInput } from "@lobu/core/contracts/tools/action-input";
+import type { ManageAuthProfilesArgs } from "@lobu/core/contracts/tools/manage-auth-profiles";
 import type { Env } from "../../index";
 import { manageAuthProfiles } from "../../tools/admin/manage_auth_profiles";
 import type { ToolContext } from "../../tools/registry";
-import type { AuthProfileKind as StoredAuthProfileKind } from "../../utils/auth-profiles";
 import { createActionCaller, idArg } from "./action-call";
 
-/** Kinds manageable through the SDK — the stored kinds minus the internal-only `interactive`. */
-export type AuthProfileKind = Exclude<StoredAuthProfileKind, "interactive">;
-
-export interface AuthProfileCreateInput {
-	profile_kind: AuthProfileKind;
-	connector_key: string;
-	display_name: string;
-	/** Optional stable slug for the new profile. Auto-derived when omitted. */
-	slug?: string;
-	credentials?: Record<string, string>;
-	auth_data?: Record<string, unknown>;
-	requested_scopes?: string[];
-}
-
-export interface AuthProfileUpdateInput {
-	/** Identifies the profile to mutate. */
-	auth_profile_slug: string;
-	display_name?: string;
-	/** Rename the profile. */
-	slug?: string;
-	credentials?: Record<string, string>;
-	auth_data?: Record<string, unknown>;
-	requested_scopes?: string[];
-	status?: string;
-	reconnect?: boolean;
-}
+// The `profile_kind` on list/create covers the four caller-manageable kinds
+// only. The stored enum also has `interactive`, which the contract deliberately
+// omits: interactive-connection setup mints those profiles itself.
+export type AuthProfileListInput = ActionInput<
+	ManageAuthProfilesArgs,
+	"list_auth_profiles"
+>;
+export type AuthProfileCreateInput = ActionInput<
+	ManageAuthProfilesArgs,
+	"create_auth_profile"
+>;
+export type AuthProfileUpdateInput = ActionInput<
+	ManageAuthProfilesArgs,
+	"update_auth_profile"
+>;
+/** `delete` takes the slug positionally; the rest of the action rides in `options`. */
+export type AuthProfileDeleteOptions = Omit<
+	ActionInput<ManageAuthProfilesArgs, "delete_auth_profile">,
+	"auth_profile_slug"
+>;
 
 export interface AuthProfilesNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	list(input?: {
-		connector_key?: string;
-		provider?: string;
-		profile_kind?: AuthProfileKind;
-	}): Promise<unknown>;
+	list(input?: AuthProfileListInput): Promise<unknown>;
 	get(auth_profile_slug: string): Promise<unknown>;
 	test(auth_profile_slug: string): Promise<unknown>;
 	create(input: AuthProfileCreateInput): Promise<unknown>;
 	update(input: AuthProfileUpdateInput): Promise<unknown>;
 	delete(
 		auth_profile_slug: string,
-		options?: { force?: boolean },
+		options?: AuthProfileDeleteOptions,
 	): Promise<unknown>;
 }
 

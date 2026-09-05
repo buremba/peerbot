@@ -1,5 +1,6 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { ApprovalAttributionSchema } from "../interaction-envelope";
+import type { ActionInput } from "./action-input";
 import { paginationFields } from "./pagination";
 
 function SortOrderField(description: string) {
@@ -9,60 +10,310 @@ function SortOrderField(description: string) {
 }
 
 // ============================================
-// Typebox Schema
+// Typebox Schema (union of per-action variants)
 // ============================================
+//
+// The wire schema flattens this union into ONE MCP object and merges duplicate
+// properties first-occurrence-wins, so a property carried by more than one
+// variant must read true for every one of them.
 
-export const ManageEntitySchema = Type.Object({
-  action: Type.Union(
-    [
-      Type.Literal("create", {
-        description: "Create an entity of a given type.",
-      }),
-      Type.Literal("update", {
-        description:
-          "Patch entity fields (human-owned fields queued for approval).",
-      }),
-      Type.Literal("list", {
-        description: "Paginated entity list with filters.",
-      }),
-      Type.Literal("get", { description: "Fetch one entity." }),
-      Type.Literal("delete", {
-        description: "Delete an entity (force_delete_tree for cascading).",
-      }),
-      Type.Literal("link", {
-        description: "Create a relationship edge between two entities.",
-      }),
-      Type.Literal("unlink", { description: "Soft-delete a relationship." }),
-      Type.Literal("update_link", {
-        description: "Patch relationship metadata/confidence/source.",
-      }),
-      Type.Literal("list_links", {
-        description: "List relationships for an entity with filters + counts.",
-      }),
-      Type.Literal("merge", {
-        description:
-          "Fold a duplicate entity (entity_id) into the one it really is (winner_entity_id). The loser is tombstoned + forwarded; its identities, aliases, edges, and events recall against the winner. Events are never rewritten. Use when two entities are confirmed the same real-world thing.",
-      }),
-      Type.Literal("resolve_duplicates", {
-        description:
-          "Discover duplicate components among candidate_entity_ids using the entity type's x-lobu-resolution policy, then auto-merge deterministic matches or queue review.",
-      }),
-      Type.Literal("unmerge", {
-        description:
-          "Reverse a merge from its durable ledger: restore the loser's identities, canonical attributes, and relationships, then un-tombstone it. Fails closed if later edits made exact reversal unsafe.",
-      }),
-    ],
-    { description: "Action to perform" }
-  ),
+const EntityType = Type.String({
+  description: "Entity type as defined in your workspace",
+});
 
-  // Merge target (the survivor) — the loser is passed as `entity_id`.
-  winner_entity_id: Type.Optional(
-    Type.Number({
+const EntityId = Type.Number({
+  description:
+    "[get/update/delete/list_links/merge/unmerge] Entity ID to operate on",
+});
+
+// Attributes an entity carries. `create` and `update` share the set; `list`
+// filters on `parent_id`, `category`, `main_market` and `market`.
+const EntityFields = {
+  name: Type.String({
+    description: "[create/update] Entity name",
+    minLength: 1,
+  }),
+  content: Type.String({
+    description:
+      "[create/update] Free-text content body. Used by memory entities and any entity that carries rich text.",
+  }),
+  slug: Type.String({
+    description:
+      "[create/update] URL-friendly slug (auto-generated from name if not provided)",
+    pattern: "^[a-z0-9]+(-[a-z0-9]+)*$",
+  }),
+  parent_id: Type.Number({
+    description:
+      "[create/update/list] Parent entity ID (for hierarchical entities). On list, only that parent's children.",
+  }),
+  enabled_classifiers: Type.Array(Type.String(), {
+    description: "[create/update] Enabled classifier slugs",
+  }),
+  domain: Type.String({
+    description: "[create/update] Primary domain (e.g., spotify.com)",
+  }),
+  category: Type.String({
+    description: "[create/update/list] Industry category",
+  }),
+  platform_type: Type.String({
+    description: "[create/update] Platform type (b2b, b2c, b2b2c)",
+  }),
+  main_market: Type.String({
+    description: "[create/update/list] Primary market (ISO 3166-1 alpha-2)",
+  }),
+  market: Type.String({
+    description: "[create/update/list] Market/region (ISO 3166-1 alpha-2)",
+  }),
+  link: Type.String({ description: "[create/update] Entity URL" }),
+};
+
+// Custom metadata (validated against entity type's JSON schema)
+const Metadata = Type.Record(Type.String(), Type.Unknown(), {
+  description:
+    "[create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).",
+});
+
+// Carried by exactly the variants whose handler reads it: the principal seam
+// (`create`, `update`, `list`, `delete`, `merge`), the read gate that consults
+// it (`list_links`), and reaction tracking (`link`). `get` resolves its read
+// gate without one, and `unlink`/`update_link`/`resolve_duplicates`/`unmerge`
+// never consult it — declaring it there would advertise an inert field.
+const AutomationSource = Type.Object(
+  {
+    automation_id: Type.Number({
+      description: "Automation that triggered this mutation",
+    }),
+    run_id: Type.Number({
+      description: "Automation run that triggered this mutation",
+    }),
+  },
+  {
+    description:
+      "Attribution source when mutation is triggered by an Automation reaction",
+  }
+);
+
+const DryRun = Type.Boolean({
+  description:
+    "[delete, merge] Preflight only. For delete: report what it would remove/detach. For merge: report whether the type's write rules would refuse it. Mutates nothing and never queues an approval.",
+});
+
+const IncludeDeleted = Type.Boolean({
+  description:
+    "[get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.",
+});
+
+// ---- Relationship (link) fields ----
+// `link` needs the endpoint triple; `unlink`/`update_link` address an edge by
+// `relationship_id` OR by the triple (the handler resolves whichever is given).
+const EdgeEndpoints = {
+  from_entity_id: Type.Number({
+    description:
+      "[link/unlink/update_link] Source entity ID. For unlink/update_link, supply this triple instead of relationship_id to address the edge by its endpoints.",
+  }),
+  to_entity_id: Type.Number({
+    description: "[link/unlink/update_link] Target entity ID",
+  }),
+  relationship_type_slug: Type.String({
+    description: "[link/unlink/update_link/list_links] Relationship type slug",
+    minLength: 1,
+  }),
+};
+
+const RelationshipId = Type.Number({
+  description:
+    "[update_link/unlink] Relationship ID. Optional when from_entity_id + to_entity_id + relationship_type_slug identify the edge.",
+});
+
+const Confidence = Type.Number({
+  description:
+    "[link/update_link] Confidence score 0-1. Defaults to 1.0 for ui/api source.",
+  minimum: 0,
+  maximum: 1,
+});
+
+const RelationshipSource = Type.Union(
+  [
+    Type.Literal("ui"),
+    Type.Literal("llm"),
+    Type.Literal("feed"),
+    Type.Literal("api"),
+  ],
+  {
+    description:
+      "[link/update_link] Source of the relationship. [list_links] Only relationships from this source.",
+  }
+);
+
+export const CreateEntityAction = Type.Object({
+  action: Type.Literal("create", {
+    description: "Create an entity of a given type.",
+  }),
+  entity_type: EntityType,
+  name: EntityFields.name,
+  content: Type.Optional(EntityFields.content),
+  slug: Type.Optional(EntityFields.slug),
+  parent_id: Type.Optional(EntityFields.parent_id),
+  enabled_classifiers: Type.Optional(EntityFields.enabled_classifiers),
+  domain: Type.Optional(EntityFields.domain),
+  category: Type.Optional(EntityFields.category),
+  platform_type: Type.Optional(EntityFields.platform_type),
+  main_market: Type.Optional(EntityFields.main_market),
+  market: Type.Optional(EntityFields.market),
+  link: Type.Optional(EntityFields.link),
+  metadata: Type.Optional(Metadata),
+  automation_source: Type.Optional(AutomationSource),
+});
+
+export const UpdateEntityAction = Type.Object({
+  action: Type.Literal("update", {
+    description:
+      "Patch entity fields (human-owned fields queued for approval).",
+  }),
+  entity_id: EntityId,
+  name: Type.Optional(EntityFields.name),
+  content: Type.Optional(EntityFields.content),
+  slug: Type.Optional(EntityFields.slug),
+  parent_id: Type.Optional(EntityFields.parent_id),
+  enabled_classifiers: Type.Optional(EntityFields.enabled_classifiers),
+  domain: Type.Optional(EntityFields.domain),
+  category: Type.Optional(EntityFields.category),
+  platform_type: Type.Optional(EntityFields.platform_type),
+  main_market: Type.Optional(EntityFields.main_market),
+  market: Type.Optional(EntityFields.market),
+  link: Type.Optional(EntityFields.link),
+  metadata: Type.Optional(Metadata),
+  // Human-correction annotation
+  field_note: Type.Optional(
+    Type.String({
       description:
-        "[merge] The surviving entity that absorbs `entity_id` (the duplicate).",
+        "[update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so an Automation (and the UI) can see why the value was set.",
     })
   ),
+  // Approve/affirm: claim ownership of a field's current value without changing it
+  affirm_fields: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        "[update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so an Automation can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.",
+    })
+  ),
+  automation_source: Type.Optional(AutomationSource),
+});
 
+export const ListEntitiesAction = Type.Object({
+  action: Type.Literal("list", {
+    description: "Paginated entity list with filters.",
+  }),
+  entity_type: Type.Optional(EntityType),
+  parent_id: Type.Optional(EntityFields.parent_id),
+  search: Type.Optional(Type.String({ description: "[list] Search by name" })),
+  category: Type.Optional(EntityFields.category),
+  main_market: Type.Optional(EntityFields.main_market),
+  market: Type.Optional(EntityFields.market),
+  ...paginationFields(100),
+  sort_by: Type.Optional(
+    Type.String({
+      description:
+        "[list] Sort by column (name, created_at, domain, total_content, active_connections, automations_count, children_count)",
+    })
+  ),
+  sort_order: SortOrderField("[list] Sort order (asc or desc)"),
+  automation_source: Type.Optional(AutomationSource),
+});
+
+export const GetEntityAction = Type.Object({
+  action: Type.Literal("get", { description: "Fetch one entity." }),
+  entity_id: EntityId,
+  include_deleted: Type.Optional(IncludeDeleted),
+});
+
+export const DeleteEntityAction = Type.Object({
+  action: Type.Literal("delete", {
+    description: "Delete an entity (force_delete_tree for cascading).",
+  }),
+  entity_id: EntityId,
+  force_delete_tree: Type.Optional(
+    Type.Boolean({
+      description:
+        "[delete] Hard delete entity and all descendants. Event history is never deleted (append-only) — event rows referencing the tree are detached instead.",
+    })
+  ),
+  dry_run: Type.Optional(DryRun),
+  automation_source: Type.Optional(AutomationSource),
+});
+
+export const LinkEntitiesAction = Type.Object({
+  action: Type.Literal("link", {
+    description: "Create a relationship edge between two entities.",
+  }),
+  from_entity_id: EdgeEndpoints.from_entity_id,
+  to_entity_id: EdgeEndpoints.to_entity_id,
+  relationship_type_slug: EdgeEndpoints.relationship_type_slug,
+  confidence: Type.Optional(Confidence),
+  source: Type.Optional(RelationshipSource),
+  metadata: Type.Optional(Metadata),
+  automation_source: Type.Optional(AutomationSource),
+});
+
+export const UnlinkEntitiesAction = Type.Object({
+  action: Type.Literal("unlink", {
+    description: "Soft-delete a relationship.",
+  }),
+  relationship_id: Type.Optional(RelationshipId),
+  from_entity_id: Type.Optional(EdgeEndpoints.from_entity_id),
+  to_entity_id: Type.Optional(EdgeEndpoints.to_entity_id),
+  relationship_type_slug: Type.Optional(EdgeEndpoints.relationship_type_slug),
+});
+
+export const UpdateLinkAction = Type.Object({
+  action: Type.Literal("update_link", {
+    description: "Patch relationship metadata/confidence/source.",
+  }),
+  relationship_id: Type.Optional(RelationshipId),
+  from_entity_id: Type.Optional(EdgeEndpoints.from_entity_id),
+  to_entity_id: Type.Optional(EdgeEndpoints.to_entity_id),
+  relationship_type_slug: Type.Optional(EdgeEndpoints.relationship_type_slug),
+  confidence: Type.Optional(Confidence),
+  source: Type.Optional(RelationshipSource),
+  metadata: Type.Optional(Metadata),
+});
+
+export const ListLinksAction = Type.Object({
+  action: Type.Literal("list_links", {
+    description: "List relationships for an entity with filters + counts.",
+  }),
+  entity_id: EntityId,
+  direction: Type.Optional(
+    Type.Union(
+      [Type.Literal("outbound"), Type.Literal("inbound"), Type.Literal("both")],
+      { description: "[list_links] Direction filter. Default both." }
+    )
+  ),
+  relationship_type_slug: Type.Optional(EdgeEndpoints.relationship_type_slug),
+  confidence_min: Type.Optional(
+    Type.Number({
+      description: "[list_links] Minimum confidence threshold",
+      minimum: 0,
+      maximum: 1,
+    })
+  ),
+  source: Type.Optional(RelationshipSource),
+  include_deleted: Type.Optional(IncludeDeleted),
+  ...paginationFields(100),
+  automation_source: Type.Optional(AutomationSource),
+});
+
+export const MergeEntitiesAction = Type.Object({
+  action: Type.Literal("merge", {
+    description:
+      "Fold a duplicate entity (entity_id) into the one it really is (winner_entity_id). The loser is tombstoned + forwarded; its identities, aliases, edges, and events recall against the winner. Events are never rewritten. Use when two entities are confirmed the same real-world thing.",
+  }),
+  // Merge target (the survivor) — the loser is passed as `entity_id`.
+  winner_entity_id: Type.Number({
+    description:
+      "[merge] The surviving entity that absorbs `entity_id` (the duplicate).",
+  }),
+  entity_id: Type.Optional(EntityId),
   duplicate_entity_ids: Type.Optional(
     Type.Array(Type.Number(), {
       minItems: 1,
@@ -72,17 +323,6 @@ export const ManageEntitySchema = Type.Object({
         "[merge] All duplicate entities to fold into winner_entity_id. Use this for a duplicate group; entity_id remains supported for a single duplicate.",
     })
   ),
-
-  candidate_entity_ids: Type.Optional(
-    Type.Array(Type.Integer({ minimum: 1 }), {
-      minItems: 2,
-      maxItems: 5000,
-      uniqueItems: true,
-      description:
-        "[resolve_duplicates] Candidate entity IDs. The server re-reads their values and applies the entity type's resolution policy.",
-    })
-  ),
-
   merge_evidence: Type.Optional(
     Type.Array(
       Type.Object({
@@ -99,7 +339,6 @@ export const ManageEntitySchema = Type.Object({
       }
     )
   ),
-
   merge_rationale: Type.Optional(
     Type.String({
       maxLength: 500,
@@ -107,210 +346,61 @@ export const ManageEntitySchema = Type.Object({
         "[merge] Why you believe these are the same thing, in one sentence, for the human reviewing the approval card (e.g. 'Same phone digits; the shell is a WhatsApp handle for this contact.'). Shown as your claim, clearly separated from the workspace's own policy verdict — it never counts as proof and never affects whether the merge auto-applies.",
     })
   ),
-
-  // Entity type (required for create, list)
-  entity_type: Type.Optional(
-    Type.String({
-      description: "Entity type as defined in your workspace",
-    })
-  ),
-
-  // Entity ID (for get, update, delete, list_links, merge, and unmerge)
-  entity_id: Type.Optional(
-    Type.Number({
-      description:
-        "[get/update/delete/list_links/merge/unmerge] Entity ID to operate on",
-    })
-  ),
-
-  // Common fields
-  name: Type.Optional(
-    Type.String({ description: "[create/update] Entity name", minLength: 1 })
-  ),
-  content: Type.Optional(
-    Type.String({
-      description:
-        "[create/update] Free-text content body. Used by memory entities and any entity that carries rich text.",
-    })
-  ),
-  slug: Type.Optional(
-    Type.String({
-      description:
-        "[create/update] URL-friendly slug (auto-generated from name if not provided)",
-      pattern: "^[a-z0-9]+(-[a-z0-9]+)*$",
-    })
-  ),
-  parent_id: Type.Optional(
-    Type.Number({
-      description:
-        "[create/update] Parent entity ID (for hierarchical entities)",
-    })
-  ),
-  enabled_classifiers: Type.Optional(
-    Type.Array(Type.String(), {
-      description: "[create/update] Enabled classifier slugs",
-    })
-  ),
-
-  // Optional fields (available on all entity types)
-  domain: Type.Optional(
-    Type.String({
-      description: "[create/update] Primary domain (e.g., spotify.com)",
-    })
-  ),
-  category: Type.Optional(
-    Type.String({ description: "[create/update/list] Industry category" })
-  ),
-  platform_type: Type.Optional(
-    Type.String({
-      description: "[create/update] Platform type (b2b, b2c, b2b2c)",
-    })
-  ),
-  main_market: Type.Optional(
-    Type.String({
-      description: "[create/update/list] Primary market (ISO 3166-1 alpha-2)",
-    })
-  ),
-  market: Type.Optional(
-    Type.String({
-      description: "[create/update/list] Market/region (ISO 3166-1 alpha-2)",
-    })
-  ),
-  link: Type.Optional(
-    Type.String({ description: "[create/update] Entity URL" })
-  ),
-
-  // Custom metadata (validated against entity type's JSON schema)
-  metadata: Type.Optional(
-    Type.Record(Type.String(), Type.Unknown(), {
-      description:
-        "[create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).",
-    })
-  ),
-
-  // Human-correction annotation
-  field_note: Type.Optional(
-    Type.String({
-      description:
-        "[update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so an Automation (and the UI) can see why the value was set.",
-    })
-  ),
-
-  // Approve/affirm: claim ownership of a field's current value without changing it
-  affirm_fields: Type.Optional(
-    Type.Array(Type.String(), {
-      description:
-        "[update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so an Automation can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.",
-    })
-  ),
-
-  // List/pagination
-  search: Type.Optional(Type.String({ description: "[list] Search by name" })),
-  ...paginationFields(100),
-  sort_by: Type.Optional(
-    Type.String({
-      description:
-        "[list] Sort by column (name, created_at, domain, total_content, active_connections, automations_count, children_count)",
-    })
-  ),
-  sort_order: SortOrderField("[list] Sort order (asc or desc)"),
-
-  // Delete options
-  force_delete_tree: Type.Optional(
-    Type.Boolean({
-      description:
-        "[delete] Hard delete entity and all descendants. Event history is never deleted (append-only) — event rows referencing the tree are detached instead.",
-    })
-  ),
-  dry_run: Type.Optional(
-    Type.Boolean({
-      description:
-        "[delete, merge] Preflight only. For delete: report what it would remove/detach. For merge: report whether the type's write rules would refuse it. Mutates nothing and never queues an approval.",
-    })
-  ),
-
-  // ---- Relationship (link) fields ----
-  from_entity_id: Type.Optional(
-    Type.Number({
-      description:
-        "[link/unlink/update_link] Source entity ID. For unlink/update_link, supply this triple instead of relationship_id to address the edge by its endpoints.",
-    })
-  ),
-  to_entity_id: Type.Optional(
-    Type.Number({ description: "[link/unlink/update_link] Target entity ID" })
-  ),
-  relationship_type_slug: Type.Optional(
-    Type.String({
-      description:
-        "[link/unlink/update_link/list_links] Relationship type slug",
-      minLength: 1,
-    })
-  ),
-  confidence: Type.Optional(
-    Type.Number({
-      description:
-        "[link/update_link] Confidence score 0-1. Defaults to 1.0 for ui/api source.",
-      minimum: 0,
-      maximum: 1,
-    })
-  ),
-  source: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal("ui"),
-        Type.Literal("llm"),
-        Type.Literal("feed"),
-        Type.Literal("api"),
-      ],
-      { description: "[link/update_link] Source of the relationship" }
-    )
-  ),
-  relationship_id: Type.Optional(
-    Type.Number({
-      description:
-        "[update_link/unlink] Relationship ID. Optional when from_entity_id + to_entity_id + relationship_type_slug identify the edge.",
-    })
-  ),
-  direction: Type.Optional(
-    Type.Union(
-      [Type.Literal("outbound"), Type.Literal("inbound"), Type.Literal("both")],
-      {
-        description: "[list_links] Direction filter. Default both.",
-      }
-    )
-  ),
-  confidence_min: Type.Optional(
-    Type.Number({
-      description: "[list_links] Minimum confidence threshold",
-      minimum: 0,
-      maximum: 1,
-    })
-  ),
-  include_deleted: Type.Optional(
-    Type.Boolean({
-      description:
-        "[get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.",
-    })
-  ),
-  automation_source: Type.Optional(
-    Type.Object(
-      {
-        automation_id: Type.Number({
-          description: "Automation that triggered this mutation",
-        }),
-        run_id: Type.Number({
-          description: "Automation run that triggered this mutation",
-        }),
-      },
-      {
-        description:
-          "Attribution source when mutation is triggered by an Automation reaction",
-      }
-    )
-  ),
+  dry_run: Type.Optional(DryRun),
+  automation_source: Type.Optional(AutomationSource),
 });
 
+export const ResolveDuplicatesAction = Type.Object({
+  action: Type.Literal("resolve_duplicates", {
+    description:
+      "Discover duplicate components among candidate_entity_ids using the entity type's x-lobu-resolution policy, then auto-merge deterministic matches or queue review.",
+  }),
+  candidate_entity_ids: Type.Array(Type.Integer({ minimum: 1 }), {
+    minItems: 2,
+    maxItems: 5000,
+    uniqueItems: true,
+    description:
+      "[resolve_duplicates] Candidate entity IDs. The server re-reads their values and applies the entity type's resolution policy.",
+  }),
+});
+
+export const UnmergeEntityAction = Type.Object({
+  action: Type.Literal("unmerge", {
+    description:
+      "Reverse a merge from its durable ledger: restore the loser's identities, canonical attributes, and relationships, then un-tombstone it. Fails closed if later edits made exact reversal unsafe.",
+  }),
+  entity_id: EntityId,
+});
+
+export const ManageEntitySchema = Type.Union([
+  CreateEntityAction,
+  UpdateEntityAction,
+  ListEntitiesAction,
+  GetEntityAction,
+  DeleteEntityAction,
+  LinkEntitiesAction,
+  UnlinkEntitiesAction,
+  UpdateLinkAction,
+  ListLinksAction,
+  MergeEntitiesAction,
+  ResolveDuplicatesAction,
+  UnmergeEntityAction,
+]);
+
 export type ManageEntityArgs = Static<typeof ManageEntitySchema>;
+
+export type EntityCreateInput = ActionInput<ManageEntityArgs, "create">;
+export type EntityUpdateInput = ActionInput<ManageEntityArgs, "update">;
+export type EntityListInput = ActionInput<ManageEntityArgs, "list">;
+export type EntityGetInput = ActionInput<ManageEntityArgs, "get">;
+export type EntityDeleteInput = ActionInput<ManageEntityArgs, "delete">;
+export type EntityLinkInput = ActionInput<ManageEntityArgs, "link">;
+export type EntityUnlinkInput = ActionInput<ManageEntityArgs, "unlink">;
+export type EntityUpdateLinkInput = ActionInput<
+  ManageEntityArgs,
+  "update_link"
+>;
+export type EntityListLinksInput = ActionInput<ManageEntityArgs, "list_links">;
 
 // ============================================
 // Result Types

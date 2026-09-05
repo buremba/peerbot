@@ -852,191 +852,486 @@ export type RunSdkResponses = {
 export type RunSdkResponse = RunSdkResponses[keyof RunSdkResponses];
 
 export type ManageEntityData = {
-  body: {
-    /**
-     * Action to perform
-     */
-    action:
-      | "create"
-      | "update"
-      | "list"
-      | "get"
-      | "delete"
-      | "link"
-      | "unlink"
-      | "update_link"
-      | "list_links"
-      | "merge"
-      | "resolve_duplicates"
-      | "unmerge";
-    /**
-     * [merge] The surviving entity that absorbs `entity_id` (the duplicate).
-     */
-    winner_entity_id?: number;
-    /**
-     * [merge] All duplicate entities to fold into winner_entity_id. Use this for a duplicate group; entity_id remains supported for a single duplicate.
-     */
-    duplicate_entity_ids?: Array<number>;
-    /**
-     * [resolve_duplicates] Candidate entity IDs. The server re-reads their values and applies the entity type's resolution policy.
-     */
-    candidate_entity_ids?: Array<number>;
-    /**
-     * [merge] Optional structured evidence for human-initiated merge provenance. Agent and Automation evidence is always recomputed from the entity type's resolution policy.
-     */
-    merge_evidence?: Array<{
-      kind: string;
-      identifier: string;
-      identity_ids?: Array<number>;
-    }>;
-    /**
-     * [merge] Why you believe these are the same thing, in one sentence, for the human reviewing the approval card (e.g. 'Same phone digits; the shell is a WhatsApp handle for this contact.'). Shown as your claim, clearly separated from the workspace's own policy verdict — it never counts as proof and never affects whether the merge auto-applies.
-     */
-    merge_rationale?: string;
-    /**
-     * Entity type as defined in your workspace
-     */
-    entity_type?: string;
-    /**
-     * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
-     */
-    entity_id?: number;
-    /**
-     * [create/update] Entity name
-     */
-    name?: string;
-    /**
-     * [create/update] Free-text content body. Used by memory entities and any entity that carries rich text.
-     */
-    content?: string;
-    /**
-     * [create/update] URL-friendly slug (auto-generated from name if not provided)
-     */
-    slug?: string;
-    /**
-     * [create/update] Parent entity ID (for hierarchical entities)
-     */
-    parent_id?: number;
-    /**
-     * [create/update] Enabled classifier slugs
-     */
-    enabled_classifiers?: Array<string>;
-    /**
-     * [create/update] Primary domain (e.g., spotify.com)
-     */
-    domain?: string;
-    /**
-     * [create/update/list] Industry category
-     */
-    category?: string;
-    /**
-     * [create/update] Platform type (b2b, b2c, b2b2c)
-     */
-    platform_type?: string;
-    /**
-     * [create/update/list] Primary market (ISO 3166-1 alpha-2)
-     */
-    main_market?: string;
-    /**
-     * [create/update/list] Market/region (ISO 3166-1 alpha-2)
-     */
-    market?: string;
-    /**
-     * [create/update] Entity URL
-     */
-    link?: string;
-    /**
-     * [create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).
-     */
-    metadata?: {
-      [key: string]: unknown;
-    };
-    /**
-     * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so an Automation (and the UI) can see why the value was set.
-     */
-    field_note?: string;
-    /**
-     * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so an Automation can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
-     */
-    affirm_fields?: Array<string>;
-    /**
-     * [list] Search by name
-     */
-    search?: string;
-    /**
-     * Page size (default: 100, max: 500)
-     */
-    limit?: number;
-    /**
-     * Pagination offset (default: 0, max: 1000000)
-     */
-    offset?: number;
-    /**
-     * [list] Sort by column (name, created_at, domain, total_content, active_connections, automations_count, children_count)
-     */
-    sort_by?: string;
-    /**
-     * [list] Sort order (asc or desc)
-     */
-    sort_order?: "asc" | "desc";
-    /**
-     * [delete] Hard delete entity and all descendants. Event history is never deleted (append-only) — event rows referencing the tree are detached instead.
-     */
-    force_delete_tree?: boolean;
-    /**
-     * [delete, merge] Preflight only. For delete: report what it would remove/detach. For merge: report whether the type's write rules would refuse it. Mutates nothing and never queues an approval.
-     */
-    dry_run?: boolean;
-    /**
-     * [link/unlink/update_link] Source entity ID. For unlink/update_link, supply this triple instead of relationship_id to address the edge by its endpoints.
-     */
-    from_entity_id?: number;
-    /**
-     * [link/unlink/update_link] Target entity ID
-     */
-    to_entity_id?: number;
-    /**
-     * [link/unlink/update_link/list_links] Relationship type slug
-     */
-    relationship_type_slug?: string;
-    /**
-     * [link/update_link] Confidence score 0-1. Defaults to 1.0 for ui/api source.
-     */
-    confidence?: number;
-    /**
-     * [link/update_link] Source of the relationship
-     */
-    source?: "ui" | "llm" | "feed" | "api";
-    /**
-     * [update_link/unlink] Relationship ID. Optional when from_entity_id + to_entity_id + relationship_type_slug identify the edge.
-     */
-    relationship_id?: number;
-    /**
-     * [list_links] Direction filter. Default both.
-     */
-    direction?: "outbound" | "inbound" | "both";
-    /**
-     * [list_links] Minimum confidence threshold
-     */
-    confidence_min?: number;
-    /**
-     * [get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.
-     */
-    include_deleted?: boolean;
-    /**
-     * Attribution source when mutation is triggered by an Automation reaction
-     */
-    automation_source?: {
-      /**
-       * Automation that triggered this mutation
-       */
-      automation_id: number;
-      /**
-       * Automation run that triggered this mutation
-       */
-      run_id: number;
-    };
-  };
+  body:
+    | {
+        /**
+         * Create an entity of a given type.
+         */
+        action: "create";
+        /**
+         * Entity type as defined in your workspace
+         */
+        entity_type: string;
+        /**
+         * [create/update] Entity name
+         */
+        name: string;
+        /**
+         * [create/update] Free-text content body. Used by memory entities and any entity that carries rich text.
+         */
+        content?: string;
+        /**
+         * [create/update] URL-friendly slug (auto-generated from name if not provided)
+         */
+        slug?: string;
+        /**
+         * [create/update/list] Parent entity ID (for hierarchical entities). On list, only that parent's children.
+         */
+        parent_id?: number;
+        /**
+         * [create/update] Enabled classifier slugs
+         */
+        enabled_classifiers?: Array<string>;
+        /**
+         * [create/update] Primary domain (e.g., spotify.com)
+         */
+        domain?: string;
+        /**
+         * [create/update/list] Industry category
+         */
+        category?: string;
+        /**
+         * [create/update] Platform type (b2b, b2c, b2b2c)
+         */
+        platform_type?: string;
+        /**
+         * [create/update/list] Primary market (ISO 3166-1 alpha-2)
+         */
+        main_market?: string;
+        /**
+         * [create/update/list] Market/region (ISO 3166-1 alpha-2)
+         */
+        market?: string;
+        /**
+         * [create/update] Entity URL
+         */
+        link?: string;
+        /**
+         * [create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).
+         */
+        metadata?: {
+          [key: string]: unknown;
+        };
+        /**
+         * Attribution source when mutation is triggered by an Automation reaction
+         */
+        automation_source?: {
+          /**
+           * Automation that triggered this mutation
+           */
+          automation_id: number;
+          /**
+           * Automation run that triggered this mutation
+           */
+          run_id: number;
+        };
+      }
+    | {
+        /**
+         * Patch entity fields (human-owned fields queued for approval).
+         */
+        action: "update";
+        /**
+         * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
+         */
+        entity_id: number;
+        /**
+         * [create/update] Entity name
+         */
+        name?: string;
+        /**
+         * [create/update] Free-text content body. Used by memory entities and any entity that carries rich text.
+         */
+        content?: string;
+        /**
+         * [create/update] URL-friendly slug (auto-generated from name if not provided)
+         */
+        slug?: string;
+        /**
+         * [create/update/list] Parent entity ID (for hierarchical entities). On list, only that parent's children.
+         */
+        parent_id?: number;
+        /**
+         * [create/update] Enabled classifier slugs
+         */
+        enabled_classifiers?: Array<string>;
+        /**
+         * [create/update] Primary domain (e.g., spotify.com)
+         */
+        domain?: string;
+        /**
+         * [create/update/list] Industry category
+         */
+        category?: string;
+        /**
+         * [create/update] Platform type (b2b, b2c, b2b2c)
+         */
+        platform_type?: string;
+        /**
+         * [create/update/list] Primary market (ISO 3166-1 alpha-2)
+         */
+        main_market?: string;
+        /**
+         * [create/update/list] Market/region (ISO 3166-1 alpha-2)
+         */
+        market?: string;
+        /**
+         * [create/update] Entity URL
+         */
+        link?: string;
+        /**
+         * [create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).
+         */
+        metadata?: {
+          [key: string]: unknown;
+        };
+        /**
+         * [update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so an Automation (and the UI) can see why the value was set.
+         */
+        field_note?: string;
+        /**
+         * [update] Metadata field names whose CURRENT value the human approves as-is. No value change, but each is marked human-owned so an Automation can't later overwrite it without an approval. The 'approve' half of the recap feedback loop.
+         */
+        affirm_fields?: Array<string>;
+        /**
+         * Attribution source when mutation is triggered by an Automation reaction
+         */
+        automation_source?: {
+          /**
+           * Automation that triggered this mutation
+           */
+          automation_id: number;
+          /**
+           * Automation run that triggered this mutation
+           */
+          run_id: number;
+        };
+      }
+    | {
+        /**
+         * Paginated entity list with filters.
+         */
+        action: "list";
+        /**
+         * Entity type as defined in your workspace
+         */
+        entity_type?: string;
+        /**
+         * [create/update/list] Parent entity ID (for hierarchical entities). On list, only that parent's children.
+         */
+        parent_id?: number;
+        /**
+         * [list] Search by name
+         */
+        search?: string;
+        /**
+         * [create/update/list] Industry category
+         */
+        category?: string;
+        /**
+         * [create/update/list] Primary market (ISO 3166-1 alpha-2)
+         */
+        main_market?: string;
+        /**
+         * [create/update/list] Market/region (ISO 3166-1 alpha-2)
+         */
+        market?: string;
+        /**
+         * Page size (default: 100, max: 500)
+         */
+        limit?: number;
+        /**
+         * Pagination offset (default: 0, max: 1000000)
+         */
+        offset?: number;
+        /**
+         * [list] Sort by column (name, created_at, domain, total_content, active_connections, automations_count, children_count)
+         */
+        sort_by?: string;
+        /**
+         * [list] Sort order (asc or desc)
+         */
+        sort_order?: "asc" | "desc";
+        /**
+         * Attribution source when mutation is triggered by an Automation reaction
+         */
+        automation_source?: {
+          /**
+           * Automation that triggered this mutation
+           */
+          automation_id: number;
+          /**
+           * Automation run that triggered this mutation
+           */
+          run_id: number;
+        };
+      }
+    | {
+        /**
+         * Fetch one entity.
+         */
+        action: "get";
+        /**
+         * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
+         */
+        entity_id: number;
+        /**
+         * [get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.
+         */
+        include_deleted?: boolean;
+      }
+    | {
+        /**
+         * Delete an entity (force_delete_tree for cascading).
+         */
+        action: "delete";
+        /**
+         * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
+         */
+        entity_id: number;
+        /**
+         * [delete] Hard delete entity and all descendants. Event history is never deleted (append-only) — event rows referencing the tree are detached instead.
+         */
+        force_delete_tree?: boolean;
+        /**
+         * [delete, merge] Preflight only. For delete: report what it would remove/detach. For merge: report whether the type's write rules would refuse it. Mutates nothing and never queues an approval.
+         */
+        dry_run?: boolean;
+        /**
+         * Attribution source when mutation is triggered by an Automation reaction
+         */
+        automation_source?: {
+          /**
+           * Automation that triggered this mutation
+           */
+          automation_id: number;
+          /**
+           * Automation run that triggered this mutation
+           */
+          run_id: number;
+        };
+      }
+    | {
+        /**
+         * Create a relationship edge between two entities.
+         */
+        action: "link";
+        /**
+         * [link/unlink/update_link] Source entity ID. For unlink/update_link, supply this triple instead of relationship_id to address the edge by its endpoints.
+         */
+        from_entity_id: number;
+        /**
+         * [link/unlink/update_link] Target entity ID
+         */
+        to_entity_id: number;
+        /**
+         * [link/unlink/update_link/list_links] Relationship type slug
+         */
+        relationship_type_slug: string;
+        /**
+         * [link/update_link] Confidence score 0-1. Defaults to 1.0 for ui/api source.
+         */
+        confidence?: number;
+        /**
+         * [link/update_link] Source of the relationship. [list_links] Only relationships from this source.
+         */
+        source?: "ui" | "llm" | "feed" | "api";
+        /**
+         * [create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).
+         */
+        metadata?: {
+          [key: string]: unknown;
+        };
+        /**
+         * Attribution source when mutation is triggered by an Automation reaction
+         */
+        automation_source?: {
+          /**
+           * Automation that triggered this mutation
+           */
+          automation_id: number;
+          /**
+           * Automation run that triggered this mutation
+           */
+          run_id: number;
+        };
+      }
+    | {
+        /**
+         * Soft-delete a relationship.
+         */
+        action: "unlink";
+        /**
+         * [update_link/unlink] Relationship ID. Optional when from_entity_id + to_entity_id + relationship_type_slug identify the edge.
+         */
+        relationship_id?: number;
+        /**
+         * [link/unlink/update_link] Source entity ID. For unlink/update_link, supply this triple instead of relationship_id to address the edge by its endpoints.
+         */
+        from_entity_id?: number;
+        /**
+         * [link/unlink/update_link] Target entity ID
+         */
+        to_entity_id?: number;
+        /**
+         * [link/unlink/update_link/list_links] Relationship type slug
+         */
+        relationship_type_slug?: string;
+      }
+    | {
+        /**
+         * Patch relationship metadata/confidence/source.
+         */
+        action: "update_link";
+        /**
+         * [update_link/unlink] Relationship ID. Optional when from_entity_id + to_entity_id + relationship_type_slug identify the edge.
+         */
+        relationship_id?: number;
+        /**
+         * [link/unlink/update_link] Source entity ID. For unlink/update_link, supply this triple instead of relationship_id to address the edge by its endpoints.
+         */
+        from_entity_id?: number;
+        /**
+         * [link/unlink/update_link] Target entity ID
+         */
+        to_entity_id?: number;
+        /**
+         * [link/unlink/update_link/list_links] Relationship type slug
+         */
+        relationship_type_slug?: string;
+        /**
+         * [link/update_link] Confidence score 0-1. Defaults to 1.0 for ui/api source.
+         */
+        confidence?: number;
+        /**
+         * [link/update_link] Source of the relationship. [list_links] Only relationships from this source.
+         */
+        source?: "ui" | "llm" | "feed" | "api";
+        /**
+         * [create/update/link/update_link] Custom metadata object. For entities: validated against the entity type's JSON schema. For links: relationship metadata. On update, fields a human owns are NOT overwritten — they are queued for the human's approval and reported in the result's `blocked_fields`/`approval_queued`; tell the user you PROPOSED those changes rather than claiming you set them. Unowned fields in the same call apply directly (`applied_fields`).
+         */
+        metadata?: {
+          [key: string]: unknown;
+        };
+      }
+    | {
+        /**
+         * List relationships for an entity with filters + counts.
+         */
+        action: "list_links";
+        /**
+         * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
+         */
+        entity_id: number;
+        /**
+         * [list_links] Direction filter. Default both.
+         */
+        direction?: "outbound" | "inbound" | "both";
+        /**
+         * [link/unlink/update_link/list_links] Relationship type slug
+         */
+        relationship_type_slug?: string;
+        /**
+         * [list_links] Minimum confidence threshold
+         */
+        confidence_min?: number;
+        /**
+         * [link/update_link] Source of the relationship. [list_links] Only relationships from this source.
+         */
+        source?: "ui" | "llm" | "feed" | "api";
+        /**
+         * [get] Return the entity even if it is soft-deleted (deleted_at set). [list_links] Include soft-deleted relationships.
+         */
+        include_deleted?: boolean;
+        /**
+         * Page size (default: 100, max: 500)
+         */
+        limit?: number;
+        /**
+         * Pagination offset (default: 0, max: 1000000)
+         */
+        offset?: number;
+        /**
+         * Attribution source when mutation is triggered by an Automation reaction
+         */
+        automation_source?: {
+          /**
+           * Automation that triggered this mutation
+           */
+          automation_id: number;
+          /**
+           * Automation run that triggered this mutation
+           */
+          run_id: number;
+        };
+      }
+    | {
+        /**
+         * Fold a duplicate entity (entity_id) into the one it really is (winner_entity_id). The loser is tombstoned + forwarded; its identities, aliases, edges, and events recall against the winner. Events are never rewritten. Use when two entities are confirmed the same real-world thing.
+         */
+        action: "merge";
+        /**
+         * [merge] The surviving entity that absorbs `entity_id` (the duplicate).
+         */
+        winner_entity_id: number;
+        /**
+         * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
+         */
+        entity_id?: number;
+        /**
+         * [merge] All duplicate entities to fold into winner_entity_id. Use this for a duplicate group; entity_id remains supported for a single duplicate.
+         */
+        duplicate_entity_ids?: Array<number>;
+        /**
+         * [merge] Optional structured evidence for human-initiated merge provenance. Agent and Automation evidence is always recomputed from the entity type's resolution policy.
+         */
+        merge_evidence?: Array<{
+          kind: string;
+          identifier: string;
+          identity_ids?: Array<number>;
+        }>;
+        /**
+         * [merge] Why you believe these are the same thing, in one sentence, for the human reviewing the approval card (e.g. 'Same phone digits; the shell is a WhatsApp handle for this contact.'). Shown as your claim, clearly separated from the workspace's own policy verdict — it never counts as proof and never affects whether the merge auto-applies.
+         */
+        merge_rationale?: string;
+        /**
+         * [delete, merge] Preflight only. For delete: report what it would remove/detach. For merge: report whether the type's write rules would refuse it. Mutates nothing and never queues an approval.
+         */
+        dry_run?: boolean;
+        /**
+         * Attribution source when mutation is triggered by an Automation reaction
+         */
+        automation_source?: {
+          /**
+           * Automation that triggered this mutation
+           */
+          automation_id: number;
+          /**
+           * Automation run that triggered this mutation
+           */
+          run_id: number;
+        };
+      }
+    | {
+        /**
+         * Discover duplicate components among candidate_entity_ids using the entity type's x-lobu-resolution policy, then auto-merge deterministic matches or queue review.
+         */
+        action: "resolve_duplicates";
+        /**
+         * [resolve_duplicates] Candidate entity IDs. The server re-reads their values and applies the entity type's resolution policy.
+         */
+        candidate_entity_ids: Array<number>;
+      }
+    | {
+        /**
+         * Reverse a merge from its durable ledger: restore the loser's identities, canonical attributes, and relationships, then un-tombstone it. Fails closed if later edits made exact reversal unsafe.
+         */
+        action: "unmerge";
+        /**
+         * [get/update/delete/list_links/merge/unmerge] Entity ID to operate on
+         */
+        entity_id: number;
+      };
   path: {
     /**
      * Organization slug (workspace identifier)

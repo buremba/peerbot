@@ -304,8 +304,7 @@ jobs:
           ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
         run: |
           set -euo pipefail
-          pending=$(gh api --paginate --slurp \
-            "repos/${REPOSITORY}/issues?state=closed&labels=autorelease:%20pending&per_page=100" \
+          pending=$(gh api --paginate --slurp "repos/${REPOSITORY}/issues?state=closed&labels=autorelease:%20pending&per_page=100" \
             | jq -r '.[][] | select(.pull_request.merged_at) | .number')
           for pr in $pending; do
             merged_sha=$(gh api "repos/${REPOSITORY}/pulls/${pr}" --jq '.merge_commit_sha')

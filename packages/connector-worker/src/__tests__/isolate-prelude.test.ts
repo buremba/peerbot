@@ -5,7 +5,7 @@ import {
   IsolateLaneIneligibleError,
 } from '../isolate/eligibility.js';
 import { createHash, createHmac, pbkdf2Sync } from 'node:crypto';
-import { GUEST_PRELUDE, PRELUDE_GLOBALS, PRELUDE_HOST_SYNC } from '../isolate/prelude.js';
+import { createPreludeHostSync, GUEST_PRELUDE, PRELUDE_GLOBALS } from '../isolate/prelude.js';
 
 describe('guest prelude text', () => {
   it('installs every advertised global', () => {
@@ -86,11 +86,12 @@ describe('guest prelude text', () => {
  * assertions cover both sides of the bridge rather than a stub's idea of them.
  */
 function instantiateGuest(): any {
+  const hostSync = createPreludeHostSync();
   const guest: any = {
     __host_sync: {
       applySync: (_receiver: unknown, args: any[]) => {
         const [name, ...rest] = args;
-        const fn = PRELUDE_HOST_SYNC[String(name)];
+        const fn = hostSync[String(name)];
         if (!fn) return { __lobu: 1, ok: true, value: null };
         try {
           return { __lobu: 1, ok: true, value: fn(...rest) };
@@ -307,5 +308,198 @@ describe('guest Buffer shim — Node semantics connector code relies on', () => 
     expect(Array.from(guest.Buffer.alloc(3, 7))).toEqual([7, 7, 7]);
     expect(Array.from(guest.Buffer.alloc(2))).toEqual([0, 0]);
     expect(Array.from(guest.Buffer.alloc(3, new Uint8Array([5, 6])))).toEqual([5, 6, 5]);
+  });
+});
+
+/**
+ * `TextDecoder.decode(chunk, { stream: true })` is how every SSE consumer
+ * (pi-ai's Anthropic provider, the Stainless SDKs) reassembles a body that
+ * arrives in chunks. The guest shell has no decoder state of its own: the
+ * sequence of streaming decodes runs on one Node `TextDecoder` the host holds
+ * open until the flushing decode, so these pin that both halves agree with
+ * Node on a multi-byte sequence split across chunks.
+ */
+describe('guest TextDecoder streaming', () => {
+  // 'café €' = 63 61 66 | c3 a9 | 20 | e2 82 ac
+  const bytes = new TextEncoder().encode('café €');
+
+  it('holds a split multi-byte sequence across chunks and flushes on the final decode', () => {
+    const guest = instantiateGuest();
+    const decoder = new guest.TextDecoder();
+    expect(decoder.decode(bytes.subarray(0, 4), { stream: true })).toBe('caf');
+    expect(decoder.decode(bytes.subarray(4, 8), { stream: true })).toBe('é ');
+    expect(decoder.decode(bytes.subarray(8))).toBe('€');
+    // Reusable and stateless again after the flush, as the spec resets it.
+    expect(decoder.decode(bytes)).toBe('café €');
+  });
+
+  it('matches Node chunk for chunk over every split point', () => {
+    const guest = instantiateGuest();
+    for (let split = 0; split <= bytes.length; split++) {
+      const guestDecoder = new guest.TextDecoder();
+      const nodeDecoder = new TextDecoder();
+      const guestOut =
+        guestDecoder.decode(bytes.subarray(0, split), { stream: true }) + guestDecoder.decode(bytes.subarray(split));
+      const nodeOut = nodeDecoder.decode(bytes.subarray(0, split), { stream: true }) + nodeDecoder.decode(bytes.subarray(split));
+      expect(guestOut, `split at ${split}`).toBe(nodeOut);
+      expect(guestOut).toBe('café €');
+    }
+  });
+
+  it('without the stream flag a chunk boundary inside a sequence is a replacement character, as on Node', () => {
+    const guest = instantiateGuest();
+    const decoder = new guest.TextDecoder();
+    expect(decoder.decode(bytes.subarray(0, 4))).toBe(new TextDecoder().decode(bytes.subarray(0, 4)));
+    expect(decoder.decode(bytes.subarray(0, 4))).toBe('caf\uFFFD');
+  });
+
+  it('a fatal decoder throws at the flush for a sequence that never completed, and only then', () => {
+    const guest = instantiateGuest();
+    const decoder = new guest.TextDecoder('utf-8', { fatal: true });
+    expect(decoder.decode(bytes.subarray(0, 4), { stream: true })).toBe('caf');
+    expect(() => decoder.decode()).toThrow(TypeError);
+    // The failed flush released the host decoder: the next decode starts clean.
+    expect(decoder.decode(bytes)).toBe('café €');
+  });
+
+  it('a flush with no input ends the stream, the way an SSE reader finishes', () => {
+    const guest = instantiateGuest();
+    const decoder = new guest.TextDecoder();
+    expect(decoder.decode(bytes.subarray(0, 4), { stream: true })).toBe('caf');
+    expect(decoder.decode()).toBe('\uFFFD');
+    expect(decoder.decode(bytes.subarray(4, 6))).toBe('\uFFFD ');
+  });
+
+  it('bounds the streaming decoders one guest may leave open', () => {
+    const guest = instantiateGuest();
+    for (let i = 0; i < 1024; i++) new guest.TextDecoder().decode(bytes.subarray(0, 1), { stream: true });
+    expect(() => new guest.TextDecoder().decode(bytes.subarray(0, 1), { stream: true })).toThrow(RangeError);
+    // Each host is its own registry: a fresh guest is not affected.
+    expect(new (instantiateGuest().TextDecoder)().decode(bytes, { stream: true })).toBe('café €');
+  });
+});
+
+/**
+ * `Response.body` is a `ReadableStream` over the host's `fetchRead`, and a
+ * socket's `readable` is one over `socketRead`, so what a reader does after
+ * the consumer stops reading decides whether the guest reads from something
+ * the host already released. Both sources are pull-only, which these model
+ * directly rather than through a fetch.
+ */
+describe('guest ReadableStream reader', () => {
+  /**
+   * A source that hands out one chunk per pull and records the cancel. It
+   * answers on a later microtask, as `fetchRead` and `socketRead` do across
+   * the host boundary, so several reads really are waiting at once.
+   */
+  function pullSource(chunks: string[]): { source: Record<string, unknown>; pulls: () => number; cancelled: () => boolean } {
+    let pulls = 0;
+    let cancelled = false;
+    return {
+      source: {
+        pull: (controller: { enqueue: (chunk: string) => void; close: () => void }) => {
+          pulls += 1;
+          const index = pulls;
+          return Promise.resolve().then(() => {
+            if (index > chunks.length) controller.close();
+            else controller.enqueue(chunks[index - 1]);
+          });
+        },
+        cancel: () => {
+          cancelled = true;
+        },
+      },
+      pulls: () => pulls,
+      cancelled: () => cancelled,
+    };
+  }
+
+  it('answers concurrent reads in order, one pull each', async () => {
+    const guest = instantiateGuest();
+    const probe = pullSource(['a', 'b', 'c']);
+    const reader = new guest.ReadableStream(probe.source).getReader();
+    const results = await Promise.all([reader.read(), reader.read(), reader.read()]);
+    expect(results.map((r: { value: string }) => r.value)).toEqual(['a', 'b', 'c']);
+    expect(probe.pulls()).toBe(3);
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it('cancelling ends the stream: the source is cancelled once and no later read pulls it again', async () => {
+    const guest = instantiateGuest();
+    const probe = pullSource(['a', 'b', 'c']);
+    const reader = new guest.ReadableStream(probe.source).getReader();
+    expect((await reader.read()).value).toBe('a');
+    await reader.cancel();
+    expect(probe.cancelled()).toBe(true);
+    expect(await reader.read()).toEqual({ value: undefined, done: true });
+    expect(await reader.read()).toEqual({ value: undefined, done: true });
+    expect(probe.pulls()).toBe(1);
+  });
+
+  it('cancelling settles a read already waiting and drops a chunk the source still owed', async () => {
+    const guest = instantiateGuest();
+    let release: ((value: string) => void) | null = null;
+    const reader = new guest.ReadableStream({
+      pull: (controller: { enqueue: (chunk: string) => void }) => {
+        release = (value: string) => controller.enqueue(value);
+      },
+    }).getReader();
+    const pending = reader.read();
+    await reader.cancel();
+    expect(await pending).toEqual({ value: undefined, done: true });
+    release?.('late');
+    expect(await reader.read()).toEqual({ value: undefined, done: true });
+  });
+
+  it('an error the source reports after a cancel is dropped: a later read still reports done', async () => {
+    const guest = instantiateGuest();
+    let fail: ((error: Error) => void) | null = null;
+    const reader = new guest.ReadableStream({
+      pull: (controller: { error: (error: Error) => void }) => {
+        fail = (error: Error) => controller.error(error);
+      },
+    }).getReader();
+    const pending = reader.read();
+    await reader.cancel();
+    expect(await pending).toEqual({ value: undefined, done: true });
+    // The in-flight pull answers after the cancel, as a fetchRead killed by
+    // fetchAbort does with its AbortError.
+    fail?.(new Error('aborted after cancel'));
+    expect(await reader.read()).toEqual({ value: undefined, done: true });
+  });
+
+  it('marks the stream disturbed on the first read, which is what Response.bodyUsed reports', async () => {
+    const guest = instantiateGuest();
+    const stream = new guest.ReadableStream(pullSource(['a']).source);
+    expect(stream._disturbed).toBe(false);
+    await stream.getReader().read();
+    expect(stream._disturbed).toBe(true);
+  });
+});
+
+/**
+ * `Response.clone()` tees a streamed body on every other runtime; here it
+ * throws for one, since nothing bundled clones a network response and a tee
+ * nobody reads is surface for its own sake. A guest-constructed body still
+ * clones, so the narrowing is pinned exactly where it applies.
+ */
+describe('guest Response.clone', () => {
+  it('clones a guest-constructed body and refuses a streamed one', async () => {
+    const guest = instantiateGuest();
+    const built = new guest.Response('payload', { status: 201, headers: { 'x-a': '1' } });
+    const copy = built.clone();
+    expect(copy.status).toBe(201);
+    expect(copy.headers.get('x-a')).toBe('1');
+    expect(await copy.text()).toBe('payload');
+    expect(await built.text()).toBe('payload');
+
+    const streamed = new guest.Response(new guest.ReadableStream({ pull: (c: { close: () => void }) => c.close() }));
+    expect(streamed.body).not.toBeNull();
+    expect(() => streamed.clone()).toThrow(TypeError);
+    expect(() => streamed.clone()).toThrow(/streamed body cannot be cloned/);
+    // Refusing to clone did not consume the body.
+    expect(streamed.bodyUsed).toBe(false);
+    expect(await streamed.text()).toBe('');
+    expect(() => streamed.clone()).toThrow(/already been consumed/);
   });
 });

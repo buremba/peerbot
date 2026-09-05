@@ -9,7 +9,8 @@
  * boundary as a named host capability, so the host owns the network. Both
  * network capabilities dial through the one egress module: `fetch` (domain
  * allowlist from `@lobu/connector-sdk/egress-policy`, DNS pinning from
- * `@lobu/connector-worker/egress`, plus a body cap) and `socketOpen` (the
+ * `@lobu/connector-worker/egress`; the response body streams back to the
+ * guest one chunk per `fetchRead`, under a byte cap) and `socketOpen` (the
  * WinterCG `connect` the DB connectors need: a real TCP socket the HOST dials
  * at an address the same transport resolved and validated under the DB egress
  * policy).
@@ -57,7 +58,11 @@ export interface IsolateExecutorOptions {
   memoryMb: number;
   /** Cap on any single message crossing the boundary (default 16 MiB). */
   messageBytes: number;
-  /** Cap on a fetched response body (default 16 MiB). */
+  /**
+   * Cap on the bytes one fetched response body may deliver to the guest
+   * (default 16 MiB). Enforced as the guest pulls: the body stream errors
+   * with `FetchBodyLimitExceeded` at the chunk that crosses it.
+   */
   fetchBodyBytes: number;
   /** Cap on total console output forwarded per run (default 1 MiB). */
   logBytes: number;
@@ -106,6 +111,14 @@ const DEFAULT_OPTIONS: IsolateExecutorOptions = {
 
 const STREAM_TAIL_CAP_BYTES = 16 * 1024;
 const MAX_REDIRECTS = 20;
+/**
+ * Responses one run may hold open at once (headers delivered, body not yet
+ * drained or cancelled). Each pins an upstream socket and a reader on the
+ * host until the guest reads it to the end, cancels it, or the run ends, so
+ * the count is bounded here rather than by a guest that fetches and never
+ * reads; an honest connector drains or cancels every body it opens.
+ */
+const MAX_OPEN_FETCHES = 1024;
 
 /** Thrown when a job demands the isolate lane on a host that cannot run one. */
 export class IsolateRuntimeUnavailableError extends Error {
@@ -140,13 +153,32 @@ interface GuestFetchRequest {
   redirect: 'follow' | 'manual' | 'error';
 }
 
+/** What `fetchOpen` answers once the headers are in. */
 interface HostFetchReply {
   status: number;
   statusText: string;
   url: string;
   redirected: boolean;
   headers: [string, string][];
-  body: Uint8Array;
+  /** Whether a body follows: the guest pulls it through `fetchRead` under the request's own id. False for a body-less response (204, 304, HEAD). */
+  hasBody: boolean;
+}
+
+/** The upstream response as `hostFetch` hands it to the capability layer: headers now, body still on the wire. */
+interface HostFetchResponse extends Omit<HostFetchReply, 'hasBody'> {
+  body: ReadableStream<Uint8Array> | null;
+}
+
+/** One `fetchRead` answer: a chunk, the end of the body, or the error that ended it. */
+interface HostFetchChunk {
+  data: Uint8Array | null;
+  done: boolean;
+  error?: { name: string; message: string };
+}
+
+function describeBodyError(error: unknown): NonNullable<HostFetchChunk['error']> {
+  if (error instanceof Error) return { name: error.name || 'Error', message: error.message };
+  return { name: 'Error', message: String(error) };
 }
 
 /**
@@ -424,7 +456,24 @@ export class IsolateExecutor implements SyncExecutor {
     let processingChain: Promise<void> = Promise.resolve();
     const runAbort = new AbortController();
     const pendingSleeps = new Set<ReturnType<typeof setTimeout>>();
-    const inflightFetches = new Map<number, AbortController>();
+    interface ActiveFetch {
+      controller: AbortController;
+      /** The upstream body once the headers have arrived; null before that and for a body-less response. */
+      body: ReadableStreamDefaultReader<Uint8Array> | null;
+      /** Bytes handed to the guest so far, against `fetchBodyBytes`. */
+      received: number;
+      url: string;
+    }
+    /** Every request the guest has open, keyed by its own id, from `fetchOpen` until the body ends or is aborted. */
+    const activeFetches = new Map<number, ActiveFetch>();
+    const closeFetch = (active: ActiveFetch) => {
+      active.controller.abort();
+      void active.body?.cancel().catch(() => undefined);
+    };
+    const closeAllFetches = () => {
+      for (const active of activeFetches.values()) closeFetch(active);
+      activeFetches.clear();
+    };
     // The run's `fetch` transport: block-private, with the exact allowlist
     // entries lowered to the allow-private floor. One per run and destroyed
     // with it, so a worker that builds an executor per job never accumulates
@@ -489,8 +538,7 @@ export class IsolateExecutor implements SyncExecutor {
       runAbort.abort();
       for (const timer of pendingSleeps) clearTimeout(timer);
       pendingSleeps.clear();
-      for (const controller of inflightFetches.values()) controller.abort();
-      inflightFetches.clear();
+      closeAllFetches();
       closeAllSockets();
       host?.terminate(state);
     };
@@ -526,21 +574,73 @@ export class IsolateExecutor implements SyncExecutor {
       return undefined;
     };
 
-    const fetchCapability = async (request: unknown, body: unknown): Promise<HostFetchReply> => {
+    const fetchOpen = async (request: unknown, body: unknown): Promise<HostFetchReply> => {
       const req = request as GuestFetchRequest;
       if (!req || typeof req !== 'object' || typeof req.url !== 'string' || typeof req.id !== 'number') {
         throw new TypeError('fetch: malformed request from guest');
       }
-      const controller = new AbortController();
-      inflightFetches.set(req.id, controller);
-      const onRunAbort = () => controller.abort();
-      runAbort.signal.addEventListener('abort', onRunAbort, { once: true });
-      try {
-        return await this.hostFetch(req, body, controller.signal, egress, log);
-      } finally {
-        runAbort.signal.removeEventListener('abort', onRunAbort);
-        inflightFetches.delete(req.id);
+      if (activeFetches.has(req.id)) throw new TypeError(`fetch: request ${req.id} is already open`);
+      if (activeFetches.size >= MAX_OPEN_FETCHES) {
+        throw new TypeError(
+          `fetch: this run has ${MAX_OPEN_FETCHES} responses open; read or cancel a body before opening another`
+        );
       }
+      const active: ActiveFetch = { controller: new AbortController(), body: null, received: 0, url: req.url };
+      activeFetches.set(req.id, active);
+      let response: HostFetchResponse;
+      try {
+        response = await this.hostFetch(req, body, active.controller.signal, egress, log);
+      } catch (error) {
+        activeFetches.delete(req.id);
+        throw error;
+      }
+      if (activeFetches.get(req.id) !== active) {
+        // `fetchAbort` or teardown removed it while the headers were in flight.
+        await response.body?.cancel().catch(() => undefined);
+        const aborted = new Error('This operation was aborted');
+        aborted.name = 'AbortError';
+        throw aborted;
+      }
+      const { body: upstream, ...reply } = response;
+      if (!upstream) {
+        activeFetches.delete(req.id);
+        return { ...reply, hasBody: false };
+      }
+      active.body = upstream.getReader();
+      active.url = reply.url;
+      return { ...reply, hasBody: true };
+    };
+
+    // One upstream chunk per call, so the host never holds more of a body
+    // than the guest has asked for, and the cap is applied to what was handed
+    // over rather than to a buffer nobody has read yet.
+    const fetchRead = async (id: unknown): Promise<HostFetchChunk> => {
+      const key = typeof id === 'number' ? id : Number.NaN;
+      const active = activeFetches.get(key);
+      if (!active?.body) return { data: null, done: true };
+      const ended = (error?: HostFetchChunk['error']): HostFetchChunk => {
+        activeFetches.delete(key);
+        return error ? { data: null, done: true, error } : { data: null, done: true };
+      };
+      let chunk: Awaited<ReturnType<typeof active.body.read>>;
+      try {
+        chunk = await active.body.read();
+      } catch (error) {
+        // `fetchAbort` and teardown cancel the reader through the controller;
+        // undici reports that here as an AbortError the guest maps back onto
+        // its own signal. Anything else is the upstream failing mid-body.
+        return ended(describeBodyError(error));
+      }
+      if (chunk.done) return ended();
+      active.received += chunk.value.byteLength;
+      if (active.received > this.options.fetchBodyBytes) {
+        closeFetch(active);
+        return ended({
+          name: 'FetchBodyLimitExceeded',
+          message: `fetch response body exceeded the ${this.options.fetchBodyBytes}-byte cap for ${active.url}`,
+        });
+      }
+      return { data: chunk.value, done: false };
     };
 
     const mergedConfig = job.mode === 'authenticate' ? job.config : buildConnectorConfig(job);
@@ -558,8 +658,15 @@ export class IsolateExecutor implements SyncExecutor {
           terminate({ name: 'UncaughtException', message: desc.message ?? 'uncaught exception in the connector' });
           return undefined;
         },
+        // Before the headers: the request fails with the guest's abort reason.
+        // After them: the body stream errors with it, and the upstream socket
+        // is released either way.
         fetchAbort: (id: unknown) => {
-          if (typeof id === 'number') inflightFetches.get(id)?.abort();
+          const active = typeof id === 'number' ? activeFetches.get(id) : undefined;
+          if (active) {
+            activeFetches.delete(id as number);
+            closeFetch(active);
+          }
           return undefined;
         },
       },
@@ -632,7 +739,8 @@ export class IsolateExecutor implements SyncExecutor {
             if (timer) clearTimeout(timer);
           }
         },
-        fetch: fetchCapability,
+        fetchOpen,
+        fetchRead,
         socketOpen: async (hostParam: unknown, portParam: unknown, optionsJson: unknown) => {
           const rawHost = String(hostParam);
           const hostname = stripIpv6Brackets(rawHost);
@@ -896,6 +1004,7 @@ export class IsolateExecutor implements SyncExecutor {
       runAbort.abort();
       for (const timer of pendingSleeps) clearTimeout(timer);
       pendingSleeps.clear();
+      closeAllFetches();
       closeAllSockets();
       void egress.destroy().catch(() => undefined);
       host.dispose();
@@ -926,9 +1035,9 @@ export class IsolateExecutor implements SyncExecutor {
     signal: AbortSignal,
     egress: EgressDispatcher,
     log: RunLog
-  ): Promise<HostFetchReply> {
+  ): Promise<HostFetchResponse> {
     let url = new URL(request.url);
-    // The guest `fetch` rejects other schemes, but `__lobuHost.async('fetch')`
+    // The guest `fetch` rejects other schemes, but `__lobuHost.async('fetchOpen')`
     // is reachable from guest code directly, and a `data:` URL has no host for
     // the allowlist to judge: Node's fetch would resolve it locally.
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
@@ -1007,52 +1116,14 @@ export class IsolateExecutor implements SyncExecutor {
         await response.body?.cancel().catch(() => undefined);
         throw new TypeError('fetch failed: unexpected redirect');
       }
-      const bytes = await this.readBodyCapped(response, signal);
       return {
         status: response.status,
         statusText: response.statusText,
         url: url.href,
         redirected,
         headers: [...response.headers.entries()],
-        body: bytes,
+        body: response.body,
       };
     }
-  }
-
-  private async readBodyCapped(response: Response, signal: AbortSignal): Promise<Uint8Array> {
-    if (!response.body) return new Uint8Array(0);
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    const reader = response.body.getReader();
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        total += value.byteLength;
-        if (total > this.options.fetchBodyBytes) {
-          await reader.cancel().catch(() => undefined);
-          const capped = new Error(`fetch response body exceeded the ${this.options.fetchBodyBytes}-byte cap for ${response.url}`);
-          capped.name = 'FetchBodyLimitExceeded';
-          throw capped;
-        }
-        chunks.push(value);
-        if (signal.aborted) {
-          await reader.cancel().catch(() => undefined);
-          const aborted = new Error('This operation was aborted');
-          aborted.name = 'AbortError';
-          throw aborted;
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      out.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return out;
   }
 }

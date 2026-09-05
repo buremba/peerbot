@@ -2,10 +2,10 @@
  * Fixture connector for `isolate-executor.test.ts`.
  *
  * Each `scenario` config value exercises one boundary of the connector isolate
- * lane: chunked emit and checkpoint hooks, host-mediated fetch, timers, console
- * redaction, runaway CPU and heap, thrown errors, a throwing timer callback,
- * an oversized bridge message, auth artifacts and chrome dispatch. The suite compiles it for BOTH lanes so what each lane observably does
- * can be compared. It is never registered as a real connector.
+ * lane: chunked emit and checkpoint hooks, host-mediated fetch with streamed
+ * bodies, timers, console redaction, runaway CPU and heap, thrown errors, a
+ * throwing timer callback, an oversized bridge message, auth artifacts and
+ * chrome dispatch. It is never registered as a real connector.
  */
 import {
 	type ActionContext,
@@ -23,6 +23,10 @@ interface FixtureConfig {
 	scenario?: string;
 	count?: number;
 	url?: string;
+	/** `stream`: POSTed after every chunk read, so the server can hold the next one back until the guest has seen this one. */
+	ackUrl?: string;
+	/** `stream_abort` / `stream_cancel`: fetched after the body was given up, to show the run carries on. */
+	afterUrl?: string;
 	method?: string;
 	body?: string;
 	secret?: string;
@@ -98,6 +102,7 @@ export default class IsolateFixtureConnector extends ConnectorRuntime<Record<str
 					init.headers = { ...(init.headers as Record<string, string>), "content-type": "application/json" };
 				}
 				const res = await fetch(String(ctx.config.url), init);
+				const hasBody = res.body !== null;
 				const text = await res.text();
 				return {
 					events: [],
@@ -107,10 +112,61 @@ export default class IsolateFixtureConnector extends ConnectorRuntime<Record<str
 						url: res.url,
 						redirected: res.redirected,
 						contentType: res.headers.get("content-type"),
+						hasBody,
 						bytes: text.length,
 						text: text.slice(0, 512),
 					},
 				};
+			}
+			case "stream": {
+				// Reads the body as it arrives and acknowledges every chunk to the
+				// server before it sends the next one. A lane that buffered the
+				// body would wait for an end the server only writes after the
+				// acknowledgement the guest cannot send until it has read a chunk.
+				const res = await fetch(String(ctx.config.url));
+				if (!res.body) throw new Error("streamed response has no body");
+				const usedBeforeRead = res.bodyUsed;
+				const reader = res.body.getReader();
+				const decoder = new TextDecoder();
+				const chunks: string[] = [];
+				for (;;) {
+					const { value, done } = await reader.read();
+					if (done) break;
+					chunks.push(decoder.decode(value, { stream: true }));
+					await fetch(String(ctx.config.ackUrl), { method: "POST", body: String(chunks.length) });
+				}
+				const tail = decoder.decode();
+				return {
+					events: [],
+					checkpoint: { chunks, tail, text: chunks.join("") + tail, usedBeforeRead, usedAfterRead: res.bodyUsed },
+				};
+			}
+			case "stream_abort": {
+				// Abort after the first chunk: the next read rejects with the
+				// signal's reason, and the run goes on to another fetch.
+				const controller = new AbortController();
+				const res = await fetch(String(ctx.config.url), { signal: controller.signal });
+				if (!res.body) throw new Error("streamed response has no body");
+				const reader = res.body.getReader();
+				const first = new TextDecoder().decode((await reader.read()).value);
+				controller.abort();
+				let rejection = "none";
+				try {
+					await reader.read();
+				} catch (error) {
+					rejection = String((error as Error).name);
+				}
+				const after = await (await fetch(String(ctx.config.afterUrl))).text();
+				return { events: [], checkpoint: { first, rejection, after } };
+			}
+			case "stream_cancel": {
+				const res = await fetch(String(ctx.config.url));
+				if (!res.body) throw new Error("streamed response has no body");
+				const reader = res.body.getReader();
+				const first = new TextDecoder().decode((await reader.read()).value);
+				await reader.cancel();
+				const after = await (await fetch(String(ctx.config.afterUrl))).text();
+				return { events: [], checkpoint: { first, after, bodyUsed: res.bodyUsed } };
 			}
 			case "raw_fetch": {
 				// Bypasses the guest fetch validator on purpose: the host must judge
@@ -118,7 +174,7 @@ export default class IsolateFixtureConnector extends ConnectorRuntime<Record<str
 				const host = (globalThis as unknown as { __lobuHost: { async(name: string, ...args: unknown[]): Promise<unknown> } })
 					.__lobuHost;
 				try {
-					await host.async("fetch", { id: 4242, url: String(ctx.config.url), method: "GET", headers: [], redirect: "follow" });
+					await host.async("fetchOpen", { id: 4242, url: String(ctx.config.url), method: "GET", headers: [], redirect: "follow" });
 					return { events: [], checkpoint: { outcome: "resolved" } };
 				} catch (error) {
 					const e = error as { name?: string; message?: string };

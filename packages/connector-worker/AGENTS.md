@@ -44,8 +44,12 @@ also used by `@lobu/cli` and `@lobu/server`.
   limit, wall clock, named sync/async capabilities as `ivm.Reference`s),
   `prelude.ts` (the guest's globals — timers, console, URL, TextEncoder,
   AbortController, fetch — all over host capabilities; add one only with a
-  connector that needs it), `eligibility.ts` (rejects bundles that still
-  `require()` a Node builtin).
+  connector that needs it. `fetch` answers with headers as soon as they arrive
+  and `Response.body` is a pull `ReadableStream` over `fetchRead`, one host
+  chunk per read, so SSE and other long bodies are consumed as they stream;
+  `TextDecoder` with `{ stream: true }` holds its state on the host between
+  chunks), `eligibility.ts` (rejects bundles that still `require()` a Node
+  builtin).
 - `daemon/` — the poll loop (`worker.ts`, `executor.ts`) that claims and runs
   jobs from the worker API. `automation.ts` is the device-only Automation arm:
   it spawns the user's local agent CLI per its `AgentSpec` (from

@@ -806,7 +806,10 @@ export class IsolateExecutor implements SyncExecutor {
               // Until then a connector that is ASKED to verify (postgres
               // `sslmode=verify-*`) refuses before dialling rather than
               // connecting unverified here — see `openGuardedPool` in
-              // `connectors/src/postgres.ts`.
+              // `connectors/src/postgres.ts`. Full verify+CA on this lane is a
+              // guest-contract change tracked for a follow-up PR; suppress the
+              // scanner here rather than dismiss the finding in the dashboard.
+              // codeql[js/disabling-certificate-validation]
               rejectUnauthorized: false,
             });
             tlsSock.once('secureConnect', () => {

@@ -1,3 +1,4 @@
+import type { SaveContentArgs } from "@lobu/core/contracts/tools/save-memory";
 import type { PublicGetContentArgs } from "../../tools/get_content";
 import type { PublicSearchArgs } from "../../tools/search";
 import type {
@@ -22,6 +23,9 @@ export type KnowledgeSaveInputContract = [
 	Assert<Accepts<{ semantic_type: "note"; content: string }>>,
 	Assert<Rejects<{ semantic_type: "note" }>>,
 	Assert<Rejects<{ semantic_type: "note"; payload_type: "text" }>>,
+	// Contract fields reach every variant; the phantom `slug` of the old hand copy does not.
+	Assert<"supersedes_event_id" extends keyof KnowledgeSaveInput ? true : false>,
+	Assert<"slug" extends keyof KnowledgeSaveInput ? false : true>,
 ];
 
 /**
@@ -85,4 +89,7 @@ type ExactKeys<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : fals
 export type KnowledgeInputKeysExhaustive = [
 	Assert<ExactKeys<keyof KnowledgeReadInput, keyof PublicGetContentArgs>>,
 	Assert<ExactKeys<keyof KnowledgeSearchInput, keyof PublicSearchArgs>>,
+	// Every variant of the save union Picks the whole contract, so its `keyof`
+	// is the contract's — an omitted field in any one variant fails here.
+	Assert<ExactKeys<keyof KnowledgeSaveInput, keyof SaveContentArgs>>,
 ];

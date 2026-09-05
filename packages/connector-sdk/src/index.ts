@@ -232,6 +232,7 @@ export type { ReactionContext } from './reaction-sdk.js';
 export type { ReactionClient } from './reaction-client-types.js';
 export type {
   CardElement,
+  KnowledgeDeleteInput,
   KnowledgeReadInput,
   KnowledgeSaveInput,
   KnowledgeSaveResult,

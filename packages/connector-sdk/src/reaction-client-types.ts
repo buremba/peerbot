@@ -15,6 +15,7 @@
 // Type-only imports: they erase at compile time, so nothing new enters the
 // isolate bundle. Core SUBPATH imports are permitted here; the root is not
 // (see AGENTS.md).
+import type { DeleteContentArgs } from "@lobu/core/contracts/tools/delete-knowledge";
 import type { ConnectionListInput } from "@lobu/core/contracts/tools/manage-connections";
 import type {
   EntityCreateInput,
@@ -33,6 +34,7 @@ import type {
   OperationListRunsInput,
 } from "@lobu/core/contracts/tools/manage-operations";
 import type { PublicGetContentArgs } from "@lobu/core/contracts/tools/read-knowledge";
+import type { SaveContentInput } from "@lobu/core/contracts/tools/save-memory";
 import type { PublicSearchArgs } from "@lobu/core/contracts/tools/search-memory";
 import type {} from "./reaction-client-types.typecheck";
 
@@ -56,25 +58,17 @@ export type CardElement = Record<string, unknown>;
  */
 export type KnowledgeSearchInput = PublicSearchArgs;
 
-export interface KnowledgeSaveInput {
-  entity_ids?: number[];
-  content: string;
-  semantic_type: string;
-  metadata?: Record<string, unknown>;
-  title?: string;
-  slug?: string;
-  author?: string;
-  payload_type?: "text" | "markdown" | "json_template" | "media" | "empty";
-  source_url?: string;
-  /** Event this content answers; stored as a durable thread edge. */
-  parent_event_id?: number;
-  /** Replace the current event while preserving its append-only row and lineage. */
-  supersedes_event_id?: number;
-  /** Stable producer key used to collapse reaction retries. */
-  idempotency_key?: string;
-  occurred_at?: string;
-  automation_source?: { automation_id: number; run_id: number };
-}
+/**
+ * The `save_memory` contract's own input, from core. The hand-written copy
+ * lacked `payload_data`, `payload_template` and `attachments`, required
+ * `content` for every payload type, and advertised a `slug` field the server
+ * rejects as an unknown argument. Pinned by `ReactionKnowledgeSaveContract`
+ * in `./reaction-client-types.typecheck`.
+ */
+export type KnowledgeSaveInput = SaveContentInput;
+
+/** Tombstone by id, or by the `delete_knowledge` contract's `content_id(s)` + `reason`. */
+export type KnowledgeDeleteInput = number | DeleteContentArgs;
 
 /**
  * Derived from the `read_knowledge` contract rather than re-declared. The
@@ -175,8 +169,7 @@ export interface ReactionClient {
     search(input: KnowledgeSearchInput): Promise<unknown>;
     save(input: KnowledgeSaveInput): Promise<KnowledgeSaveResult>;
     read(input: KnowledgeReadInput): Promise<unknown>;
-    /** Tombstone content by id. `delete_content` names the ids `content_id(s)`. */
-    delete(input: number | { content_id?: number; content_ids?: number[]; reason?: string }): Promise<unknown>;
+    delete(input: KnowledgeDeleteInput): Promise<unknown>;
   };
 
   entities: {

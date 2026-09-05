@@ -742,3 +742,63 @@ describe("paginated API payloads are piped into jq, never passed as arguments", 
     expect(piped).toHaveLength(slurped.length);
   });
 });
+
+// release-please marks its own merged release PR `autorelease: tagged` from
+// inside the release step, which this workflow skips so the release can bind
+// to the attested commit. The replacement step below is therefore the ONLY
+// thing that clears the label, and release-please aborts opening the next
+// release PR while a merged one still reads pending -- while still reporting
+// the job green. Deleting the step re-freezes the whole npm train with no red
+// anywhere, which is how lobu-v18.0.0 went unnoticed for three days.
+describe("a cut release clears the pending label off the PR that produced it", () => {
+  const jobId = "release-please-write";
+  const stepName = "Clear the pending label from released PRs";
+  const step = () => {
+    const found = steps("release-please.yml", jobId).find(
+      (candidate) => candidate.name === stepName
+    );
+    if (!found)
+      throw new Error(`release-please.yml/${jobId} lost "${stepName}"`);
+    return found;
+  };
+
+  it("still has the step, after the release is verified", () => {
+    expect(step().run ?? "").not.toEqual("");
+    expect(
+      stepAt("release-please.yml", jobId, "Verify the release")
+    ).toBeLessThan(stepAt("release-please.yml", jobId, stepName));
+  });
+
+  it("only runs when this workflow actually cut a release", () => {
+    // Without the gate an ordinary main push clears the label off a release PR
+    // whose release has not been created yet, and that release is then never
+    // cut at all.
+    expect(step().if).toBe("steps.bump.outputs.bumped == 'true'");
+  });
+
+  it("excludes closed-unmerged PRs before it compares anything", () => {
+    // A closed-unmerged PR still reports a `refs/pull/N/merge` test-merge sha,
+    // so an emptiness check does not filter it. GitHub collects those commits,
+    // and `compare` against a collected one 404s -- under `set -e` that fails
+    // the job after the release already exists.
+    const body = step().run ?? "";
+    const filter = body.indexOf("select(.pull_request.merged_at)");
+    expect(filter).toBeGreaterThan(-1);
+    expect(filter).toBeLessThan(body.indexOf("/compare/"));
+  });
+
+  it("tolerates a losing DELETE but never a failing POST", () => {
+    // Two main pushes can both reach this step for one release, and the second
+    // finds the label already gone. Tolerating the POST as well would swallow a
+    // token-permission fault and silently leave the label in place.
+    const body = step().run ?? "";
+    const post = body.slice(
+      body.indexOf("--method POST"),
+      body.indexOf("--method DELETE")
+    );
+    const del = body.slice(body.indexOf("--method DELETE"));
+    expect(post).toContain(">/dev/null");
+    expect(post).not.toContain("|| true");
+    expect(del).toContain("|| true");
+  });
+});

@@ -1,6 +1,6 @@
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../db/client";
-import { fetchCredentialedPublicUrl } from "../gateway/proxy/ssrf-guard";
+import { fetchCredentialedPublicUrl } from "@lobu/connector-worker/egress";
 import { LOST_LEASE_MESSAGE, runLeaseFence } from "../runs/run-lease";
 import { resolveCredentialsByConnectionId } from "../mcp-proxy/credential-resolver";
 import { readResponseTextWithLimit } from "../utils/bounded-response";

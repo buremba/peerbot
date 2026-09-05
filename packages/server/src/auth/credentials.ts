@@ -6,7 +6,7 @@
  */
 
 import type { DbClient } from '../db/client';
-import { fetchCredentialedPublicUrl } from '../gateway/proxy/ssrf-guard';
+import { fetchCredentialedPublicUrl } from '@lobu/connector-worker/egress';
 import {
   readConnectorOAuthResponse,
   withConnectorOAuthDeadline,

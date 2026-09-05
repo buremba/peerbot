@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import type { AgentInlineGuardrail } from "@lobu/core";
 import { createLogger, normalizeDomainPattern } from "@lobu/core";
+import {
+  findLongestMatchingPattern,
+  patternReaches,
+} from "@lobu/connector-sdk/egress-policy";
 
 const logger = createLogger("policy-store");
 
@@ -200,42 +204,12 @@ interface SuppressedJudgedDomainOptions {
    * global allowlist matcher does (`matchesDomainPattern`); the per-agent
    * `GrantStore.hasGrant` does not — it expands a hostname into its exact form
    * plus its wildcard PARENTS, so the root never sees its own wildcard row.
-   * Defaults to grant semantics.
+   * Defaults to grant semantics. Passed straight through to `patternReaches`
+   * in `@lobu/connector-sdk/egress-policy`, the one overlap predicate shared
+   * with the grant store's write guard, the deployment manager's grant
+   * reconcile, and the remote runtime's deny subtraction.
    */
   wildcardCoversRoot?: boolean;
-}
-
-/**
- * Whether an allow pattern reaches any host a judged pattern covers.
- *
- * Three callers, one predicate: {@link findSuppressedJudgedDomains} uses it to
- * refuse a shadowing agent CONFIG at write time, the deployment manager's
- * grant reconcile uses it to refuse the shadowing GRANT at dispatch time (a
- * connector-contributed domain never passes through agent config), and
- * `GrantStore.grant` uses it to refuse the row itself, whichever writer asks.
- * All default to grant semantics; only the global-allowlist check passes
- * `wildcardCoversRoot`.
- *
- * A judged `.suffix` covers the root and every subdomain — {@link findMatchingRule},
- * which `PolicyStore.resolve` matches with, treats `normalized === suffix` as a
- * hit. Whether the ALLOW side's wildcard covers the root depends on which
- * matcher enforces it (see {@link SuppressedJudgedDomainOptions}). Two
- * wildcards overlap when either suffix sits under the other.
- */
-export function allowReachesJudged(
-  judged: string,
-  allow: string,
-  wildcardCoversRoot = false
-): boolean {
-  const judgedWild = judged.startsWith(".");
-  const allowWild = allow.startsWith(".");
-  const j = judgedWild ? judged.slice(1) : judged;
-  const a = allowWild ? allow.slice(1) : allow;
-  const under = (host: string, suffix: string) => host.endsWith(`.${suffix}`);
-  if (!judgedWild && !allowWild) return j === a;
-  if (!judgedWild) return (wildcardCoversRoot && j === a) || under(j, a);
-  if (!allowWild) return a === j || under(a, j);
-  return j === a || under(j, a) || under(a, j);
 }
 
 /**
@@ -268,7 +242,7 @@ export function findSuppressedJudgedDomains(
   const suppressed: SuppressedJudgedDomain[] = [];
   for (const rule of bundle.judgedDomains) {
     const covering = allowPatterns.find((allow) =>
-      allowReachesJudged(rule.domain, allow, wildcardCoversRoot)
+      patternReaches(rule.domain, allow, { wildcardCoversRoot })
     );
     if (covering) {
       suppressed.push({
@@ -302,28 +276,16 @@ function prepareBundle(
   };
 }
 
+/**
+ * Exact pattern first, then the longest covering wildcard (`.api.example.com`
+ * beats `.example.com`); a wildcard covers its apex. Same grammar as every
+ * other egress matcher, via `@lobu/connector-sdk/egress-policy`.
+ */
 function findMatchingRule(
   hostname: string,
   rules: JudgedDomainRule[]
 ): JudgedDomainRule | undefined {
-  const normalized = hostname.toLowerCase();
-
-  const exact = rules.find(
-    (r) => !r.domain.startsWith(".") && r.domain.toLowerCase() === normalized
-  );
-  if (exact) return exact;
-
-  // Longer wildcard patterns beat shorter ones (".api.example.com" > ".example.com").
-  const wildcards = rules
-    .filter((r) => r.domain.startsWith("."))
-    .sort((a, b) => b.domain.length - a.domain.length);
-  for (const rule of wildcards) {
-    const suffix = rule.domain.substring(1).toLowerCase();
-    if (normalized === suffix || normalized.endsWith(`.${suffix}`)) {
-      return rule;
-    }
-  }
-  return undefined;
+  return findLongestMatchingPattern(hostname, rules, (rule) => rule.domain);
 }
 
 function hashPolicy(

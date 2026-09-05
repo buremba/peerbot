@@ -1,0 +1,260 @@
+import { describe, expect, test } from 'bun:test';
+import {
+  canonicalizeHostname,
+  decideEgress,
+  evaluateListPolicy,
+  findLongestMatchingPattern,
+  isUnrestrictedMode,
+  matchesDomainPattern,
+  patternCovers,
+  patternReaches,
+  wildcardParentPatterns,
+} from '../egress-policy.js';
+
+describe('isUnrestrictedMode', () => {
+  test('only the sole "*" entry is unrestricted', () => {
+    expect(isUnrestrictedMode(['*'])).toBe(true);
+    expect(isUnrestrictedMode(['*', 'example.com'])).toBe(false);
+    expect(isUnrestrictedMode([])).toBe(false);
+  });
+});
+
+describe('canonicalizeHostname', () => {
+  test('strips trailing dots and lowercases', () => {
+    expect(canonicalizeHostname('Example.COM.')).toBe('example.com');
+    expect(canonicalizeHostname('evil.com..')).toBe('evil.com');
+  });
+
+  test('folds Unicode hosts to punycode so CONNECT and HTTP forms agree', () => {
+    expect(canonicalizeHostname('münchen.de')).toBe('xn--mnchen-3ya.de');
+    expect(canonicalizeHostname('MÜNCHEN.DE.')).toBe('xn--mnchen-3ya.de');
+    expect(canonicalizeHostname('xn--mnchen-3ya.de')).toBe('xn--mnchen-3ya.de');
+  });
+
+  test('leaves IP literals and unparseable hosts alone (lowercased)', () => {
+    expect(canonicalizeHostname('127.0.0.1')).toBe('127.0.0.1');
+    expect(canonicalizeHostname('[::1]')).toBe('[::1]');
+    expect(canonicalizeHostname('::FFFF:7F00:1')).toBe('::ffff:7f00:1');
+    expect(canonicalizeHostname('ex%61mple.com')).toBe('ex%61mple.com');
+    expect(canonicalizeHostname('')).toBe('');
+  });
+});
+
+describe('patternCovers / matchesDomainPattern', () => {
+  test('an exact pattern covers only that host', () => {
+    expect(patternCovers('example.com', 'example.com')).toBe(true);
+    expect(patternCovers('example.com', 'sub.example.com')).toBe(false);
+    expect(patternCovers('EXAMPLE.com', 'example.COM')).toBe(true);
+  });
+
+  test('a ".suffix" wildcard covers the apex and every subdomain, label-aligned', () => {
+    expect(patternCovers('.example.com', 'example.com')).toBe(true);
+    expect(patternCovers('.example.com', 'a.example.com')).toBe(true);
+    expect(patternCovers('.example.com', 'a.b.example.com')).toBe(true);
+    expect(patternCovers('.example.com', 'notexample.com')).toBe(false);
+    expect(patternCovers('.ample.com', 'example.com')).toBe(false);
+  });
+
+  test('"*.suffix" is the same wildcard', () => {
+    expect(patternCovers('*.example.com', 'a.example.com')).toBe(true);
+    expect(patternCovers('*.example.com', 'example.com')).toBe(true);
+  });
+
+  test('grant semantics: the wildcard does not cover its apex', () => {
+    expect(patternCovers('.example.com', 'example.com', { wildcardCoversRoot: false })).toBe(false);
+    expect(patternCovers('.example.com', 'a.example.com', { wildcardCoversRoot: false })).toBe(true);
+  });
+
+  test('"*" never matches as a hostname pattern', () => {
+    expect(matchesDomainPattern('example.com', ['*'])).toBe(false);
+    expect(matchesDomainPattern('example.com', ['other.com', '.example.com'])).toBe(true);
+  });
+});
+
+describe('evaluateListPolicy', () => {
+  test('an empty allowlist denies everything', () => {
+    expect(evaluateListPolicy('example.com', [], [])).toBe(false);
+  });
+
+  test('unrestricted mode allows everything the denylist does not name', () => {
+    expect(evaluateListPolicy('example.com', ['*'], [])).toBe(true);
+    expect(evaluateListPolicy('evil.com', ['*'], ['.evil.com'])).toBe(false);
+    expect(evaluateListPolicy('sub.evil.com', ['*'], ['.evil.com'])).toBe(false);
+  });
+
+  test('the denylist beats the allowlist', () => {
+    expect(evaluateListPolicy('api.example.com', ['.example.com'], ['api.example.com'])).toBe(false);
+    expect(evaluateListPolicy('www.example.com', ['.example.com'], ['api.example.com'])).toBe(true);
+    expect(evaluateListPolicy('other.com', ['.example.com'], [])).toBe(false);
+  });
+});
+
+describe('wildcardParentPatterns', () => {
+  test('lists every ancestor suffix, most specific first, in both spellings', () => {
+    expect(wildcardParentPatterns('a.b.example.com')).toEqual([
+      '.b.example.com',
+      '*.b.example.com',
+      '.example.com',
+      '*.example.com',
+    ]);
+  });
+
+  test('the apex has no wildcard parent', () => {
+    expect(wildcardParentPatterns('example.com')).toEqual([]);
+    expect(wildcardParentPatterns('localhost')).toEqual([]);
+  });
+});
+
+describe('findLongestMatchingPattern', () => {
+  const rules = [{ domain: '.example.com' }, { domain: '.api.example.com' }, { domain: 'v2.api.example.com' }];
+  const byDomain = (rule: { domain: string }) => rule.domain;
+
+  test('an exact pattern beats any wildcard', () => {
+    expect(findLongestMatchingPattern('v2.api.example.com', rules, byDomain)?.domain).toBe('v2.api.example.com');
+  });
+
+  test('a longer wildcard beats a shorter one', () => {
+    expect(findLongestMatchingPattern('v3.api.example.com', rules, byDomain)?.domain).toBe('.api.example.com');
+    expect(findLongestMatchingPattern('www.example.com', rules, byDomain)?.domain).toBe('.example.com');
+  });
+
+  test('wildcards cover their apex; unrelated hosts match nothing', () => {
+    expect(findLongestMatchingPattern('example.com', rules, byDomain)?.domain).toBe('.example.com');
+    expect(findLongestMatchingPattern('Api.Example.com', rules, byDomain)?.domain).toBe('.api.example.com');
+    expect(findLongestMatchingPattern('other.com', rules, byDomain)).toBeUndefined();
+  });
+});
+
+describe('patternReaches', () => {
+  test('two exact patterns reach each other only when equal', () => {
+    expect(patternReaches('example.com', 'example.com')).toBe(true);
+    expect(patternReaches('example.com', 'other.com')).toBe(false);
+  });
+
+  test('an allow wildcard reaches an exact covered host under it', () => {
+    expect(patternReaches('api.example.com', '.example.com')).toBe(true);
+    expect(patternReaches('api.example.com', '.other.com')).toBe(false);
+  });
+
+  test('whether the allow wildcard reaches the apex depends on the enforcing matcher', () => {
+    expect(patternReaches('example.com', '.example.com')).toBe(false);
+    expect(patternReaches('example.com', '.example.com', { wildcardCoversRoot: true })).toBe(true);
+    expect(patternReaches('example.com', '*.example.com', { wildcardCoversRoot: true })).toBe(true);
+  });
+
+  test('a covering wildcard is reached by its apex and any host under it', () => {
+    expect(patternReaches('.example.com', 'example.com')).toBe(true);
+    expect(patternReaches('.example.com', 'deep.sub.example.com')).toBe(true);
+    expect(patternReaches('.example.com', 'example.org')).toBe(false);
+  });
+
+  test('two wildcards overlap when either suffix sits under the other', () => {
+    expect(patternReaches('.example.com', '.api.example.com')).toBe(true);
+    expect(patternReaches('.api.example.com', '.example.com')).toBe(true);
+    expect(patternReaches('.example.com', '.example.com')).toBe(true);
+    expect(patternReaches('.example.com', '.example.org')).toBe(false);
+  });
+});
+
+describe('decideEgress', () => {
+  function tenant(overrides: { denied?: string[]; granted?: string[] }) {
+    const calls: string[] = [];
+    return {
+      calls,
+      lookups: {
+        isDenied: async (host: string) => {
+          calls.push(`isDenied:${host}`);
+          return (overrides.denied ?? []).includes(host);
+        },
+        hasGrant: async (host: string) => {
+          calls.push(`hasGrant:${host}`);
+          return (overrides.granted ?? []).includes(host);
+        },
+      },
+    };
+  }
+
+  test('the global denylist wins over every allow', async () => {
+    const t = tenant({ granted: ['evil.com'] });
+    const decision = await decideEgress({
+      hostname: 'evil.com',
+      global: { allowedDomains: ['*'], deniedDomains: ['evil.com'] },
+      tenant: t.lookups,
+      judge: async () => ({ allowed: true, decision: 'never' }),
+    });
+    expect(decision).toEqual({ allowed: false, source: 'global' });
+    expect(t.calls).toEqual([]);
+  });
+
+  test('a tenant deny beats the global allowlist and the judge', async () => {
+    const t = tenant({ denied: ['api.example.com'] });
+    const decision = await decideEgress({
+      hostname: 'api.example.com',
+      global: { allowedDomains: ['.example.com'], deniedDomains: [] },
+      tenant: t.lookups,
+      judge: async () => ({ allowed: true, decision: 'never' }),
+    });
+    expect(decision).toEqual({ allowed: false, source: 'grant' });
+  });
+
+  test('a global allow short-circuits before grants and the judge', async () => {
+    const t = tenant({});
+    let judged = 0;
+    const decision = await decideEgress({
+      hostname: 'www.example.com',
+      global: { allowedDomains: ['.example.com'], deniedDomains: [] },
+      tenant: t.lookups,
+      judge: async () => {
+        judged += 1;
+        return null;
+      },
+    });
+    expect(decision).toEqual({ allowed: true, source: 'global' });
+    expect(t.calls).toEqual(['isDenied:www.example.com']);
+    expect(judged).toBe(0);
+  });
+
+  test('a tenant grant allows a host the global lists do not name', async () => {
+    const t = tenant({ granted: ['api.other.com'] });
+    const decision = await decideEgress({
+      hostname: 'api.other.com',
+      global: { allowedDomains: ['.example.com'], deniedDomains: [] },
+      tenant: t.lookups,
+    });
+    expect(decision).toEqual({ allowed: true, source: 'grant' });
+  });
+
+  test('the judge is asked last and its verdict is returned with its decision', async () => {
+    const decision = await decideEgress({
+      hostname: 'judged.com',
+      global: { allowedDomains: [], deniedDomains: [] },
+      tenant: tenant({}).lookups,
+      judge: async (host) => ({ allowed: false, decision: { host, reason: 'policy' } }),
+    });
+    expect(decision).toEqual({
+      allowed: false,
+      source: 'judge',
+      judge: { host: 'judged.com', reason: 'policy' },
+    });
+  });
+
+  test('no list, no grant, no judged rule → deny', async () => {
+    const decision = await decideEgress({
+      hostname: 'nowhere.com',
+      global: { allowedDomains: [], deniedDomains: [] },
+      judge: async () => null,
+    });
+    expect(decision).toEqual({ allowed: false, source: 'global' });
+  });
+
+  test('the hostname is canonicalized before any lookup sees it', async () => {
+    const t = tenant({ granted: ['xn--mnchen-3ya.de'] });
+    const decision = await decideEgress({
+      hostname: 'MÜNCHEN.de.',
+      global: { allowedDomains: [], deniedDomains: [] },
+      tenant: t.lookups,
+    });
+    expect(decision).toEqual({ allowed: true, source: 'grant' });
+    expect(t.calls).toEqual(['isDenied:xn--mnchen-3ya.de', 'hasGrant:xn--mnchen-3ya.de']);
+  });
+});

@@ -19,6 +19,10 @@
       "import": "./dist/env.js",
       "types": "./dist/env.d.ts"
     },
+    "./egress": {
+      "import": "./dist/egress/index.js",
+      "types": "./dist/egress/index.d.ts"
+    },
     "./embeddings": {
       "import": "./dist/embeddings.js",
       "types": "./dist/embeddings.d.ts"
@@ -75,7 +79,8 @@
     "jimp": "^1.6.0",
     "playwright": "npm:patchright@^1.57.0",
     "playwright-vanilla": "npm:playwright@^1.60.0",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "undici": "7.29.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

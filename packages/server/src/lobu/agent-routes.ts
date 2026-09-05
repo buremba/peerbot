@@ -32,10 +32,8 @@ import {
 	egressGuardrailsToPolicyBundle,
 	findSuppressedJudgedDomains,
 } from "../gateway/permissions/policy-store";
-import {
-	isUnrestrictedMode,
-	loadAllowedDomains,
-} from "../gateway/config/network-allowlist";
+import { isUnrestrictedMode } from "@lobu/connector-sdk/egress-policy";
+import { loadAllowedDomains } from "../gateway/config/network-allowlist";
 import { createAuthProfileLabel } from "../gateway/auth/settings/auth-profiles-manager";
 import { orgBucketAgentId } from "../gateway/auth/settings/user-auth-profile-store";
 import { validateModelRefsAgainstOrg } from "./model-config";

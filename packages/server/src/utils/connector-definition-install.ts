@@ -18,7 +18,7 @@ import {
   extractConnectorMetadata,
   validateConnectorMetadata,
 } from './connector-compiler';
-import { fetchPublicUrl, isInternalUrl } from '../gateway/proxy/ssrf-guard';
+import { fetchPublicUrl, isInternalUrl } from '@lobu/connector-worker/egress';
 import type { McpOAuthMetadata } from '../mcp-proxy/types';
 import { assertChromeNamespaceInstallIsDeviceManifest } from './connector-execution-placement';
 import { preflightConnectorRelationshipTypes } from './connector-relationship-declarations';

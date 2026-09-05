@@ -7,8 +7,8 @@ import {
 import { validatePublicUrl } from '../url-guards.ts';
 
 /**
- * This module replaced three separate IP classifiers: the gateway's
- * `ssrf-guard.ts`, the database `db-egress-guard.ts`, and the regex block that
+ * This module replaced three separate IP classifiers: the gateway egress
+ * transport (now `@lobu/connector-worker/egress`), the database `db-egress-guard.ts`, and the regex block that
  * used to live inline in `validatePublicUrl`. The cases below pin the union of
  * what those three enforced, so no consumer silently loses a check.
  */

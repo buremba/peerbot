@@ -260,6 +260,67 @@ describe('waitForDeviceActionRun', () => {
     expect(syntheticNow).toBeGreaterThan(queueDeadline);
   });
 
+  it('honors a persisted action timeout longer than the browser watchdog', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+    const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 150_000 });
+    let syntheticNow = Date.now();
+    await claim(runId, WORKER_ID, syntheticNow);
+    let sleeps = 0;
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+      queueMs: 60_000,
+      postClaimMs: 95_000,
+      pollMs: 1,
+      now: () => syntheticNow,
+      sleep: async () => {
+        sleeps += 1;
+        if (sleeps === 1) { syntheticNow += 100_000; return; }
+        if (sleeps === 2) {
+          await workerCompleteAction(runId, WORKER_ID, 'success', { ok: true });
+          return;
+        }
+        throw new Error('waiter failed to observe completion');
+      },
+    });
+    expect(out.status).toBe('completed');
+    expect(sleeps).toBe(2);
+  });
+
+  it.each([null, 0, -1, 1.5, '150000', 300_001])(
+    'does not extend a wait for an invalid timeout %s', async (timeout_ms) => {
+      const org = await createTestOrganization();
+      await insertChromeConnector(org.id);
+      const connId = await insertChromeConnection(org.id);
+      const runId = await insertPendingActionRun(org.id, connId, { timeout_ms });
+      let syntheticNow = Date.now();
+      await claim(runId, WORKER_ID, syntheticNow);
+      const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+        queueMs: 60_000, postClaimMs: 95_000, pollMs: 1,
+        now: () => syntheticNow,
+        sleep: async () => { syntheticNow += 100_000; },
+      });
+      expect(out.status).toBe('timeout');
+      expect(out.error_message).toContain('95000ms');
+    }
+  );
+
+  it('still bounds a valid long action after its completion grace', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+    const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 150_000 });
+    let syntheticNow = Date.now();
+    await claim(runId, WORKER_ID, syntheticNow);
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+      queueMs: 60_000, postClaimMs: 95_000, pollMs: 1,
+      now: () => syntheticNow,
+      sleep: async () => { syntheticNow += 180_000; },
+    });
+    expect(out.status).toBe('timeout');
+    expect(out.error_message).toContain('180000ms');
+  });
+
   it('atomic guard: a worker that finalizes after gateway-timeout cannot overwrite the verdict', async () => {
     const org = await createTestOrganization();
     await insertChromeConnector(org.id);

@@ -87,7 +87,12 @@ async function sleepUnlessAborted(ms: number, abortSignal?: AbortSignal): Promis
 // 20-30s) could exhaust a flat-100s deadline before the worker even
 // claimed the run, marking it timeout while the worker was about to
 // pick it up.
-const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
+const POST_CLAIM_BUDGET_MS = 95_000; // default for the extension's 90s watchdog
+// Device actions can explicitly request a longer deadline than Chrome's
+// watchdog. Leave time for process-group cleanup and terminal-result delivery;
+// the caller's abort signal still bounds the lifetime of this whole wait.
+const ACTION_COMPLETION_GRACE_MS = 30_000;
+const MAX_ACTION_TIMEOUT_MS = 300_000;
 const POLL_MS = 500;
 
 interface DeviceActionRunOutcome {
@@ -147,10 +152,11 @@ export async function waitForDeviceActionRunWithOptions(
   const sleep = options.sleep ?? ((ms: number) => sleepUnlessAborted(ms, options.abortSignal));
   const queueDeadline = now() + options.queueMs;
   let claimedAtMs: number | null = null;
+  let postClaimMs = options.postClaimMs;
 
   while (true) {
     const rows = (await sql`
-      SELECT status, action_output, error_message, claimed_at
+      SELECT status, action_output, error_message, claimed_at, action_input
       FROM runs
       WHERE id = ${runId} AND organization_id = ${organizationId}
       LIMIT 1
@@ -159,6 +165,7 @@ export async function waitForDeviceActionRunWithOptions(
       action_output: unknown;
       error_message: string | null;
       claimed_at: Date | string | null;
+      action_input: { timeout_ms?: unknown } | null;
     }>;
     const row = rows[0];
     if (!row) {
@@ -179,6 +186,14 @@ export async function waitForDeviceActionRunWithOptions(
         error_message: row.error_message ?? `Run ${runId} ${row.status}`,
       };
     }
+    // The durable input is the request the device executes, not the current
+    // connector default or a caller-supplied waiter override.
+    const requestedTimeout = row.action_input?.timeout_ms;
+    postClaimMs =
+      typeof requestedTimeout === 'number' && Number.isSafeInteger(requestedTimeout) &&
+      requestedTimeout > 0 && requestedTimeout <= MAX_ACTION_TIMEOUT_MS
+        ? Math.max(options.postClaimMs, requestedTimeout + ACTION_COMPLETION_GRACE_MS)
+        : options.postClaimMs;
     // Still pending or running. Check the right deadline for this phase.
     if (row.claimed_at && claimedAtMs == null) {
       claimedAtMs =
@@ -191,7 +206,7 @@ export async function waitForDeviceActionRunWithOptions(
     if (options.abortSignal?.aborted) break;
     const currentTimeMs = now();
     if (claimedAtMs != null) {
-      if (currentTimeMs - claimedAtMs >= options.postClaimMs) break;
+      if (currentTimeMs - claimedAtMs >= postClaimMs) break;
     } else {
       if (currentTimeMs >= queueDeadline) break;
     }
@@ -266,7 +281,7 @@ export async function waitForDeviceActionRunWithOptions(
     status: 'timeout',
     error_message:
       deviceDiagnostic == null
-        ? `Run ${runId} claimed but the device worker didn't finish within ${options.postClaimMs}ms.`
+        ? `Run ${runId} claimed but the device worker didn't finish within ${postClaimMs}ms.`
         : `Run ${runId} was never claimed within ${options.queueMs}ms — ${deviceDiagnostic}.`,
   };
 }

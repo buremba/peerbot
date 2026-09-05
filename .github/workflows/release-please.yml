@@ -269,3 +269,60 @@ jobs:
           tag: ${{ steps.bump.outputs.tag }}
           expected-sha: ${{ needs.attest.outputs.sha }}
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+      # release-please marks its own merged release PR `autorelease: tagged`
+      # from inside the release step, and this workflow skips that step
+      # (`skip-github-release: true`) so the release can be bound to the
+      # attested commit rather than to whatever the action considered HEAD.
+      # Nothing else moves the label, so it stays `autorelease: pending`
+      # forever -- and release-please refuses to open the NEXT release PR
+      # while any merged one still reads pending ("There are untagged, merged
+      # release PRs outstanding - aborting"). One release therefore blocks
+      # every release after it: 18.0.0 was tagged on 2026-09-03 and no
+      # version-bump PR opened again until its label was corrected by hand.
+      #
+      # Matching is by ancestry, not by title: `assert-newer` above guarantees
+      # the release just cut is the newest, so any release PR merged at or
+      # before the attested commit has had its version superseded and its
+      # pending label is stale by construction. A title comparison would go
+      # silently stale the moment `pull-request-title-pattern` changed, which
+      # is the same silence this step exists to remove.
+      #
+      # Merged-ness is read from the list payload, so an unmerged PR costs no
+      # extra call -- and it has to be read, because release-please closes
+      # every release PR it supersedes without clearing the label. Those
+      # closed-unmerged ones are harmless to the abort above, which counts
+      # merged PRs only, but their `merge_commit_sha` is the
+      # `refs/pull/N/merge` test merge: GitHub garbage-collects it, and
+      # comparing against a collected one 404s and, under `set -e`, fails this
+      # job after the release was already created.
+      - name: Clear the pending label from released PRs
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ATTESTED_SHA: ${{ needs.attest.outputs.sha }}
+        run: |
+          set -euo pipefail
+          pending=$(gh api --paginate --slurp \
+            "repos/${REPOSITORY}/issues?state=closed&labels=autorelease:%20pending&per_page=100" \
+            | jq -r '.[][] | select(.pull_request.merged_at) | .number')
+          for pr in $pending; do
+            merged_sha=$(gh api "repos/${REPOSITORY}/pulls/${pr}" --jq '.merge_commit_sha')
+            compare_status=$(gh api "repos/${REPOSITORY}/compare/${merged_sha}...${ATTESTED_SHA}" --jq '.status')
+            case "$compare_status" in
+              ahead | identical) ;;
+              *) continue ;;
+            esac
+            # Add then remove, so the PR is never momentarily unlabelled. The
+            # DELETE is tolerated because two main pushes can both reach this
+            # step for one release -- the create step above is written for that
+            # same race -- and the second finds the label already gone. It
+            # cannot swallow a permission fault: the POST shares the token and
+            # is not tolerated.
+            gh api --method POST "repos/${REPOSITORY}/issues/${pr}/labels" \
+              --input <(jq -n '{labels: ["autorelease: tagged"]}') >/dev/null
+            gh api --method DELETE \
+              "repos/${REPOSITORY}/issues/${pr}/labels/autorelease:%20pending" >/dev/null || true
+            echo "cleared the pending label from #${pr}"
+          done

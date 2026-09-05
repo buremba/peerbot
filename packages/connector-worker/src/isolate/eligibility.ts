@@ -5,7 +5,7 @@
  * except Node builtins, which esbuild leaves as bare `require()` calls because
  * `platform: 'node'` marks them external. An isolate has no module loader, so
  * a surviving builtin `require` is the fail-closed signal that the connector
- * needs the process lane. The compiler reports it from the esbuild metafile;
+ * cannot run at all. The compiler reports it from the esbuild metafile;
  * this scan is the same check for bundles that arrive already compiled (the
  * gateway ships `compiled_code` to device workers), so the executor can refuse
  * at init with the builtin named instead of failing at the connector's first
@@ -29,12 +29,28 @@ export function isNodeBuiltinSpecifier(specifier: string): boolean {
  */
 const REQUIRE_CALL_RE = /(?:^|[^\w$.])(?:__)?require\(\s*(["'])([^"'\\\n]+)\1\s*\)/g;
 
+export const ISOLATE_PRELUDE_PROVIDED_BUILTINS = new Set([
+  'buffer',
+  'node:buffer',
+  'crypto',
+  'node:crypto',
+  'events',
+  'node:events',
+  'stream',
+  'node:stream',
+  'cloudflare:sockets',
+  'module',
+  'node:module',
+]);
+
 /** Node builtins a bundle still requires, `node:` prefix stripped, sorted. */
 export function findIsolateIneligibleBuiltins(code: string): string[] {
   const found = new Set<string>();
   for (const match of code.matchAll(REQUIRE_CALL_RE)) {
     const specifier = match[2];
-    if (isNodeBuiltinSpecifier(specifier)) found.add(specifier.replace(/^node:/, ''));
+    if (isNodeBuiltinSpecifier(specifier) && !ISOLATE_PRELUDE_PROVIDED_BUILTINS.has(specifier)) {
+      found.add(specifier.replace(/^node:/, ''));
+    }
   }
   return [...found].sort();
 }
@@ -47,7 +63,9 @@ export class IsolateLaneIneligibleError extends Error {
     const subject = label ? `Connector '${label}'` : 'Connector bundle';
     super(
       `${subject} requires Node builtin${builtins.length === 1 ? '' : 's'} ` +
-        `[${builtins.join(', ')}] and cannot run on the isolate lane; route it to the process lane.`
+        `[${builtins.join(', ')}], which the isolate does not provide. There is no other ` +
+        `lane: either drop the dependency, or serve the capability from a device backend ` +
+        `the way os.shell does.`
     );
     this.name = 'IsolateLaneIneligibleError';
     this.builtins = builtins;

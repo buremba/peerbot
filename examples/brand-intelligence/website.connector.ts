@@ -1,10 +1,16 @@
 /**
  * Website Connector
  *
- * Scrapes web pages using Playwright for JS rendering.
+ * Fetches web pages over HTTP and converts them to markdown.
  * Supports sitemap.xml discovery or explicit URL list.
  * Converts HTML → Markdown, splits into hierarchical sections.
  * Tracks changes between syncs via content hashing.
+ *
+ * Server-side rendered HTML only. The connector runs in a V8 isolate with no
+ * browser behind it, so a page whose content is painted by client-side JS
+ * yields whatever its server response contains. That is the whole crawl
+ * surface: every feed here reads public marketing and docs pages, which are
+ * served as HTML.
  */
 
 import { createHash } from "node:crypto";
@@ -18,8 +24,6 @@ import {
   type SyncResult,
   validatePublicUrl,
 } from "@lobu/connector-sdk";
-import { launchBrowser } from "@lobu/connector-sdk/browser";
-import type { Page } from "playwright";
 
 interface PageSection {
   heading: string;
@@ -58,8 +62,8 @@ export default class WebsiteConnector extends ConnectorRuntime {
     key: "website",
     name: "Website",
     description:
-      "Scrapes web pages with JS rendering via Playwright. Supports sitemap.xml for auto-discovery. Converts to markdown sections and tracks changes.",
-    version: "1.0.0",
+      "Fetches web pages over HTTP. Supports sitemap.xml for auto-discovery. Converts to markdown sections and tracks changes.",
+    version: "2.0.0",
     faviconDomain: "google.com",
     authSchema: {
       methods: [{ type: "none" }],
@@ -98,11 +102,6 @@ export default class WebsiteConnector extends ConnectorRuntime {
               default: true,
               description:
                 "Split page into sections by headings (h1-h3). If false, one event per page.",
-            },
-            wait_for_selector: {
-              type: "string",
-              description:
-                'CSS selector to wait for before extracting content (e.g. "main", "#content"). Useful for SPAs.',
             },
           },
         },
@@ -156,7 +155,6 @@ export default class WebsiteConnector extends ConnectorRuntime {
     const explicitUrls = ctx.config.urls as string[] | undefined;
     const maxPages = (ctx.config.max_pages as number) ?? 20;
     const parseSections = (ctx.config.parse_sections as boolean) ?? true;
-    const waitForSelector = ctx.config.wait_for_selector as string | undefined;
     const previousHashes =
       (ctx.checkpoint?.hashes as Record<string, string>) ?? {};
 
@@ -177,131 +175,104 @@ export default class WebsiteConnector extends ConnectorRuntime {
 
     urls = urls.slice(0, maxPages);
 
-    // Launch browser
-    const { browser } = await launchBrowser({ stealth: false });
     const events: EventEnvelope[] = [];
     const newHashes: Record<string, string> = {};
 
-    try {
-      for (let i = 0; i < urls.length; i++) {
-        const url = urls[i];
-        try {
-          validatePublicUrl(url);
-          const page = (await browser.newPage()) as Page;
-          try {
-            await page.goto(url, {
-              waitUntil: "networkidle",
-              timeout: this.PAGE_TIMEOUT,
-            });
-            await this.dismissOverlays(page);
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      try {
+        validatePublicUrl(url);
+        const { html, finalUrl } = await this.fetchPage(url);
+        const meta = this.extractMeta(html);
+        const cleanHtml = this.stripNonContent(html);
+        const markdown = this.deduplicateMarkdown(
+          this.turndown.turndown(cleanHtml).trim()
+        );
+        if (
+          !markdown ||
+          shouldSkipCookieBannerText(`${meta.title ?? ""}\n${markdown}`)
+        ) {
+          continue;
+        }
+        const contentHash = this.hash(markdown);
 
-            if (waitForSelector) {
-              await page
-                .waitForSelector(waitForSelector, { timeout: 10000 })
-                .catch(() => {
-                  // Optional selector — continue with full-page extract.
-                });
+        if (previousHashes[url] === contentHash) {
+          newHashes[url] = contentHash;
+          continue;
+        }
+        newHashes[url] = contentHash;
+
+        if (parseSections) {
+          const sections = this.parseSections(markdown);
+          for (let si = 0; si < sections.length; si++) {
+            const section = sections[si];
+            const sectionHash = this.hash(section.content);
+            const sectionKey = `${url}#${section.anchor}`;
+
+            if (previousHashes[sectionKey] === sectionHash) {
+              newHashes[sectionKey] = sectionHash;
+              continue;
             }
-
-            await this.removeHiddenElements(page);
-            const html = await page.content();
-            const finalUrl = page.url();
-            const meta = this.extractMeta(html);
-            const cleanHtml = this.stripNonContent(html);
-            const markdown = this.deduplicateMarkdown(
-              this.turndown.turndown(cleanHtml).trim()
-            );
+            newHashes[sectionKey] = sectionHash;
             if (
-              !markdown ||
-              shouldSkipCookieBannerText(`${meta.title ?? ""}\n${markdown}`)
+              shouldSkipCookieBannerText(
+                `${section.heading}\n${section.content}`
+              )
             ) {
               continue;
             }
-            const contentHash = this.hash(markdown);
 
-            if (previousHashes[url] === contentHash) {
-              newHashes[url] = contentHash;
-              continue;
-            }
-            newHashes[url] = contentHash;
-
-            if (parseSections) {
-              const sections = this.parseSections(markdown);
-              for (let si = 0; si < sections.length; si++) {
-                const section = sections[si];
-                const sectionHash = this.hash(section.content);
-                const sectionKey = `${url}#${section.anchor}`;
-
-                if (previousHashes[sectionKey] === sectionHash) {
-                  newHashes[sectionKey] = sectionHash;
-                  continue;
-                }
-                newHashes[sectionKey] = sectionHash;
-                if (
-                  shouldSkipCookieBannerText(
-                    `${section.heading}\n${section.content}`
-                  )
-                ) {
-                  continue;
-                }
-
-                const parentKey = section.parentAnchor
-                  ? `${url}#${section.parentAnchor}`
-                  : undefined;
-                events.push({
-                  origin_id: `web_section_${this.hash(sectionKey)}`,
-                  title: section.heading,
-                  payload_text: section.content,
-                  source_url: `${finalUrl}#${section.anchor}`,
-                  occurred_at: new Date(),
-                  origin_type: "section",
-                  semantic_type: "section",
-                  score: 50,
-                  origin_parent_id: parentKey
-                    ? `web_section_${this.hash(parentKey)}`
-                    : undefined,
-                  metadata: {
-                    heading: section.heading,
-                    heading_level: section.level,
-                    anchor: section.anchor,
-                    section_index: si,
-                    page_url: finalUrl,
-                    content_hash: sectionHash,
-                  },
-                });
-              }
-            } else {
-              events.push({
-                origin_id: `web_page_${this.hash(url)}`,
-                title: meta.title || finalUrl,
-                payload_text: markdown,
-                source_url: finalUrl,
-                occurred_at: new Date(),
-                origin_type: "page",
-                semantic_type: "page",
-                score: 50,
-                metadata: {
-                  content_hash: contentHash,
-                  meta_title: meta.title,
-                  meta_description: meta.description,
-                  og_image: meta.ogImage,
-                  word_count: markdown.split(/\s+/).length,
-                },
-              });
-            }
-          } finally {
-            await page.close();
+            const parentKey = section.parentAnchor
+              ? `${url}#${section.parentAnchor}`
+              : undefined;
+            events.push({
+              origin_id: `web_section_${this.hash(sectionKey)}`,
+              title: section.heading,
+              payload_text: section.content,
+              source_url: `${finalUrl}#${section.anchor}`,
+              occurred_at: new Date(),
+              origin_type: "section",
+              semantic_type: "section",
+              score: 50,
+              origin_parent_id: parentKey
+                ? `web_section_${this.hash(parentKey)}`
+                : undefined,
+              metadata: {
+                heading: section.heading,
+                heading_level: section.level,
+                anchor: section.anchor,
+                section_index: si,
+                page_url: finalUrl,
+                content_hash: sectionHash,
+              },
+            });
           }
-        } catch {
-          // Best-effort per-URL scrape; continue with remaining URLs.
+        } else {
+          events.push({
+            origin_id: `web_page_${this.hash(url)}`,
+            title: meta.title || finalUrl,
+            payload_text: markdown,
+            source_url: finalUrl,
+            occurred_at: new Date(),
+            origin_type: "page",
+            semantic_type: "page",
+            score: 50,
+            metadata: {
+              content_hash: contentHash,
+              meta_title: meta.title,
+              meta_description: meta.description,
+              og_image: meta.ogImage,
+              word_count: markdown.split(/\s+/).length,
+            },
+          });
         }
-
-        if (i < urls.length - 1) {
-          await sleep(this.PAGE_DELAY_MS);
-        }
+      } catch {
+        // Best-effort per-URL fetch; continue with remaining URLs.
       }
-    } finally {
-      await browser.close();
+
+      if (i < urls.length - 1) {
+        await sleep(this.PAGE_DELAY_MS);
+      }
     }
 
     return {
@@ -310,88 +281,39 @@ export default class WebsiteConnector extends ConnectorRuntime {
       metadata: { pages_scraped: urls.length, events_created: events.length },
     };
   }
-  private async dismissOverlays(page: Page): Promise<void> {
-    const dismissLabels = [
-      "Accept",
-      "Accept all",
-      "I agree",
-      "Allow all",
-      "Got it",
-      "Continue",
-      "Close",
-    ];
-
-    for (const label of dismissLabels) {
-      try {
-        const button = page
-          .getByRole("button", { name: new RegExp(`^${label}$`, "i") })
-          .first();
-        if (await button.isVisible({ timeout: 500 })) {
-          await button.click({ timeout: 1000 });
-          break;
-        }
-      } catch {
-        // Keep trying other labels/selectors.
-      }
-    }
-
-    await page
-      .evaluate(() => {
-        const selectors = [
-          '[id*="cookie" i]',
-          '[class*="cookie" i]',
-          '[id*="consent" i]',
-          '[class*="consent" i]',
-          '[id*="onetrust" i]',
-          '[class*="onetrust" i]',
-          '[aria-modal="true"]',
-          '[role="dialog"]',
-        ];
-
-        for (const element of document.querySelectorAll(selectors.join(","))) {
-          const html = (element as HTMLElement).innerText || "";
-          if (/cookie|consent|privacy/i.test(html)) {
-            element.remove();
-          }
-        }
-      })
-      .catch(() => {
-        // DOM cleanup is best-effort.
-      });
-  }
-
   /**
-   * Remove DOM elements hidden via CSS (display:none, visibility:hidden, zero dimensions).
-   * This handles responsive duplicates where the same content is rendered for
-   * desktop and mobile with Tailwind classes like `hidden md:block` / `md:hidden`.
+   * Fetch one page's HTML.
+   *
+   * `redirect: "follow"` matters: the markdown, the section anchors and every
+   * `source_url` are keyed off the URL the server actually served, not the one
+   * configured, so a site that redirects `/x` to `/x/` does not churn a whole
+   * page's worth of sections on every sync.
    */
-  private async removeHiddenElements(page: Page): Promise<void> {
-    await page
-      .evaluate(() => {
-        const walker = document.createTreeWalker(
-          document.body,
-          NodeFilter.SHOW_ELEMENT
-        );
-        const toRemove: Element[] = [];
-        while (walker.nextNode()) {
-          const el = walker.currentNode as HTMLElement;
-          // Skip elements that can't meaningfully contain scraped content
-          if (
-            ["SCRIPT", "STYLE", "LINK", "META", "BR", "HR"].includes(el.tagName)
-          )
-            continue;
-          const style = getComputedStyle(el);
-          if (style.display === "none" || style.visibility === "hidden") {
-            toRemove.push(el);
-          }
-        }
-        for (const el of toRemove) {
-          el.remove();
-        }
-      })
-      .catch(() => {
-        // Best-effort — continue with the full DOM if this fails.
+  private async fetchPage(
+    url: string
+  ): Promise<{ html: string; finalUrl: string }> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.PAGE_TIMEOUT);
+    try {
+      const response = await fetch(url, {
+        redirect: "follow",
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; LobuBot/1.0)",
+          Accept: "text/html,application/xhtml+xml",
+        },
       });
+      if (!response.ok) {
+        throw new Error(`Page fetch failed: HTTP ${response.status}`);
+      }
+      const contentType = response.headers.get("content-type") ?? "";
+      if (contentType && !/\b(html|xml)\b/i.test(contentType)) {
+        throw new Error(`Page is not HTML (content-type: ${contentType})`);
+      }
+      return { html: await response.text(), finalUrl: response.url || url };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**

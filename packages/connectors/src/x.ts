@@ -1223,9 +1223,9 @@ export function finalizeLikedTweetsResult(
 
 // ── Extension dispatcher ───────────────────────────────────────
 //
-// Pulled from sessionState — the connector-worker subprocess splices a live
+// Pulled from sessionState — the connector-worker host splices a live
 // `chrome_dispatcher` onto the sessionState of every sync AND every action run;
-// the dispatcher's `dispatch()` rides an IPC channel up to the gateway's
+// the dispatcher's `dispatch()` rides a host capability up to the gateway's
 // /api/workers/dispatch-chrome-action bridge and out to the paired Owletto
 // extension. When no extension is online in the connection's org, the bridge
 // returns `failed` and the dispatcher throws — we surface that verbatim.

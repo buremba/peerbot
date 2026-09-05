@@ -103,7 +103,7 @@ describe('daemon-builtin os.shell', () => {
       expect(result.stdout).toMatch(/PATH=.+/);
       expect(result.stdout).toMatch(/HOME=.+/);
       expect(result.stdout).toMatch(/TMPDIR=.+/);
-      for (const name of Object.keys(sentinels)) expect(result.stdout).not.toContain(`${name}=`);
+      for (const name of Object.keys(sentinels)) expect(result.stdout).not.toMatch(new RegExp(`^${name}=`, 'm'));
       expect(result.stdout).toContain('LC_ALL=C');
     } finally {
       for (const [name, value] of Object.entries(sentinels)) {

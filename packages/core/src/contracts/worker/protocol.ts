@@ -67,7 +67,7 @@ export const RunTypeSchema = Type.Union([
   Type.Literal("auth"),
 ]);
 
-/** Categorized subprocess exit reason on the failed-run path. */
+/** Categorized run exit reason on the failed-run path. */
 export const WorkerExitReasonSchema = Type.Union([
   Type.Literal("ok"),
   Type.Literal("cancelled"),
@@ -78,7 +78,7 @@ export const WorkerExitReasonSchema = Type.Union([
 ]);
 
 /**
- * Diagnostic fields the subprocess executor attaches on the failed-run path.
+ * Diagnostic fields the connector executor attaches on the failed-run path.
  * The worker redacts `output_tail` before sending; the backend stores it as-is.
  * Shared by `/complete` and `/complete-auth`.
  */
@@ -145,22 +145,6 @@ export function defaultBackendCapacity(
 export const ExecutionBackendSchema = Type.Union([
   Type.Literal(EXECUTION_BACKENDS.daemonBuiltin),
   Type.Literal("native_bridge"),
-]);
-
-/**
- * Where compiled connector code executes on the worker.
- *
- * `process`: a forked Node child (`SubprocessExecutor`), the lane every run
- * uses today. `isolate`: a V8 isolate inside the worker process
- * (`IsolateExecutor`), for pure-JS bundles that import no Node builtin. The
- * gateway is to derive the lane from the compiled artifact; until it does, no
- * producer sends one. The isolate is the security boundary for
- * organization-supplied code, so a worker that cannot host one FAILS an
- * `isolate` run instead of forking a child for it.
- */
-export const ExecutionLaneSchema = Type.Union([
-  Type.Literal("process"),
-  Type.Literal("isolate"),
 ]);
 
 /** `POST /api/workers/poll` request body. */
@@ -350,12 +334,6 @@ export const PollResponseSchema = Type.Object({
   connection_id: Type.Optional(Type.Integer()),
   feed_id: Type.Optional(Type.Integer()),
   compiled_code: Type.Optional(Type.String()),
-  nix_packages: Type.Optional(Type.Array(Type.String())),
-  /**
-   * Execution lane for the compiled connector code. Absent means `process`.
-   * Additive: no producer sends it yet; the worker honors it when present.
-   */
-  lane: Type.Optional(ExecutionLaneSchema),
   session_state: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   connector_version: Type.Optional(Type.String()),
   action_key: Type.Optional(Type.String()),
@@ -637,7 +615,6 @@ export type RunType = Static<typeof RunTypeSchema>;
 export type WorkerExitReason = Static<typeof WorkerExitReasonSchema>;
 export type WorkerExitDiagnostics = Static<typeof WorkerExitDiagnosticsSchema>;
 export type ExecutionBackend = Static<typeof ExecutionBackendSchema>;
-export type ExecutionLane = Static<typeof ExecutionLaneSchema>;
 export type OAuthCredentials = Static<typeof OAuthCredentialsSchema>;
 export type PollRequest = Static<typeof PollRequestSchema>;
 export type PollResponse = Static<typeof PollResponseSchema>;

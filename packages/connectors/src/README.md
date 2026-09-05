@@ -476,8 +476,8 @@ Platform-specific logic:
 For headless public scraping, use `@lobu/connector-sdk/browser` (`launchBrowser`,
 `runReviewScrape`) together with the root's `validateUrlDomain` / `validatePublicUrl`. The
 browser helpers live behind that subpath because they need a Node process (Playwright, CDP);
-the package root stays loadable inside a V8 isolate, and importing the subpath is what routes a
-connector to the process lane. Bundled connectors import timing/checkpoint helpers
+the package root stays loadable inside a V8 isolate, and a connector that imports the subpath
+cannot run there at all. Bundled connectors import timing/checkpoint helpers
 from `./scraper-utils.ts` (re-exports from the SDK).
 
 Review-site scrapers (Trustpilot, G2, etc.) live in `examples/brand-intelligence/` — they are
@@ -508,9 +508,9 @@ Browser connectors use `patchright` (an npm alias for Playwright). The SDK expor
 
 ## Worker Sandbox Environment
 
-Connector code runs in a worker subprocess with an explicit environment boundary. Key things to know:
+Connector code runs in a V8 isolate with an explicit capability boundary. Key things to know:
 
-- **Minimal env vars**: The child receives the required system keys plus explicit values in `job.env`, not the complete host environment. `WORKER_API_TOKEN` is deliberately excluded.
+- **No ambient environment**: the guest sees only the explicit values in `job.env`, never the host environment. `WORKER_API_TOKEN` is deliberately excluded.
 - **Credentials via ctx**: OAuth/session credentials flow through `ctx.credentials`; `env_keys` values are injected into `ctx.config`, and interactive auth receives `previousCredentials`.
 - **No filesystem persistence**: Don't write to disk expecting it to survive between syncs. Use `checkpoint` for state.
 
@@ -554,10 +554,10 @@ Connectors can also be installed manually via `client.connections.installConnect
 ### How connector code runs
 
 1. For fleet workers and embedded-mode hosts (worker + gateway share a host), the gateway sends only `connector_key` in the worker-poll response — both runtimes have the `.ts` source on disk, and the worker compiles locally via the shared pipeline at `@lobu/connector-worker/compile`. For DB-only / device workers without source on disk, the gateway sends `compiled_code` inline.
-2. The compiled bundle is written to a temp file (`.connector-child-{pid}-{rand}.mjs`) under cwd and loaded via dynamic `import()` inside an isolated Node child process (direct `fork`, or a `nix-shell` wrapper when native packages are declared).
-3. The parent and child speak `ExecutorJob` / `ExecutorResult` over IPC — the SDK shapes (`SyncContext` / `ActionContext` / `AuthContext` in, `SyncResult` / `ActionResult` / `AuthResult` out, no envelope). Sync events stream via `event_chunk` IPC messages as the connector emits them.
-4. Connector code gets process isolation, not a hardened security sandbox. `SubprocessExecutor` defaults to a 10-minute timeout and a 512 MB V8 old-space setting; the standalone daemon raises old space to 1024 MB, and interactive auth runs disable the fixed timeout while waiting for the user.
-5. The child inherits only the required system keys (`PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, `PLAYWRIGHT_BROWSERS_PATH`) plus explicit values supplied in `job.env` — never the complete host environment.
+2. The bundle is self-contained — the SDK and every pure-JS dependency are inlined — and is evaluated inside a V8 isolate in the worker process. The isolate has no module loader, so a bundle that still `require()`s a Node builtin is rejected before it runs.
+3. Host and guest speak the SDK shapes (`SyncContext` / `ActionContext` / `AuthContext` in, `SyncResult` / `ActionResult` / `AuthResult` out, no envelope) across named host capabilities. Sync events stream up as the connector emits them.
+4. `IsolateExecutor` defaults to a 10-minute wall clock and a 512 MB heap for every run; interactive auth runs disable the fixed timeout while waiting for the user.
+5. The guest has no filesystem, no ambient environment, and no socket of its own: everything it can reach is a named capability the host granted — `fetch` and, for the DB connectors, a host-dialled TCP socket — plus the explicit values supplied in `job.env`.
 6. Connection credentials and config flow through the typed job context (`ctx.credentials`, `ctx.config`, or auth's `previousCredentials`). The worker API token is never forwarded to connector code.
 
 For source-backed bundled connectors, the worker recompiles a `.ts` file after its mtime changes. Built deployments still require rebuild/redeploy, while project-local connector changes require another `lobu apply` to install a new organization-scoped version.

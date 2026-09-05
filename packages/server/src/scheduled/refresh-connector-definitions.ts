@@ -87,7 +87,7 @@ export async function refreshConnectorDefinitions(): Promise<RefreshResult> {
     }
     try {
       // SAME write path as install (upsertBundledConnectorForOrg): recompile
-      // bundled source → upsert this org's definition. compileConnectorFromFile
+      // bundled source → upsert this org's definition. compileConnectorForIsolateFromFile
       // is mtime-LRU-cached, so re-resolving the same key across orgs is cheap.
       const refreshed = await upsertBundledConnectorForOrg({
         organizationId: row.organization_id,

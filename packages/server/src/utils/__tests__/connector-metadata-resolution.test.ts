@@ -1,13 +1,14 @@
 /**
  * Reproducer for #1181: the gateway's bundled-connector install path compiles
- * a connector with `@lobu/connector-sdk` externalized, then extracts metadata
- * in a subprocess from a temp dir under `process.cwd()`. When the server runs
- * inside a user project with no node_modules (fresh `lobu init` + `lobu run`),
- * the bundle's bare SDK import used to fail with
- * `Cannot find package '@lobu/connector-sdk'` because resolution only walked
- * UP from the temp dir. `extractMetadata` now stages a node_modules inside the
- * temp dir, symlinking the runtime-provided packages as the server resolves
- * them — so extraction succeeds regardless of the project's node_modules.
+ * a connector, then extracts metadata in a subprocess from a temp dir under
+ * `process.cwd()`. When the server runs inside a user project with no
+ * node_modules (fresh `lobu init` + `lobu run`), a bare import left in the
+ * bundle used to fail with `Cannot find package …` because resolution only
+ * walked UP from the temp dir. `extractMetadata` now stages a node_modules
+ * inside the temp dir, symlinking the runtime-provided packages as the server
+ * resolves them — so extraction succeeds regardless of the project's
+ * node_modules. The isolate bundle inlines the SDK, but still externalises
+ * `EXTERNAL_RUNTIME_DEPS`, so the staging remains load-bearing.
  *
  * Vitest (not the bun unit lane) on purpose: the extraction subprocess is a
  * `fork()` of the test runtime, and under bun the child would auto-install
@@ -17,7 +18,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createConnectorCompiler } from '@lobu/connector-worker/compile';
+import { createIsolateConnectorCompiler } from '@lobu/connector-worker/compile';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { formatMetadataExtractionError } from '../compiler-core';
 import {
@@ -79,15 +80,16 @@ describe('extractConnectorMetadata in a project dir without node_modules', () =>
     rmSync(emptyProjectDir, { recursive: true, force: true });
   });
 
-  test('extracts metadata from an SDK-externalized bundle', async () => {
+  test('extracts metadata from the compiled bundle', async () => {
     const connectorPath = join(sourceDir, 'meta_resolution_probe.ts');
     writeFileSync(connectorPath, CONNECTOR_SOURCE);
 
-    // Same compiler the gateway's bundled-connector install path uses:
-    // leaves `@lobu/connector-sdk` as a bare external import in the bundle.
-    const { compileConnectorFromFile } = createConnectorCompiler();
-    const compiled = await compileConnectorFromFile(connectorPath);
-    expect(compiled).toContain('@lobu/connector-sdk');
+    // The same compiler the gateway's bundled-connector install path uses.
+    // It inlines the SDK, so no bare SDK specifier survives into the bundle.
+    const { compileConnectorForIsolateFromFile } = createIsolateConnectorCompiler();
+    const compiled = await compileConnectorForIsolateFromFile(connectorPath);
+    expect(compiled).not.toMatch(/from\s+['"]@lobu\/connector-sdk['"]/);
+    expect(compiled).not.toMatch(/require\(\s*['"]@lobu\/connector-sdk['"]\s*\)/);
 
     process.chdir(emptyProjectDir);
     try {
@@ -199,8 +201,8 @@ describe('non-connector files are identifiable, not just failures', () => {
           'export function normalize(v: string) { return v.toLowerCase(); }\n'
       );
 
-      const { compileConnectorFromFile } = createConnectorCompiler();
-      const compiled = await compileConnectorFromFile(modulePath);
+      const { compileConnectorForIsolateFromFile } = createIsolateConnectorCompiler();
+      const compiled = await compileConnectorForIsolateFromFile(modulePath);
 
       await expect(extractConnectorMetadata(compiled)).rejects.toThrow(
         NO_CONNECTOR_RUNTIME_ERROR

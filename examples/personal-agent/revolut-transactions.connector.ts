@@ -763,7 +763,7 @@ export function transactionToEvent(t: RevolutTransaction): EventEnvelope {
 
 /**
  * Pull the chrome action dispatcher from sessionState. The connector-worker
- * subprocess (child-runner.ts) splices a live `chrome_dispatcher` object onto
+ * host splices a live `chrome_dispatcher` object onto
  * every sync's sessionState; the dispatcher's `dispatch()` rides an IPC channel
  * up to the daemon and out to the gateway's chrome-action bridge and the paired
  * Owletto extension. When no paired Owletto extension is online in the

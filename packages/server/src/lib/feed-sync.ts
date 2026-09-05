@@ -6,8 +6,9 @@
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import { getDb, parsePgNumberArray } from '../db/client';
-import { dbEgressConfig } from '../utils/cloud-mode';
-import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
+import { dbEgressConfig, isCloudMode } from '../utils/cloud-mode';
+import { findBundledConnectorFile } from '../utils/connector-catalog';
+import { connectorRunEnv } from '@lobu/connector-worker/env';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
@@ -115,11 +116,6 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
     'Starting feed sync'
   );
 
-  // Execution-time cloud gate for the dev CLI sync path (scripts/lobu/sync-local.ts,
-  // the only caller of runFeed). The production worker-poll path is gated
-  // independently in worker-api.ts pollWorkerJob. No-op when not in cloud mode.
-  assertConnectorAllowedInCloud(feed.connector_key);
-
   const compiledCode = await resolveConnectorCode(feed.connector_key, {
     id: feed.connector_version_row_id,
     organization_id: feed.connector_version_organization_id,
@@ -149,7 +145,12 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
         ...dbEgressConfig(),
       },
       checkpoint: feed.checkpoint,
-      env: process.env as Record<string, string | undefined>,
+      // The same whitelist a fleet worker hands connector code — never the
+      // gateway's own env. See connectorRunEnv / the class-wide guard test.
+      env: connectorRunEnv({
+        organizationSupplied: findBundledConnectorFile(feed.connector_key) === null,
+        cloud: isCloudMode(),
+      }),
       sessionState,
       credentials,
       feedKey: feed.feed_key,

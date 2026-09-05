@@ -109,7 +109,7 @@ describe("device run targeting and execution invariants", () => {
 					async sync() { return { items: [] }; }
 					async execute(ctx) { return { success: true, output: { echoed: ctx.input.value } }; }
 				}
-				export { ConnectorRuntime };
+				module.exports = { ConnectorRuntime };
 			`},
 			compile_config_hash = ${COMPILE_CONFIG_HASH}
 			WHERE connector_key = ${CONNECTOR_KEY}

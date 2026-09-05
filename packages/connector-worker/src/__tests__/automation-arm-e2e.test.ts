@@ -98,7 +98,6 @@ function cfg(): ExecutorConfig {
     heartbeatIntervalMs: 60_000,
     generateEmbeddings: true,
     timeoutMs: 30_000,
-    maxOldSpaceSize: 1024,
     binaryOverrides: { pi: fakeBinary },
   };
 }

@@ -183,12 +183,18 @@ describe('query_sql connection pushdown', () => {
   }, 60_000);
 
   it('under LOBU_CLOUD_MODE the gate is open but block-private egress fails an internal host closed', async () => {
-    // postgres graduated out of CLOUD_RESTRICTED_CONNECTOR_KEYS, so pushdown is
-    // no longer refused up front ("not available on Lobu Cloud"). Instead the
+    // No per-connector cloud restriction list exists, so pushdown is no longer
+    // refused up front ("not available on Lobu Cloud"). Instead the
     // injected block-private policy takes over — and the test DB is on loopback
-    // (and/or sslmode=disable), so the connector's egress guard rejects it
-    // before any socket opens. That is the cloud security boundary now. A
-    // pushdown failure surfaces as a thrown hard error (#2042).
+    // (and/or sslmode=disable), so egress is rejected before any socket opens.
+    // That is the cloud security boundary now. A pushdown failure surfaces as a
+    // thrown hard error (#2042).
+    //
+    // The denial moved with the transport: it is now the isolate host's
+    // `socketOpen` that refuses, not the connector-side db-egress guard, so the
+    // wording changed. Match on the policy decision rather than one
+    // implementation's phrasing — the assertion that matters is that loopback
+    // was refused and the reason names the policy that refused it.
     process.env.LOBU_CLOUD_MODE = '1';
     try {
       const err = (await querySql({ sql: 'SELECT 1', connection: 'qsp-ext-db' }, {}, ctx).catch(
@@ -196,7 +202,8 @@ describe('query_sql connection pushdown', () => {
       )) as Error;
       expect(err).toBeInstanceOf(Error);
       expect(err.message).not.toMatch(/Lobu Cloud/i);
-      expect(err.message).toMatch(/blocked internal\/metadata|TLS is required/i);
+      expect(err.message).toMatch(/EgressDenied|blocked internal\/metadata|TLS is required/i);
+      expect(err.message).toMatch(/block-private|internal\/metadata|TLS is required/i);
     } finally {
       process.env.LOBU_CLOUD_MODE = undefined;
     }

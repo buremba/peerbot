@@ -30,15 +30,9 @@ import {
 import { getDb } from '../db/client';
 import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../config/intervals';
 import type { Env } from '../index';
-import { isCloudMode } from '../utils/cloud-mode';
-import {
-  assertCloudConnectorArtifactTrusted,
-  type ConnectorArtifactFacts,
-} from '../utils/custom-connector-cloud-gate';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
-import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from '../utils/connector-cloud-gate';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
-import { ToolUserError, errorMessage } from '../utils/errors';
+import { ToolUserError } from '../utils/errors';
 import { stableJson } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
@@ -229,7 +223,7 @@ async function softDeleteOrphanFeed(
  * own automation (sync soft-deletes the orphan feed; auth/action throw).
  */
 type ConnectorVersionResolution =
-  | { ok: true; version: string; facts: ConnectorArtifactFacts }
+  | { ok: true; version: string }
   | { ok: false; reason: 'no-definition' }
   | { ok: false; reason: 'no-version'; version: string }
   | { ok: false; reason: 'not-runnable'; version: string };
@@ -261,14 +255,10 @@ async function resolveActiveConnectorVersion(
     version = (defRows[0] as { version: string }).version;
   }
 
-  // The artifact row is read even when runnability is not required: Cloud
-  // admission classifies the selected artifact, and a run enqueued here is
-  // executed later whether or not the caller pre-checked for code.
+  // Presence of runnable code, never the bytes: an artifact bundle is
+  // megabytes and nothing on this path needs its contents.
   const versionRows = await sql`
-    SELECT (compiled_code IS NOT NULL) AS has_compiled_code,
-           (source_code IS NOT NULL) AS has_source_code,
-           source_path, organization_id,
-           COUNT(*) OVER ()::int AS artifact_row_count
+    SELECT (compiled_code IS NOT NULL) AS has_compiled_code, source_path
     FROM connector_versions
     WHERE connector_key = ${params.connectorKey} AND version = ${version}
       AND (organization_id = ${params.orgId} OR organization_id IS NULL)
@@ -281,33 +271,11 @@ async function resolveActiveConnectorVersion(
     // device-executed connectors that ship no gateway-side artifact) keeps
     // working, and there are no organization-supplied bytes to admit.
     if (params.requireRunnable) return { ok: false, reason: 'no-version', version };
-    return {
-      ok: true,
-      version,
-      facts: {
-        organizationId: null,
-        rowCount: 0,
-        hasCompiledCode: false,
-        hasSourceCode: false,
-        sourcePath: null,
-      },
-    };
+    return { ok: true, version };
   }
-  // Presence, never the bytes: an artifact bundle is megabytes and nothing
-  // on this path needs its contents.
   const artifact = versionRows[0] as {
     has_compiled_code: boolean;
-    has_source_code: boolean;
     source_path: string | null;
-    organization_id: string | null;
-    artifact_row_count: number;
-  };
-  const facts: ConnectorArtifactFacts = {
-    organizationId: artifact.organization_id,
-    rowCount: Number(artifact.artifact_row_count),
-    hasCompiledCode: artifact.has_compiled_code,
-    hasSourceCode: artifact.has_source_code,
-    sourcePath: artifact.source_path,
   };
   // Runnable if ANY runtime code source exists: stored compiled code, a
   // source_path the runtime can compile on demand, or a bundled connector
@@ -315,13 +283,13 @@ async function resolveActiveConnectorVersion(
   // resolveConnectorCode() resolves from whichever is present at execution.
   if (
     params.requireRunnable &&
-    !facts.hasCompiledCode &&
-    !facts.sourcePath &&
+    !artifact.has_compiled_code &&
+    !artifact.source_path &&
     !findBundledConnectorFile(params.connectorKey)
   ) {
     return { ok: false, reason: 'not-runnable', version };
   }
-  return { ok: true, version, facts };
+  return { ok: true, version };
 }
 
 /**
@@ -334,7 +302,6 @@ export type SyncRunSkipReason =
   | 'already_active'
   | 'feed_not_found'
   | 'sync_unsupported'
-  | 'cloud_restricted'
   | 'connector_uninstalled'
   | 'connector_version_unrunnable';
 
@@ -343,28 +310,13 @@ export type CreateSyncRunResult =
   | {
       ok: false;
       reason: SyncRunSkipReason;
-      /**
-       * The denial sentence, when the cause produced one. `cloud_restricted`
-       * collapses two very different causes, and the artifact gate's own
-       * message already names the reason AND the remedy — discarding it left
-       * the operator with "cannot run on Lobu Cloud yet" and nowhere to go.
-       */
-      detail?: string;
     };
 
 /**
  * Operator-facing sentence per cause. Kept beside the reasons so a new reason
  * cannot be added without deciding what a human should be told.
- *
- * `detail` wins when the cause carried its own sentence: the Cloud artifact
- * gate names the specific provenance and the supported path out of it, which
- * is strictly more than the reason code can say.
  */
-export function describeSyncRunSkip(
-  reason: SyncRunSkipReason,
-  detail?: string
-): string {
-  if (detail) return detail;
+export function describeSyncRunSkip(reason: SyncRunSkipReason): string {
   switch (reason) {
     case 'already_active':
       return 'Sync already pending or running for this feed';
@@ -372,8 +324,6 @@ export function describeSyncRunSkip(
       return 'Feed not found';
     case 'sync_unsupported':
       return 'This feed does not support sync';
-    case 'cloud_restricted':
-      return 'This connector cannot run on Lobu Cloud yet, so no sync was queued';
     case 'connector_uninstalled':
       return 'The connector is no longer installed in this workspace; the feed has been retired';
     case 'connector_version_unrunnable':
@@ -468,20 +418,6 @@ async function createSyncRunWithClient(
     return { ok: false, reason: 'sync_unsupported' };
   }
 
-  // Cloud gate: a raw-DB connector (postgres) has no tenant-URL egress hardening
-  // yet, so under LOBU_CLOUD_MODE we don't queue a scheduled sync run for it. The
-  // connection is already blocked at create time, but an existing feed must not
-  // keep queueing. The feed is left intact (NOT soft-deleted) — it's a valid feed
-  // that simply can't run on cloud until hardening lands; self-hosted is
-  // unaffected. pollWorkerJob gates again as the hard execution boundary.
-  if (isCloudMode() && CLOUD_RESTRICTED_CONNECTOR_KEYS.has(feed.connector_key)) {
-    logger.warn(
-      { feedId, connector_key: feed.connector_key },
-      '[queue] Skipping sync run for cloud-restricted connector under LOBU_CLOUD_MODE'
-    );
-    return { ok: false, reason: 'cloud_restricted' };
-  }
-
   // Resolve connector version: pinned_version → connector_definitions.version,
   // then verify the version has compiled code or a bundled source for on-demand
   // compilation.
@@ -523,18 +459,6 @@ async function createSyncRunWithClient(
     return { ok: false, reason: 'connector_version_unrunnable' };
   }
   const connectorVersion = resolved.version;
-  try {
-    assertCloudConnectorArtifactTrusted({
-      connectorKey: feed.connector_key,
-      facts: resolved.facts,
-    });
-  } catch (error) {
-    logger.warn(
-      { feedId, connector_key: feed.connector_key, error: errorMessage(error) },
-      '[queue] Skipping sync run for custom executable connector under LOBU_CLOUD_MODE'
-    );
-    return { ok: false, reason: 'cloud_restricted', detail: errorMessage(error) };
-  }
 
   // Manual feeds (schedule null) keep next_run_at null after enqueue so they
   // are not re-picked by the due-feed scheduler.
@@ -1136,10 +1060,6 @@ export async function createAuthRun(params: {
     );
   }
   const connectorVersion = resolved.version;
-  assertCloudConnectorArtifactTrusted({
-    connectorKey: params.connectorKey,
-    facts: resolved.facts,
-  });
 
   try {
     const inserted = await sql`
@@ -1294,10 +1214,6 @@ export async function createConnectorOperationRun(params: {
     );
   }
   const connectorVersion = resolved.version;
-  assertCloudConnectorArtifactTrusted({
-    connectorKey: params.connectorKey,
-    facts: resolved.facts,
-  });
 
   let targetDeviceWorkerId: string | null = null;
   if (params.connectionId && params.approvalMode !== 'inline') {

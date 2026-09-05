@@ -103,7 +103,7 @@ export async function requireMeta(metaPath: string, expectedUri: string): Promis
 /**
  * Per-source mutex. Same URI → shared `Promise` chain so concurrent
  * `fetch()` calls serialize. Process-local only — fine for the embedded
- * worker model where one worker subprocess owns its cache.
+ * worker model where one worker process owns its cache.
  *
  * v1 limitation: two processes sharing the same
  * `${WORKSPACE_DIR}/.lobu-cache` are NOT coordinated by this lock —

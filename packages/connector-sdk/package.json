@@ -48,6 +48,10 @@
       "types": "./dist/ip-reachability.d.ts",
       "import": "./dist/ip-reachability.js"
     },
+    "./net": {
+      "types": "./dist/net.d.ts",
+      "import": "./dist/net.js"
+    },
     "./browser/cdp": {
       "types": "./dist/browser/cdp.d.ts",
       "import": "./dist/browser/cdp.js"

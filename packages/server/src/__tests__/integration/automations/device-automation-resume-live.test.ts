@@ -215,7 +215,6 @@ describe("device automation resume — live server round-trip", () => {
 				heartbeatIntervalMs: 60_000,
 				generateEmbeddings: false,
 				timeoutMs: 30_000,
-				maxOldSpaceSize: 1024,
 				binaryOverrides: { pi: fakeBinary },
 			}
 		);

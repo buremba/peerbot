@@ -1,8 +1,8 @@
 /**
  * Connector-runtime env whitelist.
  *
- * Connector subprocesses (`SubprocessExecutor.fork`) inherit
- * `context.env`, which becomes `process.env` inside the connector child.
+ * A connector run receives `context.env`, which the prelude installs as
+ * `process.env` inside the isolate guest.
  * The standalone `connector-worker` CLI builds this set deliberately so
  * connectors only see the env vars they actually need (GitHub token,
  * provider API keys, etc.) — never the host process's secrets.
@@ -24,6 +24,44 @@ function cloudModeOn(): boolean {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
+/**
+ * Deployment-level provider credentials: the operator's own GitHub / Reddit /
+ * Maps apps. They reach connector code the operator SHIPS — the image's
+ * bundled connectors — and never code an organization uploaded. On a shared
+ * fleet worker the isolate is the only boundary between a tenant's connector
+ * and this env, so `withoutDeploymentProviderKeys` is what that boundary
+ * withholds; the decision is made per RUN, on provenance, because a worker
+ * often has no `LOBU_CLOUD_MODE` of its own (prod's fleet worker learns
+ * block-private from the gateway's poll response, not from its env).
+ */
+export const DEPLOYMENT_PROVIDER_ENV_KEYS = [
+  'GITHUB_TOKEN',
+  'GOOGLE_MAPS_API_KEY',
+  'REDDIT_CLIENT_ID',
+  'REDDIT_CLIENT_SECRET',
+] as const;
+
+export function withoutDeploymentProviderKeys(env: Env): Env {
+  const out: Record<string, string | undefined> = { ...env };
+  for (const key of DEPLOYMENT_PROVIDER_ENV_KEYS) delete out[key];
+  return out as Env;
+}
+
+/**
+ * The env for one connector run executed IN the gateway process (inline
+ * actions, webhook registration). Same whitelist a fleet worker gets — never
+ * `process.env`, which would hand ENCRYPTION_KEY, DATABASE_URL and
+ * WORKER_API_TOKEN to whatever code the run executes — and, under Cloud,
+ * without the deployment provider keys when the code is organization-supplied.
+ */
+export function connectorRunEnv(opts: {
+  organizationSupplied: boolean;
+  cloud: boolean;
+}): Record<string, string | undefined> {
+  const env = buildConnectorWorkerEnv();
+  return { ...(opts.cloud && opts.organizationSupplied ? withoutDeploymentProviderKeys(env) : env) };
+}
+
 export function buildConnectorWorkerEnv(): Env {
   return {
     ENVIRONMENT: process.env.ENVIRONMENT || 'production',
@@ -33,10 +71,9 @@ export function buildConnectorWorkerEnv(): Env {
     REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT: process.env.REDDIT_USER_AGENT,
     // WORKER_API_TOKEN is deliberately absent. Everything returned here reaches
-    // connector code — `subprocess.ts` spreads `job.env` into the child process
-    // environment and `buildConnectorConfig()` merges it into the connector's
-    // config — and a request bearing this token authenticates as a TRUSTED
-    // FLEET worker, which can claim and complete runs across tenants. The
+    // connector code — `buildConnectorConfig()` merges `job.env` into the
+    // connector's config — and a request bearing this token authenticates as a
+    // TRUSTED FLEET worker, which can claim and complete runs across tenants. The
     // daemon authenticates via `DaemonConfig.workerApiToken` instead, which
     // never enters this Env.
     // WORKER-DERIVED DEFAULT egress policy. The gateway ships its OWN

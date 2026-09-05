@@ -7,11 +7,17 @@
  *  1. asserts the SDK root pulls in no Node builtin and none of `@lobu/core`'s
  *     heavy graph (winston, Sentry, OpenTelemetry) — the property that makes a
  *     connector bundle loadable inside a V8 isolate at all;
- *  2. pins which bundled connectors need a real process, by the Node builtins
- *     their own bundle imports — adding `node:fs` to an isolate-eligible
- *     connector fails here instead of at a tenant's first run;
+ *  2. pins the Node builtins each bundled connector imports — adding `node:fs`
+ *     to an isolate-eligible connector fails here instead of at a tenant's
+ *     first run;
  *  3. loads every isolate-eligible connector in a real `isolated-vm` context
  *     and checks its default export came out the other side.
+ *
+ * Eligibility is decided by `findIsolateIneligibleBuiltins` — the same function
+ * the runtime gates on — rather than restated here: the pin below records what
+ * each bundle imports, and the runtime decides which of those disqualify it.
+ * Restating it is how `postgres` ended up pinned to a process lane that no
+ * longer exists, listing transport builtins it had already stopped importing.
  *
  * Runs under Node (vitest); like `run-script-runtime.test.ts` it FAILS rather
  * than skips when `isolated-vm` cannot load, because a silent skip is exactly
@@ -24,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { build, type Metafile, type Plugin } from "esbuild";
 import { describe, expect, it } from "vitest";
 import { ISOLATE_LANE_BUILD_OPTIONS } from "../../../utils/compiler-core";
+import { findIsolateIneligibleBuiltins, GUEST_PRELUDE } from "@lobu/connector-worker/isolate";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGES_DIR = resolve(HERE, "../../../../..");
@@ -31,22 +38,34 @@ const SDK_DIR = join(PACKAGES_DIR, "connector-sdk");
 const CONNECTORS_DIR = join(PACKAGES_DIR, "connectors/src");
 
 /**
- * Bundled connectors whose own imports need a Node process. Keyed by
- * connector file stem; values are the builtins the bundle still imports.
- * A new entry here is a deliberate decision to keep that connector off the
- * isolate lane, so it must be edited by hand, never regenerated.
+ * Node builtins each bundled connector's own bundle imports, keyed by file
+ * stem. Hand-edited, never regenerated: a change here is a deliberate decision
+ * about what a connector may depend on.
+ *
+ * Importing a builtin is NOT the same as needing a process — the isolate
+ * prelude supplies several of them. {@link ISOLATE_INELIGIBLE} derives the
+ * connectors that genuinely cannot run in an isolate from this map.
  */
-const PROCESS_LANE_CONNECTORS: Record<string, string[]> = {
-	// Webhook signature verification (HMAC) — a host `sign` capability or the
-	// lease tier would lift these onto the isolate lane later.
+const CONNECTOR_BUILTIN_IMPORTS: Record<string, string[]> = {
+	// Webhook signature verification (HMAC); `crypto` comes from the prelude.
 	github: ["crypto"],
 	jira: ["crypto"],
 	linear: ["crypto"],
-	// Spawns local commands by design.
-	os_shell: ["child_process", "fs", "os", "path"],
-	// Raw TCP to a database; governed by db-egress-guard, never isolate-runnable.
-	postgres: ["crypto", "dns", "fs", "net", "os", "perf_hooks", "stream", "tls"],
+	// Reaches its database over the isolate's Direct Sockets bridge, so it needs
+	// no transport builtin; what is left is all prelude-provided.
+	postgres: ["buffer", "events", "module", "stream"],
 };
+
+/**
+ * Connectors importing a builtin the isolate prelude does not supply, decided
+ * by the runtime's own gate so this file cannot drift from it.
+ */
+const ISOLATE_INELIGIBLE = Object.keys(CONNECTOR_BUILTIN_IMPORTS).filter(
+	(stem) =>
+		findIsolateIneligibleBuiltins(
+			CONNECTOR_BUILTIN_IMPORTS[stem]!.map((b) => `require("${b}")`).join(";"),
+		).length > 0,
+);
 
 const BUILTINS = new Set(builtinModules);
 function isNodeBuiltin(spec: string): boolean {
@@ -138,15 +157,15 @@ async function loadIsolatedVm(): Promise<IsolatedVm> {
  * pure-JS dependencies touch while loading (timers, console, process.env).
  * Anything else missing surfaces as a ReferenceError and fails the test.
  */
-const GUEST_PREAMBLE = `
-var module = { exports: {} }; var exports = module.exports;
-function require(spec) { throw new Error('node builtin required at load: ' + spec); }
-var console = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
-var setTimeout = function () { return 1; }; var clearTimeout = function () {};
-var setInterval = function () { return 1; }; var clearInterval = function () {};
-var queueMicrotask = function (fn) { Promise.resolve().then(fn); };
-var process = { env: {} };
-`;
+/**
+ * The REAL guest prelude, not a hand-rolled stub. A stub whose `require` always
+ * throws can only load a connector that requires nothing, which silently turned
+ * this test into a check on four connectors' import lists rather than on
+ * whether they load — `github` requires `node:crypto`, which the prelude serves
+ * from `global.crypto`.
+ */
+const GUEST_PREAMBLE = GUEST_PRELUDE;
+
 const GUEST_RUNNER = `
 (function () {
   var def = module.exports.default;
@@ -158,6 +177,14 @@ async function loadInIsolate(ivm: IsolatedVm, code: string): Promise<{ kind: str
 	try {
 		const context = await isolate.createContext();
 		await context.global.set("global", context.global.derefInto());
+		// The prelude captures its host bridge at eval time and calls it from
+		// module scope (postgres reads its transport there), so a context without
+		// these dies on `applySync` of undefined. Stubs, not fakes: this test asks
+		// whether a connector LOADS, never what a capability returns.
+		const okEnvelope = { __lobu: 1, ok: true, value: undefined };
+		await context.global.set("__host_sync", new ivm.Reference(() => okEnvelope));
+		await context.global.set("__host_async", new ivm.Reference(async () => okEnvelope));
+		await context.global.set("__host_env_json", "{}");
 		const script = await isolate.compileScript(`${GUEST_PREAMBLE}\n${code}\n${GUEST_RUNNER}`);
 		const out = (await script.run(context, { timeout: 10_000, copy: true })) as string;
 		return JSON.parse(out);
@@ -177,7 +204,7 @@ describe("connector isolate lane", () => {
 		expect(report.bytes).toBeLessThan(1_000_000);
 	});
 
-	it("pins which bundled connectors need a Node process", async () => {
+	it("pins the Node builtins each bundled connector imports", async () => {
 		const files = listBundledConnectors();
 		expect(files.length).toBeGreaterThan(20);
 		const actual: Record<string, string[]> = {};
@@ -185,15 +212,20 @@ describe("connector isolate lane", () => {
 			const report = await bundle(join(CONNECTORS_DIR, file));
 			if (report.builtins.size > 0) actual[file.replace(/\.ts$/, "")] = [...report.builtins.keys()].sort();
 		}
-		expect(actual).toEqual(PROCESS_LANE_CONNECTORS);
+		expect(actual).toEqual(CONNECTOR_BUILTIN_IMPORTS);
 	});
 
 	it("loads every isolate-eligible bundled connector in a V8 isolate", async () => {
 		const ivm = await loadIsolatedVm();
 		const all = listBundledConnectors();
-		const eligible = all.filter((f) => !(f.replace(/\.ts$/, "") in PROCESS_LANE_CONNECTORS));
-		// Every pinned process-lane entry must name a real connector file.
-		expect(eligible.length).toBe(all.length - Object.keys(PROCESS_LANE_CONNECTORS).length);
+		const eligible = all.filter((f) => !ISOLATE_INELIGIBLE.includes(f.replace(/\.ts$/, "")));
+		// Every ineligible entry must name a real connector file.
+		expect(eligible.length).toBe(all.length - ISOLATE_INELIGIBLE.length);
+		// EVERY bundled connector is isolate-eligible. `os_shell` was the last
+		// exception and it is gone: shell execution belongs to the device daemon
+		// builtin, which the gateway never compiled. Anything appearing here is a
+		// connector that would be silently dropped from the catalog.
+		expect(ISOLATE_INELIGIBLE).toEqual([]);
 		expect(eligible.length).toBeGreaterThan(15);
 		for (const file of eligible) {
 			const report = await bundle(join(CONNECTORS_DIR, file));

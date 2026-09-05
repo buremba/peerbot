@@ -151,7 +151,7 @@ describe("operations.execute backend lifecycle", () => {
 						return { success: true, output: { backend: 'local_action', value: ctx.input.value ?? null } };
 					}
 				}
-				export { ConnectorRuntime };
+				module.exports = { ConnectorRuntime };
 			`}
 			WHERE connector_key = ${LOCAL}
 		`;

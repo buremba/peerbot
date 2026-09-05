@@ -7,11 +7,15 @@
  * connectors touch (measured by loading and running them, not by emulating a
  * browser):
  *
- *  - CJS shell (`module`/`exports`) and a `require` that fails closed.
+ *  - CJS shell (`module`/`exports`) and a `require` that answers a fixed
+ *    builtin map (`node:crypto`, `node:buffer`, `node:events`, `node:stream`,
+ *    `node:module`, `cloudflare:sockets`) and fails closed on everything else.
+ *    `node:stream` is admitted so postgres.js loads; its constructors throw,
+ *    because an isolate has no Node streams to give.
  *  - `console.*` to the host `log` capability (the host redacts).
  *  - Timers, `setImmediate` and `queueMicrotask` over the host `sleep`
- *    capability; a callback that throws ends the run through `fatal`, as an
- *    uncaught exception ends the process lane's child.
+ *    capability; a callback that throws ends the run through `fatal`, the way
+ *    an uncaught exception ended the forked child this replaced.
  *  - `process = { env }` from the job env.
  *  - `TextEncoder`/`TextDecoder` and `atob`/`btoa`: object shells whose
  *    byte-level work the host does with Node's own codecs.
@@ -23,6 +27,13 @@
  *  - `Headers`, `Response` and `fetch` over the host `fetch` capability. The
  *    host performs the network call and returns status, headers and a bounded
  *    body; there are no streams on this lane (`Response.body` is null).
+ *  - `crypto`: `getRandomValues`/`randomUUID`, plus the `subtle` operations
+ *    postgres.js needs to answer an md5 or SCRAM-SHA-256 challenge, all
+ *    computed by Node on the host. `require('node:crypto')` additionally
+ *    answers with `createHash`/`createHmac`/`randomBytes` over the same host
+ *    capabilities, because that specifier is a Node module and not WebCrypto.
+ *  - `Buffer`, `EventEmitter`, `ReadableStream`/`WritableStream` and
+ *    `connect` (WinterCG Direct Sockets), which the DB connectors need.
  *
  * The guest talks to the host through two `ivm.Reference`s captured at the
  * top of the prelude and removed from the global: `__host_sync(name, ...args)`
@@ -32,12 +43,14 @@
  * in the host process.
  *
  * Deliberately absent (no bundled isolate-eligible connector or SDK root path
- * uses them): `Request`, `crypto`, `structuredClone`, `Buffer`, streams,
- * `FormData`, `Blob`. Add one only with a real connector that needs it.
+ * uses them): `Request`, `structuredClone`, `FormData`, `Blob`. Add one only
+ * with a real connector that needs it.
  *
  * Written as sloppy-mode ES2020 with no template literals so the string can
  * live in this module verbatim. `String.raw` keeps the regex escapes intact.
  */
+
+import { createHash, createHmac, pbkdf2Sync, randomBytes as nodeRandomBytes } from 'node:crypto';
 
 /** Names the prelude defines on the guest global. */
 export const PRELUDE_GLOBALS = [
@@ -64,6 +77,12 @@ export const PRELUDE_GLOBALS = [
   'Headers',
   'Response',
   'fetch',
+  'crypto',
+  'Buffer',
+  'connect',
+  'EventEmitter',
+  'ReadableStream',
+  'WritableStream',
 ] as const;
 
 /** What the guest `URL` holds: the components Node's URL reports. */
@@ -106,6 +125,21 @@ function asBytes(value: unknown, what: string): Uint8Array {
   throw new TypeError(`${what}: expected an ArrayBuffer or ArrayBufferView`);
 }
 
+/**
+ * Node's name for a WebCrypto digest label. `md5` is deliberately accepted even
+ * though WebCrypto does not define it: postgres.js asks for it by that name to
+ * answer an `AuthenticationMD5Password` challenge, and Node's hash registry
+ * has it. A future workerd backend has no md5 and reaches scram-sha-256 servers
+ * only.
+ */
+function nodeHashName(algorithm: unknown, what: string): string {
+  const name = String(
+    algorithm && typeof algorithm === 'object' ? (algorithm as { name?: unknown }).name : algorithm
+  ).toLowerCase().replace('-', '');
+  if (name === 'md5' || name === 'sha1' || name === 'sha256' || name === 'sha384' || name === 'sha512') return name;
+  throw new TypeError(`${what}: unsupported algorithm '${String(algorithm)}'`);
+}
+
 function asPairs(value: unknown): [string, string][] {
   if (!Array.isArray(value)) throw new TypeError('formUrlencodedSerialize: expected a list of [name, value] pairs');
   return value.map((pair) => [String((pair as unknown[])[0]), String((pair as unknown[])[1])]);
@@ -141,6 +175,54 @@ export const PRELUDE_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> 
   // pair the parser skips, so a query that still begins with '?' keeps it.
   formUrlencodedParse: (input: unknown): [string, string][] => Array.from(new URLSearchParams(`&${String(input)}`)),
   formUrlencodedSerialize: (list: unknown): string => new URLSearchParams(asPairs(list)).toString(),
+  /**
+   * Node's CSPRNG, never a fallback: a silently-zeroed buffer here would be a
+   * predictable nonce or UUID in the guest with nothing to signal it.
+   */
+  randomBytes: (byteLength: unknown): Uint8Array => {
+    const len = Math.min(Math.max(0, Number(byteLength) || 0), 65536);
+    return new Uint8Array(nodeRandomBytes(len));
+  },
+  /**
+   * WebCrypto primitives behind the guest's `crypto.subtle`. postgres.js's
+   * workerd build drives BOTH md5 and SCRAM-SHA-256 authentication entirely
+   * through `crypto.subtle`, so without these a DB connector cannot
+   * authenticate against any server that is not on cleartext `password` auth.
+   * Node does the work; the guest only marshals bytes.
+   */
+  cryptoDigest: (algorithm: unknown, data: unknown): Uint8Array =>
+    new Uint8Array(createHash(nodeHashName(algorithm, 'cryptoDigest')).update(asBytes(data, 'cryptoDigest')).digest()),
+  cryptoHmac: (hash: unknown, key: unknown, data: unknown): Uint8Array =>
+    new Uint8Array(
+      createHmac(nodeHashName(hash, 'cryptoHmac'), asBytes(key, 'cryptoHmac'))
+        .update(asBytes(data, 'cryptoHmac'))
+        .digest()
+    ),
+  /**
+   * Bounded because this runs SYNCHRONOUSLY on the host event loop: a guest
+   * that asked for a billion rounds would wedge the worker. SCRAM negotiates
+   * its own count (postgres sends 4096), so the ceiling is never reached by an
+   * honest server.
+   */
+  cryptoPbkdf2: (hash: unknown, password: unknown, salt: unknown, iterations: unknown, byteLength: unknown): Uint8Array => {
+    const rounds = Number(iterations);
+    const length = Number(byteLength);
+    if (!Number.isInteger(rounds) || rounds < 1 || rounds > 100_000) {
+      throw new RangeError(`cryptoPbkdf2: iterations must be an integer in 1..100000, got ${String(iterations)}`);
+    }
+    if (!Number.isInteger(length) || length < 1 || length > 1024) {
+      throw new RangeError(`cryptoPbkdf2: byteLength must be an integer in 1..1024, got ${String(byteLength)}`);
+    }
+    return new Uint8Array(
+      pbkdf2Sync(
+        asBytes(password, 'cryptoPbkdf2'),
+        asBytes(salt, 'cryptoPbkdf2'),
+        rounds,
+        length,
+        nodeHashName(hash, 'cryptoPbkdf2')
+      )
+    );
+  },
 };
 
 export const GUEST_PRELUDE = String.raw`
@@ -199,8 +281,8 @@ var exports = module.exports;
   }
 
   // An exception escaping a timer callback has no catcher in the guest. The
-  // process lane's child treats the same case as uncaughtException and ends the
-  // run with that error; do the same through the host.
+  // forked child this replaced treated the same case as uncaughtException and
+  // ended the run with that error; do the same through the host.
   function reportFatal(error) {
     try { hostSync('fatal', describeError(error)); } catch (e) {}
   }
@@ -212,8 +294,19 @@ var exports = module.exports;
   // ---------------------------------------------------------------------------
 
   global.require = function require(specifier) {
+    if (specifier === 'crypto' || specifier === 'node:crypto') return global.__lobuNodeCrypto;
+    if (specifier === 'buffer' || specifier === 'node:buffer') return { Buffer: global.Buffer };
+    if (specifier === 'events' || specifier === 'node:events') return { EventEmitter: global.EventEmitter, default: global.EventEmitter };
+    // node:stream is ADMITTED, not implemented. postgres.js reads Readable,
+    // Writable and Duplex off the module at load time (only its COPY helpers
+    // construct them), so throwing here would make the DB connectors
+    // unloadable -- but Node streams are not web streams, and handing back a
+    // web ReadableStream produced a silently wrong object instead of an error.
+    if (specifier === 'stream' || specifier === 'node:stream') return global.__lobuNodeStream;
+    if (specifier === 'cloudflare:sockets') return { connect: global.connect };
+    if (specifier === 'module' || specifier === 'node:module') return { createRequire: function () { return global.require; } };
     var err = new Error(
-      "Module '" + specifier + "' is not available on the isolate lane: Node builtins and runtime-provided packages need the process lane."
+      "Module '" + specifier + "' is not available in the connector isolate. Node builtins and runtime-provided packages are not reachable here."
     );
     err.name = 'IsolateLaneIneligible';
     err.code = 'MODULE_NOT_FOUND';
@@ -534,9 +627,9 @@ var exports = module.exports;
   // ---------------------------------------------------------------------------
 
   // The guest holds a plain record of the components. Every parse and every
-  // setter is one synchronous host call into Node's own URL, so the isolate
-  // and process lanes agree on every input by construction, IDNA hosts and
-  // the percent-encode sets included (those have drifted between Node lines).
+  // setter is one synchronous host call into Node's own URL, so the guest and
+  // Node agree on every input by construction, IDNA hosts and the
+  // percent-encode sets included (those have drifted between Node lines).
 
   var URL_SETTABLE = ['href', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash'];
 
@@ -913,5 +1006,675 @@ var exports = module.exports;
     });
   }
   global.fetch = fetch;
+
+  var crypto = {
+    getRandomValues: function (array) {
+      if (!array || !array.buffer || typeof array.byteLength !== 'number') {
+        throw new TypeError('crypto.getRandomValues: expected an ArrayBufferView');
+      }
+      var bytes = hostSync('randomBytes', array.byteLength);
+      new Uint8Array(array.buffer, array.byteOffset, array.byteLength).set(bytes);
+      return array;
+    },
+    randomUUID: function () {
+      var bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      var hex = [];
+      for (var i = 0; i < 16; i++) {
+        var h = bytes[i].toString(16);
+        hex.push(h.length === 1 ? '0' + h : h);
+      }
+      return (
+        hex.slice(0, 4).join('') + '-' +
+        hex.slice(4, 6).join('') + '-' +
+        hex.slice(6, 8).join('') + '-' +
+        hex.slice(8, 10).join('') + '-' +
+        hex.slice(10, 16).join('')
+      );
+    }
+  };
+  // WebCrypto, delegated to Node through the bridge rather than reimplemented
+  // here. postgres.js answers BOTH an md5 challenge and a SCRAM-SHA-256
+  // exchange through crypto.subtle, so a DB connector that reaches any server
+  // not on cleartext password auth needs this. Only the operations those
+  // exchanges use are implemented; anything else throws by name rather than
+  // returning a wrong answer.
+  function subtleBytes(data, what) {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (data && data.buffer instanceof ArrayBuffer) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    throw new TypeError(what + ': expected an ArrayBuffer or ArrayBufferView');
+  }
+
+  function subtleAlgorithm(algorithm) {
+    return typeof algorithm === 'string' ? { name: algorithm } : (algorithm || {});
+  }
+
+  // WebCrypto hands back an ArrayBuffer; the bridge hands back a view.
+  function subtleBuffer(u8) {
+    return u8.byteOffset === 0 && u8.byteLength === u8.buffer.byteLength
+      ? u8.buffer
+      : u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+  }
+
+  // Every subtle method is async, so a bad argument must reject rather than
+  // throw synchronously: postgres.js drives auth from an async handler with no
+  // catcher, and a synchronous throw there is swallowed as an unhandled
+  // rejection that stalls the connection until its connect_timeout.
+  function subtleCall(fn) {
+    try {
+      return Promise.resolve(fn());
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  function subtleKeyBytes(key, what) {
+    if (!key || !(key.__rawKey instanceof Uint8Array)) {
+      throw new TypeError(what + ': expected a key from crypto.subtle.importKey');
+    }
+    return key.__rawKey;
+  }
+
+  crypto.subtle = {
+    digest: function (algorithm, data) {
+      return subtleCall(function () {
+        return subtleBuffer(
+          hostSync('cryptoDigest', subtleAlgorithm(algorithm).name, subtleBytes(data, 'crypto.subtle.digest'))
+        );
+      });
+    },
+    importKey: function (format, keyData, algorithm, extractable, usages) {
+      return subtleCall(function () {
+        if (String(format).toLowerCase() !== 'raw') {
+          throw new TypeError("crypto.subtle.importKey: only the 'raw' format is supported, not '" + String(format) + "'");
+        }
+        return {
+          type: 'secret',
+          extractable: !!extractable,
+          algorithm: subtleAlgorithm(algorithm),
+          usages: usages ? Array.prototype.slice.call(usages) : [],
+          __rawKey: subtleBytes(keyData, 'crypto.subtle.importKey')
+        };
+      });
+    },
+    sign: function (algorithm, key, data) {
+      return subtleCall(function () {
+        var name = String(subtleAlgorithm(algorithm).name).toUpperCase();
+        if (name !== 'HMAC') {
+          throw new TypeError("crypto.subtle.sign: only HMAC is supported, not '" + name + "'");
+        }
+        var raw = subtleKeyBytes(key, 'crypto.subtle.sign');
+        var hash = subtleAlgorithm(key.algorithm && key.algorithm.hash ? key.algorithm.hash : 'SHA-256').name;
+        return subtleBuffer(hostSync('cryptoHmac', hash, raw, subtleBytes(data, 'crypto.subtle.sign')));
+      });
+    },
+    deriveBits: function (algorithm, key, length) {
+      return subtleCall(function () {
+        var algo = subtleAlgorithm(algorithm);
+        if (String(algo.name).toUpperCase() !== 'PBKDF2') {
+          throw new TypeError("crypto.subtle.deriveBits: only PBKDF2 is supported, not '" + String(algo.name) + "'");
+        }
+        var raw = subtleKeyBytes(key, 'crypto.subtle.deriveBits');
+        var bits = Number(length);
+        if (!isFinite(bits) || bits <= 0 || bits % 8 !== 0) {
+          throw new TypeError('crypto.subtle.deriveBits: length must be a positive multiple of 8, got ' + String(length));
+        }
+        return subtleBuffer(
+          hostSync(
+            'cryptoPbkdf2',
+            subtleAlgorithm(algo.hash ? algo.hash : 'SHA-256').name,
+            raw,
+            subtleBytes(algo.salt, 'crypto.subtle.deriveBits'),
+            algo.iterations,
+            bits / 8
+          )
+        );
+      });
+    }
+  };
+
+  global.crypto = crypto;
+
+  // ---------------------------------------------------------------------------
+  // node:crypto
+  // ---------------------------------------------------------------------------
+  // require('node:crypto') handed back the WebCrypto object, so everything
+  // Node exposes under that specifier and WebCrypto does not -- createHash,
+  // createHmac, randomBytes -- was simply missing. Eligibility could not catch
+  // it: node:crypto IS a provided builtin, so the bundle loads and the call
+  // dies at run time as "createHash is not a function". github, jira and
+  // linear each mint a webhook secret with randomBytes(32).toString('hex').
+  // Node does the work; the guest marshals bytes and encodes the digest.
+  function nodeCryptoBytes(data, encoding, what) {
+    if (typeof data === 'string') return Buffer.from(data, encoding || 'utf8');
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (data && data.buffer instanceof ArrayBuffer) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    throw new TypeError(what + ': data must be a string, ArrayBuffer or ArrayBufferView');
+  }
+
+  // Node's Hash/Hmac are streaming; the host capabilities are one-shot. Buffer
+  // the chunks and hash once at digest() -- identical output, and a connector
+  // cannot tell the difference without timing a partial write.
+  function nodeCryptoHash(what, compute) {
+    var chunks = [];
+    var api = {
+      update: function (data, inputEncoding) {
+        chunks.push(nodeCryptoBytes(data, inputEncoding, what));
+        return api;
+      },
+      digest: function (encoding) {
+        var out = compute(Buffer.concat(chunks));
+        return !encoding || encoding === 'buffer' ? out : out.toString(encoding);
+      }
+    };
+    return api;
+  }
+
+  var nodeCrypto = {
+    createHash: function (algorithm) {
+      return nodeCryptoHash('createHash', function (bytes) {
+        return hostSync('cryptoDigest', algorithm, bytes);
+      });
+    },
+    createHmac: function (algorithm, key) {
+      var keyBytes = nodeCryptoBytes(key, undefined, 'createHmac');
+      return nodeCryptoHash('createHmac', function (bytes) {
+        return hostSync('cryptoHmac', algorithm, keyBytes, bytes);
+      });
+    },
+    randomBytes: function (size) {
+      var n = Number(size);
+      if (!isFinite(n) || n < 0 || n % 1 !== 0) {
+        throw new TypeError('randomBytes: size must be a non-negative integer, got ' + String(size));
+      }
+      // Re-wrap so the result is a guest Uint8Array carrying the Buffer
+      // methods installed on the prototype -- .toString('hex') is the whole
+      // point of the call at every site that makes it.
+      var out = new Uint8Array(n);
+      if (n > 0) out.set(hostSync('randomBytes', n));
+      return out;
+    },
+    randomUUID: function () { return crypto.randomUUID(); },
+    getRandomValues: function (array) { return crypto.getRandomValues(array); },
+    webcrypto: crypto,
+    subtle: crypto.subtle
+  };
+  nodeCrypto.default = nodeCrypto;
+  global.__lobuNodeCrypto = nodeCrypto;
+
+  // ---------------------------------------------------------------------------
+  // Buffer, as Uint8Array
+  // ---------------------------------------------------------------------------
+  // Buffer.from returns a plain Uint8Array rather than a subclass, so the
+  // Buffer-only methods are installed on Uint8Array.prototype — which means
+  // they apply to EVERY typed array in the guest, including toString, whose
+  // default (comma-joined digits) is replaced by Node's utf8/hex/base64 decode.
+  // That is the point: the DB drivers this exists for pass wire buffers through
+  // SDK and connector code that cannot tell the two apart, and a subclass would
+  // be lost the first time one of them sliced or concatenated. Nothing in the
+  // guest depends on the array default, and the isolate global is thrown away
+  // with the run.
+  var Buffer = function Buffer(arg, enc) {
+    return Buffer.from(arg, enc);
+  };
+  Buffer.isBuffer = function (obj) {
+    return obj instanceof Uint8Array;
+  };
+  Buffer.alloc = function (size, fill, encoding) {
+    var u8 = new Uint8Array(size);
+    if (fill === undefined || fill === 0) return u8;
+    if (typeof fill === 'number') { u8.fill(fill & 255); return u8; }
+    // Node repeats a string / byte fill across the buffer; a silent zero fill
+    // here would corrupt every padded protocol frame built with alloc(n, 'x').
+    var pattern = Buffer.from(fill, encoding);
+    if (pattern.length === 0) return u8;
+    for (var i = 0; i < size; i++) u8[i] = pattern[i % pattern.length];
+    return u8;
+  };
+  Buffer.allocUnsafe = function (size) {
+    return new Uint8Array(size);
+  };
+  Buffer.byteLength = function (str, encoding) {
+    if (str instanceof ArrayBuffer) return str.byteLength;
+    if (str && typeof str === 'object' && typeof str.byteLength === 'number') return str.byteLength;
+    // Honour the encoding: byteLength('ff', 'hex') is 1, not 2.
+    return Buffer.from(String(str), encoding).length;
+  };
+  Buffer.concat = function (list, length) {
+    if (!length) {
+      length = 0;
+      for (var i = 0; i < list.length; i++) length += list[i].length;
+    }
+    var res = new Uint8Array(length);
+    var offset = 0;
+    for (var j = 0; j < list.length; j++) {
+      var room = length - offset;
+      if (room <= 0) break;
+      // Node TRUNCATES to the requested length; res.set() would throw instead.
+      var item = list[j].length > room ? list[j].subarray(0, room) : list[j];
+      res.set(item, offset);
+      offset += item.length;
+    }
+    return res;
+  };
+  Buffer.from = function (data, encoding) {
+    if (typeof data === 'number') {
+      throw new TypeError('The "value" argument must not be of type number. Received type number');
+    }
+    if (typeof data === 'string') {
+      var enc = (encoding || 'utf8').toLowerCase();
+      if (enc === 'hex') {
+        var clean = data.trim();
+        var len = Math.floor(clean.length / 2);
+        var u8 = new Uint8Array(len);
+        for (var i = 0; i < len; i++) {
+          u8[i] = parseInt(clean.substr(i * 2, 2), 16);
+        }
+        return u8;
+      }
+      if (enc === 'base64' || enc === 'base64url') {
+        var cleanB64 = data.replace(/-/g, '+').replace(/_/g, '/');
+        while (cleanB64.length % 4 !== 0) cleanB64 += '=';
+        var decoded = global.atob(cleanB64);
+        var u8B64 = new Uint8Array(decoded.length);
+        for (var b = 0; b < decoded.length; b++) u8B64[b] = decoded.charCodeAt(b);
+        return u8B64;
+      }
+      var res = utf8Encode(data);
+      if (res instanceof Uint8Array) return res;
+      var unescaped = unescape(encodeURIComponent(data));
+      var u8Fallback = new Uint8Array(unescaped.length);
+      for (var u = 0; u < unescaped.length; u++) u8Fallback[u] = unescaped.charCodeAt(u);
+      return u8Fallback;
+    }
+    if (data instanceof Uint8Array) {
+      // Node COPIES a typed array (only Buffer.from(arrayBuffer) shares
+      // memory), so a guest mutating the result must not mutate the source.
+      return new Uint8Array(data);
+    }
+    if (Array.isArray(data)) {
+      return new Uint8Array(data);
+    }
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
+    }
+    if (data && data.buffer instanceof ArrayBuffer) {
+      return new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    }
+    return Buffer.from(String(data));
+  };
+
+  Uint8Array.prototype.toString = function (enc, start, end) {
+    var outEnc = (enc || 'utf8').toLowerCase();
+    var slice = (start !== undefined || end !== undefined) ? this.subarray(start || 0, end !== undefined ? end : this.length) : this;
+    if (outEnc === 'base64') {
+      var bin = '';
+      for (var i = 0; i < slice.length; i++) bin += String.fromCharCode(slice[i]);
+      return global.btoa(bin);
+    }
+    if (outEnc === 'hex') {
+      var hex = '';
+      for (var j = 0; j < slice.length; j++) {
+        var h = slice[j].toString(16);
+        hex += (h.length === 1 ? '0' + h : h);
+      }
+      return hex;
+    }
+    var decoded = utf8Decode(slice);
+    if (typeof decoded === 'string') return decoded;
+    var s = '';
+    for (var k = 0; k < slice.length; k++) s += String.fromCharCode(slice[k]);
+    try {
+      return decodeURIComponent(escape(s));
+    } catch {
+      return s;
+    }
+  };
+  Uint8Array.prototype.write = function (str, offset, length, encoding) {
+    var off = offset || 0;
+    var encoded = Buffer.from(str, encoding);
+    var toWrite = length !== undefined ? Math.min(length, encoded.length) : encoded.length;
+    for (var i = 0; i < toWrite && off + i < this.length; i++) {
+      this[off + i] = encoded[i];
+    }
+    return toWrite;
+  };
+  Uint8Array.prototype.readInt32BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getInt32(offset || 0, false);
+  };
+  Uint8Array.prototype.readUInt32BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getUint32(offset || 0, false);
+  };
+  Uint8Array.prototype.readInt16BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getInt16(offset || 0, false);
+  };
+  Uint8Array.prototype.readUInt16BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getUint16(offset || 0, false);
+  };
+  Uint8Array.prototype.readUInt8 = function (offset) {
+    return this[offset || 0];
+  };
+  Uint8Array.prototype.readBigInt64BE = function (offset) {
+    return new DataView(this.buffer, this.byteOffset, this.byteLength).getBigInt64(offset || 0, false);
+  };
+  Uint8Array.prototype.writeInt32BE = function (val, offset) {
+    new DataView(this.buffer, this.byteOffset, this.byteLength).setInt32(offset || 0, val, false);
+    return (offset || 0) + 4;
+  };
+  Uint8Array.prototype.writeUInt32BE = function (val, offset) {
+    new DataView(this.buffer, this.byteOffset, this.byteLength).setUint32(offset || 0, val, false);
+    return (offset || 0) + 4;
+  };
+  Uint8Array.prototype.writeUInt16BE = function (val, offset) {
+    new DataView(this.buffer, this.byteOffset, this.byteLength).setUint16(offset || 0, val, false);
+    return (offset || 0) + 2;
+  };
+  Uint8Array.prototype.writeBigInt64BE = function (val, offset) {
+    new DataView(this.buffer, this.byteOffset, this.byteLength).setBigInt64(offset || 0, BigInt(val), false);
+    return (offset || 0) + 8;
+  };
+  // Node's Buffer.prototype.copy. Missing it failed the postgres connector at
+  // the first wire read with "prev.copy is not a function" -- postgres.js grows
+  // its read buffer with it. Node clamps to the destination's remaining room
+  // rather than throwing, and returns the number of bytes written.
+  Uint8Array.prototype.copy = function (target, targetStart, sourceStart, sourceEnd) {
+    var start = targetStart || 0;
+    var from = sourceStart || 0;
+    var to = sourceEnd === undefined ? this.length : sourceEnd;
+    var slice = this.subarray(from, to);
+    var room = target.length - start;
+    if (slice.length > room) slice = slice.subarray(0, room < 0 ? 0 : room);
+    target.set(slice, start);
+    return slice.length;
+  };
+  global.Buffer = Buffer;
+
+  // ---------------------------------------------------------------------------
+  // EventEmitter shim
+  // ---------------------------------------------------------------------------
+  function EventEmitter() {
+    this._events = Object.create(null);
+  }
+  EventEmitter.prototype.on = function (event, listener) {
+    if (!this._events[event]) this._events[event] = [];
+    this._events[event].push(listener);
+    return this;
+  };
+  EventEmitter.prototype.once = function (event, listener) {
+    var self = this;
+    function g() {
+      self.off(event, g);
+      listener.apply(this, arguments);
+    }
+    g.listener = listener;
+    return this.on(event, g);
+  };
+  EventEmitter.prototype.off = function (event, listener) {
+    var list = this._events[event];
+    if (!list) return this;
+    this._events[event] = list.filter(function (l) {
+      return l !== listener && l.listener !== listener;
+    });
+    return this;
+  };
+  EventEmitter.prototype.removeListener = EventEmitter.prototype.off;
+  EventEmitter.prototype.removeAllListeners = function (event) {
+    if (event) delete this._events[event];
+    else this._events = Object.create(null);
+    return this;
+  };
+  EventEmitter.prototype.emit = function (event) {
+    var list = this._events[event];
+    if (!list || list.length === 0) return false;
+    var args = Array.prototype.slice.call(arguments, 1);
+    var copy = list.slice();
+    for (var i = 0; i < copy.length; i++) {
+      copy[i].apply(this, args);
+    }
+    return true;
+  };
+  global.EventEmitter = EventEmitter;
+
+  // ---------------------------------------------------------------------------
+  // Web Streams (ReadableStream, WritableStream)
+  // ---------------------------------------------------------------------------
+  function ReadableStream(underlyingSource) {
+    this._source = underlyingSource || {};
+  }
+  ReadableStream.prototype.getReader = function () {
+    var self = this;
+    var queue = [];
+    var pendingRead = null;
+    var isClosed = false;
+    var streamError = null;
+
+    var controller = {
+      enqueue: function (chunk) {
+        if (pendingRead) {
+          var r = pendingRead;
+          pendingRead = null;
+          r({ value: chunk, done: false });
+        } else {
+          queue.push(chunk);
+        }
+      },
+      close: function () {
+        isClosed = true;
+        if (pendingRead) {
+          var r = pendingRead;
+          pendingRead = null;
+          r({ value: undefined, done: true });
+        }
+      },
+      error: function (err) {
+        streamError = err;
+        if (pendingRead) {
+          var r = pendingRead;
+          pendingRead = null;
+          r(Promise.reject(err));
+        }
+      }
+    };
+
+    if (this._source && this._source.start) {
+      this._source.start(controller);
+    }
+
+    return {
+      read: function () {
+        if (streamError) return Promise.reject(streamError);
+        if (queue.length > 0) {
+          return Promise.resolve({ value: queue.shift(), done: false });
+        }
+        if (isClosed) {
+          return Promise.resolve({ value: undefined, done: true });
+        }
+        // The waiter is registered BEFORE pull(), because a source that
+        // enqueues synchronously would otherwise push into the queue while
+        // pendingRead was still null and leave this read hanging forever.
+        var waiter = new Promise(function (resolve) {
+          pendingRead = resolve;
+        });
+        if (self._source && self._source.pull) {
+          self._source.pull(controller);
+        }
+        return waiter;
+      },
+      releaseLock: function () {},
+      cancel: function (reason) {
+        if (self._source && self._source.cancel) {
+          return Promise.resolve(self._source.cancel(reason));
+        }
+        return Promise.resolve();
+      }
+    };
+  };
+  global.ReadableStream = ReadableStream;
+
+  function WritableStream(underlyingSink) {
+    this._sink = underlyingSink || {};
+  }
+  WritableStream.prototype.getWriter = function () {
+    var self = this;
+    return {
+      ready: Promise.resolve(),
+      write: function (chunk) {
+        if (self._sink && self._sink.write) {
+          return Promise.resolve(self._sink.write(chunk));
+        }
+        return Promise.resolve();
+      },
+      close: function () {
+        if (self._sink && self._sink.close) {
+          return Promise.resolve(self._sink.close());
+        }
+        return Promise.resolve();
+      },
+      releaseLock: function () {}
+    };
+  };
+  global.WritableStream = WritableStream;
+
+  // ---------------------------------------------------------------------------
+  // node:stream -- present so a bundle that reads it at load time can load,
+  // and loud so nothing quietly gets a web stream where a Node stream is meant.
+  // ---------------------------------------------------------------------------
+  function nodeStreamAbsent(name) {
+    return function () {
+      throw new Error(
+        "node:stream." + name + " is not available in the connector isolate. " +
+          "Use the web streams (ReadableStream/WritableStream) or a host capability instead."
+      );
+    };
+  }
+  var nodeStream = {
+    Readable: nodeStreamAbsent('Readable'),
+    Writable: nodeStreamAbsent('Writable'),
+    Duplex: nodeStreamAbsent('Duplex')
+  };
+  nodeStream.default = nodeStream;
+  global.__lobuNodeStream = nodeStream;
+
+  // ---------------------------------------------------------------------------
+  // WinterCG Direct Sockets (connect)
+  // ---------------------------------------------------------------------------
+  global.connect = function connect(address, options) {
+    var host = '';
+    // No default port: this is the generic WinterCG entry point, so guessing
+    // one would silently dial some other connector's service.
+    var port = NaN;
+    if (typeof address === 'string') {
+      var idx = address.lastIndexOf(':');
+      if (idx !== -1) {
+        host = address.slice(0, idx);
+        port = parseInt(address.slice(idx + 1), 10);
+      } else {
+        host = address;
+      }
+    } else if (address && typeof address === 'object') {
+      host = address.hostname || '';
+      port = address.port;
+    }
+    if (!(port > 0 && port < 65536)) {
+      throw new Error('connect() requires a port; got ' + JSON.stringify(address));
+    }
+
+    var socketId = null;
+    var closedResolve;
+    var closedReject;
+    var closedPromise = new Promise(function (resolve, reject) {
+      closedResolve = resolve;
+      closedReject = reject;
+    });
+
+    var openPromise = hostAsync('socketOpen', host, port, options ? JSON.stringify(options) : '{}').then(
+      function (id) {
+        socketId = id;
+        return id;
+      },
+      function (err) {
+        closedReject(err);
+        throw err;
+      }
+    );
+
+    var readable = new ReadableStream({
+      pull: function (controller) {
+        return openPromise.then(function () {
+          return hostAsync('socketRead', socketId).then(function (res) {
+            if (res.error) {
+              var err = new Error(res.error);
+              controller.error(err);
+              closedReject(err);
+            } else if (res.done || res.data === null) {
+              controller.close();
+              closedResolve();
+            } else {
+              var bin = atob(res.data);
+              var u8 = new Uint8Array(bin.length);
+              for (var i = 0; i < bin.length; i++) {
+                u8[i] = bin.charCodeAt(i);
+              }
+              controller.enqueue(u8);
+            }
+          });
+        });
+      },
+      cancel: function () {
+        if (socketId !== null) {
+          hostAsync('socketClose', socketId);
+        }
+        closedResolve();
+      }
+    });
+
+    var writable = new WritableStream({
+      write: function (chunk) {
+        return openPromise.then(function () {
+          var u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+          var bin = '';
+          for (var i = 0; i < u8.length; i++) {
+            bin += String.fromCharCode(u8[i]);
+          }
+          return hostAsync('socketWrite', socketId, btoa(bin));
+        });
+      },
+      close: function () {
+        if (socketId !== null) {
+          return hostAsync('socketClose', socketId).then(function () {
+            closedResolve();
+          });
+        }
+        closedResolve();
+      }
+    });
+
+    var socketObj = {
+      readable: readable,
+      writable: writable,
+      closed: closedPromise,
+      close: function () {
+        if (socketId !== null) {
+          return hostAsync('socketClose', socketId).then(function () {
+            closedResolve();
+          });
+        }
+        closedResolve();
+        return Promise.resolve();
+      },
+      startTls: function (opts) {
+        openPromise = openPromise.then(function () {
+          return hostAsync('socketStartTls', socketId, opts ? JSON.stringify(opts) : '{}');
+        });
+        return socketObj;
+      }
+    };
+
+    return socketObj;
+  };
 })(globalThis);
 `;

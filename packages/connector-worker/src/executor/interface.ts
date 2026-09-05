@@ -168,25 +168,74 @@ export interface ExecutionHooks {
   ) => Promise<Record<string, unknown>>;
 }
 
-/** Per-run execution options independent of the job payload. */
-export interface ExecutionOptions {
-  /**
-   * Native system packages (nixpkgs attribute refs) the connector declared in
-   * its `runtime.nix.packages`. When non-empty, the embedded executor wraps the
-   * child process in `nix-shell -p <packages>` so the tools are on PATH.
-   */
-  nixPackages?: string[];
-}
-
 /**
- * Pluggable executor interface. The only implementation today is
- * `SubprocessExecutor`; the seam stays around so tests can stub it.
+ * Pluggable executor interface. The canonical implementation is `IsolateExecutor`;
+ * the seam stays around so tests can stub it.
  */
 export interface SyncExecutor {
   execute(
     compiledCode: string,
     job: ExecutorJob,
-    hooks?: ExecutionHooks,
-    options?: ExecutionOptions
+    hooks?: ExecutionHooks
   ): Promise<ExecutorResult>;
+}
+
+export type ConnectorExitReason = 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
+
+export interface ConnectorExecutionDiagnostics {
+  exitCode: number | null;
+  exitSignal: string | null;
+  outputTail: string;
+  exitReason: ConnectorExitReason;
+  httpStatus?: number;
+}
+
+export class ConnectorExecutionError extends Error implements ConnectorExecutionDiagnostics {
+  exitCode: number | null;
+  exitSignal: string | null;
+  outputTail: string;
+  exitReason: ConnectorExitReason;
+  httpStatus?: number;
+
+  constructor(
+    message: string,
+    diagnostics: ConnectorExecutionDiagnostics,
+    options?: { cause?: unknown }
+  ) {
+    super(message, options);
+    this.name = 'ConnectorExecutionError';
+    this.exitCode = diagnostics.exitCode;
+    this.exitSignal = diagnostics.exitSignal;
+    this.outputTail = diagnostics.outputTail;
+    this.exitReason = diagnostics.exitReason;
+    this.httpStatus = diagnostics.httpStatus;
+  }
+}
+
+/** Per-stream ring buffer that preserves the most recent bytes. */
+export class RingBuffer {
+  private chunks: string[] = [];
+  private size = 0;
+  constructor(private readonly cap: number) {}
+
+  append(chunk: string): void {
+    if (!chunk) return;
+    this.chunks.push(chunk);
+    this.size += chunk.length;
+    while (this.size > this.cap && this.chunks.length > 0) {
+      const front = this.chunks[0];
+      const overflow = this.size - this.cap;
+      if (front.length <= overflow) {
+        this.size -= front.length;
+        this.chunks.shift();
+      } else {
+        this.chunks[0] = front.slice(overflow);
+        this.size -= overflow;
+      }
+    }
+  }
+
+  toString(): string {
+    return this.chunks.join('');
+  }
 }

@@ -1207,65 +1207,6 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId)).not.toBeNull();
   });
 
-  it('ships bundled os.shell code to the headless daemon that advertises its manifest', async () => {
-    const { userId, orgId, workerId } = await seedDeviceOwner('headless');
-    // The exact manifest the connector-worker daemon sends on poll - not a
-    // synthetic fixture - so the test validates what herdr actually declares.
-    const res = await poll(
-      workerId,
-      [HEADLESS_OS_SHELL_MANIFEST],
-      'headless',
-      { 'os.shell': true },
-      { capacityAvailable: 0 },
-    );
-    expect(res.status).toBe(200);
-
-    // The manifest was admitted and stored on the device row (the headless
-    // shell connector is what makes a connection pinned to this device able to
-    // run commands). Feedless, so no definition materialization is asserted.
-    const sql = getTestDb();
-    const rows = (await sql`
-      SELECT connector_manifests FROM device_workers
-      WHERE user_id = ${userId} AND worker_id = ${workerId}
-    `) as unknown as Array<{ connector_manifests: unknown }>;
-    const stored = rows[0]?.connector_manifests as Record<string, unknown> | undefined;
-    expect(stored?.['os.shell']).toBeDefined();
-
-    const [connection] = (await sql`
-      SELECT id FROM connections
-      WHERE organization_id = ${orgId}
-        AND connector_key = 'os.shell'
-        AND deleted_at IS NULL
-      LIMIT 1
-    `) as unknown as Array<{ id: number }>;
-    const [run] = (await sql`
-      INSERT INTO runs (
-        organization_id, run_type, connection_id, connector_key,
-        connector_version, action_key, action_input, approval_status, status,
-        created_at
-      ) VALUES (
-        ${orgId}, 'action', ${connection.id}, 'os.shell', '0.1.0', 'run',
-        ${sql.json({ command: 'hostname' })}, 'auto', 'pending', NOW()
-      )
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
-
-    const claimingPoll = await poll(
-      workerId,
-      [HEADLESS_OS_SHELL_MANIFEST],
-      'headless',
-      { 'os.shell': true },
-      { capacityAvailable: 1 },
-    );
-    expect(claimingPoll.status).toBe(200);
-    const body = (await claimingPoll.json()) as Record<string, unknown>;
-    expect(body.run_id).toBe(Number(run.id));
-    expect(body.connector_key).toBe('os.shell');
-    expect(body.execution_backend).toBeUndefined();
-    expect(typeof body.compiled_code).toBe('string');
-    expect((body.compiled_code as string).length).toBeGreaterThan(0);
-  });
-
   it('routes an os.shell run to the daemon builtin on builtin capacity alone', async () => {
     const { orgId, workerId } = await seedDeviceOwner('headless');
     // The daemon declares os.shell as `runtime.execution: 'daemon_builtin'`, so
@@ -1315,6 +1256,91 @@ describe('device connector manifests', () => {
       deviceManifestHash(HEADLESS_OS_SHELL_MANIFEST as unknown as DeviceConnectorManifest),
     );
     expect(body.compiled_code).toBeUndefined();
+  });
+
+  it('runs os.shell natively for a legacy definition that declares no execution backend', async () => {
+    // The shape three production organizations are actually in, and the one
+    // that made deleting the gateway-compiled `os_shell.ts` risky:
+    //   - the org's `connector_definitions` row predates `runtime.execution`,
+    //     so it declares NEITHER `bridge` NOR `daemon_builtin` and
+    //     `classifySelectedConnectorExecution` returns no backend;
+    //   - the pinned version resolves to the SHARED artifact whose
+    //     `source_path` is the bundled `os_shell.ts`, so it is not
+    //     manifest-backed either.
+    // With the bundled source present the gateway used to compile and ship
+    // bytes. With it gone, `deviceExecutesConnectorNatively` must fall through
+    // to the capability branch and let the device run its own shell -- if it
+    // instead reached `resolveConnectorCode` the already-claimed run would be
+    // failed with "No bundled source or stored compiled code". Shell needs a
+    // real process, which no isolate has, so the device is the only correct
+    // executor here regardless.
+    const sql = getTestDb();
+    const { userId, orgId, workerId } = await seedDeviceOwner('macos');
+    await sql`
+      UPDATE device_workers SET capabilities = ${sql.json(['os.shell'])}
+      WHERE worker_id = ${workerId}
+    `;
+    const [device] = (await sql`
+      SELECT id FROM device_workers WHERE worker_id = ${workerId} LIMIT 1
+    `) as unknown as Array<{ id: string }>;
+
+    // Legacy metadata-only definition: `runtime` carries no `execution` key.
+    await sql`
+      INSERT INTO connector_definitions (
+        key, name, description, version, organization_id, status,
+        required_capability, runtime, auth_schema, feeds_schema, actions_schema
+      ) VALUES (
+        'os.shell', 'Mac Shell', 'Legacy shell definition', '0.2.0', ${orgId}, 'active',
+        'os.shell', ${sql.json({ platforms: ['macos'] })},
+        ${sql.json({ methods: [{ type: 'none' }] })}, ${sql.json({})},
+        ${sql.json({ run: { key: 'run', name: 'Run command', kind: 'write' } })}
+      )
+    `;
+    // The SHARED artifact the run resolves to: bundled source path, no bytes.
+    await sql`
+      INSERT INTO connector_versions (connector_key, version, organization_id, source_path)
+      VALUES ('os.shell', '0.2.0', NULL, 'os_shell.ts')
+      ON CONFLICT DO NOTHING
+    `;
+    const [connection] = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        created_by, visibility, device_worker_id
+      ) VALUES (
+        ${orgId}, 'os.shell', ${`legacy-shell-${generateSecureToken(4)}`},
+        'Legacy shell', 'active', ${userId}, 'private', ${device.id}
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const [run] = (await sql`
+      INSERT INTO runs (
+        organization_id, run_type, connection_id, connector_key,
+        connector_version, action_key, action_input, approval_status, status, created_at
+      ) VALUES (
+        ${orgId}, 'action', ${connection.id}, 'os.shell', '0.2.0', 'run',
+        ${sql.json({ command: 'hostname' })}, 'auto', 'pending', NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    const runId = Number(run.id);
+
+    const claimed = await poll(workerId, [], 'macos', { 'os.shell': true }, {
+      capacityAvailable: 1,
+    });
+    expect(claimed.status).toBe(200);
+    const body = (await claimed.json()) as Record<string, unknown>;
+    expect(body.run_id).toBe(runId);
+    expect(body.connector_key).toBe('os.shell');
+    // The two assertions that matter: the gateway shipped no code, and it did
+    // not terminalize the run trying to find some.
+    expect(body.compiled_code).toBeUndefined();
+    expect(body.error).toBeUndefined();
+    expect(body.skipped_run_id).toBeUndefined();
+
+    const [stored] = (await sql`
+      SELECT status FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ status: string }>;
+    expect(stored.status).not.toBe('failed');
   });
 
   it('leaves an os.shell run queued for a daemon advertising no builtin capacity', async () => {

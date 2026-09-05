@@ -17,9 +17,10 @@
  * Note this command needs no dry_run flag of its own: it ALREADY persists
  * nothing, because it never reaches the server's ingest path at all.
  *
- * Execution uses SubprocessExecutor (the same one the worker daemon uses),
- * not an in-process executor — bugs in connector code don't take the CLI
- * down, and we get the same isolation production gets.
+ * Execution goes through `IsolateExecutor` — the same executor, the same
+ * bundle, and the same guest surface the worker daemon uses, so a connector
+ * that runs here runs in production and one that cannot load here cannot load
+ * there either.
  */
 
 import { mkdirSync } from "node:fs";
@@ -33,7 +34,7 @@ import { fetchWithRetry } from "../../internal/http.js";
 import { printText } from "../../internal/output.js";
 import { getUsableToken, resolveOrg } from "../memory/_lib/memory-auth.js";
 import {
-  compileConnectorFromFile,
+  compileConnectorForIsolateFromFile,
   findBundledConnectorFile,
 } from "./connector-loader.js";
 
@@ -243,7 +244,7 @@ export async function connectorRun(
 
   // browser_session auth is CDP attach: the user runs Chrome with
   // --remote-debugging-port (launched by `lobu memory browser-auth`) and the
-  // connector subprocess attaches over CDP via the profile's cdp_url.
+  // connector attaches over CDP via the profile's cdp_url.
   if (profile.cdp_url) {
     printText(
       `Profile uses CDP at ${profile.cdp_url} — make sure that Chrome is running with --remote-debugging-port.`
@@ -305,25 +306,24 @@ export async function connectorRun(
     );
   }
   printText(`Compiling ${connectorKey} from ${sourcePath}...`);
-  const compiledCode = await compileConnectorFromFile(sourcePath);
+  const compiledCode = await compileConnectorForIsolateFromFile(sourcePath);
 
-  // The connector subprocess attaches over CDP when cdp_url is set — the
+  // The connector attaches over CDP when cdp_url is set — the
   // profile row carries the --remote-debugging-port endpoint the user pinned
   // at `lobu memory browser-auth` time.
   const sessionState: Record<string, unknown> = {};
   if (profile.cdp_url) sessionState.cdp_url = profile.cdp_url;
 
   // Lazy-import the worker so the CLI startup doesn't pay this cost for
-  // every command (only this one needs it). executeCompiledConnector defaults
-  // to SubprocessExecutor internally — no need to instantiate one ourselves.
+  // every command (only this one needs it). executeCompiledConnector picks the
+  // isolate executor internally — no need to instantiate one ourselves.
   const { executeCompiledConnector } = await import(
     "@lobu/connector-worker/executor/runtime"
   );
 
-  // Signal handlers — Chrome processes spawned by Playwright don't always die
-  // with the parent. The subprocess executor's child is forked from us, so
-  // exiting the CLI process tears it down; the explicit exit code keeps the
-  // shell's $? meaningful for scripts.
+  // Signal handlers — the isolate lives inside this process, so exiting the
+  // CLI tears the run down with it; the explicit exit code keeps the shell's
+  // $? meaningful for scripts.
   const onSignal = (sig: NodeJS.Signals) => {
     process.stderr.write(`\nReceived ${sig}, shutting down...\n`);
     process.exit(130);
@@ -340,7 +340,7 @@ export async function connectorRun(
     process.stderr.write(`  ... ${collectedEvents.length} events so far\n`);
   };
 
-  printText(`Running ${connectorKey} (subprocess executor)...`);
+  printText(`Running ${connectorKey} (isolate)...`);
   const startMs = Date.now();
   const result = await executeCompiledConnector({
     compiledCode,

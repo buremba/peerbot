@@ -98,7 +98,7 @@ export interface MidasCheckpoint {
 /**
  * Pull the chrome action dispatcher from sessionState.
  *
- * The connector-worker subprocess (child-runner.ts) splices a live
+ * The connector-worker host splices a live
  * `chrome_dispatcher` object onto every sync's sessionState; `dispatch()`
  * rides IPC up to the daemon and out through the gateway chrome-action
  * bridge to a paired Owletto extension. Looking at `ctx.channel` is wrong —

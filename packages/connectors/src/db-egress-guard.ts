@@ -37,9 +37,21 @@
  * tenant from its own operators and is an enterprise policy feature layered on
  * top later.
  */
-import dns from 'node:dns';
-import net from 'node:net';
+import { createRequire } from 'node:module';
+import type net from 'node:net';
+
+/**
+ * `node:dns` and `node:net` are reached through a RUNTIME require, not a static
+ * import, on purpose: this module is bundled into the isolate artifact, and a
+ * static import would leave a bare `require('node:dns')` in the bundle that
+ * `findIsolateIneligibleBuiltins` rejects before the connector ever loads. The
+ * two lookups below are the only uses, and neither runs in the isolate — a
+ * connector there dials through the host's `connect`, which enforces the same
+ * policy host-side (`executor/isolate.ts` `socketOpen`).
+ */
+const dynamicRequire = typeof require === 'function' ? require : createRequire(import.meta.url);
 import {
+  ipFamily,
   isReservedIpv4,
   isReservedIpv6,
   matchesIpv4Prefix,
@@ -142,7 +154,10 @@ export function isBlockedIp(ip: string, policy: DbEgressPolicy): boolean {
 /** Resolver injected for testability; defaults to the real DNS lookup. */
 export type HostLookup = (host: string) => Promise<Array<{ address: string }>>;
 
-const defaultLookup: HostLookup = (host) => dns.promises.lookup(host, { all: true });
+const defaultLookup: HostLookup = async (host) => {
+  const dns = dynamicRequire('node:dns') as typeof import('node:dns');
+  return dns.promises.lookup(host, { all: true });
+};
 
 /**
  * Parse an operator-supplied allow-host list (comma-separated) into entries.
@@ -183,7 +198,7 @@ function malformedAllowedHostReason(entry: string): string | null {
   }
   // A bare IPv6 literal legitimately contains `:` — only flag a trailing
   // `:port`, which `extractDbHosts` would already have removed from the URL.
-  if (net.isIP(entry) === 0 && /:\d+$/.test(entry)) return 'a :port is not part of the host';
+  if (ipFamily(entry) === 0 && /:\d+$/.test(entry)) return 'a :port is not part of the host';
   return null;
 }
 
@@ -371,6 +386,29 @@ export function readEgressPolicy(value: unknown): DbEgressPolicy {
  * against the name the tenant configured.
  */
 export function requiredTlsMode(connectionString: string): string {
+  const mode = requestedTlsMode(connectionString);
+  if (mode === 'disable' || mode === 'false') {
+    throw new Error(
+      'DATABASE_URL disables TLS (sslmode=disable), but TLS is required on this deployment (egress policy: block-private). Use sslmode=require or stronger.',
+    );
+  }
+  if (mode === '' || mode === 'allow' || mode === 'prefer' || mode === 'require') {
+    return 'require';
+  }
+  return mode;
+}
+
+/**
+ * The TLS mode postgres.js will actually apply to this connection string — the
+ * pure parse half of `requiredTlsMode`, with no deployment policy attached.
+ * Returns `''` when the URL says nothing about TLS, otherwise the lowercased
+ * last-wins `sslmode` (falling back to `ssl`), with `sslrootcert=system`
+ * forcing `verify-full` exactly as the driver does. Read this where the
+ * question is whether the tenant ASKED for certificate verification
+ * (`verify-ca` / `verify-full`) — an execution lane that cannot deliver it must
+ * refuse rather than connect unverified behind a verifying-looking URL.
+ */
+export function requestedTlsMode(connectionString: string): string {
   // postgres.js parses the URL with `new URL()`, whose `.searchParams` follows
   // WHATWG URL semantics: the fragment (everything from the FIRST `#`) is NOT
   // part of the query, and a `?` that appears AFTER that `#` is fragment text,
@@ -406,14 +444,6 @@ export function requiredTlsMode(connectionString: string): string {
   const usesSystemCa = params.getAll('sslrootcert').at(-1)?.toLowerCase() === 'system';
   if (usesSystemCa) {
     return 'verify-full';
-  }
-  if (mode === 'disable' || mode === 'false') {
-    throw new Error(
-      'DATABASE_URL disables TLS (sslmode=disable), but TLS is required on this deployment (egress policy: block-private). Use sslmode=require or stronger.',
-    );
-  }
-  if (mode === '' || mode === 'allow' || mode === 'prefer' || mode === 'require') {
-    return 'require';
   }
   return mode;
 }
@@ -463,7 +493,10 @@ export interface PinnedSocketOptions {
 /** Injected for tests; production uses a real TCP socket. */
 export type MakeSocket = () => net.Socket;
 
-const defaultMakeSocket: MakeSocket = () => new net.Socket();
+const defaultMakeSocket: MakeSocket = () => {
+  const net = dynamicRequire('node:net') as typeof import('node:net');
+  return new net.Socket();
+};
 
 /**
  * Resolve-then-pin, step 2: a postgres.js `socket` factory that dials the

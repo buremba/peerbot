@@ -1,19 +1,147 @@
 /**
  * G2 Connector (V1 runtime)
  *
- * Scrapes B2B software reviews from G2.com using browser rendering with stealth mode.
+ * Reads B2B software reviews through the paired Owletto Chrome extension.
+ *
+ * Connector code runs in a V8 isolate with no browser in it, and G2 fronts its
+ * review pages with bot protection. `extensionDomScrape` reads the DOM in the
+ * user's own Chrome through a content script, driven by the same schema.org
+ * `itemprop` hooks the previous in-page extract used. Pagination stays in the
+ * connector: one dispatch per `?page=N`, stopping at the first empty page.
  */
 
 import {
   type RuntimeConnectorDefinition,
+  type ChromeActionDispatcher,
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
+  extensionDomScrape,
   type SyncContext,
   type SyncResult,
   sleep,
 } from "@lobu/connector-sdk";
-import { runReviewScrape } from "@lobu/connector-sdk/browser";
+
+const G2_ALLOWED_ORIGINS = ["g2.com", "*.g2.com"];
+
+const REVIEW_SCRAPE_CONFIG = {
+  scroll: { max: 4, stall: 3, waitMs: 1200, deep: true },
+  rowSelector: '[itemprop="review"]',
+  requireFields: ["text"],
+  fields: {
+    // schema.org values live in `content` attributes, not element text.
+    author: {
+      selector: '[itemprop="author"] meta[itemprop="name"]',
+      take: "attr",
+      attr: "content",
+    },
+    date: {
+      selector: 'meta[itemprop="datePublished"]',
+      take: "attr",
+      attr: "content",
+    },
+    rating: {
+      selector: '[itemprop="ratingValue"]',
+      take: "attr",
+      attr: "content",
+    },
+    title: {
+      selector: '[itemprop="name"] .elv-font-bold',
+      take: "text",
+      firstLine: true,
+    },
+    text: { selector: '[itemprop="reviewBody"]', take: "text" },
+    reviewUrl: {
+      selector: 'a[href*="survey_responses"]',
+      take: "attr",
+      attr: "href",
+    },
+    // The reviewer's job title, industry and company size are three untagged
+    // `.elv-text-subtle` divs in document order with nothing to tell them
+    // apart. The in-page extract read them positionally off the author block's
+    // parent; `objectAll` collects them across the whole card instead, and the
+    // same positional heuristic is applied below where it can be read.
+    details: {
+      selector: ".elv-text-subtle",
+      take: "objectAll",
+      parts: { text: { take: "text" } },
+    },
+    badges: {
+      selector: '[class*="badge"], [class*="tag"], .elv-rounded-sm.elv-border',
+      take: "objectAll",
+      parts: { text: { take: "text" } },
+    },
+  },
+} as const;
+
+/** One scraped row: strings and `objectAll` part lists, or absent. */
+interface G2Row {
+  author?: string;
+  date?: string;
+  rating?: string;
+  title?: string;
+  text?: string;
+  reviewUrl?: string;
+  details?: Array<{ text?: string }>;
+  badges?: Array<{ text?: string }>;
+}
+
+function partTexts(parts: Array<{ text?: string }> | undefined): string[] {
+  return (parts ?? [])
+    .map((part) => part.text?.trim() ?? "")
+    .filter((text) => text.length > 0);
+}
+
+function normalizeReview(row: G2Row): G2Review {
+  const details = partTexts(row.details);
+  // Three details: job title, industry, company size. Two: job title and
+  // company size. One: company size. Same shape the in-page extract assumed.
+  const [jobTitle, industry, companySize] =
+    details.length >= 3
+      ? [details[0], details[1], details[2]]
+      : details.length === 2
+        ? [details[0], "", details[1]]
+        : [".", "", details[0] ?? ""];
+  const href = row.reviewUrl ?? "";
+  return {
+    rating: Number.parseFloat(row.rating ?? "0") || 0,
+    title: (row.title ?? "").trim().replace(/^"|"$/g, ""),
+    text: (row.text ?? "").trim(),
+    author: row.author?.trim() || "Anonymous",
+    jobTitle: jobTitle === "." ? "" : jobTitle,
+    industry,
+    companySize,
+    date: row.date?.trim() ?? "",
+    badges: partTexts(row.badges)
+      .filter((text) => text.length > 3 && text.length < 50)
+      .slice(0, 10),
+    reviewUrl: href
+      ? href.startsWith("http")
+        ? href
+        : `https://www.g2.com${href}`
+      : "",
+    helpfulCount: 0,
+  };
+}
+
+/**
+ * Pull the chrome action dispatcher off the sync context. The connector-worker
+ * splices a live `chrome_dispatcher` onto `sessionState`; with no online paired
+ * Owletto extension in the connection's org there is nothing to splice.
+ */
+function requireExtensionDispatcher(ctx: {
+  sessionState?: Record<string, unknown> | null;
+}): ChromeActionDispatcher {
+  const handle = ctx.sessionState?.chrome_dispatcher as
+    | ChromeActionDispatcher
+    | undefined;
+  if (!handle || typeof handle.dispatch !== "function") {
+    throw new Error(
+      "G2 connector requires a paired Owletto Chrome extension. No chrome_dispatcher was injected into sessionState — run on a connector-worker with the dispatcher bridge and an online extension."
+    );
+  }
+  return handle;
+}
 
 interface G2Review {
   rating: number;
@@ -52,8 +180,9 @@ export default class G2Connector extends ConnectorRuntime {
   readonly definition: RuntimeConnectorDefinition = {
     key: "g2",
     name: "G2",
-    description: "Scrapes B2B software reviews from G2.com.",
-    version: "1.0.0",
+    description:
+      "Reads B2B software reviews from G2.com through the paired Chrome extension.",
+    version: "2.0.0",
     faviconDomain: "g2.com",
     authSchema: {
       methods: [{ type: "none" }],
@@ -115,198 +244,62 @@ export default class G2Connector extends ConnectorRuntime {
     const baseUrl = productUrl;
     const reviewCardSelector = '[itemprop="review"]';
 
-    return runReviewScrape(ctx, {
-      connectorKey: "g2-sync",
-      baseUrl,
-      expectedDomain: "g2.com",
-      cookieConsentSelector: "#onetrust-accept-btn-handler",
-      reviewCardSelector,
-      gotoTimeoutMs: 30000,
-      extract: async (page, firstPageHasCards) => {
-        const allEvents: EventEnvelope[] = [];
-        const maxPages = 5;
-        let pagesCrawled = 0;
+    const dispatcher = requireExtensionDispatcher(ctx);
+    const allEvents: EventEnvelope[] = [];
+    const maxPages = 5;
+    let pagesCrawled = 0;
 
-        for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-          // Page 1 was already loaded, cookie-consented, and card-waited by the
-          // driver; reuse that result. Subsequent pages navigate + wait here.
-          if (pageNum > 1) {
-            await page.goto(`${baseUrl}?page=${pageNum}`, {
-              waitUntil: "domcontentloaded",
-              timeout: 30000,
-            });
-            try {
-              await page.waitForSelector(reviewCardSelector, {
-                timeout: 10000,
-              });
-            } catch {
-              // No reviews found on this page — stop paginating
-              break;
-            }
-          } else if (!firstPageHasCards) {
-            // No reviews found on page 1 — stop paginating
-            break;
-          }
+    for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      const pageUrl = pageNum === 1 ? baseUrl : `${baseUrl}?page=${pageNum}`;
+      const { items: rows } = await extensionDomScrape<G2Row>({
+        dispatcher,
+        url: pageUrl,
+        config: REVIEW_SCRAPE_CONFIG,
+        parseRows: (raw) => raw as G2Row[],
+        allowedOrigins: G2_ALLOWED_ORIGINS,
+      });
+      pagesCrawled++;
 
-          pagesCrawled++;
+      // Reviews with real content; the in-page extract used the same floor.
+      const reviews = rows
+        .map((row) => normalizeReview(row))
+        .filter((review) => review.text.length >= 50);
 
-          // Extract reviews from the page
-          const reviews: G2Review[] = await page.evaluate(() => {
-            const results: G2Review[] = [];
-            const reviewCards = document.querySelectorAll(
-              '[itemprop="review"]'
-            );
+      for (const review of reviews) {
+        allEvents.push({
+          origin_id: `g2-${productKey}-${review.date || "nodate"}-${review.author.replace(/\s+/g, "-")}`,
+          title: review.title,
+          payload_text: review.text,
+          author_name: review.author,
+          occurred_at: review.date ? new Date(review.date) : new Date(),
+          origin_type: "review",
+          score: calculateEngagementScore("g2", {
+            rating: review.rating,
+            helpful_count: 0,
+          }),
+          source_url: review.reviewUrl || baseUrl,
+          metadata: {
+            rating: review.rating,
+            helpful_count: review.helpfulCount,
+            job_title: review.jobTitle,
+            industry: review.industry,
+            company_size: review.companySize,
+            badges: review.badges,
+          },
+        });
+      }
 
-            reviewCards.forEach((card) => {
-              try {
-                // Extract author name from meta tag
-                const authorMeta = card.querySelector(
-                  '[itemprop="author"] meta[itemprop="name"]'
-                );
-                const author =
-                  authorMeta?.getAttribute("content") || "Anonymous";
+      // An empty page is the end of the list.
+      if (reviews.length === 0) break;
 
-                // Extract author details from sibling divs with elv-text-subtle class
-                const authorContainer = card.querySelector(
-                  '[itemprop="author"]'
-                );
-                const parentDiv =
-                  authorContainer?.closest(".elv-gap-2")?.parentElement;
-                const detailDivs = parentDiv
-                  ? Array.from(parentDiv.querySelectorAll(".elv-text-subtle"))
-                  : [];
+      // Rate limit between pages.
+      if (pageNum < maxPages) await sleep(6000);
+    }
 
-                // Parse author details (job title, industry, company size)
-                let jobTitle = "";
-                let industry = "";
-                let companySize = "";
-
-                if (detailDivs.length >= 3) {
-                  jobTitle = detailDivs[0]?.textContent?.trim() || "";
-                  industry = detailDivs[1]?.textContent?.trim() || "";
-                  companySize = detailDivs[2]?.textContent?.trim() || "";
-                } else if (detailDivs.length === 2) {
-                  jobTitle = detailDivs[0]?.textContent?.trim() || "";
-                  companySize = detailDivs[1]?.textContent?.trim() || "";
-                } else if (detailDivs.length === 1) {
-                  companySize = detailDivs[0]?.textContent?.trim() || "";
-                }
-
-                // Extract date from meta tag
-                const dateMeta = card.querySelector(
-                  'meta[itemprop="datePublished"]'
-                );
-                const dateStr = dateMeta?.getAttribute("content") || "";
-
-                // Extract rating
-                const ratingMeta = card.querySelector(
-                  '[itemprop="ratingValue"]'
-                );
-                const rating = ratingMeta
-                  ? parseFloat(ratingMeta.getAttribute("content") || "0")
-                  : 0;
-
-                // Extract review title
-                const titleDiv = card.querySelector(
-                  '[itemprop="name"] .elv-font-bold'
-                );
-                const title =
-                  titleDiv?.textContent?.trim().replace(/^"|"$/g, "") || "";
-
-                // Extract review body - use innerText to preserve visual spacing/newlines
-                const reviewBodyEl = card.querySelector(
-                  '[itemprop="reviewBody"]'
-                );
-                const reviewBody =
-                  (reviewBodyEl as HTMLElement)?.innerText?.trim() || "";
-
-                // Extract badges
-                const badgeEls = card.querySelectorAll(
-                  '[class*="badge"], [class*="tag"], .elv-rounded-sm.elv-border'
-                );
-                const badges = Array.from(badgeEls)
-                  .map((el) => el.textContent?.trim())
-                  .filter(
-                    (text): text is string =>
-                      !!text && text.length < 50 && text.length > 3
-                  );
-
-                // Extract review URL
-                const linkEl = card.querySelector(
-                  'a[href*="survey_responses"]'
-                );
-                const href = linkEl?.getAttribute("href") || "";
-                const reviewUrl = href
-                  ? href.startsWith("http")
-                    ? href
-                    : `https://www.g2.com${href}`
-                  : "";
-
-                // Skip reviews with minimal content
-                if ((reviewBody || "").length < 50) return;
-
-                results.push({
-                  rating,
-                  title,
-                  text: reviewBody,
-                  author,
-                  jobTitle,
-                  industry,
-                  companySize,
-                  date: dateStr,
-                  badges: badges.slice(0, 10),
-                  reviewUrl,
-                  helpfulCount: 0,
-                });
-              } catch (e) {
-                console.error("[G2Connector] Error parsing review card:", e);
-              }
-            });
-
-            return results;
-          });
-
-          // Transform reviews to EventEnvelope format
-          for (const review of reviews) {
-            const event: EventEnvelope = {
-              origin_id: `g2-${productKey}-${review.date || "nodate"}-${review.author.replace(/\s+/g, "-")}`,
-              title: review.title,
-              payload_text: review.text,
-              author_name: review.author,
-              occurred_at: review.date ? new Date(review.date) : new Date(),
-              origin_type: "review",
-              score: calculateEngagementScore("g2", {
-                rating: review.rating,
-                helpful_count: 0,
-              }),
-              source_url: review.reviewUrl || baseUrl,
-              metadata: {
-                rating: review.rating,
-                helpful_count: review.helpfulCount,
-                job_title: review.jobTitle,
-                industry: review.industry,
-                company_size: review.companySize,
-                badges: review.badges,
-              },
-            };
-            allEvents.push(event);
-          }
-
-          // If this page had no reviews, stop paginating
-          if (reviews.length === 0) break;
-
-          // Rate limit between pages
-          if (pageNum < maxPages) {
-            await sleep(6000);
-          }
-        }
-
-        return {
-          events: allEvents,
-          checkpointExtra: { pages_crawled: pagesCrawled },
-          metadata: (finalEvents) => ({ items_found: finalEvents.length }),
-        };
-      },
-    });
+    return {
+      events: allEvents,
+      checkpoint: { ...(ctx.checkpoint ?? {}), pages_crawled: pagesCrawled },
+      metadata: { items_found: allEvents.length },
+    };
   }
 }

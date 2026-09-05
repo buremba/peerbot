@@ -216,10 +216,13 @@ const gh = defineConnection({
 **Bundled connector keys** — use the exact key; several are dotted (Gmail is
 `google.gmail`, not `gmail` or `google_gmail`): `github`, `slack`, `linear`, `jira`, `google.gmail`,
 `google.calendar`, `google.drive`, `microsoft.outlook`, `discord`, `teams`, `telegram`, `webhook`,
-`whatsapp`, `gchat`, `rss`, `postgres`, `os.shell`,
+`whatsapp`, `gchat`, `rss`, `postgres`,
 `hackernews`, `market.quotes`, `reddit`, `x`, `youtube`, `producthunt`.
 
-Mac/Chrome device connectors are advertised by Owletto at poll time and appear after the relevant device grants permission.
+Device connectors are not in that list: they are advertised by the device at
+poll time and appear after it grants permission. `os.shell` is one of them —
+a Mac advertises it through Owletto, a headless server through the
+connector-worker daemon — so it exists only where a device offers it.
 
 Each connector defines its own `config` keys and feed keys — don't guess them.
 Read the installed catalog schemas before authoring config. `lobu connector run`

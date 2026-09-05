@@ -286,6 +286,7 @@ describe('assertConnectionStringAllowed — multi-host + policy', () => {
 import {
   buildDbEgressHardening,
   createPinnedSocketFactory,
+  requestedTlsMode,
   requiredTlsMode,
   resolvePinnedDbHosts,
 } from '../db-egress-guard.ts';
@@ -305,6 +306,42 @@ const fakeSocketFactory = (created: FakeSocket[]) => () => {
   created.push(s);
   return s as unknown as import('node:net').Socket;
 };
+
+describe('requestedTlsMode — the mode the driver will apply, no policy attached', () => {
+  test('is empty when the URL says nothing about TLS', () => {
+    expect(requestedTlsMode('postgres://u:p@db.example.com:5432/x')).toBe('');
+  });
+
+  test('reports disable without throwing (policy is the caller\'s job)', () => {
+    expect(requestedTlsMode('postgres://u:p@db.example.com/x?sslmode=disable')).toBe('disable');
+    expect(requestedTlsMode('postgres://u:p@db.example.com/x?ssl=false')).toBe('false');
+  });
+
+  test('reads the verifying modes the tenant asked for', () => {
+    expect(requestedTlsMode('postgres://u:p@db.example.com/x?sslmode=verify-ca')).toBe('verify-ca');
+    expect(requestedTlsMode('postgres://u:p@db.example.com/x?sslmode=VERIFY-FULL')).toBe(
+      'verify-full'
+    );
+  });
+
+  test('sslrootcert=system forces verify-full over any sslmode, as the driver does', () => {
+    expect(
+      requestedTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslrootcert=system')
+    ).toBe('verify-full');
+    expect(
+      requestedTlsMode('postgres://u:p@db.example.com/x?sslmode=disable&sslrootcert=system')
+    ).toBe('verify-full');
+  });
+
+  test('last duplicate key wins and sslmode beats ssl, matching postgres.js', () => {
+    expect(
+      requestedTlsMode('postgres://u:p@db.example.com/x?sslmode=require&sslmode=verify-full')
+    ).toBe('verify-full');
+    expect(
+      requestedTlsMode('postgres://u:p@db.example.com/x?ssl=verify-full&sslmode=require')
+    ).toBe('require');
+  });
+});
 
 describe('requiredTlsMode — forced TLS under block-private', () => {
   test('rejects sslmode=disable with a clear error', () => {

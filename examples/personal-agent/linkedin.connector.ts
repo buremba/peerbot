@@ -1413,7 +1413,7 @@ export function buildHomeFeedEvents(
 
 /**
  * Pull the chrome action dispatcher from sessionState. The connector-worker
- * subprocess (child-runner.ts) splices a live `chrome_dispatcher` object
+ * host splices a live `chrome_dispatcher` object
  * onto every sync's sessionState; the dispatcher's `dispatch()` rides an
  * IPC channel up to the daemon and out to the gateway's
  * /api/workers/dispatch-chrome-action bridge. When no paired Owletto

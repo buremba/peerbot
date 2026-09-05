@@ -132,8 +132,8 @@ class WhatsAppAdapterError extends Error {
 
 /**
  * Pull the chrome action dispatcher off sessionState. The connector-worker
- * subprocess splices a live `chrome_dispatcher` onto every sync AND action
- * context; its `dispatch()` rides IPC up to the daemon and out to the
+ * host splices a live `chrome_dispatcher` onto every sync AND action context;
+ * its `dispatch()` rides a host capability up to the daemon and out to the
  * gateway's chrome-action bridge.
  */
 function requireExtensionDispatcher(ctx: {

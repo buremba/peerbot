@@ -3,11 +3,10 @@ import { readdir, stat } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-	createConnectorCompiler,
+	createIsolateConnectorCompiler,
 	findBundledConnectorFile as findInDirs,
 } from "@lobu/connector-worker/compile";
 import { getErrorMessage } from "@lobu/core";
-import { getConnectorCloudAvailability } from "./connector-cloud-gate";
 import {
 	extractConnectorMetadata,
 	NO_CONNECTOR_RUNTIME_ERROR,
@@ -29,18 +28,7 @@ const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
 	resolve(process.cwd(), "connectors"),
 ];
 
-const connectorCompiler = createConnectorCompiler({
-	onUnresolvedNpm: ({ bareSpecifier, importer }) => {
-		// Package isn't installed in this image — externalize so the bundle
-		// still produces. Worker runtime supplies the implementation.
-		// Log so an actual typo or missing-dep regression is diagnosable
-		// rather than silently producing a bundle that crashes at runtime.
-		logger.warn(
-			{ package: bareSpecifier, importer },
-			"externalising npm:* import — package not resolvable in gateway image (worker runtime must provide it)",
-		);
-	},
-});
+const connectorCompiler = createIsolateConnectorCompiler();
 
 type CachedMetadata =
 	| {
@@ -128,7 +116,7 @@ export async function resolveBundledAgentToolingMetadata(
 
 	let value: BundledAgentToolingMetadata | null = null;
 	try {
-		const compiledCode = await compileConnectorFromFile(filePath);
+		const compiledCode = await compileConnectorForIsolateFromFile(filePath);
 		const metadata = await extractConnectorMetadata(compiledCode);
 		if (metadata.key === connectorKey && metadata.version === selectedVersion) {
 			value = {
@@ -179,7 +167,7 @@ export type CatalogConnectorInstallability =
 	| { installable: true }
 	| {
 			installable: false;
-			reason: "cloud_restricted" | "bundled_source_unavailable";
+			reason: "bundled_source_unavailable";
 			message: string;
 	  };
 
@@ -191,14 +179,6 @@ export type CatalogConnectorInstallability =
 export function getCatalogConnectorInstallability(
 	connectorKey: string,
 ): CatalogConnectorInstallability {
-	const cloud = getConnectorCloudAvailability(connectorKey);
-	if (!cloud.allowed) {
-		return {
-			installable: false,
-			reason: cloud.reason,
-			message: cloud.message,
-		};
-	}
 	if (!findBundledConnectorFile(connectorKey)) {
 		return {
 			installable: false,
@@ -253,12 +233,12 @@ export function resolveFileSourcePath(value: string): string | null {
 	return fileURLToPath(normalized);
 }
 
-// `compileConnectorFromFile` is owned by `@lobu/connector-worker/compile`
-// (LRU-capped at 8 entries, keyed by file mtime, identical to the previous
-// implementation that lived here — see lobu#771 for the cap rationale).
-// Re-exported here so existing server callers keep their import paths.
-export const compileConnectorFromFile =
-	connectorCompiler.compileConnectorFromFile;
+// `compileConnectorForIsolateFromFile` is owned by `@lobu/connector-worker/compile`
+// (LRU-capped at 8 entries, keyed by file mtime — see lobu#771 for the cap
+// rationale). Re-exported here so the gateway's candidate-dir configuration of
+// the compiler is the single instance every server caller shares.
+export const compileConnectorForIsolateFromFile =
+	connectorCompiler.compileConnectorForIsolateFromFile;
 
 async function extractConnectorCatalogMetadata(
 	filePath: string,
@@ -271,7 +251,7 @@ async function extractConnectorCatalogMetadata(
 	}
 
 	try {
-		const compiledCode = await compileConnectorFromFile(filePath);
+		const compiledCode = await compileConnectorForIsolateFromFile(filePath);
 		const metadata = await extractConnectorMetadata(compiledCode);
 
 		if (!metadata.key || !metadata.name || !metadata.version) {

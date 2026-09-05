@@ -1,7 +1,7 @@
 /**
  * Run Executor
  *
- * Executes sync and action runs via subprocess execution with compiled connector code.
+ * Executes sync and action runs in a V8 isolate from compiled connector code.
  * Generates embeddings and streams results.
  */
 
@@ -15,6 +15,8 @@ import { attachedInteractiveSession, attachInteractiveSession } from './interact
 import { log } from './log.js';
 import { reportTerminalFailure } from './terminal-failure.js';
 import { completeActionOnce } from './terminal-delivery.js';
+import type { SyncExecutor, ExecutorResult } from '../executor/interface.js';
+import { withoutDeploymentProviderKeys } from '../env.js';
 
 /**
  * Resolve the executable compiled code for a job.
@@ -37,11 +39,12 @@ import { completeActionOnce } from './terminal-delivery.js';
  */
 type JobCodeResult = { ok: true; code: string } | { ok: false; error: string };
 
-async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
+export async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
   if (job.compiled_code) return { ok: true, code: job.compiled_code };
   // Inline compiled jobs must not load the optional compiler/SDK graph.
-  const { compileConnectorFromFile, compileConnectorForIsolateFromFile, findBundledConnectorFile } =
-    await import('../compile-connector.js');
+  const { compileConnectorForIsolateFromFile, findBundledConnectorFile } = await import(
+    '../compile-connector.js'
+  );
   if (!job.connector_key) {
     return { ok: false, error: 'No compiled_code and no connector_key — gateway sent neither.' };
   }
@@ -55,12 +58,13 @@ async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> {
     };
   }
   try {
-    // The isolate lane needs a self-contained CJS bundle (SDK inlined, Node
-    // builtins rejected); the process lane keeps its SDK-externalized ESM.
-    const code =
-      job.lane === 'isolate'
-        ? await compileConnectorForIsolateFromFile(localPath)
-        : await compileConnectorFromFile(localPath);
+    // ALWAYS the isolate build: a self-contained CJS bundle with the SDK inlined
+    // and Node builtins rejected. `selectExecutor` returns an IsolateExecutor
+    // for every job, so compiling anything else hands the isolate a bundle it
+    // cannot load -- bare imports with no module loader behind them. A retired
+    // `lane` field an older gateway may still stamp is deliberately ignored:
+    // there is no second lane to send the job to.
+    const code = await compileConnectorForIsolateFromFile(localPath);
     return { ok: true, code };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -93,27 +97,23 @@ type JobExecution =
 
 /**
  * Resolve the code and the executor for a claimed run, or the reason it cannot
- * run here. `lane: 'isolate'` is a requirement (the isolate is the security
- * boundary for organization-supplied code), so a host without `isolated-vm`
- * fails the run instead of forking a child.
+ * run here. The isolate is the security boundary for organization-supplied
+ * code and the only executor, so a host without `isolated-vm` fails the run
+ * outright; there is nothing to fall back to.
  */
 async function resolveJobExecution(
   select: typeof import('../executor/select.js'),
   job: PollResponse,
   timeoutMs: number,
-  maxOldSpaceSize: number
+  customExecutor?: SyncExecutor
 ): Promise<JobExecution> {
   const codeResult = await resolveJobCode(job);
   if (!codeResult.ok) return codeResult;
+  if (customExecutor) {
+    return { ok: true, code: codeResult.code, executor: customExecutor };
+  }
   try {
-    // No allowlist rides on the poll payload yet, so an isolate-lane run has
-    // no egress: the executor denies every fetch until the gateway supplies
-    // the connector's declared domains.
-    const executor = await select.selectExecutor({
-      lane: job.lane,
-      timeoutMs,
-      maxOldSpaceSize,
-    });
+    const executor = await select.selectExecutor({ timeoutMs });
     return { ok: true, code: codeResult.code, executor };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -127,7 +127,8 @@ export interface ExecutorConfig {
   terminalHeartbeatGraceMs?: number;
   generateEmbeddings: boolean;
   timeoutMs: number;
-  maxOldSpaceSize: number;
+  /** Optional executor override (tests / custom runner). */
+  executor?: SyncExecutor;
   /** Daemon lifecycle signal used only by pending interactive handoffs. */
   shutdownSignal?: AbortSignal;
   /** Local agent kind used when an Automation omits agent_kind. */
@@ -145,7 +146,6 @@ const DEFAULT_CONFIG: ExecutorConfig = {
   heartbeatIntervalMs: 30000,
   generateEmbeddings: true,
   timeoutMs: 600000,
-  maxOldSpaceSize: 1024,
 };
 
 /**
@@ -166,6 +166,13 @@ const DEFAULT_CONFIG: ExecutorConfig = {
  *
  * The gateway allow-host list replaces any worker-local value. A missing list
  * means no exemptions, so a worker cannot widen the gateway's boundary.
+ *
+ * Deployment provider credentials (`DEPLOYMENT_PROVIDER_ENV_KEYS`) follow the
+ * run's PROVENANCE: under block-private a job that arrives with `compiled_code`
+ * is organization-supplied (the gateway omits the bytes for connectors the
+ * image ships, so this worker compiles those from its own image), and tenant
+ * code never sees the operator's provider apps. The keys stay for image-shipped
+ * code, which is how a bundled Reddit feed on a shared worker authenticates.
  */
 export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
   const workerPolicy = (env as Record<string, string | undefined>).LOBU_DB_EGRESS_POLICY;
@@ -175,11 +182,12 @@ export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
     workerPolicy === 'block-private' || gatewayPolicy === 'block-private'
       ? 'block-private'
       : (gatewayPolicy ?? workerPolicy ?? 'allow-private');
-  return {
+  const merged: Env = {
     ...env,
     LOBU_DB_EGRESS_POLICY: effective,
     LOBU_DB_EGRESS_ALLOW_HOSTS: job.db_egress_allow_hosts ?? '',
   };
+  return effective === 'block-private' && job.compiled_code ? withoutDeploymentProviderKeys(merged) : merged;
 }
 
 /**
@@ -284,7 +292,12 @@ async function executeSyncRun(
     throw new Error('Invalid run: missing run_id or connector_key');
   }
 
-  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg.maxOldSpaceSize);
+  const execution = await resolveJobExecution(
+    select,
+    job,
+    cfg.timeoutMs,
+    cfg.executor
+  );
   if (!execution.ok) {
     const errorMessage = `Run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
@@ -359,7 +372,6 @@ async function executeSyncRun(
 
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
-      nixPackages: job.nix_packages,
       executor: laneExecutor,
       job: {
         mode: 'sync',
@@ -442,7 +454,7 @@ async function executeSyncRun(
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.info(`[executor] Sync run ${run_id} failed:`, errorMessage);
 
-    const diag = extractSubprocessDiagnostics(error);
+    const diag = extractExecutionDiagnostics(error);
 
     await client.complete({
       run_id,
@@ -478,11 +490,11 @@ function partialFetchFailureMessage(
 }
 
 /**
- * Pull diagnostic fields off a SubprocessError-shaped error so the worker
+ * Pull diagnostic fields off a ConnectorExecutionError-shaped error so the worker
  * can persist them on the failed run row. Returns `undefined` when the
- * thrown value isn't a subprocess failure (e.g. a stream/HTTP error).
+ * thrown value isn't an execution failure (e.g. a stream/HTTP error).
  */
-function extractSubprocessDiagnostics(error: unknown):
+function extractExecutionDiagnostics(error: unknown):
   | {
       output_tail?: string;
       exit_code?: number | null;
@@ -527,7 +539,12 @@ async function executeActionRun(
 
   const [select, { executeCompiledConnector }] = await loadCompiledRuntime();
 
-  const execution = await resolveJobExecution(select, job, cfg.timeoutMs, cfg.maxOldSpaceSize);
+  const execution = await resolveJobExecution(
+    select,
+    job,
+    cfg.timeoutMs,
+    cfg.executor
+  );
   if (!execution.ok) {
     const errorMessage = `Action run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
@@ -563,7 +580,6 @@ async function executeActionRun(
   try {
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
-      nixPackages: job.nix_packages,
       executor: laneExecutor,
       job: {
         mode: 'action',
@@ -717,7 +733,12 @@ async function executeAuthRun(
   // Interactive auth runs wait on human input (QR scans, OTP entry, OAuth
   // redirects) — a fixed timeout would kill the pairing mid-flow. Terminate
   // via the UI cancel signal instead (timeoutMs: 0 on either lane).
-  const execution = await resolveJobExecution(select, job, 0, cfg.maxOldSpaceSize);
+  const execution = await resolveJobExecution(
+    select,
+    job,
+    0,
+    cfg.executor
+  );
   if (!execution.ok) {
     const errorMessage = `Auth run ${run_id} (${connector_key}): ${execution.error}`;
     log.info('[executor]', errorMessage);
@@ -746,7 +767,6 @@ async function executeAuthRun(
   try {
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
-      nixPackages: job.nix_packages,
       executor: laneExecutor,
       job: {
         mode: 'authenticate',
@@ -811,7 +831,7 @@ async function executeAuthRun(
     const errorMessage = error instanceof Error ? error.message : String(error);
     log.info(`[executor] Auth run ${run_id} failed:`, errorMessage);
 
-    const diag = extractSubprocessDiagnostics(error);
+    const diag = extractExecutionDiagnostics(error);
 
     try {
       await client.completeAuth({

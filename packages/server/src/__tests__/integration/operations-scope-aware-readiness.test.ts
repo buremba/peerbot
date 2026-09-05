@@ -125,7 +125,7 @@ describe("operation readiness respects OAuth scopes", () => {
 		`;
 		await sql`
 			UPDATE connector_versions
-			SET compiled_code = ${`class R { async sync(){return {items:[]};} async execute(ctx){return {success:true,output:{operation_key:ctx.actionKey}};} } export { R };`}
+			SET compiled_code = ${`class R { async sync(){return {items:[]};} async execute(ctx){return {success:true,output:{operation_key:ctx.actionKey}};} } module.exports = { default: R, R };`}
 			WHERE connector_key = ${CONNECTOR_KEY}
 		`;
 

@@ -50,8 +50,7 @@ export function startEmbeddedConnectorWorker(
   }
 
   const workerId = `embedded:${hostname() || 'localhost'}:${process.pid}`;
-  // Connector subprocesses inherit `context.env` from the WorkerDaemon's
-  // `env` arg (`SubprocessExecutor.fork` spreads it onto `pickSystemEnv`).
+  // Connector runs receive `context.env` from the WorkerDaemon's `env` arg.
   // Passing the gateway's full env would leak ENCRYPTION_KEY,
   // BETTER_AUTH_SECRET, DATABASE_URL, and provider secrets into every
   // connector run. Re-use the same whitelist the standalone connector-worker

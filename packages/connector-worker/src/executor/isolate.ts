@@ -2,19 +2,25 @@
  * Isolate Executor
  *
  * Runs a compiled pure-JS connector bundle inside a V8 isolate in the worker
- * process (`isolated-vm`), speaking the same `SyncExecutor` contract as
- * `SubprocessExecutor`: `ExecutorJob` in, `ExecutorResult` out, SDK context
- * calls mapped onto `ExecutionHooks`. Unlike the process lane the connector
- * gets no filesystem, no sockets and no module loader: every effect crosses
- * the boundary as a named host capability, so the host holds the network and
- * can enforce a domain allowlist and a body cap on `fetch`.
+ * process (`isolated-vm`), speaking the `SyncExecutor` contract: `ExecutorJob`
+ * in, `ExecutorResult` out, SDK context calls mapped onto `ExecutionHooks`.
+ * Unlike the forked child this replaced, the connector gets no filesystem and
+ * no module loader, and it opens nothing itself: every effect crosses the
+ * boundary as a named host capability, so the host owns the network. `fetch`
+ * carries a domain allowlist and a body cap; `socketOpen` (the WinterCG
+ * `connect` the DB connectors need) is a real TCP socket the HOST dials, after
+ * resolving the name and applying the DB egress policy.
  *
- * Selected only for jobs that carry `lane: 'isolate'` (`executor/select.ts`);
- * a bundle that still requires a Node builtin is rejected before any isolate
- * work with `IsolateLaneIneligibleError`.
+ * This is the only executor `executor/select.ts` builds; a bundle that still
+ * requires a Node builtin is rejected before any isolate work with
+ * `IsolateLaneIneligibleError`.
  */
 
+import dns from 'node:dns';
+import net from 'node:net';
+import tls from 'node:tls';
 import type { EventEnvelope } from '@lobu/connector-sdk';
+import { ipFamily, isReservedIp, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
 import { IsolateHost, IsolateHostError, type IsolateTerminalState } from '../isolate/bridge.js';
 import { assertIsolateEligible } from '../isolate/eligibility.js';
 import type { IsolatedVm } from '../isolate/ivm-types.js';
@@ -22,13 +28,12 @@ import { isolatedVmUnavailableReason, loadIsolatedVm } from '../isolate/load.js'
 import { buildConnectorConfig } from './connector-config.js';
 import type {
   ExecutionHooks,
-  ExecutionOptions,
   ExecutorJob,
   ExecutorResult,
   SyncExecutor,
 } from './interface.js';
 import { redactOutput } from './redact.js';
-import { RingBuffer, SubprocessError } from './subprocess.js';
+import { RingBuffer, ConnectorExecutionError } from './interface.js';
 
 export type IsolateLogLevel = 'log' | 'info' | 'debug' | 'warn' | 'error';
 
@@ -45,14 +50,20 @@ export interface IsolateExecutorOptions {
   logBytes: number;
   /**
    * Hosts the connector may fetch: exact host or any subdomain. Empty (the
-   * default) closes egress: every fetch is denied before a request leaves the
-   * host. There is no unrestricted mode. The gateway supplies the connector's
-   * declared domains once the wire carries them; until then an isolate-lane
-   * run has no network.
+   * default) means the public internet, NOT a closed door — see `hostAllowed`
+   * for why. Reserved and internal addresses are denied either way, and
+   * nothing on the wire populates this yet, so every production run today
+   * takes the empty-list path.
    */
   allowedDomains: readonly string[];
   /** Where redacted console lines go (default: the worker's stdout/stderr). */
   logSink: (level: IsolateLogLevel, line: string) => void;
+  /**
+   * Name resolution for host-dialled sockets and `fetch`'s reserved-address
+   * pre-flight. The system resolver by default; tests inject one to stage a
+   * dual-stack host without touching DNS.
+   */
+  lookup: (hostname: string) => Promise<Array<{ address: string }>>;
 }
 
 const MIB = 1024 * 1024;
@@ -68,6 +79,7 @@ const DEFAULT_OPTIONS: IsolateExecutorOptions = {
     const stream = level === 'warn' || level === 'error' ? process.stderr : process.stdout;
     stream.write(`[isolate] ${line}\n`);
   },
+  lookup: (hostname) => dns.promises.lookup(hostname, { all: true }),
 };
 
 const STREAM_TAIL_CAP_BYTES = 16 * 1024;
@@ -116,10 +128,10 @@ interface HostFetchReply {
 }
 
 /**
- * Guest-side port of `child-runner.ts`'s `executeConnectorRuntime`: same
- * mode dispatch, same context shapes, same result and error envelopes. Runs
- * after the prelude and the connector bundle in one script; its final
- * expression is the promise the host awaits.
+ * The guest's `executeConnectorRuntime`: mode dispatch, context shapes, and
+ * result/error envelopes for a connector run. Runs after the prelude and the
+ * connector bundle in one script; its final expression is the promise the host
+ * awaits.
  */
 const GUEST_RUNNER = String.raw`
 (async function () {
@@ -289,14 +301,40 @@ function normalizeDomain(domain: string): string {
   return domain.trim().toLowerCase().replace(/^\*\./, '').replace(/\.$/, '');
 }
 
-/** IPv4 dotted quads and bracketed IPv6 literals never match as "subdomains". */
-function isIpLiteral(host: string): boolean {
-  return host.startsWith('[') || /^\d+(\.\d+){3}$/.test(host);
+/**
+ * Names that never denote a public endpoint. This is defence in depth only:
+ * any name can point at a private address, so the ENFORCING control is the
+ * resolve-and-check in `hostFetch` / `socketOpen`, which runs on the resolved
+ * addresses before a socket opens. Denying these by name just fails faster,
+ * and without a DNS round trip.
+ */
+const INTERNAL_HOST_SUFFIXES = ['.local', '.localhost', '.internal', '.intranet', '.corp', '.lan', '.home'];
+
+function isInternalHostname(host: string): boolean {
+  return host === 'localhost' || INTERNAL_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
 }
 
-function hostAllowed(hostname: string, allowedDomains: readonly string[]): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/, '');
-  if (isIpLiteral(host)) return allowedDomains.includes(host);
+/**
+ * Whether a run may reach `hostname`.
+ *
+ * An EMPTY `allowedDomains` means the public internet, not "closed". The
+ * process lane this replaced had no allowlist at all, so closing egress by
+ * default would take every connector offline rather than preserve a boundary
+ * that never existed; reserved address space stays denied either way. A
+ * NON-EMPTY list is a genuine restriction: only those domains and their
+ * subdomains, and still never reserved space.
+ */
+export function hostAllowed(hostname: string, allowedDomains: readonly string[]): boolean {
+  const host = stripIpv6Brackets(hostname.toLowerCase().replace(/\.$/, ''));
+  // An EXACT entry is always honoured, reserved or not: naming `127.0.0.1` or
+  // an internal hostname is how a self-hosted install reaches its own database
+  // and how the fixture suites reach their loopback servers. Reserved space is
+  // denied only when nothing named it — so an empty list can never reach the
+  // metadata endpoint, and `['spotify.com']` cannot either.
+  if (allowedDomains.includes(host)) return true;
+  if (ipFamily(host) !== 0) return !isReservedIp(host) && allowedDomains.length === 0;
+  if (isInternalHostname(host)) return false;
+  if (allowedDomains.length === 0) return true;
   return allowedDomains.some((domain) => host === domain || host.endsWith(`.${domain}`));
 }
 
@@ -331,7 +369,7 @@ export class IsolateExecutor implements SyncExecutor {
     }
     const domains = merged.allowedDomains.map(normalizeDomain);
     if (domains.some((d) => d.length === 0)) {
-      throw new RangeError('allowedDomains entries must be hosts; pass an empty list to close egress');
+      throw new RangeError('allowedDomains entries must be non-empty hosts');
     }
     merged.allowedDomains = domains;
     this.options = merged;
@@ -346,15 +384,8 @@ export class IsolateExecutor implements SyncExecutor {
   async execute(
     compiledCode: string,
     job: ExecutorJob,
-    hooks?: ExecutionHooks,
-    options?: ExecutionOptions
+    hooks?: ExecutionHooks
   ): Promise<ExecutorResult> {
-    const nixPackages = options?.nixPackages ?? [];
-    if (nixPackages.length > 0) {
-      throw new Error(
-        `This connector declares native packages [${nixPackages.join(', ')}], which the isolate lane cannot provide; route it to the process lane.`
-      );
-    }
     assertIsolateEligible(compiledCode);
     const ivm = await this.requireIsolatedVm();
 
@@ -371,12 +402,66 @@ export class IsolateExecutor implements SyncExecutor {
     const inflightFetches = new Map<number, AbortController>();
     let host: IsolateHost | null = null;
 
+    interface ActiveSocket {
+      id: number;
+      sock: net.Socket;
+      chunks: string[];
+      pendingReads: Array<(res: { data: string | null; done: boolean; error?: string }) => void>;
+      closed: boolean;
+      closeError: string | null;
+    }
+    let nextSocketId = 1;
+    const activeSockets = new Map<number, ActiveSocket>();
+    const closeAllSockets = () => {
+      for (const active of activeSockets.values()) {
+        try {
+          active.closed = true;
+          active.sock.destroy();
+          while (active.pendingReads.length > 0) {
+            const r = active.pendingReads.shift()!;
+            r({ data: null, done: true });
+          }
+        } catch {
+          // ignore
+        }
+      }
+      activeSockets.clear();
+    };
+
+    const attachSocketListeners = (sock: net.Socket, active: ActiveSocket) => {
+      sock.on('data', (buf: Buffer) => {
+        const b64 = buf.toString('base64');
+        if (active.pendingReads.length > 0) {
+          const r = active.pendingReads.shift()!;
+          r({ data: b64, done: false });
+        } else {
+          active.chunks.push(b64);
+        }
+      });
+      sock.on('end', () => {
+        active.closed = true;
+        while (active.pendingReads.length > 0) {
+          const r = active.pendingReads.shift()!;
+          r({ data: null, done: true });
+        }
+      });
+      sock.on('error', (err: Error) => {
+        active.closed = true;
+        active.closeError = err.message;
+        while (active.pendingReads.length > 0) {
+          const r = active.pendingReads.shift()!;
+          r({ data: null, done: true, error: err.message });
+        }
+      });
+    };
+
     const terminate = (state: IsolateTerminalState) => {
       runAbort.abort();
       for (const timer of pendingSleeps) clearTimeout(timer);
       pendingSleeps.clear();
       for (const controller of inflightFetches.values()) controller.abort();
       inflightFetches.clear();
+      closeAllSockets();
       host?.terminate(state);
     };
 
@@ -496,10 +581,245 @@ export class IsolateExecutor implements SyncExecutor {
           }
           const parsed = parseGuestJson(inputJson, 'dispatchChromeAction');
           const input = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-          const output = await hooks.onChromeDispatch(String(actionKey), input);
-          return JSON.stringify(output ?? {});
+          const keyStr = String(actionKey);
+          let timer: NodeJS.Timeout | undefined;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              reject(
+                new Error(
+                  `chrome_dispatcher.dispatch('${keyStr}') exceeded 120000ms; IPC may be wedged`
+                )
+              );
+            }, 120_000);
+          });
+          try {
+            const output = await Promise.race([
+              hooks.onChromeDispatch(keyStr, input),
+              timeoutPromise,
+            ]);
+            return JSON.stringify(output ?? {});
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
         },
         fetch: fetchCapability,
+        socketOpen: async (hostParam: unknown, portParam: unknown, optionsJson: unknown) => {
+          const rawHost = String(hostParam);
+          const hostname = stripIpv6Brackets(rawHost);
+          const port = typeof portParam === 'number' ? portParam : parseInt(String(portParam), 10);
+          if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            throw new Error(`Invalid port: ${portParam}`);
+          }
+          const options = (optionsJson ? parseGuestJson(optionsJson, 'socketOpen') : {}) as {
+            secureTransport?: 'off' | 'on' | 'starttls';
+          };
+
+          // A NON-EMPTY allowlist binds raw sockets exactly as it binds
+          // `hostFetch` -- otherwise a run restricted to `api.example.com`
+          // could still reach anything over TCP. The empty case is skipped on
+          // purpose rather than delegated to `hostAllowed`: that helper denies
+          // loopback and internal names when nothing lists them, which is the
+          // normal shape of a self-hosted database. With no allowlist the DB
+          // egress policy below is the only rule, as it has always been.
+          if (
+            this.options.allowedDomains.length > 0 &&
+            !hostAllowed(hostname, this.options.allowedDomains)
+          ) {
+            throw new Error(`EgressDenied: socket to ${hostname} is not in the connector's allowed domains`);
+          }
+
+          const mergedConfig = buildConnectorConfig(job);
+          // The literal is a fallback for a MALFORMED job, not the shipped
+          // default: both job producers always populate the key --
+          // `dbEgressConfig()` (server: `feed-sync.ts`, `connector-pushdown.ts`)
+          // and `resolveEffectiveEnv` (standalone daemon: `env.ts`), each
+          // resolving to 'allow-private' off cloud. Verified live: a postgres
+          // feed against a loopback DB syncs under EITHER literal, because the
+          // key is set before it is read. So the fallback only decides a job
+          // that arrived without one, and this is the only place the ADDRESS
+          // half of the policy is enforced on this lane (`postgres.ts` skips
+          // `buildDbEgressHardening`'s resolve-and-pin in the isolate because
+          // the guest cannot resolve a name; it still applies the TLS half) --
+          // so it fails closed.
+          // `||` not `??` on purpose: an empty string is absent, not a choice.
+          const policy =
+            (job.env?.LOBU_DB_EGRESS_POLICY as string) ||
+            (mergedConfig.LOBU_DB_EGRESS_POLICY as string) ||
+            'block-private';
+          const allowHostsRaw = String(
+            job.env?.LOBU_DB_EGRESS_ALLOW_HOSTS ||
+              mergedConfig.LOBU_DB_EGRESS_ALLOW_HOSTS ||
+              ''
+          );
+          const allowHosts = allowHostsRaw
+            .split(',')
+            .map((h) => h.trim())
+            .filter(Boolean);
+
+          let candidates: string[];
+          if (isReservedIp(hostname)) {
+            if (policy === 'block-private' && !allowHosts.includes(hostname)) {
+              throw new Error(`EgressDenied: socket to ${hostname} is blocked under policy ${policy}`);
+            }
+            candidates = [hostname];
+          } else {
+            const addresses = await this.options.lookup(hostname);
+            if (!addresses || addresses.length === 0) {
+              throw new Error(`getaddrinfo ENOTFOUND ${hostname}`);
+            }
+            if (policy === 'block-private' && !allowHosts.includes(hostname)) {
+              for (const a of addresses) {
+                if (isReservedIp(a.address)) {
+                  throw new Error(
+                    `EgressDenied: socket to ${hostname} (${a.address}) is blocked under policy ${policy}`
+                  );
+                }
+              }
+            }
+            candidates = addresses.map((a) => a.address);
+          }
+
+          const isTls = options?.secureTransport === 'on';
+          const dial = (targetIp: string): Promise<net.Socket> =>
+            new Promise<net.Socket>((resolve, reject) => {
+              // Direct TLS keeps Node's strict default, unlike the `startTls`
+              // upgrade below: that one is relaxed for postgres' BYO-CA reality
+              // and nothing dials `secureTransport: 'on'` today, so there is no
+              // legitimate certificate this would break.
+              const sock = isTls
+                ? tls.connect({ host: targetIp, port, servername: hostname })
+                : net.createConnection({ host: targetIp, port });
+              let settled = false;
+              const timer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                sock.destroy();
+                reject(new Error(`Connection to ${hostname}:${port} timed out`));
+              }, 10000);
+              sock.once(isTls ? 'secureConnect' : 'connect', () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(sock);
+              });
+              sock.once('error', (err: Error) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                sock.destroy();
+                reject(err);
+              });
+            });
+
+          // Dial every validated address in resolver order until one answers.
+          // Node's own `net.connect(hostname)` falls back across families
+          // (autoSelectFamily), so a dual-stack host whose AAAA record is
+          // unreachable from this machine connected on the process lane and
+          // must keep connecting here. Every candidate passed the policy
+          // above, so moving to the next one never widens what the run reaches.
+          let sock: net.Socket | null = null;
+          let lastError: Error | null = null;
+          for (const targetIp of candidates) {
+            try {
+              sock = await dial(targetIp);
+              break;
+            } catch (err) {
+              lastError = err as Error;
+            }
+          }
+          if (!sock) throw lastError ?? new Error(`Connection to ${hostname}:${port} failed`);
+
+          const id = nextSocketId++;
+          const active: ActiveSocket = {
+            id,
+            sock,
+            chunks: [],
+            pendingReads: [],
+            closed: false,
+            closeError: null,
+          };
+          activeSockets.set(id, active);
+          attachSocketListeners(sock, active);
+          return id;
+        },
+        socketRead: async (idParam: unknown) => {
+          const active = activeSockets.get(Number(idParam));
+          if (!active) return { data: null, done: true };
+          if (active.chunks.length > 0) {
+            return { data: active.chunks.shift()!, done: false };
+          }
+          if (active.closed) {
+            return { data: null, done: true, error: active.closeError ?? undefined };
+          }
+          return await new Promise<{ data: string | null; done: boolean; error?: string }>((resolve) => {
+            active.pendingReads.push(resolve);
+          });
+        },
+        socketWrite: async (idParam: unknown, base64Data: unknown) => {
+          const active = activeSockets.get(Number(idParam));
+          if (!active || active.closed) throw new Error('Socket is closed');
+          const buf = Buffer.from(String(base64Data), 'base64');
+          await new Promise<void>((resolve, reject) => {
+            active.sock.write(buf, (err) => (err ? reject(err) : resolve()));
+          });
+          return true;
+        },
+        socketClose: async (idParam: unknown) => {
+          const active = activeSockets.get(Number(idParam));
+          if (active) {
+            active.closed = true;
+            active.sock.destroy();
+            while (active.pendingReads.length > 0) {
+              const r = active.pendingReads.shift()!;
+              r({ data: null, done: true });
+            }
+            activeSockets.delete(Number(idParam));
+          }
+          return true;
+        },
+        socketStartTls: async (idParam: unknown, optionsJson: unknown) => {
+          const active = activeSockets.get(Number(idParam));
+          if (!active || active.closed) throw new Error('Socket is closed');
+          const opts = (optionsJson ? parseGuestJson(optionsJson, 'socketStartTls') : {}) as {
+            servername?: string;
+          };
+          // `servername` is the ORIGINAL hostname the connector configured, not
+          // the address we dialled, so SNI routing still works after the host
+          // resolved the name.
+          const oldSock = active.sock;
+          oldSock.removeAllListeners('data');
+          oldSock.removeAllListeners('end');
+          oldSock.removeAllListeners('error');
+
+          return await new Promise<boolean>((resolve, reject) => {
+            const tlsSock = tls.connect({
+              socket: oldSock,
+              servername: opts?.servername,
+              // Encrypt without verifying the chain — the same floor
+              // `requiredTlsMode` documents (`connectors/src/db-egress-guard.ts`):
+              // tenant databases routinely present self-signed or private-CA
+              // certificates (RDS regional bundles, on-prem), and there is no
+              // per-connection CA upload yet, so verifying here would hard-break
+              // most legitimate BYO databases. The guest cannot raise this: the
+              // WinterCG `startTls` contract carries only `servername`, so a
+              // stricter mode has to arrive with CA upload, as one change.
+              // Until then a connector that is ASKED to verify (postgres
+              // `sslmode=verify-*`) refuses before dialling rather than
+              // connecting unverified here — see `openGuardedPool` in
+              // `connectors/src/postgres.ts`. Full verify+CA on this lane is a
+              // guest-contract change tracked for a follow-up PR; suppress the
+              // scanner here rather than dismiss the finding in the dashboard.
+              // codeql[js/disabling-certificate-validation]
+              rejectUnauthorized: false,
+            });
+            tlsSock.once('secureConnect', () => {
+              active.sock = tlsSock;
+              attachSocketListeners(tlsSock, active);
+              resolve(true);
+            });
+            tlsSock.once('error', reject);
+          });
+        },
       },
     });
 
@@ -519,7 +839,7 @@ export class IsolateExecutor implements SyncExecutor {
         if (guestFatal) throw this.guestError(guestFatal, redactedTail());
         if (error instanceof IsolateHostError) {
           if (error.kind === 'timeout') {
-            throw new SubprocessError(withTail(`Feed execution timed out after ${this.options.timeoutMs}ms`), {
+            throw new ConnectorExecutionError(withTail(`Feed execution timed out after ${this.options.timeoutMs}ms`), {
               exitCode: null,
               exitSignal: null,
               outputTail: redactedTail(),
@@ -527,14 +847,14 @@ export class IsolateExecutor implements SyncExecutor {
             });
           }
           if (error.kind === 'memory') {
-            throw new SubprocessError(withTail(`Isolate out of memory (limit ${this.options.memoryMb} MB)`), {
+            throw new ConnectorExecutionError(withTail(`Isolate out of memory (limit ${this.options.memoryMb} MB)`), {
               exitCode: null,
               exitSignal: null,
               outputTail: redactedTail(),
               exitReason: 'oom',
             });
           }
-          throw new SubprocessError(withTail(error.message), {
+          throw new ConnectorExecutionError(withTail(error.message), {
             exitCode: null,
             exitSignal: null,
             outputTail: redactedTail(),
@@ -548,7 +868,7 @@ export class IsolateExecutor implements SyncExecutor {
         );
       }
       // Wait for hooks the guest fired without awaiting (or whose promise the
-      // guest dropped) before reporting the result, as the process lane does.
+      // guest dropped) before reporting the result.
       await processingChain;
       if (hookFailure !== null) throw hookFailure;
       const outcome = parseGuestJson(raw, 'result') as GuestOutcome;
@@ -564,14 +884,15 @@ export class IsolateExecutor implements SyncExecutor {
       runAbort.abort();
       for (const timer of pendingSleeps) clearTimeout(timer);
       pendingSleeps.clear();
+      closeAllSockets();
       host.dispose();
     }
   }
 
-  /** Same shape `SubprocessExecutor` produces for a child `{type:'error'}` message. */
-  private guestError(description: GuestErrorDescription, outputTail: string): SubprocessError {
+  /** Build the `ConnectorExecutionError` the daemon reports for a guest-thrown error. */
+  private guestError(description: GuestErrorDescription, outputTail: string): ConnectorExecutionError {
     const rawMessage = description.message ?? 'Connector reported error';
-    const error = new SubprocessError(redactOutput(String(rawMessage)), {
+    const error = new ConnectorExecutionError(redactOutput(String(rawMessage)), {
       exitCode: null,
       exitSignal: null,
       outputTail,
@@ -581,7 +902,7 @@ export class IsolateExecutor implements SyncExecutor {
           ? description.httpStatus
           : undefined,
     });
-    error.name = description.name ? redactOutput(String(description.name)) : 'SubprocessError';
+    error.name = description.name ? redactOutput(String(description.name)) : 'ConnectorExecutionError';
     if (description.stack) error.stack = redactOutput(String(description.stack));
     return error;
   }
@@ -603,11 +924,46 @@ export class IsolateExecutor implements SyncExecutor {
 
     for (let hop = 0; ; hop++) {
       if (!hostAllowed(url.hostname, this.options.allowedDomains)) {
-        const closed =
-          this.options.allowedDomains.length === 0 ? ' (egress is closed: no domains were supplied for this run)' : '';
-        const denied = new Error(`fetch to ${url.hostname} is not in the connector's allowed domains${closed}`);
+        const scope =
+          this.options.allowedDomains.length === 0
+            ? ' (reserved and internal hosts are never reachable)'
+            : ` (this run may reach: ${this.options.allowedDomains.join(', ')})`;
+        const denied = new Error(`fetch to ${url.hostname} is not permitted${scope}`);
         denied.name = 'EgressDenied';
         throw denied;
+      }
+      // The ENFORCING half of the check: a public-looking name may resolve
+      // into reserved space, and with an empty allowlist `hostAllowed` admits
+      // every name, so this is the only thing standing between a connector and
+      // the metadata endpoint. A lookup that FAILS must deny rather than fall
+      // through — swallowing it handed the decision to `fetch`'s own resolver,
+      // which resolves independently and may answer differently.
+      if (ipFamily(stripIpv6Brackets(url.hostname)) === 0) {
+        // An EXACT entry for the NAME is honoured here too, or `hostAllowed`'s
+        // promise that naming `localhost` reaches a self-hosted install's own
+        // services would hold for the name and fail at the loopback address
+        // it resolves to. Reserved space is still denied for every name the
+        // list does not spell out.
+        const exactName = this.options.allowedDomains.includes(normalizeDomain(url.hostname));
+        let addresses: Array<{ address: string }>;
+        try {
+          addresses = await this.options.lookup(url.hostname);
+        } catch (err) {
+          const denied = new Error(
+            `fetch to ${url.hostname} is blocked: its address could not be resolved (${(err as Error).message})`
+          );
+          denied.name = 'EgressDenied';
+          throw denied;
+        }
+        for (const a of addresses) {
+          if (isReservedIp(a.address) && !exactName && !this.options.allowedDomains.includes(a.address)) {
+            const denied = new Error(
+              `fetch to ${url.hostname} (${a.address}) is blocked: resolved to a private or reserved IP address`
+            );
+            denied.name = 'EgressDenied';
+            throw denied;
+          }
+        }
       }
       let response: Response;
       try {

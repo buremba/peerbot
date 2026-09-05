@@ -35,26 +35,20 @@ mock.module('../executor/runtime.js', () => ({
   executeCompiledConnector: executeCompiledConnectorMock,
 }));
 
+
 mock.module('../embeddings.js', () => ({
   batchGenerateEmbeddings: batchGenerateEmbeddingsMock,
   generateEmbedding: async () => [0, 0, 0],
 }));
 
 mock.module('../compile-connector.js', () => ({
-  compileConnectorFromFile: async () => 'compiled-code',
+  // `resolveJobCode` compiles for the isolate and nothing else; a mock that
+  // still names the retired non-isolate build would let a real compile run
+  // here, and bun's module mocks are process-wide.
+  compileConnectorForIsolateFromFile: async () => 'compiled-code',
   findBundledConnectorFile: () => '/fake/path',
 }));
 
-mock.module('../executor/subprocess.js', () => ({
-  SubprocessExecutor: class {
-    // biome-ignore lint/suspicious/noExplicitAny: test stub
-    constructor(_opts: any) {}
-  },
-  // `executor/select.js` also pulls in the isolate lane, which imports these;
-  // a mock missing a named export fails the whole module graph at load.
-  SubprocessError: class extends Error {},
-  RingBuffer: class {},
-}));
 
 import type { ContentItem } from '../daemon/client.js';
 import { executeRun } from '../daemon/executor.js';
@@ -130,7 +124,10 @@ describe('sync embedding path batches per chunk (Finding #12)', () => {
 
     // batchSize=10 so the chunk does not flush mid-loop; default generateEmbeddings=true.
     // biome-ignore lint/suspicious/noExplicitAny: minimal env
-    const result = await executeRun(client as any, job, {} as any, { batchSize: 10 });
+    const result = await executeRun(client as any, job, {} as any, {
+      batchSize: 10,
+      executor: { execute: executeCompiledConnectorMock },
+    });
     expect(result.error).toBeUndefined();
 
     // (1) exactly ONE batch call for the whole chunk — not one per event.

@@ -42,8 +42,17 @@ export const RUNTIME_PROVIDED_PACKAGES = [
  * compiled artifacts unsafe to execute (esbuild banner/target/plugin
  * semantics). Changes to EXTERNAL_RUNTIME_DEPS are picked up automatically
  * via the fingerprint below.
+ *
+ * 2: the isolate build became the only build. A pipeline-1 artifact is either
+ * SDK-externalized ESM with a `createRequire` banner or a bundle that still
+ * requires a Node builtin — both shaped for the forked child that used to run
+ * them. The isolate has no module loader, so `resolveConnectorCode` returning
+ * one verbatim (which it does whenever the stored fingerprint matches) hands
+ * the guest imports it cannot resolve. Every prod artifact carrying the
+ * pipeline-1 fingerprint was in exactly that state, so the fingerprint has to
+ * move for them to be recompiled from their stored source.
  */
-const COMPILE_PIPELINE_VERSION = 1;
+const COMPILE_PIPELINE_VERSION = 2;
 
 /** Fingerprint of the compile configuration that produced an artifact. */
 export function computeCompileConfigHash(external: readonly string[]): string {

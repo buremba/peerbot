@@ -16,7 +16,7 @@ import { splitConfigByFeedScope, type FeedDefinition } from '../tools/admin/help
 import {
   type BundledDeviceConnector,
   bundledConnectorSourcePath,
-  compileConnectorFromFile,
+  compileConnectorForIsolateFromFile,
   findBundledConnectorFile,
   getBundledDeviceConnectors,
 } from '../utils/connector-catalog';
@@ -477,7 +477,7 @@ async function ensureDeviceConnectorWired(
         logger.warn({ connectorKey }, '[auto-wire] Bundled connector file not found');
         return null;
       }
-      const compiledCode = await compileConnectorFromFile(filePath);
+      const compiledCode = await compileConnectorForIsolateFromFile(filePath);
       metadata = await extractConnectorMetadata(compiledCode);
       sourcePath = bundledConnectorSourcePath(filePath);
       if (!metadata.key || !metadata.name || !metadata.version) return null;

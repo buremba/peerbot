@@ -89,7 +89,7 @@ describe("approval-event atomicity (item 16)", () => {
 					async sync() { return { items: [] }; }
 					async execute(ctx) { return { success: true, output: {} }; }
 				}
-				export { ConnectorRuntime };
+				module.exports = { ConnectorRuntime };
 			`}
 			WHERE connector_key = ${CONNECTOR}
 		`;

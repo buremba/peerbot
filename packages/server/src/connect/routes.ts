@@ -342,7 +342,7 @@ connectRoutes.post('/:token/validate', requireConnectToken, async (c) => {
   const created = await createSyncRun(feedId, c.env as unknown as Env);
   if (!created.ok) {
     return c.json(
-      { error: describeSyncRunSkip(created.reason, created.detail) },
+      { error: describeSyncRunSkip(created.reason) },
       409
     );
   }

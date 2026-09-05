@@ -69,11 +69,14 @@ export interface IsolateExecutorOptions {
    * no allowlist, so closing egress by default would take every connector
    * offline rather than preserve a boundary that never existed, and nothing on
    * the wire populates this yet. An EMPTY list denies everything, exactly as
-   * it does for every other consumer of the grammar. Reserved and internal
-   * addresses are refused under every list, except where an EXACT entry names
-   * one: `localhost` or `127.0.0.1` is how a self-hosted install reaches its
-   * own services and how the fixture suites reach a loopback server. Even that
-   * exemption keeps cloud metadata refused.
+   * it does for every other consumer of the grammar. For `fetch`, reserved and
+   * internal addresses are refused under every list except where an EXACT
+   * entry names one: `localhost` or `127.0.0.1` is how a self-hosted install
+   * reaches its own services and how the fixture suites reach a loopback
+   * server; even that exemption keeps cloud metadata refused. Raw sockets do
+   * NOT inherit it: a DB socket's address policy is `LOBU_DB_EGRESS_POLICY`
+   * plus the operator's `LOBU_DB_EGRESS_ALLOW_HOSTS`, so this list can only
+   * ever narrow what a run reaches, never widen the DB boundary.
    */
   allowedDomains: readonly string[];
   /** Where redacted console lines and the lane's egress refusals go (default: the worker's stdout/stderr). */
@@ -347,7 +350,7 @@ const UNSUPPORTED_SCHEME_MESSAGE = 'fetch failed: only http: and https: URLs are
 
 export class IsolateExecutor implements SyncExecutor {
   private readonly options: IsolateExecutorOptions;
-  /** Exact allowlist entries: the run's exemptions from the reserved-address rule (see `allowedDomains`). */
+  /** Exact allowlist entries: `fetch`'s exemptions from the reserved-address rule (see `allowedDomains`). */
   private readonly exactAllowedHosts: readonly string[];
 
   constructor(options?: Partial<IsolateExecutorOptions>) {
@@ -668,15 +671,17 @@ export class IsolateExecutor implements SyncExecutor {
           );
 
           // Resolve once and dial only what was validated: the transport the
-          // gateway uses, with the DB policy on the address axis. The
-          // operator's exemptions and the run's exact allowlist entries drop
-          // to the `allow-private` floor -- never below it, so metadata stays
-          // refused even for an exempted host.
+          // gateway uses, with the DB policy on the address axis. Only the
+          // OPERATOR's exemptions drop a host to the `allow-private` floor --
+          // never below it, so metadata stays refused even for an exempted
+          // host -- and the run's own allowlist is deliberately not one of
+          // them: it exists to restrict reach, and a producer of it must never
+          // be able to widen the DB boundary by naming `10.0.0.5`.
           let candidates: string[];
           try {
             const addresses = await resolveEgressAddresses(hostname, {
               addressPolicy: policy,
-              exemptHosts: [...allowHosts, ...this.exactAllowedHosts],
+              exemptHosts: allowHosts,
               lookup: this.options.lookup,
             });
             candidates = addresses.map((a) => a.address);

@@ -8,7 +8,10 @@
  * through the one egress transport (`@lobu/connector-worker/egress`), applying
  * `LOBU_DB_EGRESS_POLICY` and the operator's `LOBU_DB_EGRESS_ALLOW_HOSTS`
  * exemptions to every resolved address, and pinning the socket to the address
- * it validated. The policy values themselves are
+ * it validated. A multi-host authority (`postgres://u:p@h1,h2/db`) needs no
+ * parser here any more: postgres.js dials each failover host through its own
+ * `connect()`, so every host is checked at `socketOpen` as it is tried. The
+ * policy values themselves are
  * `@lobu/connector-sdk/ip-reachability`'s {@link EgressAddressPolicy}.
  *
  * The TLS half stays connector-side because nothing on the wire tells the host

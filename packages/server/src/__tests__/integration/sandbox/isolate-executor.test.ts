@@ -480,11 +480,11 @@ describe("isolate lane: fixture connector", () => {
 	});
 
 	it("honours an exact hostname entry at the address it resolves to, not only at the name", async () => {
-		// `hostAllowed` documents that naming `localhost` is how a self-hosted
-		// install reaches its own services. The resolved-address pre-flight must
-		// keep that promise: `localhost` resolves into loopback, which is
-		// reserved, and before the fix only an exact IP entry was consulted
-		// there -- so the name passed and the address it resolved to was denied.
+		// `allowedDomains` documents that naming `localhost` is how a self-hosted
+		// install reaches its own services. The egress transport must keep that
+		// promise at the ADDRESS too: `localhost` resolves into loopback, which
+		// is reserved, so the exact entry has to be the dispatcher's exemption,
+		// not only a match for the name.
 		const port = new URL(baseUrl).port;
 		const named = await runIsolate(
 			fixtureIsolateCode,
@@ -519,11 +519,12 @@ describe("isolate lane: fixture connector", () => {
 	});
 
 	it("denies reserved address space whether or not an allowlist is supplied, before a request leaves", async () => {
-		// An empty allowlist opens the PUBLIC internet (the deleted process lane
-		// replaced had no allowlist at all), but never reserved space — and the
-		// fixture server is on loopback, so both shapes still deny here. The
-		// public-open half is asserted exhaustively over `hostAllowed` in
-		// packages/connector-worker/src/__tests__/isolate-executor-options.test.ts,
+		// The default allowlist is unrestricted (the deleted process lane had no
+		// allowlist at all), but reserved space is never reachable unless an
+		// exact entry names it — and the fixture server is on loopback, so the
+		// default denies here for that reason. The address rule itself is the
+		// egress transport's, pinned in
+		// packages/connector-worker/src/__tests__/egress-transport.test.ts,
 		// which needs no network.
 		const before = hits;
 		const byDefault = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }));
@@ -531,10 +532,13 @@ describe("isolate lane: fixture connector", () => {
 		expect(byDefault.message).toContain("reserved and internal hosts are never reachable");
 		expect(byDefault.exitReason).toBe("error_message");
 
+		// An EMPTY list is deny-all in the shared grammar, the same as for every
+		// other consumer: the allowlist refuses before the address is even asked.
 		const explicit = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
 			allowedDomains: [],
 		});
-		expect(explicit.message).toContain("reserved and internal hosts are never reachable");
+		expect(explicit.message).toContain("fetch to 127.0.0.1 is not permitted");
+		expect(explicit.message).toContain("this run has no allowed domains");
 
 		// A non-empty allowlist that does not name the host denies for the other
 		// reason, and names what the run may reach.

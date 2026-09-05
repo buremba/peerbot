@@ -6,21 +6,34 @@
  * in, `ExecutorResult` out, SDK context calls mapped onto `ExecutionHooks`.
  * Unlike the forked child this replaced, the connector gets no filesystem and
  * no module loader, and it opens nothing itself: every effect crosses the
- * boundary as a named host capability, so the host owns the network. `fetch`
- * carries a domain allowlist and a body cap; `socketOpen` (the WinterCG
- * `connect` the DB connectors need) is a real TCP socket the HOST dials, after
- * resolving the name and applying the DB egress policy.
+ * boundary as a named host capability, so the host owns the network. Both
+ * network capabilities dial through the one egress module: `fetch` (domain
+ * allowlist from `@lobu/connector-sdk/egress-policy`, DNS pinning from
+ * `@lobu/connector-worker/egress`, plus a body cap) and `socketOpen` (the
+ * WinterCG `connect` the DB connectors need: a real TCP socket the HOST dials
+ * at an address the same transport resolved and validated under the DB egress
+ * policy).
  *
  * This is the only executor `executor/select.ts` builds; a bundle that still
  * requires a Node builtin is rejected before any isolate work with
  * `IsolateLaneIneligibleError`.
  */
 
-import dns from 'node:dns';
 import net from 'node:net';
 import tls from 'node:tls';
 import type { EventEnvelope } from '@lobu/connector-sdk';
-import { ipFamily, isReservedIp, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
+import { decideEgress } from '@lobu/connector-sdk/egress-policy';
+import { type EgressAddressPolicy, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
+import { normalizeDomainPattern } from '@lobu/core';
+import {
+  EgressDispatcher,
+  fetchPublicUrl,
+  MalformedHostError,
+  parseExemptHosts,
+  PrivateAddressError,
+  type ResolveAllAddresses,
+  resolveEgressAddresses,
+} from '../egress/transport.js';
 import { IsolateHost, IsolateHostError, type IsolateTerminalState } from '../isolate/bridge.js';
 import { assertIsolateEligible } from '../isolate/eligibility.js';
 import type { IsolatedVm } from '../isolate/ivm-types.js';
@@ -49,21 +62,28 @@ export interface IsolateExecutorOptions {
   /** Cap on total console output forwarded per run (default 1 MiB). */
   logBytes: number;
   /**
-   * Hosts the connector may fetch: exact host or any subdomain. Empty (the
-   * default) means the public internet, NOT a closed door — see `hostAllowed`
-   * for why. Reserved and internal addresses are denied either way, and
-   * nothing on the wire populates this yet, so every production run today
-   * takes the empty-list path.
+   * Hosts the connector may reach, in the shared egress grammar
+   * (`@lobu/connector-sdk/egress-policy`): `example.com` exact,
+   * `.example.com` / `*.example.com` the apex and every subdomain, `*`
+   * unrestricted. The default is `['*']`: the process lane this replaced had
+   * no allowlist, so closing egress by default would take every connector
+   * offline rather than preserve a boundary that never existed, and nothing on
+   * the wire populates this yet. An EMPTY list denies everything, exactly as
+   * it does for every other consumer of the grammar. Reserved and internal
+   * addresses are refused under every list, except where an EXACT entry names
+   * one: `localhost` or `127.0.0.1` is how a self-hosted install reaches its
+   * own services and how the fixture suites reach a loopback server. Even that
+   * exemption keeps cloud metadata refused.
    */
   allowedDomains: readonly string[];
-  /** Where redacted console lines go (default: the worker's stdout/stderr). */
+  /** Where redacted console lines and the lane's egress refusals go (default: the worker's stdout/stderr). */
   logSink: (level: IsolateLogLevel, line: string) => void;
   /**
-   * Name resolution for host-dialled sockets and `fetch`'s reserved-address
-   * pre-flight. The system resolver by default; tests inject one to stage a
+   * Name resolution for host-dialled sockets and `fetch`. The egress
+   * transport's system resolver by default; tests inject one to stage a
    * dual-stack host without touching DNS.
    */
-  lookup: (hostname: string) => Promise<Array<{ address: string }>>;
+  lookup?: ResolveAllAddresses;
 }
 
 const MIB = 1024 * 1024;
@@ -74,12 +94,11 @@ const DEFAULT_OPTIONS: IsolateExecutorOptions = {
   messageBytes: 16 * MIB,
   fetchBodyBytes: 16 * MIB,
   logBytes: MIB,
-  allowedDomains: [],
+  allowedDomains: ['*'],
   logSink: (level, line) => {
     const stream = level === 'warn' || level === 'error' ? process.stderr : process.stdout;
     stream.write(`[isolate] ${line}\n`);
   },
-  lookup: (hostname) => dns.promises.lookup(hostname, { all: true }),
 };
 
 const STREAM_TAIL_CAP_BYTES = 16 * 1024;
@@ -297,45 +316,27 @@ function parseGuestJson(value: unknown, what: string): unknown {
   }
 }
 
-function normalizeDomain(domain: string): string {
-  return domain.trim().toLowerCase().replace(/^\*\./, '').replace(/\.$/, '');
-}
+/** The run's console channel: redacted, capped by `logBytes`, and part of the tail an error report carries. */
+type RunLog = (level: IsolateLogLevel, line: string) => void;
 
 /**
- * Names that never denote a public endpoint. This is defence in depth only:
- * any name can point at a private address, so the ENFORCING control is the
- * resolve-and-check in `hostFetch` / `socketOpen`, which runs on the resolved
- * addresses before a socket opens. Denying these by name just fails faster,
- * and without a DNS round trip.
+ * The lane's egress refusal. Named AND prefixed so a run can tell a policy
+ * decision from an upstream failure whichever of the two the guest surfaces.
+ * Every refusal is logged once, host-side, through the run's console budget,
+ * so a connector looping on a denied host cannot write unbounded stderr.
  */
-const INTERNAL_HOST_SUFFIXES = ['.local', '.localhost', '.internal', '.intranet', '.corp', '.lan', '.home'];
-
-function isInternalHostname(host: string): boolean {
-  return host === 'localhost' || INTERNAL_HOST_SUFFIXES.some((suffix) => host.endsWith(suffix));
+function refuse(log: RunLog, detail: string): Error {
+  log('warn', `egress denied: ${detail}`);
+  const denied = new Error(`EgressDenied: ${detail}`);
+  denied.name = 'EgressDenied';
+  return denied;
 }
 
-/**
- * Whether a run may reach `hostname`.
- *
- * An EMPTY `allowedDomains` means the public internet, not "closed". The
- * process lane this replaced had no allowlist at all, so closing egress by
- * default would take every connector offline rather than preserve a boundary
- * that never existed; reserved address space stays denied either way. A
- * NON-EMPTY list is a genuine restriction: only those domains and their
- * subdomains, and still never reserved space.
- */
-export function hostAllowed(hostname: string, allowedDomains: readonly string[]): boolean {
-  const host = stripIpv6Brackets(hostname.toLowerCase().replace(/\.$/, ''));
-  // An EXACT entry is always honoured, reserved or not: naming `127.0.0.1` or
-  // an internal hostname is how a self-hosted install reaches its own database
-  // and how the fixture suites reach their loopback servers. Reserved space is
-  // denied only when nothing named it — so an empty list can never reach the
-  // metadata endpoint, and `['spotify.com']` cannot either.
-  if (allowedDomains.includes(host)) return true;
-  if (ipFamily(host) !== 0) return !isReservedIp(host) && allowedDomains.length === 0;
-  if (isInternalHostname(host)) return false;
-  if (allowedDomains.length === 0) return true;
-  return allowedDomains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+/** The transport refused the address; `address` is the DNS answer when the name itself was fine. */
+function refusedAddress(error: unknown): string | null {
+  if (error instanceof PrivateAddressError) return error.address ? ` (${error.address})` : '';
+  if (error instanceof MalformedHostError) return '';
+  return null;
 }
 
 /** Request headers that must not follow a redirect to another origin. */
@@ -346,6 +347,8 @@ const UNSUPPORTED_SCHEME_MESSAGE = 'fetch failed: only http: and https: URLs are
 
 export class IsolateExecutor implements SyncExecutor {
   private readonly options: IsolateExecutorOptions;
+  /** Exact allowlist entries: the run's exemptions from the reserved-address rule (see `allowedDomains`). */
+  private readonly exactAllowedHosts: readonly string[];
 
   constructor(options?: Partial<IsolateExecutorOptions>) {
     const merged: IsolateExecutorOptions = {
@@ -367,12 +370,31 @@ export class IsolateExecutor implements SyncExecutor {
     if (!Number.isFinite(merged.logBytes) || merged.logBytes < 1024) {
       throw new RangeError(`logBytes must be at least 1024, got ${String(merged.logBytes)}`);
     }
-    const domains = merged.allowedDomains.map(normalizeDomain);
+    // Normalized once here, the way every other producer of a pattern list
+    // does at write time, so the shared matcher only ever sees canonical
+    // entries. IPv6 literals lose their brackets so one spelling matches both
+    // a bracketed fetch URL and a bare `connect()` host.
+    const domains = merged.allowedDomains.map((entry) => stripIpv6Brackets(normalizeDomainPattern(entry)));
     if (domains.some((d) => d.length === 0)) {
       throw new RangeError('allowedDomains entries must be non-empty hosts');
     }
     merged.allowedDomains = domains;
     this.options = merged;
+    this.exactAllowedHosts = domains.filter((d) => d !== '*' && !d.startsWith('.'));
+  }
+
+  /** The shared allowlist decision for both network capabilities. */
+  private async assertHostAllowed(capability: 'fetch' | 'socket', hostname: string, log: RunLog): Promise<void> {
+    const decision = await decideEgress({
+      hostname: stripIpv6Brackets(hostname),
+      global: { allowedDomains: this.options.allowedDomains, deniedDomains: [] },
+    });
+    if (decision.allowed) return;
+    const scope =
+      this.options.allowedDomains.length === 0
+        ? 'this run has no allowed domains'
+        : `this run may reach: ${this.options.allowedDomains.join(', ')}`;
+    throw refuse(log, `${capability} to ${hostname} is not permitted (${scope})`);
   }
 
   private async requireIsolatedVm(): Promise<IsolatedVm> {
@@ -400,6 +422,11 @@ export class IsolateExecutor implements SyncExecutor {
     const runAbort = new AbortController();
     const pendingSleeps = new Set<ReturnType<typeof setTimeout>>();
     const inflightFetches = new Map<number, AbortController>();
+    // The run's `fetch` transport: block-private, with the exact allowlist
+    // entries lowered to the allow-private floor. One per run and destroyed
+    // with it, so a worker that builds an executor per job never accumulates
+    // idle keep-alive sockets.
+    const egress = new EgressDispatcher({ exemptHosts: this.exactAllowedHosts, lookup: this.options.lookup });
     let host: IsolateHost | null = null;
 
     interface ActiveSocket {
@@ -506,7 +533,7 @@ export class IsolateExecutor implements SyncExecutor {
       const onRunAbort = () => controller.abort();
       runAbort.signal.addEventListener('abort', onRunAbort, { once: true });
       try {
-        return await this.hostFetch(req, body, controller.signal);
+        return await this.hostFetch(req, body, controller.signal, egress, log);
       } finally {
         runAbort.signal.removeEventListener('abort', onRunAbort);
         inflightFetches.delete(req.id);
@@ -614,69 +641,49 @@ export class IsolateExecutor implements SyncExecutor {
             secureTransport?: 'off' | 'on' | 'starttls';
           };
 
-          // A NON-EMPTY allowlist binds raw sockets exactly as it binds
-          // `hostFetch` -- otherwise a run restricted to `api.example.com`
-          // could still reach anything over TCP. The empty case is skipped on
-          // purpose rather than delegated to `hostAllowed`: that helper denies
-          // loopback and internal names when nothing lists them, which is the
-          // normal shape of a self-hosted database. With no allowlist the DB
-          // egress policy below is the only rule, as it has always been.
-          if (
-            this.options.allowedDomains.length > 0 &&
-            !hostAllowed(hostname, this.options.allowedDomains)
-          ) {
-            throw new Error(`EgressDenied: socket to ${hostname} is not in the connector's allowed domains`);
-          }
+          await this.assertHostAllowed('socket', hostname, log);
 
           const mergedConfig = buildConnectorConfig(job);
           // The literal is a fallback for a MALFORMED job, not the shipped
           // default: both job producers always populate the key --
           // `dbEgressConfig()` (server: `feed-sync.ts`, `connector-pushdown.ts`)
-          // and `resolveEffectiveEnv` (standalone daemon: `env.ts`), each
+          // and `resolveEffectiveEnv` (standalone daemon: `daemon/executor.ts`,
+          // over `env.ts`'s worker-derived default), each
           // resolving to 'allow-private' off cloud. Verified live: a postgres
           // feed against a loopback DB syncs under EITHER literal, because the
           // key is set before it is read. So the fallback only decides a job
-          // that arrived without one, and this is the only place the ADDRESS
-          // half of the policy is enforced on this lane (`postgres.ts` skips
-          // `buildDbEgressHardening`'s resolve-and-pin in the isolate because
-          // the guest cannot resolve a name; it still applies the TLS half) --
-          // so it fails closed.
+          // that arrived without one -- or with a misspelt value -- and this is
+          // the only place the ADDRESS half of the policy is enforced on this
+          // lane (`postgres.ts` applies the TLS half in the guest, which
+          // cannot resolve a name), so it fails closed.
           // `||` not `??` on purpose: an empty string is absent, not a choice.
-          const policy =
+          const rawPolicy =
             (job.env?.LOBU_DB_EGRESS_POLICY as string) ||
             (mergedConfig.LOBU_DB_EGRESS_POLICY as string) ||
             'block-private';
-          const allowHostsRaw = String(
-            job.env?.LOBU_DB_EGRESS_ALLOW_HOSTS ||
-              mergedConfig.LOBU_DB_EGRESS_ALLOW_HOSTS ||
-              ''
+          const policy: EgressAddressPolicy = rawPolicy === 'allow-private' ? 'allow-private' : 'block-private';
+          const allowHosts = parseExemptHosts(
+            job.env?.LOBU_DB_EGRESS_ALLOW_HOSTS || mergedConfig.LOBU_DB_EGRESS_ALLOW_HOSTS || '',
+            'LOBU_DB_EGRESS_ALLOW_HOSTS'
           );
-          const allowHosts = allowHostsRaw
-            .split(',')
-            .map((h) => h.trim())
-            .filter(Boolean);
 
+          // Resolve once and dial only what was validated: the transport the
+          // gateway uses, with the DB policy on the address axis. The
+          // operator's exemptions and the run's exact allowlist entries drop
+          // to the `allow-private` floor -- never below it, so metadata stays
+          // refused even for an exempted host.
           let candidates: string[];
-          if (isReservedIp(hostname)) {
-            if (policy === 'block-private' && !allowHosts.includes(hostname)) {
-              throw new Error(`EgressDenied: socket to ${hostname} is blocked under policy ${policy}`);
-            }
-            candidates = [hostname];
-          } else {
-            const addresses = await this.options.lookup(hostname);
-            if (!addresses || addresses.length === 0) {
-              throw new Error(`getaddrinfo ENOTFOUND ${hostname}`);
-            }
-            if (policy === 'block-private' && !allowHosts.includes(hostname)) {
-              for (const a of addresses) {
-                if (isReservedIp(a.address)) {
-                  throw new Error(
-                    `EgressDenied: socket to ${hostname} (${a.address}) is blocked under policy ${policy}`
-                  );
-                }
-              }
-            }
+          try {
+            const addresses = await resolveEgressAddresses(hostname, {
+              addressPolicy: policy,
+              exemptHosts: [...allowHosts, ...this.exactAllowedHosts],
+              lookup: this.options.lookup,
+            });
             candidates = addresses.map((a) => a.address);
+          } catch (error) {
+            const where = refusedAddress(error);
+            if (where === null) throw error;
+            throw refuse(log, `socket to ${hostname}${where} is blocked under policy ${policy}`);
           }
 
           const isTls = options?.secureTransport === 'on';
@@ -885,6 +892,7 @@ export class IsolateExecutor implements SyncExecutor {
       for (const timer of pendingSleeps) clearTimeout(timer);
       pendingSleeps.clear();
       closeAllSockets();
+      void egress.destroy().catch(() => undefined);
       host.dispose();
     }
   }
@@ -907,7 +915,13 @@ export class IsolateExecutor implements SyncExecutor {
     return error;
   }
 
-  private async hostFetch(request: GuestFetchRequest, body: unknown, signal: AbortSignal): Promise<HostFetchReply> {
+  private async hostFetch(
+    request: GuestFetchRequest,
+    body: unknown,
+    signal: AbortSignal,
+    egress: EgressDispatcher,
+    log: RunLog
+  ): Promise<HostFetchReply> {
     let url = new URL(request.url);
     // The guest `fetch` rejects other schemes, but `__lobuHost.async('fetch')`
     // is reachable from guest code directly, and a `data:` URL has no host for
@@ -923,66 +937,41 @@ export class IsolateExecutor implements SyncExecutor {
     let redirected = false;
 
     for (let hop = 0; ; hop++) {
-      if (!hostAllowed(url.hostname, this.options.allowedDomains)) {
-        const scope =
-          this.options.allowedDomains.length === 0
-            ? ' (reserved and internal hosts are never reachable)'
-            : ` (this run may reach: ${this.options.allowedDomains.join(', ')})`;
-        const denied = new Error(`fetch to ${url.hostname} is not permitted${scope}`);
-        denied.name = 'EgressDenied';
-        throw denied;
-      }
-      // The ENFORCING half of the check: a public-looking name may resolve
-      // into reserved space, and with an empty allowlist `hostAllowed` admits
-      // every name, so this is the only thing standing between a connector and
-      // the metadata endpoint. A lookup that FAILS must deny rather than fall
-      // through — swallowing it handed the decision to `fetch`'s own resolver,
-      // which resolves independently and may answer differently.
-      if (ipFamily(stripIpv6Brackets(url.hostname)) === 0) {
-        // An EXACT entry for the NAME is honoured here too, or `hostAllowed`'s
-        // promise that naming `localhost` reaches a self-hosted install's own
-        // services would hold for the name and fail at the loopback address
-        // it resolves to. Reserved space is still denied for every name the
-        // list does not spell out.
-        const exactName = this.options.allowedDomains.includes(normalizeDomain(url.hostname));
-        let addresses: Array<{ address: string }>;
-        try {
-          addresses = await this.options.lookup(url.hostname);
-        } catch (err) {
-          const denied = new Error(
-            `fetch to ${url.hostname} is blocked: its address could not be resolved (${(err as Error).message})`
-          );
-          denied.name = 'EgressDenied';
-          throw denied;
-        }
-        for (const a of addresses) {
-          if (isReservedIp(a.address) && !exactName && !this.options.allowedDomains.includes(a.address)) {
-            const denied = new Error(
-              `fetch to ${url.hostname} (${a.address}) is blocked: resolved to a private or reserved IP address`
-            );
-            denied.name = 'EgressDenied';
-            throw denied;
-          }
-        }
-      }
+      await this.assertHostAllowed('fetch', url.hostname, log);
       let response: Response;
       try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body: requestBody ? new Uint8Array(requestBody) : undefined,
-          signal,
-          redirect: 'manual',
-        });
+        // The ENFORCING half of the check: a public-looking name may resolve
+        // into reserved space. The transport resolves once, refuses the whole
+        // answer set if any address is reserved, and pins the socket to what
+        // it validated -- there is no separate pre-flight for `fetch`'s own
+        // resolver to disagree with. The run's exact allowlist entries are
+        // this dispatcher's exemptions (see `allowedDomains`).
+        response = await fetchPublicUrl(
+          url,
+          {
+            method,
+            headers,
+            body: requestBody ? new Uint8Array(requestBody) : undefined,
+            signal,
+            redirect: 'manual',
+          },
+          egress
+        );
       } catch (error) {
         if (signal.aborted) {
           const aborted = new Error('This operation was aborted');
           aborted.name = 'AbortError';
           throw aborted;
         }
+        const where = refusedAddress(error);
+        if (where !== null) {
+          throw refuse(
+            log,
+            `fetch to ${url.hostname}${where} is not permitted (reserved and internal hosts are never reachable)`
+          );
+        }
         const cause = (error as { cause?: unknown }).cause;
-        const failed = new TypeError(`fetch failed${cause instanceof Error ? `: ${cause.message}` : ''}`);
-        throw failed;
+        throw new TypeError(`fetch failed${cause instanceof Error ? `: ${cause.message}` : ''}`);
       }
       const location = response.headers.get('location');
       const isRedirect = response.status >= 300 && response.status <= 399 && location !== null;

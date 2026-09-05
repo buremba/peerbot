@@ -1,30 +1,45 @@
 import type { LookupAddress } from 'node:dns';
 import dns from 'node:dns/promises';
 import type { LookupFunction } from 'node:net';
-import { isReservedIp, normalizeIpLiteral, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
+import { canonicalizeHostname } from '@lobu/connector-sdk/egress-policy';
+import {
+  type EgressAddressPolicy,
+  ipFamily,
+  isBlockedIp,
+  normalizeIpLiteral,
+  stripIpv6Brackets,
+} from '@lobu/connector-sdk/ip-reachability';
 import { Agent, buildConnector } from 'undici';
 
 /**
  * The one Node egress transport for untrusted destinations.
  *
  * Policy (which hosts a caller may name) is `@lobu/connector-sdk/egress-policy`
- * and the IP classifier is `@lobu/connector-sdk/ip-reachability`; both are
- * pure. This module is the Node layer above them: DNS resolution, socket
- * pinning, and the credential transport rule. The gateway dials through here
- * for all of it — its worker egress proxy, the MCP proxy, OAuth and
- * connector-operation fetches — so a DNS rebinding gap closed once is closed
- * for every one of them. The connector isolate lane's host `fetch` is NOT a
- * caller yet: it still uses a bare global `fetch` (see `egress-policy.ts`).
+ * and the IP classifier plus address policy is
+ * `@lobu/connector-sdk/ip-reachability`; both are pure. This module is the
+ * Node layer above them: DNS resolution, socket pinning, and the credential
+ * transport rule. The gateway dials through here for all of it — its worker
+ * egress proxy, the MCP proxy, OAuth and connector-operation fetches — and so
+ * does the connector isolate lane, for the guest's `fetch` (via
+ * {@link fetchPublicUrl} on a per-executor {@link EgressDispatcher}) and for
+ * the raw sockets the DB connectors open (via {@link resolveEgressAddresses}).
+ * A DNS rebinding gap closed once is closed for every one of them.
  *
  * `fetchPublicUrl` closes the check-then-fetch (TOCTOU) gap a plain predicate
  * leaves open: its connector resolves every hostname once, rejects the whole
- * answer set if any address is reserved, then hands one of those exact
+ * answer set if any address is refused, then hands one of those exact
  * validated addresses to the socket. Redirects stay on the same dispatcher, so
  * every hop gets the same treatment.
  *
- * `resolvePublicAddresses` is the same validation for callers that open their
- * own socket (the proxy's CONNECT tunnel): they dial an address it returned and
- * never re-resolve the name.
+ * `resolveEgressAddresses` is the same validation for callers that open their
+ * own socket (the proxy's CONNECT tunnel, the isolate's `socketOpen`): they
+ * dial an address it returned and never re-resolve the name.
+ *
+ * The address axis ({@link EgressAddressOptions}) is what differs between
+ * callers: the gateway refuses every reserved address; a self-hosted database
+ * run may reach private space under `allow-private`; an operator exemption
+ * lowers ONE exact host to that floor. Cloud metadata stays refused under all
+ * of them.
  *
  * `isInternalUrl` remains a plain predicate and still has that gap by
  * construction; prefer the transport whenever the point of the check is to then
@@ -32,25 +47,35 @@ import { Agent, buildConnector } from 'undici';
  */
 
 /**
- * Raised when a target resolves to a reserved address.
+ * Raised when a target is, or resolves to, an address the policy refuses.
  *
  * A distinct class rather than a message prefix: `findPrivateAddressError`
  * digs this out of the `cause` / `AggregateError` chain that Node's fetch wraps
  * connector failures in, and matching on message text would silently stop
- * working the first time someone reworded the string.
+ * working the first time someone reworded the string. `hostname` is the name
+ * the caller asked for; `address` is the refused DNS answer, or `null` when
+ * the hostname itself was the refused literal or internal name.
  */
 export class PrivateAddressError extends Error {
-  constructor(hostname: string) {
-    super(`URL points to a private/internal address: ${hostname}`);
+  readonly hostname: string;
+  readonly address: string | null;
+
+  constructor(hostname: string, address?: string) {
+    super(`URL points to a private/internal address: ${hostname}${address ? ` (${address})` : ''}`);
     this.name = 'PrivateAddressError';
+    this.hostname = hostname;
+    this.address = address ?? null;
   }
 }
 
 /** Raised for a target that looks like an IP literal but does not parse as one. */
 export class MalformedHostError extends Error {
+  readonly hostname: string;
+
   constructor(hostname: string) {
     super(`Target host is not a valid address: ${hostname}`);
     this.name = 'MalformedHostError';
+    this.hostname = hostname;
   }
 }
 
@@ -65,74 +90,169 @@ export class DnsResolutionError extends Error {
 }
 
 /**
- * Reject a literal/private hostname before a socket is opened. DNS names are
- * resolved by {@link resolvePublicAddresses}; this synchronous check is still
- * needed because Node skips DNS lookup entirely for IP-literal redirect targets.
- */
-function assertPublicHostname(rawHostname: string): void {
-  const hostname = stripIpv6Brackets(rawHostname.toLowerCase());
-  const normalized = normalizeIpLiteral(hostname);
-  if (normalized.kind === 'invalid') throw new MalformedHostError(hostname);
-  if (isReservedIp(hostname)) throw new PrivateAddressError(hostname);
-  if (
-    normalized.kind === 'not-ip' &&
-    (hostname === 'localhost' ||
-      hostname.endsWith('.localhost') ||
-      hostname.endsWith('.local') ||
-      hostname.endsWith('.internal'))
-  ) {
-    throw new PrivateAddressError(hostname);
-  }
-}
-
-/**
  * Resolve the complete answer set before selecting an address. Selecting a
  * public answer while silently ignoring a private sibling would let resolver
  * ordering determine the result and leave a rebinding path open.
  */
-export type ResolveAllAddresses = (hostname: string) => Promise<LookupAddress[]>;
+export type ResolveAllAddresses = (hostname: string) => Promise<ReadonlyArray<{ address: string }>>;
 
 const systemLookup: ResolveAllAddresses = (hostname) => dns.lookup(hostname, { all: true, verbatim: true });
 
+/** The address axis of an egress decision; see the module header. */
+export interface EgressAddressOptions {
+  /** Which reserved space may be dialled. Default: `block-private`. */
+  addressPolicy?: EgressAddressPolicy;
+  /**
+   * Exact hostnames or IP literals lowered to the `allow-private` floor — an
+   * operator naming its own database, or a run whose allowlist names
+   * `localhost`. Never below the floor: metadata stays refused for them too.
+   */
+  exemptHosts?: readonly string[];
+  /** The resolver; the system one by default. Tests stage answers here. */
+  lookup?: ResolveAllAddresses;
+}
+
+interface ResolvedEgressOptions {
+  addressPolicy: EgressAddressPolicy;
+  exemptHosts: ReadonlySet<string>;
+  lookup: ResolveAllAddresses;
+}
+
+/** One canonical spelling for matching and resolving: lowercased, punycoded, no trailing dot, no IPv6 brackets. */
+function canonicalHost(rawHostname: string): string {
+  return stripIpv6Brackets(canonicalizeHostname(rawHostname));
+}
+
+function resolveEgressOptions(options: EgressAddressOptions): ResolvedEgressOptions {
+  return {
+    addressPolicy: options.addressPolicy ?? 'block-private',
+    exemptHosts: new Set((options.exemptHosts ?? []).map(canonicalHost)),
+    lookup: options.lookup ?? systemLookup,
+  };
+}
+
+function effectivePolicy(hostname: string, egress: ResolvedEgressOptions): EgressAddressPolicy {
+  return egress.exemptHosts.has(hostname) ? 'allow-private' : egress.addressPolicy;
+}
+
 /**
- * Resolve `rawHostname` to the addresses a caller may dial.
- *
- * An IP literal is validated and returned in its canonical form (so an
- * IPv4-mapped or NAT64 spelling pins to the bare IPv4 that was checked); a name
- * is resolved once through `lookup` and the WHOLE answer set must be public.
- * Throws {@link MalformedHostError}, {@link PrivateAddressError} or
- * {@link DnsResolutionError}; callers map those to their own protocol.
+ * Names that never denote a public endpoint. Refusing them by name under
+ * `block-private` gives the same answer as resolving them, one round trip
+ * earlier, and an internal name that happens to resolve publicly no longer
+ * gets through. Under `allow-private` they are ordinary names: `db.local` is
+ * the normal shape of a self-hosted database.
  */
-export async function resolvePublicAddresses(
-  rawHostname: string,
-  options: { lookup?: ResolveAllAddresses } = {},
-): Promise<LookupAddress[]> {
-  const hostname = stripIpv6Brackets(rawHostname);
-  assertPublicHostname(hostname);
-  const normalized = normalizeIpLiteral(hostname.toLowerCase());
+const INTERNAL_NAME_SUFFIXES = ['.localhost', '.local', '.internal', '.intranet', '.corp', '.lan', '.home'];
+
+function isInternalName(hostname: string): boolean {
+  return hostname === 'localhost' || INTERNAL_NAME_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
+}
+
+/**
+ * Refuse a literal or internal hostname before a socket is opened. DNS names
+ * are resolved by {@link resolveEgressAddresses}; this synchronous check is
+ * still needed because Node skips DNS lookup entirely for IP-literal redirect
+ * targets. Takes the canonical hostname.
+ */
+function assertReachableHostname(hostname: string, egress: ResolvedEgressOptions): void {
+  const policy = effectivePolicy(hostname, egress);
+  const normalized = normalizeIpLiteral(hostname);
+  if (normalized.kind === 'invalid') throw new MalformedHostError(hostname);
+  if (normalized.kind !== 'not-ip') {
+    if (isBlockedIp(normalized.value, policy)) throw new PrivateAddressError(hostname);
+    return;
+  }
+  if (policy === 'block-private' && isInternalName(hostname)) throw new PrivateAddressError(hostname);
+}
+
+async function resolveWith(rawHostname: string, egress: ResolvedEgressOptions): Promise<LookupAddress[]> {
+  const hostname = canonicalHost(rawHostname);
+  assertReachableHostname(hostname, egress);
+  const normalized = normalizeIpLiteral(hostname);
   if (normalized.kind === 'ipv4' || normalized.kind === 'ipv6') {
     return [{ address: normalized.value, family: normalized.kind === 'ipv4' ? 4 : 6 }];
   }
-  let addresses: LookupAddress[];
+  const policy = effectivePolicy(hostname, egress);
+  let answers: ReadonlyArray<{ address: string }>;
   try {
-    addresses = await (options.lookup ?? systemLookup)(hostname);
+    answers = await egress.lookup(hostname);
   } catch (error) {
     throw new DnsResolutionError(hostname, error);
   }
-  if (addresses.length === 0) {
+  if (answers.length === 0) {
     throw new DnsResolutionError(hostname, new Error('no addresses'));
   }
-  for (const answer of addresses) {
-    if (isReservedIp(answer.address)) {
-      throw new PrivateAddressError(`${hostname} (${answer.address})`);
+  const addresses: LookupAddress[] = [];
+  for (const answer of answers) {
+    const literal = normalizeIpLiteral(stripIpv6Brackets(answer.address));
+    if (literal.kind === 'not-ip') {
+      throw new DnsResolutionError(hostname, new Error(`resolver returned a non-address: ${answer.address}`));
     }
+    if (literal.kind === 'invalid' || isBlockedIp(literal.value, policy)) {
+      throw new PrivateAddressError(hostname, answer.address);
+    }
+    // Canonical form out (an IPv4-mapped or NAT64 spelling pins to the bare
+    // IPv4 that was checked), so the socket dials exactly what was validated.
+    addresses.push({ address: literal.value, family: literal.kind === 'ipv4' ? 4 : 6 });
   }
   return addresses;
 }
 
-function createGuardedLookup(resolveAll: ResolveAllAddresses = systemLookup): LookupFunction {
+/**
+ * Resolve `rawHostname` to the addresses a caller may dial under `options`.
+ *
+ * An IP literal is validated and returned in its canonical form; a name is
+ * resolved once through `lookup` and the WHOLE answer set must pass the
+ * policy. Throws {@link MalformedHostError}, {@link PrivateAddressError} or
+ * {@link DnsResolutionError}; callers map those to their own protocol.
+ */
+export async function resolveEgressAddresses(
+  rawHostname: string,
+  options: EgressAddressOptions = {},
+): Promise<LookupAddress[]> {
+  return resolveWith(rawHostname, resolveEgressOptions(options));
+}
+
+/**
+ * Parse an operator-supplied exemption list: comma-separated EXACT hosts
+ * (`LOBU_DB_EGRESS_ALLOW_HOSTS`). Deployment config only — it rides the
+ * gateway-authoritative config path and is never settable from tenant or
+ * connection config, so a tenant cannot widen its own boundary. An entry
+ * matches a host exactly (IPv6 without brackets); no wildcards or CIDRs, so
+ * approving one tailnet host never approves `100.64.0.0/10`. Shapes that can
+ * never match are rejected here rather than left silently inactive; `source`
+ * names the setting in that error.
+ */
+export function parseExemptHosts(value: unknown, source: string): string[] {
+  if (typeof value !== 'string') return [];
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  for (const entry of entries) {
+    const reason = unusableExemptHostReason(entry);
+    if (reason) {
+      throw new Error(
+        `${source} entry "${entry}" is invalid: ${reason}. Use the exact bare host (no CIDR, wildcard, port, or IPv6 brackets).`,
+      );
+    }
+  }
+  return entries;
+}
+
+/** Why an exemption entry can never match a host, if so. */
+function unusableExemptHostReason(entry: string): string | null {
+  if (entry.includes('/')) return 'a CIDR range is not an exact host';
+  if (entry.includes('*')) return 'a wildcard is not an exact host';
+  if (entry.startsWith('[') || entry.endsWith(']')) return 'brackets are stripped from IPv6 hosts before matching';
+  // A bare IPv6 literal legitimately contains `:` — only flag a trailing `:port`.
+  if (ipFamily(entry) === 0 && /:\d+$/.test(entry)) return 'a :port is not part of the host';
+  return null;
+}
+
+function createGuardedLookup(egress: ResolvedEgressOptions): LookupFunction {
   return (hostname, options, callback) => {
-    void resolvePublicAddresses(hostname, { lookup: resolveAll })
+    void resolveWith(hostname, egress)
       .then((addresses) => {
         if (typeof options === 'object' && options.all) {
           (callback as unknown as (error: null, value: LookupAddress[]) => void)(null, addresses);
@@ -153,38 +273,59 @@ function createGuardedLookup(resolveAll: ResolveAllAddresses = systemLookup): Lo
   };
 }
 
-const guardedLookup = createGuardedLookup();
-const connectToValidatedAddress = buildConnector({ lookup: guardedLookup });
-
 type RuntimeConnector = ReturnType<typeof buildConnector>;
 
-function connectPublicTarget(
-  options: Parameters<RuntimeConnector>[0],
-  callback: Parameters<RuntimeConnector>[1],
-  connect: RuntimeConnector = connectToValidatedAddress,
-): void {
-  try {
-    // Load-bearing for redirects to raw IP literals: net.connect bypasses
-    // lookup for those, so the lookup callback alone is not a complete guard.
-    assertPublicHostname(options.hostname);
-  } catch (error) {
-    callback(error instanceof Error ? error : new Error('Blocked outbound connection target'), null);
-    return;
-  }
-  // Forward the original options object unchanged. In particular, TLS SNI
-  // remains the URL hostname even though lookup pins the socket to a validated
-  // numeric address.
-  connect(options, callback);
+function createGuardedConnector(
+  egress: ResolvedEgressOptions,
+  connect: RuntimeConnector = buildConnector({ lookup: createGuardedLookup(egress) }),
+): RuntimeConnector {
+  return (options, callback) => {
+    try {
+      // Load-bearing for redirects to raw IP literals: net.connect bypasses
+      // lookup for those, so the lookup callback alone is not a complete guard.
+      assertReachableHostname(canonicalHost(options.hostname), egress);
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error('Blocked outbound connection target'), null);
+      return;
+    }
+    // Forward the original options object unchanged. In particular, TLS SNI
+    // remains the URL hostname even though lookup pins the socket to a validated
+    // numeric address.
+    connect(options, callback);
+  };
 }
 
-const publicNetworkDispatcher = new Agent({
-  connect: connectPublicTarget,
-});
+/**
+ * An undici dispatcher whose every new connection resolves through the guarded
+ * lookup and re-checks literal targets at connect time; a reused socket is
+ * already connected to a previously validated address. One per address
+ * policy: the gateway shares the default (block-private, no exemptions) and
+ * the isolate lane builds one per executor carrying that run's exact allowlist
+ * entries. Nominal on purpose — `fetchPublicUrl` accepts only a dispatcher
+ * built here, never an arbitrary undici Agent.
+ */
+export class EgressDispatcher extends Agent {
+  private readonly egress: ResolvedEgressOptions;
+
+  constructor(options: EgressAddressOptions = {}) {
+    const egress = resolveEgressOptions(options);
+    super({ connect: createGuardedConnector(egress) });
+    this.egress = egress;
+  }
+
+  /** Throw before a request leaves if `hostname` can never be dialled under this dispatcher's policy. */
+  assertReachable(hostname: string): void {
+    assertReachableHostname(canonicalHost(hostname), this.egress);
+  }
+}
+
+const defaultDispatcher = new EgressDispatcher();
 
 /** Narrow transport seams exposed only for dependency-free regression tests. */
 export const __egressTransportTestOnly = {
-  connectPublicTarget,
+  createGuardedConnector,
   createGuardedLookup,
+  resolveEgressOptions,
 };
 
 /**
@@ -209,22 +350,25 @@ function findPrivateAddressError(error: unknown): Error | null {
 }
 
 /**
- * Fetch an untrusted public URL without a DNS check-then-fetch race.
- *
- * The dispatcher is retained for connection pooling, but every new connection
- * resolves through `guardedLookup`; a reused socket is already connected to a
- * previously validated address. Undici also uses the dispatcher for redirect
- * hops, including the literal-host check in the connector above.
+ * Fetch an untrusted URL without a DNS check-then-fetch race. Every new
+ * connection resolves through the dispatcher's guarded lookup, and undici uses
+ * the same dispatcher for redirect hops, including the literal-host check in
+ * the connector above. The default dispatcher is the gateway's block-private
+ * one; the isolate lane passes its own.
  */
-export async function fetchPublicUrl(input: string | URL, init: RequestInit = {}): Promise<Response> {
+export async function fetchPublicUrl(
+  input: string | URL,
+  init: RequestInit = {},
+  dispatcher: EgressDispatcher = defaultDispatcher,
+): Promise<Response> {
   const parsed = input instanceof URL ? input : new URL(input);
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`Unsupported protocol: ${parsed.protocol}`);
   }
-  assertPublicHostname(parsed.hostname);
+  dispatcher.assertReachable(parsed.hostname);
   const requestInit = {
     ...init,
-    dispatcher: publicNetworkDispatcher,
+    dispatcher,
   } as unknown as RequestInit;
   try {
     return await fetch(parsed, requestInit);
@@ -273,13 +417,13 @@ export async function isInternalUrl(url: string): Promise<boolean> {
     // WHATWG URL keeps IPv6 literals bracketed (`[::1]`); strip so the classifier sees them.
     const hostname = stripIpv6Brackets(parsed.hostname);
 
-    if (isReservedIp(hostname)) return true;
+    if (isBlockedIp(hostname, 'block-private')) return true;
 
     const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
     const addresses6 = await dns.resolve6(hostname).catch(() => [] as string[]);
 
     for (const addr of [...addresses, ...addresses6]) {
-      if (isReservedIp(addr)) return true;
+      if (isBlockedIp(addr, 'block-private')) return true;
     }
 
     return false;

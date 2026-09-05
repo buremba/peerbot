@@ -1,21 +1,28 @@
 /**
  * Canonical IP-literal classifier shared by every Lobu egress guard.
  *
- * Three call sites need the same answer to "is this host an internal
- * address?", and each layers its own policy on top of this one classifier:
+ * Two call sites need the same answer to "is this host an internal
+ * address?", and both read it through this one classifier:
  *
- *  - `packages/connector-worker/src/egress/transport.ts` — transport layer:
- *    resolves DNS and pins the socket to a validated answer.
- *  - `packages/connectors/src/db-egress-guard.ts` — policy layer:
- *    `allow-private` (self-hosted) vs `block-private` (untrusted cloud),
- *    plus operator allowlists and forced TLS.
+ *  - `packages/connector-worker/src/egress/transport.ts` — the Node egress
+ *    transport: resolves DNS, applies an {@link EgressAddressPolicy} to every
+ *    answer, and pins the socket to a validated address. The gateway and the
+ *    connector isolate lane (`fetch` and `socketOpen`) both dial through it.
  *  - `./url-guards.ts` — connector-authored URL check, applied at the
  *    trust boundary before a connector fetches an operator-supplied URL.
  *
+ * The address POLICY lives here too ({@link isBlockedIp}): which reserved
+ * ranges `allow-private` (self-hosted) still refuses and which
+ * `block-private` (untrusted cloud) refuses on top. Forced TLS for database
+ * URLs is the one policy piece that stays connector-side
+ * (`packages/connectors/src/db-egress-guard.ts`): nothing on the wire tells
+ * the host that a socket carries database credentials.
+ *
  * Keeping the classifier here rather than in each consumer is deliberate:
- * `@lobu/connector-sdk` is the only package all three can import (the server
- * package is not reachable from a bundled connector, and `@lobu/core` pulls
- * OpenTelemetry, Sentry, and winston, which connectors intentionally avoid).
+ * `@lobu/connector-sdk` is the only package every consumer can import (the
+ * server package is not reachable from a bundled connector, and `@lobu/core`
+ * pulls OpenTelemetry, Sentry, and winston, which connectors intentionally
+ * avoid).
  *
  * The matcher collapses the spellings an attacker can use to dress up an
  * internal address so `net.BlockList` won't recognise it: IPv4-mapped IPv6
@@ -416,6 +423,95 @@ export function isReservedIp(ip: string): boolean {
       return isReservedIpv4(normalized.value);
     case 'ipv6':
       return isReservedIpv6(normalized.value);
+    case 'invalid':
+      return true;
+    case 'not-ip':
+      return false;
+  }
+}
+
+/**
+ * Which reserved address space an egress path may dial.
+ *
+ *  - `block-private` (untrusted cloud, the transport's default): every
+ *    non-global address is refused — the full {@link isReservedIp} set.
+ *  - `allow-private` (self-hosted / first-party): loopback, RFC1918, CGNAT
+ *    and ULA are legitimate destinations (`make dev` reaches localhost, the
+ *    dogfood reaches Lobu's own private Postgres), but link-local / cloud
+ *    metadata, multicast, the reserved and broadcast range, and the
+ *    unspecified address stay refused: no real endpoint lives there, so this
+ *    is cheap defence in depth.
+ *
+ * Cloud-metadata endpoints that sit INSIDE a range `allow-private` permits
+ * are pinned individually and refused under both policies, so lowering a host
+ * to the `allow-private` floor (an operator exemption) never exposes them.
+ */
+export type EgressAddressPolicy = 'block-private' | 'allow-private';
+
+/**
+ * The subset blocked even under `allow-private`. Loopback, RFC1918, CGNAT and
+ * ULA are deliberately ABSENT.
+ */
+const ALLOW_PRIVATE_BLOCKED_V4: ReadonlyArray<readonly [string, number]> = [
+  ['0.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+];
+
+const ALLOW_PRIVATE_BLOCKED_V6: ReadonlyArray<readonly [string, number]> = [
+  ['fe80::', 10],
+  ['ff00::', 8],
+];
+
+/**
+ * Cloud-metadata endpoints OUTSIDE the ranges the `allow-private` floor already
+ * denies, listed individually so they stay blocked under every policy and even
+ * for an explicitly exempted host. Each sits in a range `allow-private`
+ * deliberately permits: Alibaba's is in CGNAT `100.64.0.0/10` — exactly the
+ * range a Tailscale exemption targets — and AWS's IPv6 IMDS is in ULA
+ * `fc00::/7`, where a self-hoster's database legitimately lives. Kept
+ * metadata-only so ordinary CGNAT and ULA hosts stay reachable.
+ * (169.254.169.254 and 169.254.170.2 need no entry: link-local is already
+ * denied at the floor.)
+ */
+const METADATA_V4: ReadonlyArray<readonly [string, number]> = [
+  ['100.100.100.200', 32], // Alibaba Cloud metadata (inside CGNAT)
+  ['192.0.0.192', 32], // Oracle Cloud metadata (IETF protocol assignments)
+];
+
+const METADATA_V6: ReadonlyArray<readonly [string, number]> = [
+  ['fd00:ec2::254', 128], // AWS IMDS over IPv6 (inside ULA)
+];
+
+function isBlockedIpv4(address: string, policy: EgressAddressPolicy): boolean {
+  if (METADATA_V4.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix))) return true;
+  if (policy === 'block-private') return isReservedIpv4(address);
+  return ALLOW_PRIVATE_BLOCKED_V4.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix));
+}
+
+function isBlockedIpv6(address: string, policy: EgressAddressPolicy): boolean {
+  if (METADATA_V6.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix))) return true;
+  if (matchesIpv6Prefix(address, '::', 128)) return true;
+  if (policy === 'block-private') return isReservedIpv6(address);
+  return ALLOW_PRIVATE_BLOCKED_V6.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix));
+}
+
+/**
+ * Whether an IP literal (in any spelling) may NOT be dialled under `policy`.
+ * Under `block-private` this is exactly {@link isReservedIp}; under
+ * `allow-private` it drops to the floor documented on
+ * {@link EgressAddressPolicy}. A literal that looks like an IP but won't parse
+ * fails closed; a non-IP hostname returns false (the caller resolves it and
+ * re-checks every answer). Bare address in, as for {@link isReservedIp}.
+ */
+export function isBlockedIp(ip: string, policy: EgressAddressPolicy): boolean {
+  const normalized = normalizeIpLiteral(ip);
+  switch (normalized.kind) {
+    case 'ipv4':
+      return isBlockedIpv4(normalized.value, policy);
+    case 'ipv6':
+      return isBlockedIpv6(normalized.value, policy);
     case 'invalid':
       return true;
     case 'not-ip':

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { ExecutorJob } from '../executor/interface.js';
-import { hostAllowed, IsolateExecutor, IsolateRuntimeUnavailableError } from '../executor/isolate.js';
+import { IsolateExecutor, IsolateRuntimeUnavailableError } from '../executor/isolate.js';
 import { IsolateLaneIneligibleError } from '../isolate/eligibility.js';
 
 const job: ExecutorJob = {
@@ -18,7 +18,7 @@ describe('IsolateExecutor options', () => {
   it('accepts the defaults and partial overrides', () => {
     expect(() => new IsolateExecutor()).not.toThrow();
     expect(() => new IsolateExecutor({ timeoutMs: 0, memoryMb: 8, allowedDomains: ['Example.COM'] })).not.toThrow();
-    // An empty allowlist is the default and means egress is closed, not misconfigured.
+    // An empty allowlist means egress is closed (the shared grammar), not misconfigured.
     expect(() => new IsolateExecutor({ allowedDomains: [] })).not.toThrow();
     expect(() => new IsolateExecutor({ timeoutMs: undefined })).not.toThrow();
   });
@@ -53,37 +53,27 @@ describe('IsolateExecutor options', () => {
   });
 
 
-  it('enforces SSRF protection and opens public egress by default in hostAllowed', () => {
-    // Default open to public internet under SSRF guard
-    expect(hostAllowed('api.spotify.com', [])).toBe(true);
-    expect(hostAllowed('news.ycombinator.com', [])).toBe(true);
+  it('normalizes allowlist entries into the shared egress grammar', () => {
+    // Exact entries are the run's reserved-address exemptions; wildcards are
+    // not, and `*.` is the same wildcard as `.` (the SDK grammar), not a
+    // prefix to strip. The matcher itself is @lobu/connector-sdk/egress-policy,
+    // tested there; this pins only what the executor does to its input.
+    const executor = new IsolateExecutor({
+      allowedDomains: ['Example.COM', '*.Api.example.com', '.cdn.example.com', '[::1]', '127.0.0.1'],
+    });
+    const options = (executor as unknown as { options: { allowedDomains: readonly string[] } }).options;
+    // A bracketed IPv6 literal loses its brackets, so one entry covers both a
+    // bracketed fetch URL host and a bare `connect()` host.
+    expect(options.allowedDomains).toEqual(['example.com', '.api.example.com', '.cdn.example.com', '::1', '127.0.0.1']);
+    const exact = (executor as unknown as { exactAllowedHosts: readonly string[] }).exactAllowedHosts;
+    expect(exact).toEqual(['example.com', '::1', '127.0.0.1']);
+  });
 
-    // Blocks cloud metadata and private addresses
-    expect(hostAllowed('169.254.169.254', [])).toBe(false);
-    expect(hostAllowed('127.0.0.1', [])).toBe(false);
-    expect(hostAllowed('10.0.0.1', [])).toBe(false);
-    expect(hostAllowed('192.168.1.1', [])).toBe(false);
-    expect(hostAllowed('172.16.0.1', [])).toBe(false);
-    expect(hostAllowed('[::1]', [])).toBe(false);
-    expect(hostAllowed('localhost', [])).toBe(false);
-    expect(hostAllowed('my-service.local', [])).toBe(false);
-    expect(hostAllowed('internal.corp', [])).toBe(false);
-
-    // An IP literal never matches as a "subdomain" of a shorter suffix.
-    expect(hostAllowed('8.8.8.8', ['8.8'])).toBe(false);
-    expect(hostAllowed('8.8.8.8', ['8.8.8.8'])).toBe(true);
-
-    // An EXACT entry is honoured even for reserved space: that is how a
-    // self-hosted install reaches its own database and how the fixture suites
-    // reach a loopback server. Nothing weaker admits reserved space.
-    expect(hostAllowed('127.0.0.1', ['127.0.0.1'])).toBe(true);
-    expect(hostAllowed('localhost', ['localhost'])).toBe(true);
-    expect(hostAllowed('127.0.0.1', ['0.0.1'])).toBe(false);
-
-    // When an explicit domain allowlist is supplied, restrict to it
-    expect(hostAllowed('api.spotify.com', ['spotify.com'])).toBe(true);
-    expect(hostAllowed('spotify.com', ['spotify.com'])).toBe(true);
-    expect(hostAllowed('attacker.com', ['spotify.com'])).toBe(false);
-    expect(hostAllowed('169.254.169.254', ['spotify.com'])).toBe(false);
+  it('is unrestricted by default and closed on an explicit empty list', () => {
+    const read = (executor: IsolateExecutor) =>
+      (executor as unknown as { options: { allowedDomains: readonly string[] } }).options.allowedDomains;
+    expect(read(new IsolateExecutor())).toEqual(['*']);
+    expect(read(new IsolateExecutor({ allowedDomains: undefined }))).toEqual(['*']);
+    expect(read(new IsolateExecutor({ allowedDomains: [] }))).toEqual([]);
   });
 });

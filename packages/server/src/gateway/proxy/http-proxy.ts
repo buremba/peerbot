@@ -17,7 +17,7 @@ import {
   DnsResolutionError,
   MalformedHostError,
   PrivateAddressError,
-  resolvePublicAddresses,
+  resolveEgressAddresses,
 } from "@lobu/connector-worker/egress";
 import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import {
@@ -293,18 +293,18 @@ export const __testOnly = {
  * slip past the blocklist. This function only maps the transport's typed
  * errors onto the proxy's status lines.
  *
- * Adopting the transport also adopts its pre-DNS name rules: `localhost`,
- * `*.localhost`, `*.local` and `*.internal` are refused before a lookup
- * instead of being resolved and then blocked on the answer. Same 403, one
- * round trip earlier, and an internal name that happens to resolve publicly
- * no longer gets through.
+ * Adopting the transport also adopts its pre-DNS name rules: `localhost` and
+ * the internal suffixes (`.localhost`, `.local`, `.internal`, `.intranet`,
+ * `.corp`, `.lan`, `.home`) are refused before a lookup instead of being
+ * resolved and then blocked on the answer. Same 403, one round trip earlier,
+ * and an internal name that happens to resolve publicly no longer gets through.
  */
 async function resolveAndValidateTarget(
   rawHostname: string
 ): Promise<TargetResolutionResult> {
   const override = dnsLookupOverride;
   try {
-    const addresses = await resolvePublicAddresses(rawHostname, {
+    const addresses = await resolveEgressAddresses(rawHostname, {
       lookup: override
         ? (hostname) => override(hostname, { all: true, verbatim: true })
         : undefined,

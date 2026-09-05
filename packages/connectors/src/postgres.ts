@@ -21,15 +21,19 @@
  *  - origin_id = "<feed>:<pk>" so two feeds on one connection never collide, and
  *    re-emitting a row supersedes (events ingestion dedupes by origin_id).
  *
- * Trust model (plan §G): the DATABASE_URL host is checked before connecting
- * (openGuardedPool → db-egress-guard). Under the default `allow-private` policy
- * (first-party / operator-set URL) private IPs are allowed — the dogfood reaches
- * Lobu's own private PG — and only metadata/link-local literals are blocked.
- * Under `block-private` (injected by the server in cloud mode) every non-public
- * host is rejected, TLS is forced (sslmode=disable is refused), and the socket
- * is pinned to the guard-validated IP so the driver never re-resolves DNS
- * (rebind TOCTOU closed). A per-org destination allowlist is a deferred
- * enterprise policy layer — see db-egress-guard's module header.
+ * Trust model (plan §G): the connector runs only on the isolate lane, so every
+ * socket is dialled by the HOST (`socketOpen`) through the one egress transport
+ * after resolving the DATABASE_URL host and applying `LOBU_DB_EGRESS_POLICY`
+ * to every address. Under the default `allow-private` (first-party /
+ * operator-set URL) private IPs are allowed — the dogfood reaches Lobu's own
+ * private PG — and only metadata/link-local space is refused. Under
+ * `block-private` (injected by the server in cloud mode) every non-public host
+ * is refused and the socket is pinned to the validated address, so the driver
+ * never re-resolves DNS (rebind TOCTOU closed). What the connector itself owns
+ * is the TLS half (openGuardedPool → db-egress-guard): forced TLS under
+ * block-private, and a refusal of verify-* URLs the lane cannot honour. A
+ * per-org destination allowlist is a deferred enterprise policy layer — see
+ * db-egress-guard's module header.
  */
 
 import {
@@ -44,13 +48,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import postgres from 'postgres';
-import {
-  buildDbEgressHardening,
-  parseAllowedHosts,
-  readEgressPolicy,
-  requestedTlsMode,
-  requiredTlsMode,
-} from './db-egress-guard.js';
+import { readEgressPolicy, requestedTlsMode, requiredTlsMode } from './db-egress-guard.js';
 
 interface PgQueryConfig {
   /** ONE read-only base SELECT. No WHERE-cursor / ORDER BY / top-level LIMIT — the connector wraps it. */
@@ -282,26 +280,20 @@ const POOL_OPTS = {
 } as const;
 
 /**
- * SSRF/egress pre-flight + guarded pool, run before any socket opens on sync(),
- * query(), and direct feed reads. The server injects `block-private` under cloud mode
- * plus any operator host exemptions; everything else defaults to trusted
- * `allow-private`. Under block-private the guard forces TLS and installs a
- * socket factory that dials the validated IP, closing DNS-rebind TOCTOU. Under
- * allow-private the overrides are empty. They land after POOL_OPTS so nothing
- * can shadow them. `socket` isn't in postgres.js's published Options type
- * (supported since 3.4: connection.js `options.socket`), hence the cast.
+ * The TLS half of DB egress, applied before any socket opens on sync(),
+ * query(), and direct feed reads. The server injects `block-private` under
+ * cloud mode; everything else defaults to trusted `allow-private`.
  *
- * ON THE ISOLATE LANE (`globalThis.connect` installed) the ADDRESS half of the
- * hardening is the host's job, not ours: the guest cannot resolve a name, and
- * `socketOpen` (`connector-worker/src/executor/isolate.ts`) resolves once,
- * applies the same policy to every resolved address, and dials the address it
- * validated — so the pre-flight and the pinned socket factory would both be
- * duplicate work on a lookup the guest can't even perform. The TLS half is
- * NOT the host's job: nothing on the wire tells `socketOpen` whether this
+ * The ADDRESS half is the host's job, not ours: the connector runs only on the
+ * isolate lane, where the guest cannot resolve a name, and `socketOpen`
+ * (`connector-worker/src/executor/isolate.ts`) resolves once through the one
+ * egress transport, applies the policy and the operator's exemptions to every
+ * resolved address, and dials the address it validated. The TLS half is NOT
+ * the host's job: nothing on the wire tells `socketOpen` whether this
  * connection must be encrypted, and postgres.js only upgrades when the pool
- * was given `ssl`. So block-private still resolves `requiredTlsMode` here and
- * passes it through — without this the cloud lane would send credentials in
- * cleartext, which is exactly what the process lane it replaced never did.
+ * was given `ssl`. So block-private resolves `requiredTlsMode` here and passes
+ * it through, after POOL_OPTS so nothing can shadow it — without this the
+ * cloud lane would send credentials in cleartext.
  *
  * What the lane CANNOT do yet is verify the chain on the tenant's behalf:
  * postgres.js's WinterCG polyfill upgrades with `startTls({ servername })`,
@@ -312,34 +304,18 @@ const POOL_OPTS = {
  * `requiredTlsMode` exists to prevent. Those modes fail closed here, under
  * every egress policy, until the trust decision can ride the upgrade.
  */
-async function openGuardedPool(
-  connectionString: string,
-  config: Record<string, unknown>,
-): Promise<postgres.Sql> {
-  if (typeof (globalThis as unknown as { connect?: unknown }).connect === 'function') {
-    const requested = requestedTlsMode(connectionString);
-    if (requested === 'verify-ca' || requested === 'verify-full') {
-      throw new Error(
-        `DATABASE_URL asks for sslmode=${requested}, but this execution lane cannot verify server certificates yet: its TLS upgrade carries only the server name, so the session would be encrypted but unverified. Use sslmode=require (encrypted, unverified) until certificate verification lands on the isolate lane.`,
-      );
-    }
-    const isolatePolicy = readEgressPolicy(config.LOBU_DB_EGRESS_POLICY);
-    const isolateSsl = isolatePolicy === 'block-private' ? requiredTlsMode(connectionString) : undefined;
-    return postgres(connectionString, {
-      ...POOL_OPTS,
-      ...(isolateSsl ? { ssl: isolateSsl } : {}),
-    } as unknown as postgres.Options<Record<string, never>>);
+function openGuardedPool(connectionString: string, config: Record<string, unknown>): postgres.Sql {
+  const requested = requestedTlsMode(connectionString);
+  if (requested === 'verify-ca' || requested === 'verify-full') {
+    throw new Error(
+      `DATABASE_URL asks for sslmode=${requested}, but this execution lane cannot verify server certificates yet: its TLS upgrade carries only the server name, so the session would be encrypted but unverified. Use sslmode=require (encrypted, unverified) until certificate verification lands on the isolate lane.`,
+    );
   }
-  const hardening = await buildDbEgressHardening(
-    connectionString,
-    readEgressPolicy(config.LOBU_DB_EGRESS_POLICY),
-    undefined,
-    undefined,
-    parseAllowedHosts(config.LOBU_DB_EGRESS_ALLOW_HOSTS),
-  );
+  const policy = readEgressPolicy(config.LOBU_DB_EGRESS_POLICY);
+  const ssl = policy === 'block-private' ? requiredTlsMode(connectionString) : undefined;
   return postgres(connectionString, {
     ...POOL_OPTS,
-    ...hardening,
+    ...(ssl ? { ssl } : {}),
   } as unknown as postgres.Options<Record<string, never>>);
 }
 
@@ -430,7 +406,7 @@ export default class PostgresConnector extends ConnectorRuntime {
 
     const checkpoint = (ctx.checkpoint as PgCheckpoint | null) ?? {};
 
-    const sql = await openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
+    const sql = openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
 
     try {
       // Everything runs inside ONE read-only transaction — the probe included —
@@ -538,7 +514,7 @@ export default class PostgresConnector extends ConnectorRuntime {
     // path. baseSql has no top-level LIMIT (rejected above), so this is exact.
     const countSql = `SELECT count(*)::int AS n FROM (\n${baseSql}\n) q`;
 
-    const sql = await openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
+    const sql = openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
     try {
       const { data, total } = (await sql.begin(async (tx) => {
         await setReadOnly(tx, 30000);
@@ -591,7 +567,7 @@ export default class PostgresConnector extends ConnectorRuntime {
       orderBy = `ORDER BY q."${col}" ${ctx.sort.order === 'desc' ? 'DESC' : 'ASC'}`;
     }
 
-    const sql = await openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
+    const sql = openGuardedPool(connectionString, ctx.config as Record<string, unknown>);
     try {
       const { data, columns, total } = (await sql.begin(async (tx) => {
         await setReadOnly(tx, 30000);

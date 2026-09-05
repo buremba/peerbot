@@ -1,5 +1,5 @@
 /**
- * The one egress policy grammar for Lobu's gateway-mediated HTTP egress.
+ * The one egress policy grammar for every host-mediated egress path in Lobu.
  *
  * Every place below decides "may this code reach that host?" by evaluating the
  * same configured patterns with the functions in this file:
@@ -9,12 +9,9 @@
  *    (`packages/server/src/gateway/permissions/`)
  *  - the remote runtime provider's sandbox network policy
  *    (`packages/server/src/gateway/runtime/providers/vercel.ts`)
- *
- * NOT yet a consumer: the connector isolate lane's host `fetch`
- * (`IsolateExecutor.hostFetch` in `@lobu/connector-worker`) still carries its
- * own `hostAllowed` matcher, whose bare `example.com` entry covers subdomains
- * too. Moving it onto this grammar narrows what a run may reach, so it is a
- * separate PR of its own.
+ *  - the connector isolate lane's host capabilities, `fetch` and `socketOpen`
+ *    (`IsolateExecutor` in `@lobu/connector-worker`), whose allowlist is
+ *    unrestricted by default and closed when empty like everyone else's
  *
  * Pattern grammar (patterns are produced by `@lobu/core`'s
  * `normalizeDomainPattern`, which lowercases, punycodes, and rewrites
@@ -27,8 +24,8 @@
  *  - `*`             unrestricted, only meaningful as the sole allow entry
  *
  * An empty allowlist denies everything. That is the fail-closed default every
- * caller shares; a lane that needs a transitional "no list means open" must say
- * so at its own call site, never here.
+ * caller shares; a caller whose configured default is "open" supplies `["*"]`
+ * itself, never a special case here.
  *
  * Decision order, shared by every caller that layers tenant and judge inputs on
  * the global lists ({@link decideEgress}):

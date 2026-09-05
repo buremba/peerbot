@@ -1,15 +1,15 @@
 /**
  * Postgres connector sync — keyset incremental + validation, against a real DB.
  *
- * Drives the connector directly (the same class the connector-worker runs),
- * pointed at the test DB URL, reading a throwaway table. Exercises
- * validateBaseQuery → keyset compound-cursor wrap → column-type probe →
- * checkpoint round-trip end to end.
+ * Drives the connector directly, pointed at the test DB URL, reading a
+ * throwaway table. Exercises validateBaseQuery → keyset compound-cursor wrap →
+ * column-type probe → checkpoint round-trip end to end. Direct drive covers the
+ * SQL contract and the connector-owned TLS gate only: the ADDRESS half of
+ * egress is the isolate host's, so the policy cases run on the lane (the last
+ * case below), the only place the connector executes in production.
  */
 
-import { createPinnedSocketFactory } from '@lobu/connectors/db-egress-guard';
 import PostgresConnector from '@lobu/connectors/postgres';
-import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getTestDb } from '../../setup/test-db';
 
@@ -126,61 +126,12 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     await expect(run({ query: 'UPDATE pgc_it SET email = NULL' }, null)).rejects.toThrow(/SELECT/i);
   });
 
-  it('blocks an internal host under the block-private egress policy (cloud)', async () => {
-    // The test DB is on loopback; block-private rejects it before any socket
-    // opens. The TLS gate runs FIRST (fail fast, no DNS), so strip any
-    // sslmode=disable off the test URL to reach the host classifier.
-    // (allow-private — the default exercised by every other case here — allows it.)
-    const noSslmode = (process.env.DATABASE_URL ?? '').replace(/[?&]sslmode=[^&]*/, '');
-    await expect(
-      run({ DATABASE_URL: noSslmode, LOBU_DB_EGRESS_POLICY: 'block-private' }, null)
-    ).rejects.toThrow(/blocked internal\/metadata/i);
-  });
-
-  it('rejects sslmode=disable under block-private BEFORE the host check (forced TLS)', async () => {
+  it('rejects sslmode=disable under block-private before any socket opens (forced TLS)', async () => {
     const base = (process.env.DATABASE_URL ?? '').replace(/[?&]sslmode=[^&]*/, '');
     const disabled = base + (base.includes('?') ? '&' : '?') + 'sslmode=disable';
     await expect(
       run({ DATABASE_URL: disabled, LOBU_DB_EGRESS_POLICY: 'block-private' }, null)
     ).rejects.toThrow(/TLS is required/i);
-  });
-
-  it('query() also enforces the egress policy', async () => {
-    const conn2 = new PostgresConnector();
-    const noSslmode = (process.env.DATABASE_URL ?? '').replace(/[?&]sslmode=[^&]*/, '');
-    await expect(
-      conn2.query({
-        feedKey: null,
-        query: 'SELECT 1 AS one',
-        config: {
-          DATABASE_URL: noSslmode,
-          LOBU_DB_EGRESS_POLICY: 'block-private',
-        },
-        credentials: null,
-      } as never)
-    ).rejects.toThrow(/blocked internal\/metadata/i);
-  });
-
-  it('postgres.js completes a real session through the pinned socket factory', async () => {
-    // The riskiest hardening assumption is that postgres.js honors a custom
-    // `socket` option end to end (it is unpublished in its types). Prove it
-    // against the real test DB: pin the URL's host to its loopback IP and run a
-    // query through the factory-made socket. (block-private itself cannot be
-    // exercised against loopback — it would rightly reject the host — so this
-    // validates the MECHANISM the cloud path relies on.)
-    const url = new URL((process.env.DATABASE_URL ?? '').replace(/^postgres(ql)?:/, 'http:'));
-    const pinned = new Map([[url.hostname.toLowerCase(), '127.0.0.1']]);
-    const sql = postgres(process.env.DATABASE_URL as string, {
-      max: 1,
-      prepare: false,
-      socket: createPinnedSocketFactory(pinned),
-    } as never);
-    try {
-      const rows = await sql.unsafe('SELECT 41 + 1 AS answer');
-      expect(rows[0]?.answer).toBe(42);
-    } finally {
-      await sql.end({ timeout: 5 });
-    }
   });
 
   it('labels result column types from the OID map (incl. name / jsonb / oid)', async () => {
@@ -230,12 +181,12 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
 
     const executor = new IsolateExecutor({ timeoutMs: 10000, memoryMb: 512 });
 
-    // The TLS gate runs before the host classifier on this lane too (case 4),
-    // so strip any `sslmode=disable` off the test URL to reach the address
-    // checks -- the same strip the direct-drive cases above use.
+    // The TLS gate runs before the host dials (case 4), so strip any
+    // `sslmode=disable` off the test URL to reach the address checks -- the
+    // same strip the direct-drive TLS case above uses.
     const baseUrl = (process.env.DATABASE_URL ?? '').replace(/[?&]sslmode=[^&]*/, '');
 
-    // 1. Under block-private policy in env, connection to 127.0.0.1 test DB is blocked by SSRF egress guard
+    // 1. Under block-private policy in env, the host's socketOpen refuses the loopback test DB
     await expect(
       executor.execute(code, {
         mode: 'query',

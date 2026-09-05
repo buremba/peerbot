@@ -77,7 +77,9 @@ const HOST_CHARS = /^[A-Za-z0-9._\-\u0080-\uffff]+$/;
  * sees the one name the resolver will ultimately use.
  */
 export function canonicalizeHostname(hostname: string): string {
-  const lower = hostname.replace(/\.+$/, '').toLowerCase();
+  let end = hostname.length;
+  while (end > 0 && hostname.charCodeAt(end - 1) === 0x2e) end -= 1;
+  const lower = hostname.slice(0, end).toLowerCase();
   if (lower === '' || !HOST_CHARS.test(lower)) return lower;
   if (normalizeIpLiteral(stripIpv6Brackets(lower)).kind !== 'not-ip') return lower;
   try {

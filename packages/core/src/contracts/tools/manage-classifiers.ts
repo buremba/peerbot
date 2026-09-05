@@ -1,91 +1,69 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 
 // ============================================
-// Typebox Schema
+// Typebox Schema (union of per-action variants)
 // ============================================
+//
+// The wire schema flattens this union into ONE MCP object and merges duplicate
+// properties first-occurrence-wins, so a property carried by more than one
+// variant must read true for every one of them.
 
-export const ManageClassifiersSchema = Type.Object({
-  action: Type.Union(
-    [
-      // Template CRUD
-      Type.Literal("create", {
-        description:
-          "Create a classifier. Org-level by default; pass automation_id to scope it to one Automation.",
-      }),
-      Type.Literal("list", { description: "List classifiers with filters." }),
-      Type.Literal("generate_embeddings", {
-        description: "Generate/regenerate attribute-value embeddings.",
-      }),
-      Type.Literal("delete", {
-        description: "Archive a classifier (status -> deprecated).",
-      }),
-      // Manual classification
-      Type.Literal("classify", {
-        description: "Manual single/batch classification.",
-      }),
-      Type.Literal("apply", {
-        description:
-          "Run a classifier over specific content ids (embedding match, no LLM). Re-running re-labels: it replaces prior embedding results and never touches manual/LLM ones. Use after editing a classifier — run generate_embeddings first.",
-      }),
-    ],
-    { description: "Action to perform" }
-  ),
+const EntityId = Type.Number({
+  description:
+    "[create/list] Entity ID to scope classifiers (global if omitted)",
+});
+const ClassifierId = Type.Number({
+  description: "[generate_embeddings/delete] Classifier ID",
+});
+const ClassifierSlug = Type.String({
+  description:
+    '[classify/apply] Classifier slug (e.g., "sentiment", "bug-severity")',
+});
+const EmbeddingModel = Type.String({
+  description:
+    "[create/generate_embeddings/apply] Embedding model to use. Defaults to this deployment's configured model; only set it to work in a different vector space. Label vectors and event vectors must share a model — a classifier embedded under one model matches nothing when applied under another, and `apply` will report every id as not_embedded until the events are embedded under the same model.",
+});
 
-  // Template fields
-  entity_id: Type.Optional(
-    Type.Number({
-      description:
-        "[create/list] Entity ID to scope classifiers (global if omitted)",
-    })
-  ),
+export const CreateClassifierAction = Type.Object({
+  action: Type.Literal("create", {
+    description:
+      "Create a classifier. Org-level by default; pass automation_id to scope it to one Automation.",
+  }),
+  entity_id: Type.Optional(EntityId),
   automation_id: Type.Optional(
     Type.String({
       description:
         "[create] Persisted Automation ID returned by manage_automations (numeric string). OMIT for an org-level classifier — only those are matched by `apply` and the reconciliation job. Pass it only to scope the classifier to a single Automation.",
     })
   ),
-  classifier_id: Type.Optional(
-    Type.Number({
-      description: "[generate_embeddings/delete] Classifier ID",
-    })
-  ),
-  slug: Type.Optional(
-    Type.String({
-      description: '[create] Unique identifier (e.g., "sentiment", "quality")',
-    })
-  ),
-  name: Type.Optional(Type.String({ description: "[create] Display name" })),
+  slug: Type.String({
+    description: '[create] Unique identifier (e.g., "sentiment", "quality")',
+  }),
+  name: Type.String({ description: "[create] Display name" }),
   description: Type.Optional(
     Type.String({ description: "[create] Classifier description" })
   ),
-  attribute_key: Type.Optional(
-    Type.String({
-      description:
-        '[create] Key in content classifications (e.g., "sentiment")',
-    })
-  ),
-  attribute_values: Type.Optional(
-    Type.Record(
-      Type.String({ minLength: 1 }),
-      Type.Object(
-        {
-          description: Type.String(),
-          examples: Type.Array(Type.String()),
-          embedding: Type.Optional(
-            Type.Union([
-              Type.Array(Type.Number(), { minItems: 1 }),
-              Type.Null(),
-            ])
-          ),
-        },
-        { additionalProperties: false }
-      ),
+  attribute_key: Type.String({
+    description: '[create] Key in content classifications (e.g., "sentiment")',
+  }),
+  attribute_values: Type.Record(
+    Type.String({ minLength: 1 }),
+    Type.Object(
       {
-        minProperties: 1,
-        description:
-          "[create] Map of attribute values to descriptions, examples, and optional embeddings.",
-      }
-    )
+        description: Type.String(),
+        examples: Type.Array(Type.String()),
+        embedding: Type.Optional(
+          Type.Union([Type.Array(Type.Number(), { minItems: 1 }), Type.Null()])
+        ),
+      },
+      { additionalProperties: false }
+    ),
+    {
+      minProperties: 1,
+      description:
+        "[create] Map of attribute values to descriptions, examples, and optional embeddings.",
+    }
   ),
   min_similarity: Type.Optional(
     Type.Number({
@@ -100,29 +78,57 @@ export const ManageClassifiersSchema = Type.Object({
   created_by: Type.Optional(
     Type.String({ description: "[create] Creator identifier" })
   ),
+  embedding_model: Type.Optional(EmbeddingModel),
+});
+
+export const ListClassifiersAction = Type.Object({
+  action: Type.Literal("list", {
+    description: "List classifiers with filters.",
+  }),
+  entity_id: Type.Optional(EntityId),
   status: Type.Optional(
     Type.String({
       description:
         "[list] Filter by status. Defaults to 'active' (deprecated classifiers are excluded). Pass 'deprecated' to see archived ones, or 'all' to list every classifier regardless of status.",
     })
   ),
+});
+
+export const GenerateClassifierEmbeddingsAction = Type.Object({
+  action: Type.Literal("generate_embeddings", {
+    description: "Generate/regenerate attribute-value embeddings.",
+  }),
+  classifier_id: ClassifierId,
   force_regenerate: Type.Optional(
     Type.Boolean({
       description:
         "[generate_embeddings] Force regenerate existing embeddings (default: false)",
     })
   ),
-  embedding_model: Type.Optional(
-    Type.String({
-      description:
-        "[create/generate_embeddings/apply] Embedding model to use. Defaults to this deployment's configured model; only set it to work in a different vector space. Label vectors and event vectors must share a model — a classifier embedded under one model matches nothing when applied under another, and `apply` will report every id as not_embedded until the events are embedded under the same model.",
-    })
-  ),
+  embedding_model: Type.Optional(EmbeddingModel),
+});
 
-  // Manual classification fields
+export const DeleteClassifierAction = Type.Object({
+  action: Type.Literal("delete", {
+    description: "Archive a classifier (status -> deprecated).",
+  }),
+  classifier_id: ClassifierId,
+});
+
+export const ClassifyContentAction = Type.Object({
+  action: Type.Literal("classify", {
+    description: "Manual single/batch classification.",
+  }),
+  classifier_slug: ClassifierSlug,
   content_id: Type.Optional(
     Type.Number({
       description: "[classify] Content ID to update (single mode)",
+    })
+  ),
+  value: Type.Optional(
+    Type.Union([Type.String(), Type.Null()], {
+      description:
+        "[classify] Classification value for single update, or null to unset",
     })
   ),
   classifications: Type.Optional(
@@ -144,26 +150,6 @@ export const ManageClassifiersSchema = Type.Object({
       }
     )
   ),
-  content_ids: Type.Optional(
-    Type.Array(Type.Number(), {
-      minItems: 1,
-      maxItems: 2000,
-      description:
-        "[apply] Content ids to classify. Get them with a read-only SQL query first, then pass them here. Ids outside your organization, or without an embedding, are skipped and reported — never silently dropped.",
-    })
-  ),
-  classifier_slug: Type.Optional(
-    Type.String({
-      description:
-        '[classify/apply] Classifier slug (e.g., "sentiment", "bug-severity")',
-    })
-  ),
-  value: Type.Optional(
-    Type.Union([Type.String(), Type.Null()], {
-      description:
-        "[classify] Classification value for single update, or null to unset",
-    })
-  ),
   source: Type.Optional(
     Type.Union([Type.Literal("llm"), Type.Literal("user")], {
       description:
@@ -178,7 +164,50 @@ export const ManageClassifiersSchema = Type.Object({
   ),
 });
 
+export const ApplyClassifierAction = Type.Object({
+  action: Type.Literal("apply", {
+    description:
+      "Run a classifier over specific content ids (embedding match, no LLM). Re-running re-labels: it replaces prior embedding results and never touches manual/LLM ones. Use after editing a classifier — run generate_embeddings first.",
+  }),
+  classifier_slug: ClassifierSlug,
+  content_ids: Type.Array(Type.Number(), {
+    minItems: 1,
+    maxItems: 2000,
+    description:
+      "[apply] Content ids to classify. Get them with a read-only SQL query first, then pass them here. Ids outside your organization, or without an embedding, are skipped and reported — never silently dropped.",
+  }),
+  embedding_model: Type.Optional(EmbeddingModel),
+});
+
+export const ManageClassifiersSchema = Type.Union([
+  CreateClassifierAction,
+  ListClassifiersAction,
+  GenerateClassifierEmbeddingsAction,
+  DeleteClassifierAction,
+  ClassifyContentAction,
+  ApplyClassifierAction,
+]);
+
 export type ManageClassifiersArgs = Static<typeof ManageClassifiersSchema>;
+
+export type ClassifierCreateInput = ActionInput<
+  ManageClassifiersArgs,
+  "create"
+>;
+export type ClassifierListInput = ActionInput<ManageClassifiersArgs, "list">;
+export type ClassifierGenerateEmbeddingsInput = ActionInput<
+  ManageClassifiersArgs,
+  "generate_embeddings"
+>;
+export type ClassifierDeleteInput = ActionInput<
+  ManageClassifiersArgs,
+  "delete"
+>;
+export type ClassifierClassifyInput = ActionInput<
+  ManageClassifiersArgs,
+  "classify"
+>;
+export type ClassifierApplyInput = ActionInput<ManageClassifiersArgs, "apply">;
 
 /**
  * Result of `manage_classifiers`. TypeBox-first: `Static<>` derives the TS type

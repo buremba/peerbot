@@ -5643,123 +5643,168 @@ export type ReadKnowledgeResponse =
   ReadKnowledgeResponses[keyof ReadKnowledgeResponses];
 
 export type ManageClassifiersData = {
-  body: {
-    /**
-     * Action to perform
-     */
-    action:
-      | "create"
-      | "list"
-      | "generate_embeddings"
-      | "delete"
-      | "classify"
-      | "apply";
-    /**
-     * [create/list] Entity ID to scope classifiers (global if omitted)
-     */
-    entity_id?: number;
-    /**
-     * [create] Persisted Automation ID returned by manage_automations (numeric string). OMIT for an org-level classifier — only those are matched by `apply` and the reconciliation job. Pass it only to scope the classifier to a single Automation.
-     */
-    automation_id?: string;
-    /**
-     * [generate_embeddings/delete] Classifier ID
-     */
-    classifier_id?: number;
-    /**
-     * [create] Unique identifier (e.g., "sentiment", "quality")
-     */
-    slug?: string;
-    /**
-     * [create] Display name
-     */
-    name?: string;
-    /**
-     * [create] Classifier description
-     */
-    description?: string;
-    /**
-     * [create] Key in content classifications (e.g., "sentiment")
-     */
-    attribute_key?: string;
-    /**
-     * [create] Map of attribute values to descriptions, examples, and optional embeddings.
-     */
-    attribute_values?: {
-      [key: string]:
-        | unknown
-        | {
-            description: string;
-            examples: Array<string>;
-            embedding?: Array<number> | null;
-          };
-    };
-    /**
-     * [create] Minimum similarity threshold (default: 0.7)
-     */
-    min_similarity?: number;
-    /**
-     * [create] Fallback value if no match (default: null)
-     */
-    fallback_value?: unknown;
-    /**
-     * [create] Creator identifier
-     */
-    created_by?: string;
-    /**
-     * [list] Filter by status. Defaults to 'active' (deprecated classifiers are excluded). Pass 'deprecated' to see archived ones, or 'all' to list every classifier regardless of status.
-     */
-    status?: string;
-    /**
-     * [generate_embeddings] Force regenerate existing embeddings (default: false)
-     */
-    force_regenerate?: boolean;
-    /**
-     * [create/generate_embeddings/apply] Embedding model to use. Defaults to this deployment's configured model; only set it to work in a different vector space. Label vectors and event vectors must share a model — a classifier embedded under one model matches nothing when applied under another, and `apply` will report every id as not_embedded until the events are embedded under the same model.
-     */
-    embedding_model?: string;
-    /**
-     * [classify] Content ID to update (single mode)
-     */
-    content_id?: number;
-    /**
-     * [classify] Array of classifications to update (batch mode)
-     */
-    classifications?: Array<{
-      /**
-       * Content ID
-       */
-      content_id: number;
-      /**
-       * Classification value, or null to unset
-       */
-      value: string | null;
-      /**
-       * Reasoning/justification for this classification
-       */
-      reasoning?: string;
-    }>;
-    /**
-     * [apply] Content ids to classify. Get them with a read-only SQL query first, then pass them here. Ids outside your organization, or without an embedding, are skipped and reported — never silently dropped.
-     */
-    content_ids?: Array<number>;
-    /**
-     * [classify/apply] Classifier slug (e.g., "sentiment", "bug-severity")
-     */
-    classifier_slug?: string;
-    /**
-     * [classify] Classification value for single update, or null to unset
-     */
-    value?: string | null;
-    /**
-     * [classify] Classification source: "llm" (AI-generated) or "user" (manual). Defaults to "user".
-     */
-    source?: "llm" | "user";
-    /**
-     * [classify] Reasoning/justification for the classification(s)
-     */
-    reasoning?: string;
-  };
+  body:
+    | {
+        /**
+         * Create a classifier. Org-level by default; pass automation_id to scope it to one Automation.
+         */
+        action: "create";
+        /**
+         * [create/list] Entity ID to scope classifiers (global if omitted)
+         */
+        entity_id?: number;
+        /**
+         * [create] Persisted Automation ID returned by manage_automations (numeric string). OMIT for an org-level classifier — only those are matched by `apply` and the reconciliation job. Pass it only to scope the classifier to a single Automation.
+         */
+        automation_id?: string;
+        /**
+         * [create] Unique identifier (e.g., "sentiment", "quality")
+         */
+        slug: string;
+        /**
+         * [create] Display name
+         */
+        name: string;
+        /**
+         * [create] Classifier description
+         */
+        description?: string;
+        /**
+         * [create] Key in content classifications (e.g., "sentiment")
+         */
+        attribute_key: string;
+        /**
+         * [create] Map of attribute values to descriptions, examples, and optional embeddings.
+         */
+        attribute_values: {
+          [key: string]:
+            | unknown
+            | {
+                description: string;
+                examples: Array<string>;
+                embedding?: Array<number> | null;
+              };
+        };
+        /**
+         * [create] Minimum similarity threshold (default: 0.7)
+         */
+        min_similarity?: number;
+        /**
+         * [create] Fallback value if no match (default: null)
+         */
+        fallback_value?: unknown;
+        /**
+         * [create] Creator identifier
+         */
+        created_by?: string;
+        /**
+         * [create/generate_embeddings/apply] Embedding model to use. Defaults to this deployment's configured model; only set it to work in a different vector space. Label vectors and event vectors must share a model — a classifier embedded under one model matches nothing when applied under another, and `apply` will report every id as not_embedded until the events are embedded under the same model.
+         */
+        embedding_model?: string;
+      }
+    | {
+        /**
+         * List classifiers with filters.
+         */
+        action: "list";
+        /**
+         * [create/list] Entity ID to scope classifiers (global if omitted)
+         */
+        entity_id?: number;
+        /**
+         * [list] Filter by status. Defaults to 'active' (deprecated classifiers are excluded). Pass 'deprecated' to see archived ones, or 'all' to list every classifier regardless of status.
+         */
+        status?: string;
+      }
+    | {
+        /**
+         * Generate/regenerate attribute-value embeddings.
+         */
+        action: "generate_embeddings";
+        /**
+         * [generate_embeddings/delete] Classifier ID
+         */
+        classifier_id: number;
+        /**
+         * [generate_embeddings] Force regenerate existing embeddings (default: false)
+         */
+        force_regenerate?: boolean;
+        /**
+         * [create/generate_embeddings/apply] Embedding model to use. Defaults to this deployment's configured model; only set it to work in a different vector space. Label vectors and event vectors must share a model — a classifier embedded under one model matches nothing when applied under another, and `apply` will report every id as not_embedded until the events are embedded under the same model.
+         */
+        embedding_model?: string;
+      }
+    | {
+        /**
+         * Archive a classifier (status -> deprecated).
+         */
+        action: "delete";
+        /**
+         * [generate_embeddings/delete] Classifier ID
+         */
+        classifier_id: number;
+      }
+    | {
+        /**
+         * Manual single/batch classification.
+         */
+        action: "classify";
+        /**
+         * [classify/apply] Classifier slug (e.g., "sentiment", "bug-severity")
+         */
+        classifier_slug: string;
+        /**
+         * [classify] Content ID to update (single mode)
+         */
+        content_id?: number;
+        /**
+         * [classify] Classification value for single update, or null to unset
+         */
+        value?: string | null;
+        /**
+         * [classify] Array of classifications to update (batch mode)
+         */
+        classifications?: Array<{
+          /**
+           * Content ID
+           */
+          content_id: number;
+          /**
+           * Classification value, or null to unset
+           */
+          value: string | null;
+          /**
+           * Reasoning/justification for this classification
+           */
+          reasoning?: string;
+        }>;
+        /**
+         * [classify] Classification source: "llm" (AI-generated) or "user" (manual). Defaults to "user".
+         */
+        source?: "llm" | "user";
+        /**
+         * [classify] Reasoning/justification for the classification(s)
+         */
+        reasoning?: string;
+      }
+    | {
+        /**
+         * Run a classifier over specific content ids (embedding match, no LLM). Re-running re-labels: it replaces prior embedding results and never touches manual/LLM ones. Use after editing a classifier — run generate_embeddings first.
+         */
+        action: "apply";
+        /**
+         * [classify/apply] Classifier slug (e.g., "sentiment", "bug-severity")
+         */
+        classifier_slug: string;
+        /**
+         * [apply] Content ids to classify. Get them with a read-only SQL query first, then pass them here. Ids outside your organization, or without an embedding, are skipped and reported — never silently dropped.
+         */
+        content_ids: Array<number>;
+        /**
+         * [create/generate_embeddings/apply] Embedding model to use. Defaults to this deployment's configured model; only set it to work in a different vector space. Label vectors and event vectors must share a model — a classifier embedded under one model matches nothing when applied under another, and `apply` will report every id as not_embedded until the events are embedded under the same model.
+         */
+        embedding_model?: string;
+      };
   path: {
     /**
      * Organization slug (workspace identifier)

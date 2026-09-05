@@ -5,7 +5,7 @@
  *
  * Template actions:
  * - create: Create new classifier (v1)
- * - list: List all classifiers (optionally filter by slug/status)
+ * - list: List all classifiers (optionally filter by entity_id/status)
  * - generate_embeddings: Generate embeddings for attribute values
  * - delete: Archive classifier (soft delete)
  *
@@ -17,11 +17,17 @@
  */
 
 import {
+  ApplyClassifierAction,
+  ClassifyContentAction,
+  CreateClassifierAction,
+  DeleteClassifierAction,
+  GenerateClassifierEmbeddingsAction,
+  ListClassifiersAction,
   ManageClassifiersSchema,
-  type ManageClassifiersArgs,
   ManageClassifiersResultSchema,
   type ManageClassifiersResult,
 } from '@lobu/core/contracts/tools/manage-classifiers';
+import type { Static } from '@sinclair/typebox';
 import type { DbClient } from '../../db/client';
 import { getDb, pgBigintArray } from '../../db/client';
 import type { Env } from '../../index';
@@ -33,8 +39,7 @@ import {
 } from '../../utils/embeddings';
 import logger from '../../utils/logger';
 import type { ToolContext } from '../registry';
-import { withValidatedArgs } from '../validate-args';
-import { defineFlatActionTool, flatAction } from './action-tool';
+import { action, defineActionTool } from './action-tool';
 
 export { ManageClassifiersResultSchema, ManageClassifiersSchema };
 
@@ -196,37 +201,31 @@ function stripEmbeddingsFromAttributeValues(
 // Main Function (Action Router)
 // ============================================
 
-export const manageClassifiers = withValidatedArgs(
-  'manage_classifiers',
-  ManageClassifiersSchema,
-  defineFlatActionTool<ManageClassifiersArgs, ManageClassifiersResult>('manage_classifiers', {
-    create: flatAction((args, ctx, env) => handleCreate(args, env, ctx)),
-    list: flatAction(handleList),
-    generate_embeddings: flatAction((args, ctx, env) => handleGenerateEmbeddings(args, env, ctx)),
-    delete: flatAction(handleDelete),
-    classify: flatAction(handleClassify),
-    apply: flatAction(handleApply),
-  })
-);
+// Variants in the contract's order, so the derived union matches the exposed
+// `ManageClassifiersSchema`. Each handler receives its own variant's args.
+const manageClassifiersTool = defineActionTool('manage_classifiers', {
+  create: action(CreateClassifierAction, (args, ctx, env) => handleCreate(args, env, ctx)),
+  list: action(ListClassifiersAction, handleList),
+  generate_embeddings: action(GenerateClassifierEmbeddingsAction, (args, ctx, env) =>
+    handleGenerateEmbeddings(args, env, ctx)
+  ),
+  delete: action(DeleteClassifierAction, handleDelete),
+  classify: action(ClassifyContentAction, handleClassify),
+  apply: action(ApplyClassifierAction, handleApply),
+});
+
+export const manageClassifiers = manageClassifiersTool.run;
 
 // ============================================
 // Template CRUD Handlers
 // ============================================
 
 async function handleCreate(
-  args: ManageClassifiersArgs,
+  args: Static<typeof CreateClassifierAction>,
   env: Env,
   ctx: ToolContext
 ): Promise<ManageClassifiersResult> {
   const sql = getDb();
-
-  if (!args.slug || !args.name || !args.attribute_key || !args.attribute_values) {
-    return {
-      success: false,
-      action: 'create',
-      message: 'Missing required fields: slug, name, attribute_key, attribute_values',
-    };
-  }
 
   const entityId = args.entity_id ?? null;
   // Optional on purpose. `automation_id` becomes `classify_facet.automation_id`, and
@@ -330,7 +329,7 @@ async function handleCreate(
 }
 
 async function handleList(
-  args: ManageClassifiersArgs,
+  args: Static<typeof ListClassifiersAction>,
   ctx: ToolContext
 ): Promise<ManageClassifiersResult> {
   const sql = getDb();
@@ -400,18 +399,11 @@ async function handleList(
 }
 
 async function handleGenerateEmbeddings(
-  args: ManageClassifiersArgs,
+  args: Static<typeof GenerateClassifierEmbeddingsAction>,
   env: Env,
   ctx: ToolContext
 ): Promise<ManageClassifiersResult> {
   const sql = getDb();
-  if (!args.classifier_id) {
-    return {
-      success: false,
-      action: 'generate_embeddings',
-      message: 'Missing required field: classifier_id',
-    };
-  }
 
   const facet = await sql`
     SELECT cf.attribute_values
@@ -457,13 +449,10 @@ async function handleGenerateEmbeddings(
 }
 
 async function handleDelete(
-  args: ManageClassifiersArgs,
+  args: Static<typeof DeleteClassifierAction>,
   ctx: ToolContext
 ): Promise<ManageClassifiersResult> {
   const sql = getDb();
-  if (!args.classifier_id) {
-    return { success: false, action: 'delete', message: 'Missing required field: classifier_id' };
-  }
 
   const result = await sql`
     UPDATE classify_facet
@@ -492,7 +481,7 @@ async function handleDelete(
 // ============================================
 
 async function handleClassify(
-  args: ManageClassifiersArgs,
+  args: Static<typeof ClassifyContentAction>,
   ctx: ToolContext
 ): Promise<ManageClassifiersResult> {
   const sql = getDb();
@@ -508,10 +497,6 @@ async function handleClassify(
         message:
           'Must provide either content_id (single mode) or classifications array (batch mode), not both',
       };
-    }
-
-    if (!args.classifier_slug) {
-      return { success: false, action: 'classify', message: 'classifier_slug is required' };
     }
 
     const classifierResult = (await sql`
@@ -653,17 +638,10 @@ const SKIP_REASON_TEXT: Record<SkipReason, string> = {
  * looking like a successful no-op.
  */
 async function runApply(
-  args: ManageClassifiersArgs,
+  args: Static<typeof ApplyClassifierAction>,
   ctx: ToolContext
 ): Promise<ManageClassifiersResult> {
   const sql = getDb();
-
-  if (!args.classifier_slug) {
-    return { success: false, action: 'apply', message: 'classifier_slug is required' };
-  }
-  if (!args.content_ids || args.content_ids.length === 0) {
-    return { success: false, action: 'apply', message: 'content_ids is required and must be non-empty' };
-  }
 
   // Dedupe so the counts below describe distinct events, not request repeats.
   const requestedIds = [...new Set(args.content_ids)];
@@ -800,14 +778,14 @@ async function runApply(
  * `routeAction`.
  */
 async function handleApply(
-  args: ManageClassifiersArgs,
+  args: Static<typeof ApplyClassifierAction>,
   ctx: ToolContext
 ): Promise<ManageClassifiersResult> {
   try {
     return await runApply(args, ctx);
   } catch (error) {
     logger.error(
-      { error, classifier_slug: args.classifier_slug, requested: args.content_ids?.length ?? 0 },
+      { error, classifier_slug: args.classifier_slug, requested: args.content_ids.length },
       'Failed to apply classifier over content ids'
     );
     return {

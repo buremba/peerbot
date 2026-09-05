@@ -183,6 +183,42 @@ describe('daemon-builtin os.shell', () => {
     });
   });
 
+  test('preserves a signal instead of collapsing it to exit code -1', async () => {
+    if (process.platform === 'win32') return;
+
+    const result = await executeDaemonBuiltin({
+      connectorKey: 'os.shell',
+      actionKey: 'run',
+      input: { command: 'kill -TERM $$', cwd: process.cwd() },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'operation_execution_failed',
+      error: 'Shell command terminated by SIGTERM',
+      output: {
+        exit_code: -1,
+        exit_signal: 'SIGTERM',
+        process_stage: 'target_exit',
+      },
+    });
+  });
+
+  test('keeps short-lived command outcomes stable under process churn', async () => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const output = await runShellBuiltin({
+        command: "printf 'lobu-shell-self-check\\n'",
+        cwd: process.cwd(),
+      });
+      expect(output).toMatchObject({
+        success: true,
+        stdout: 'lobu-shell-self-check\n',
+        stderr: '',
+        exit_code: 0,
+      });
+    }
+  });
+
   test('executes without compiled connector code or connector SDK resolution', async () => {
     const { client, completions } = stubClient();
     const result = await executeRun(
@@ -430,7 +466,19 @@ describe('daemon-builtin os.shell', () => {
         actionKey: 'run',
         input: { command: 'printf nope', cwd: file },
       });
-      expect(spawnFault).toMatchObject({ ok: false, code: 'operation_execution_failed' });
+      expect(spawnFault).toMatchObject({
+        ok: false,
+        code: 'operation_execution_failed',
+        output: {
+          exit_code: -1,
+          process_stage: 'supervisor_spawn',
+          process_error_code: 'ENOTDIR',
+        },
+      });
+      if (!spawnFault.ok) {
+        expect(spawnFault.error).toContain('Shell supervisor failed to start');
+        expect(spawnFault.error).toContain('ENOTDIR');
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

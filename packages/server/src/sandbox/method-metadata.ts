@@ -101,7 +101,7 @@ export default async (_ctx, client) => {
 		access: "write",
 		throws: ["ValidationError"],
 		example:
-			"await client.entities.create({ type: 'company', name: 'Acme', metadata: {} });",
+			"await client.entities.create({ entity_type: 'company', name: 'Acme', metadata: {} });",
 		usageExample: `// Two-hop: ensure the entity type exists, THEN create the entity.
 // A first-of-its-kind type must be created before any entity of it.
 export default async (_ctx, client) => {
@@ -119,7 +119,7 @@ export default async (_ctx, client) => {
     }
   }
   return client.entities.create({
-    type: 'company',
+    entity_type: 'company',
     name: 'Acme',
     metadata: { team_size: 50 },
   });

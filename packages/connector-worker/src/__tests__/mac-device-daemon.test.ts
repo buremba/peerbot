@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  bridgeImplementsRun,
   createMacDeviceDaemonShutdown,
   macDeviceDaemonMetadata,
   selectMacDeviceDaemonAgentKind,
   validateMacDeviceDaemonOptions,
 } from '../daemon/mac-device-daemon';
+import { MutableWorkerAdvertisementProvider } from '../daemon/client';
 import { executeAutomationRun } from '../daemon/automation';
 import { NATIVE_BRIDGE_PROTOCOL } from '../daemon/native-bridge/protocol';
 import {
@@ -325,5 +327,63 @@ describe('WorkerPollLoop', () => {
     await handler('SIGTERM');
 
     expect(events).toEqual(['daemon-stop', 'wait', 'exit:0']);
+  });
+});
+
+// The Mac daemon routes every sync/action/auth run through this predicate, and
+// it is the ONLY thing standing between a claimed run and the native bridge.
+// It replaced a routing marker the gateway derived from the connector manifest
+// — which is what forced the implementation into the manifest, and therefore
+// into the contract hash, so one contract could not be served by two endpoints.
+describe('bridgeImplementsRun', () => {
+  const provider = new MutableWorkerAdvertisementProvider({
+    capabilities: {},
+    manifests: [{ key: 'os.shell', version: '0.3.0' }, { key: 'apple.calendar' }],
+    generation: 1,
+  });
+
+  test('routes a run whose connector the app declared over the bridge', () => {
+    for (const run_type of ['sync', 'action', 'auth'] as const) {
+      expect(
+        bridgeImplementsRun({ run_id: 1, run_type, connector_key: 'os.shell' } as never, provider)
+      ).toBe(true);
+    }
+  });
+
+  test('refuses a connector the app never advertised', () => {
+    expect(
+      bridgeImplementsRun(
+        { run_id: 2, run_type: 'action', connector_key: 'apple.photos' } as never,
+        provider
+      )
+    ).toBe(false);
+  });
+
+  // The gateway ships code only for connectors the device does NOT implement,
+  // so a compiled payload is never bridge work however the inventory reads.
+  test('refuses a compiled payload and a run with no connector', () => {
+    expect(
+      bridgeImplementsRun(
+        {
+          run_id: 3,
+          run_type: 'action',
+          connector_key: 'os.shell',
+          compiled_code: 'must-not-execute',
+        } as never,
+        provider
+      )
+    ).toBe(false);
+    expect(bridgeImplementsRun({ run_id: 4, run_type: 'action' } as never, provider)).toBe(false);
+  });
+
+  // A daemon started without the app's advertisement channel knows of no
+  // implementation at all, so it must claim none rather than assume one.
+  test('refuses everything when no advertisement provider is attached', () => {
+    expect(
+      bridgeImplementsRun(
+        { run_id: 5, run_type: 'action', connector_key: 'os.shell' } as never,
+        undefined
+      )
+    ).toBe(false);
   });
 });

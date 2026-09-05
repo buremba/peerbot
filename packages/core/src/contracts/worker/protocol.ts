@@ -112,43 +112,24 @@ export const OAuthCredentialsSchema = Type.Object({
 export const EXECUTION_BACKENDS = {
   /** Artifact compiled from connector source and executed by the worker. */
   compiledConnector: "compiled_connector",
-  /** Built into the daemon binary; no compiler or SDK resolution involved. */
-  daemonBuiltin: "daemon_builtin",
 } as const;
 
 /**
- * What a worker on `platform` advertises when it sends no `backend_capacity`.
+ * What a worker advertises when it sends no `backend_capacity`.
  *
  * Every daemon is compiled-capable by construction: `startDaemonCommand`
  * asserts the compiled runtime resolves and loads before the first poll, so a
- * polling daemon has already proven it. `headless` — the default platform of
- * `lobu daemon` — additionally owns the in-process daemon builtin. Platforms
- * that poll without running a daemon (the Chrome extension, the macOS app)
- * never run one and so never advertise it.
- */
-export function defaultBackendCapacity(
-  platform: string | null | undefined
-): Record<string, number> {
-  return platform === "headless"
-    ? {
-        [EXECUTION_BACKENDS.daemonBuiltin]: 1,
-        [EXECUTION_BACKENDS.compiledConnector]: 1,
-      }
-    : { [EXECUTION_BACKENDS.compiledConnector]: 1 };
-}
-
-/**
- * Server-selected execution path for an exact pinned connector artifact.
+ * polling daemon has already proven it.
  *
- * Device-owned paths only. A compiled run ships the code itself and carries no
- * marker, so `compiled_connector` is a `backend_capacity` key and never a poll
- * response value — listing it here would widen the wire contract with a value
- * no producer emits and the worker ignores.
+ * Capacity covers only work the SERVER hands over as code. A connector the
+ * endpoint implements itself needs no advertised backend, because the gateway
+ * ships nothing to run and the endpoint routes it from its own registry — that
+ * is also what lets a device with a broken connector compiler keep serving its
+ * native connectors and be recovered through one.
  */
-export const ExecutionBackendSchema = Type.Union([
-  Type.Literal(EXECUTION_BACKENDS.daemonBuiltin),
-  Type.Literal("native_bridge"),
-]);
+export function defaultBackendCapacity(): Record<string, number> {
+  return { [EXECUTION_BACKENDS.compiledConnector]: 1 };
+}
 
 /** `POST /api/workers/poll` request body. */
 export const PollRequestSchema = Type.Object({
@@ -314,9 +295,11 @@ export const PollResponseSchema = Type.Object({
   ),
   connector_key: Type.Optional(Type.String()),
   feed_key: Type.Optional(Type.String()),
+  /**
+   * Contract identity of the pinned manifest artifact, so a device can refuse
+   * a manifest it does not implement at that exact hash.
+   */
   connector_manifest_hash: Type.Optional(Type.String({ minLength: 1 })),
-  /** Server-selected execution path for the exact pinned connector artifact. */
-  execution_backend: Type.Optional(ExecutionBackendSchema),
   config: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   db_egress_policy: Type.Optional(
     Type.Union([Type.Literal("block-private"), Type.Literal("allow-private")])
@@ -617,7 +600,6 @@ export const DispatchChromeActionResponseSchema = Type.Object({
 export type RunType = Static<typeof RunTypeSchema>;
 export type WorkerExitReason = Static<typeof WorkerExitReasonSchema>;
 export type WorkerExitDiagnostics = Static<typeof WorkerExitDiagnosticsSchema>;
-export type ExecutionBackend = Static<typeof ExecutionBackendSchema>;
 export type OAuthCredentials = Static<typeof OAuthCredentialsSchema>;
 export type PollRequest = Static<typeof PollRequestSchema>;
 export type PollResponse = Static<typeof PollResponseSchema>;

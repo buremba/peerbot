@@ -10,7 +10,6 @@ import { hostname } from 'node:os';
 import { isKnownPlatform } from '@lobu/core';
 import {
   EXECUTION_BACKENDS,
-  defaultBackendCapacity,
 } from '@lobu/core/contracts/worker/protocol';
 import { assertExternalDepsResolvable } from '../compile/index.js';
 import { buildConnectorWorkerEnv } from '../env.js';
@@ -189,7 +188,6 @@ export async function startDaemonCommand(
     );
   }
   const backendCapacity = {
-    ...defaultBackendCapacity(platform),
     [EXECUTION_BACKENDS.compiledConnector]: compiledRuntimeReady ? 1 : 0,
   };
   log.info(`[cli] Starting worker daemon (ID: ${workerId}, API: ${opts.apiUrl})`);

@@ -1,8 +1,10 @@
 import type { DeviceConnectorSpec } from "@lobu/connector-sdk";
 
 /**
- * Canonical TypeScript source for the active Mac-native device connector metadata.
- * The bridge owns execution; this package contains no executable handlers.
+ * Canonical TypeScript source for the Mac-only device connector metadata. The
+ * Mac app implements every entry natively; this package contains no executable
+ * handlers. Connectors shared with another platform are authored separately
+ * (see `os-shell.ts`) so both endpoints serialize the identical contract.
  */
 export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
   {
@@ -15,7 +17,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "screentime",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -87,7 +88,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "local_directory",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -177,7 +177,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
         "workouts",
         "resting-heart-rate",
       ],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -309,7 +308,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     runtime: {
       platforms: ["macos"],
       scopes: ["date", "location", "albums"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -444,7 +442,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "system_audio",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -519,7 +516,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "calendar",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -591,7 +587,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "reminders",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -657,7 +652,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
     requiredCapability: "computer_use",
     runtime: {
       platforms: ["macos"],
-      execution: "bridge",
     },
     authSchema: {
       methods: [
@@ -1201,98 +1195,6 @@ export const macDeviceConnectorSpecs: readonly DeviceConnectorSpec[] = [
         outputSchema: {
           type: "object",
           additionalProperties: true,
-        },
-      },
-    },
-  },
-  {
-    key: "os.shell",
-    version: "0.2.0",
-    name: "Mac Shell",
-    description:
-      "Run shell commands on this Mac through Lobu for Mac, as the signed-in user. Returns structured stdout/stderr/exit_code. Same trust tier as computer use — commands run in the user's real environment (host PATH, gh, files). Enable it explicitly in Lobu for Mac; it advertises nothing until switched on.",
-    faviconDomain: "apple.com",
-    requiredCapability: "os.shell",
-    runtime: {
-      platforms: ["macos"],
-      execution: "bridge",
-    },
-    authSchema: {
-      methods: [
-        {
-          type: "none",
-        },
-      ],
-    },
-    feeds: {},
-    actions: {
-      run: {
-        key: "run",
-        kind: "write",
-        name: "Run command",
-        description:
-          "Run a shell command as the signed-in user and return stdout, stderr, and exit_code. Commands execute through the user's login shell (zsh -l -c), so host-installed CLIs (gh, git, bun, brew, …) resolve via PATH. Prefer one focused command per call over a long script. Destructive/open-world by nature — gate with approval in production.",
-        requiresApproval: true,
-        annotations: {
-          destructiveHint: true,
-          idempotentHint: false,
-          openWorldHint: true,
-        },
-        inputSchema: {
-          type: "object",
-          required: ["command"],
-          properties: {
-            command: {
-              type: "string",
-              minLength: 1,
-              maxLength: 20000,
-              description:
-                "Shell command to execute. Runs via `zsh -l -c`, so pipes, redirects, and && chains work. Keep commands short and targeted.",
-            },
-            cwd: {
-              type: "string",
-              description:
-                "Absolute working directory. Defaults to the user's home directory. Must exist.",
-            },
-            timeout_ms: {
-              type: "integer",
-              minimum: 100,
-              maximum: 150000,
-              default: 60000,
-              description:
-                "Wall-clock budget in milliseconds. On timeout the process gets SIGTERM (3s grace) then SIGKILL. Default 60000, max 150000.",
-            },
-            stdin: {
-              type: "string",
-              maxLength: 1000000,
-              description: "Optional string piped to the command's stdin.",
-            },
-          },
-          additionalProperties: false,
-        },
-        outputSchema: {
-          type: "object",
-          additionalProperties: true,
-          properties: {
-            stdout: {
-              type: "string",
-            },
-            stderr: {
-              type: "string",
-            },
-            exit_code: {
-              type: "integer",
-            },
-            success: {
-              type: "boolean",
-            },
-            timed_out: {
-              type: "boolean",
-            },
-            duration_ms: {
-              type: "integer",
-            },
-          },
         },
       },
     },

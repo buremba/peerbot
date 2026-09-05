@@ -34,7 +34,6 @@ export interface ConnectorMetadata {
     platforms: Array<
       'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'headless' | 'chrome-extension'
     >;
-    execution?: 'bridge' | 'daemon_builtin';
     scopes?: string[];
   } | null;
   /**

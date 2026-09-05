@@ -233,7 +233,6 @@ async function ensureDeviceConnectorWired(
       manifestHash: currentSource.manifestHash,
       definitionManifestHash: currentSource.definitionManifestHash,
       sourcePath: currentSource.sourcePath,
-      runtimeExecution: currentSource.metadata.runtime?.execution,
     };
   };
   const selectedArtifactMatches = async (

@@ -67,7 +67,6 @@ interface ConnectorClaimLaneRefs {
   runRequiredCapability: SqlFragment;
   runManifestBacked: SqlFragment;
   runManifestHash: SqlFragment;
-  runArtifactSourcePath: SqlFragment;
   runRuntime: SqlFragment;
 }
 
@@ -88,6 +87,15 @@ export function connectorClaimLaneSql(
     ${refs.activationKind} = 'page_visit'
     AND ${refs.activatedAt} IS NOT NULL
   `;
+  // A device is authorized for the exact CONTRACT it advertises: key, version
+  // and manifest hash. The hash covers every declared field, so matching it
+  // means this endpoint declares precisely the artifact the run selected.
+  //
+  // Artifact provenance (`source_path`) deliberately is NOT compared. It
+  // records which platform's poll first registered the definition, and a
+  // contract shared by two endpoints is registered by whichever one polled
+  // first — comparing it would authorize that endpoint and silently deny the
+  // other, which is the whole failure this consolidation removes.
   const exactManifestAuthorization = sql`
     EXISTS (
       SELECT 1
@@ -97,7 +105,6 @@ export function connectorClaimLaneSql(
       WHERE auth_item->>'connectorKey' = ${refs.connectorKey}
         AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
         AND auth_item->>'manifestHash' = ${refs.runManifestHash}
-        AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
     )
   `;
   const legacyHashlessManifestAuthorization = sql`
@@ -107,10 +114,12 @@ export function connectorClaimLaneSql(
     AND ${refs.runRequiredCapability} = ANY(
       ${pgTextArray(context.authorizedCapabilities)}::text[]
     )
-    -- A legacy capability poll may retain the pre-bridge metadata-only
-    -- contract, but it must never authorize a bridge execution. A
-    -- hash-attested historical artifact has no active definition runtime, so
-    -- it still requires the exact retained manifest authorization above.
+    -- No contract declares runtime.execution any more, but definitions
+    -- registered before the endpoint consolidation still carry it: stored
+    -- manifest JSON is preserved verbatim (normalizeManifest spreads runtime)
+    -- so those artifact hashes stay valid. Keep failing closed for them --
+    -- a legacy capability poll must not stand in for the exact retained
+    -- manifest authorization those devices already hold above.
     AND COALESCE(${refs.runRuntime}->>'execution', '') <> 'bridge'
     AND (
       NOT COALESCE(${refs.runManifestBacked}, false)
@@ -126,61 +135,33 @@ export function connectorClaimLaneSql(
     (${exactManifestAuthorization})
     OR (${legacyHashlessManifestAuthorization})
   `;
-  const exactDaemonBuiltinAuthorization = sql`
-    EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(${sql.json(context.manifestClaimAuthorizations)}::jsonb) auth_item
-      WHERE auth_item->>'connectorKey' = ${refs.connectorKey}
-        AND auth_item->>'connectorVersion' = ${refs.connectorVersion}
-        AND auth_item->>'manifestHash' = ${refs.runManifestHash}
-        AND auth_item->>'sourcePath' = ${refs.runArtifactSourcePath}
-        AND auth_item->>'runtimeExecution' = ${EXECUTION_BACKENDS.daemonBuiltin}
-    )
-  `;
   const delegatedBrowserAffinity = delegatedBrowserAffinitySql(sql, {
     platform: refs.pinPlatform,
     connectorKey: refs.connectorKey,
   });
-  // A worker may be able to run the daemon-owned backend while its connector
+  // A worker may still implement its own connectors while its connector
   // compiler/SDK runtime is unavailable. Never let a compiled artifact enter
   // any claim lane unless that backend was explicitly advertised as ready.
   const compiledBackendReady = hasPositiveBackendCapacity(
     context.backendCapacity,
     EXECUTION_BACKENDS.compiledConnector
   );
-  const daemonBuiltinReady = hasPositiveBackendCapacity(
-    context.backendCapacity,
-    EXECUTION_BACKENDS.daemonBuiltin
-  );
   // A chrome-namespace execution runs inside the advertising extension, so it
   // needs no server-side backend at all.
   const chromeNamespaceExecution = chromeNamespaceConnectorSql(sql, {
     connectorKey: refs.connectorKey,
   });
-  // Keep this guard outside the individual lanes: every lane must advertise
-  // the backend that the selected artifact actually needs. A manifest-backed
-  // artifact executes on the device that advertised the manifest, so the only
-  // server-side backend it can need is the daemon-owned one. Historical
-  // manifest artifacts carry no run_runtime, so daemon_builtin is derived from
-  // the exact retained authorization; an unrecognised execution kind fails
-  // closed rather than inheriting the unrestricted branch.
+  // Keep this guard outside the individual lanes: every lane must advertise the
+  // backend the selected artifact actually needs. A manifest-backed artifact
+  // carries no code and is implemented by the endpoint that advertised it, so
+  // it needs no server-side backend at all — which is also what lets a device
+  // whose connector compiler is broken keep serving its native connectors and
+  // be recovered. Only a compiled artifact requires advertised capacity.
   const selectedBackendReady = sql`
     (
       ${chromeNamespaceExecution}
-      OR (
-        NOT COALESCE(${refs.runManifestBacked}, false)
-        AND ${compiledBackendReady}
-      )
-      OR (
-        COALESCE(${refs.runManifestBacked}, false)
-        AND CASE
-          WHEN ${refs.runRuntime}->>'execution' = ${EXECUTION_BACKENDS.daemonBuiltin} THEN ${daemonBuiltinReady}
-          WHEN ${refs.runRuntime}->>'execution' = 'bridge' THEN true
-          WHEN ${refs.runRuntime}->>'execution' IS NULL
-            THEN NOT (${exactDaemonBuiltinAuthorization}) OR ${daemonBuiltinReady}
-          ELSE false
-        END
-      )
+      OR COALESCE(${refs.runManifestBacked}, false)
+      OR ${compiledBackendReady}
     )
   `;
 

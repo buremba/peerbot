@@ -60,10 +60,6 @@ import { stripServerOnlyExecutionConfig } from '../tools/admin/automation-execut
 import { supersedeActionEvent } from '../tools/admin/approval-events';
 import logger from '../utils/logger';
 import { selectedConnectorVersionArtifactSql } from '../utils/connector-execution-placement';
-import {
-  classifySelectedConnectorExecution,
-  deviceExecutesConnectorNatively,
-} from '../utils/connector-execution-backend';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
 import { normalizeAdvertisedCapabilities, normalizeAgentKinds } from './shared';
@@ -424,16 +420,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       effectivePlatform = existing[0].platform;
     }
   }
-  // An omitted map means a client that predates the field; mirror what that
-  // platform's daemon would have advertised — see `defaultBackendCapacity` in
-  // core/contracts/worker/protocol.ts for why each platform gets what it gets.
-  //
-  // Keyed on effectivePlatform and placed AFTER the binding resolution above:
-  // a headless-bound device that omits `platform` from its body would
-  // otherwise default to compiled-only and silently lose the one backend it
-  // is the only worker able to run.
+  // An omitted map means a client that predates the field; mirror what a daemon
+  // would have advertised. Capacity now covers only server-shipped compiled
+  // code, so it no longer varies by platform — a connector the endpoint
+  // implements itself needs no advertised backend at all.
   if (!backendCapacityProvided) {
-    backendCapacity = defaultBackendCapacity(effectivePlatform);
+    backendCapacity = defaultBackendCapacity();
   }
   // For user-scoped (device) workers, authorize the advertised capability set
   // against the platform-specific allowlist in @lobu/core. Anything outside
@@ -785,7 +777,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 runRequiredCapability: tx`cd.run_required_capability`,
                 runManifestBacked: tx`run_cv.manifest_backed`,
                 runManifestHash: tx`run_cv.artifact_hash`,
-                runArtifactSourcePath: tx`run_cv.artifact_source_path`,
                 runRuntime: tx`cd.run_runtime`,
               })}
             )
@@ -982,20 +973,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         cv.artifact_compiled_code AS compiled_code,
         cv.artifact_compile_config_hash AS compile_config_hash,
         cv.artifact_hash AS connector_manifest_hash,
-        cv.artifact_source_path AS artifact_source_path,
-        cv.artifact_has_source_code AS artifact_has_source_code,
         COALESCE(cv.manifest_backed, false) AS connector_manifest_backed,
-        CASE WHEN cd.version = r.connector_version THEN cd.runtime ELSE NULL END
-          AS connector_runtime,
         CASE WHEN cd.version = r.connector_version THEN cd.required_capability ELSE NULL END
           AS connector_required_capability,
-        CASE WHEN cd.version = r.connector_version THEN cd.name ELSE NULL END AS connector_name,
-        CASE WHEN cd.version = r.connector_version THEN cd.description ELSE NULL END AS connector_description,
-        CASE WHEN cd.version = r.connector_version THEN cd.favicon_domain ELSE NULL END AS connector_favicon_domain,
-        CASE WHEN cd.version = r.connector_version THEN cd.auth_schema ELSE NULL END AS connector_auth_schema,
-        CASE WHEN cd.version = r.connector_version THEN cd.feeds_schema ELSE NULL END AS connector_feeds_schema,
-        CASE WHEN cd.version = r.connector_version THEN cd.actions_schema ELSE NULL END AS connector_actions_schema,
-        CASE WHEN cd.version = r.connector_version THEN cd.options_schema ELSE NULL END AS connector_options_schema,
         ap.auth_data AS auth_profile_auth_data,
         w.name AS automation_name,
         w.managed_agent_id AS automation_agent_id,
@@ -1150,18 +1130,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     compiled_code: string | null;
     compile_config_hash: string | null;
     connector_manifest_hash: string | null;
-    artifact_source_path: string | null;
-    artifact_has_source_code: boolean;
     connector_manifest_backed: boolean;
-    connector_runtime: { nix?: { packages?: string[] } | null } | null;
     connector_required_capability: string | null;
-    connector_name: string | null;
-    connector_description: string | null;
-    connector_favicon_domain: string | null;
-    connector_auth_schema: unknown;
-    connector_feeds_schema: unknown;
-    connector_actions_schema: unknown;
-    connector_options_schema: unknown;
     run_created_at: string | Date | null;
     // Automation run fields (populated via LEFT JOINs)
     automation_id: number | null;
@@ -1186,62 +1156,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     auth_profile_auth_data: Record<string, unknown> | null;
   };
 
-  const selectedExecution =
-    row.connector_key && row.connector_version
-      ? classifySelectedConnectorExecution({
-          artifact: {
-            sourcePath: row.artifact_source_path,
-            manifestHash: row.connector_manifest_hash,
-            compiledCode: row.compiled_code,
-            compileConfigHash: row.compile_config_hash,
-            hasSourceCode: row.artifact_has_source_code,
-          },
-          definition:
-            row.connector_name && row.connector_runtime
-              ? {
-                  key: row.connector_key,
-                  version: row.connector_version,
-                  name: row.connector_name,
-                  description: row.connector_description,
-                  faviconDomain: row.connector_favicon_domain,
-                  requiredCapability: row.connector_required_capability,
-                  runtime: row.connector_runtime,
-                  authSchema: row.connector_auth_schema,
-                  feeds: row.connector_feeds_schema,
-                  actions: row.connector_actions_schema,
-                  optionsSchema: row.connector_options_schema,
-                }
-              : null,
-          connectorKey: row.connector_key,
-          connectorVersion: row.connector_version,
-          authorizations: manifestClaimAuthorizations,
-          expectedPlatform: effectivePlatform,
-        })
-      : { manifestBacked: false };
-  if (selectedExecution.inconsistency) {
-    const message = selectedExecution.inconsistency;
-    await failClaimedWorkerRun({
-      runId: row.run_id,
-      workerId: worker_id,
-      errorMessage: message,
-    });
-    logger.error(
-      { run_id: row.run_id, connector_key: row.connector_key, connector_version: row.connector_version },
-      '[poll] rejected inconsistent native bridge artifact'
-    );
-    return c.json({
-      next_poll_seconds: 1,
-      skipped_run_id: row.run_id,
-      error: message,
-      ...pollMetadata,
-    });
-  }
-  // Both device-owned backends: the device implements the work itself, so the
-  // gateway ships no compiled code and does not hold the connection lease. The
-  // classifier returns a backend only for a hash-attested manifest artifact
-  // that carries no compiled or source code, so "a backend was classified" is
-  // exactly "this run is device-owned".
-  const isDeviceOwnedRun = selectedExecution.backend !== undefined;
+  // The device implements a manifest-backed connector itself: the artifact
+  // carries no code and its identity is the contract hash the device
+  // advertised. HOW it runs there — a native bridge, an in-process built-in —
+  // is the endpoint's own routing decision, made from its local registry, so
+  // the gateway neither classifies it nor names a backend. Encoding the
+  // implementation here is what previously forced it into the manifest, and
+  // therefore into the hash, so one contract could not be served by two
+  // endpoints.
+  const isDeviceOwnedRun = isUserScopedWorker && row.connector_manifest_backed;
 
   // Device chat reuses the ordinary messages/chat_message row. The poll
   // response is only an execution envelope: ownership/routing remain on the
@@ -1681,19 +1604,21 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     !(isCloudMode() && gatewayHasLocalSource);
   const workerWillResolveLocally =
     !isUserScopedWorker && gatewayHasLocalSource && !hasStoredCompiledCode;
-  // Only a device-owned run (native bridge or daemon builtin) is implemented by
-  // the device itself. Manifest backing and the capability gate do not
-  // establish who executes the code.
-  const deviceWillExecuteNativeConnector = deviceExecutesConnectorNatively({
-    isUserScopedWorker,
-    hasStoredCompiledCode,
-    gatewayHasLocalSource,
-    isDeviceOwnedRun,
-    manifestBacked: row.connector_manifest_backed,
-    deviceAdvertisesRequiredCapability:
-      row.connector_required_capability != null &&
-      authorizedCapabilities.includes(row.connector_required_capability),
-  });
+  // Whether the claiming device implements this connector itself, so the
+  // gateway may omit `compiled_code`. A device-owned (manifest-backed) run
+  // always qualifies. A legacy device manifest or a capability-only client also
+  // stays device-executed when the gateway has no code it could deliver; once
+  // bundled or stored code exists, manifest backing and capability
+  // advertisement are authorization signals only and do not establish that the
+  // device implements the connector.
+  const deviceWillExecuteNativeConnector =
+    isUserScopedWorker &&
+    !hasStoredCompiledCode &&
+    (isDeviceOwnedRun ||
+      (!gatewayHasLocalSource &&
+        (row.connector_manifest_backed ||
+          (row.connector_required_capability != null &&
+            authorizedCapabilities.includes(row.connector_required_capability)))));
   if (row.connector_key && !workerWillResolveLocally && !deviceWillExecuteNativeConnector) {
     try {
       compiledCode = await resolveConnectorCode(row.connector_key, {
@@ -1800,16 +1725,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     run_type: row.run_type,
     connector_key: row.connector_key ?? undefined,
     connector_version: row.connector_version ?? undefined,
-    // The routing marker the worker switches on: `daemon_builtin` selects the
-    // daemon's supervised built-in, `native_bridge` the native bridge daemon.
-    // Every classified backend has to reach the worker -- emitting only one of
-    // them leaves the other lane dead, and the worker then falls through to the
-    // compiled path for a run the gateway deliberately shipped no code for.
-    ...(selectedExecution.backend
-      ? {
-          execution_backend: selectedExecution.backend,
-          connector_manifest_hash: selectedExecution.manifestHash,
-        }
+    // The contract identity the device must recognise. The native bridge
+    // forwards it so the app can refuse a manifest it does not implement at the
+    // exact hash. No routing marker rides along: which local backend serves the
+    // run is the endpoint's decision, not the gateway's.
+    ...(isDeviceOwnedRun && row.connector_manifest_hash
+      ? { connector_manifest_hash: row.connector_manifest_hash }
       : {}),
     feed_key: row.feed_key ?? undefined,
     feed_id: row.feed_id ?? undefined,

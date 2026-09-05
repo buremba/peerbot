@@ -8,7 +8,11 @@
 import type { Env, EventEnvelope } from '@lobu/connector-sdk';
 import type { AgentKind } from '@lobu/core/contracts/worker/device-automation';
 import { executeAutomationRun } from './automation.js';
-import { executeDaemonBuiltin } from './builtins/index.js';
+import {
+  executeDaemonBuiltin,
+  hasDaemonBuiltin,
+  hasDaemonBuiltinConnector,
+} from './builtins/index.js';
 import { executeDeviceChatRun } from './device-chat.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
@@ -79,7 +83,7 @@ export async function resolveJobCode(job: PollResponse): Promise<JobCodeResult> 
  * broken is precisely the case the daemon builtins exist to recover, and a
  * static import here would fail this whole module at load — taking the
  * recovery path down with it. So inline-compiled jobs (which already carry
- * their code) and daemon_builtin jobs never reach this graph at all; only
+ * their code) and daemon built-in jobs never reach this graph at all; only
  * source-backed jobs do, and those need both halves anyway. The published-
  * package isolation smoke pins that: it runs both lanes with the source
  * artifacts absent.
@@ -205,18 +209,17 @@ export async function executeRun(
   config: Partial<ExecutorConfig> = {}
 ): Promise<{ itemsCollected: number; error?: string }> {
   const cfg = { ...DEFAULT_CONFIG, ...config };
-  if (job.execution_backend === 'native_bridge') {
-    const message = 'native_bridge runs must be handled by the native bridge daemon';
-    try {
-      await reportTerminalFailure(client, job, message, 'error_message');
-    } catch (error) {
-      log.info('[executor] Failed to reject native bridge run:', error);
-    }
-    return { itemsCollected: 0, error: message };
-  }
-  if (job.execution_backend === 'daemon_builtin' && job.run_type !== 'action') {
-    const message =
-      'operation_backend_unavailable: daemon_builtin currently supports action runs only';
+  // A connector this daemon implements itself ships no code, so any run kind
+  // other than an action has nothing to fall through to: the compiled path
+  // would fail with a confusing "no connector code" instead of naming the real
+  // fault. Routing is decided HERE, from the local registry, never from a
+  // marker the gateway sends.
+  if (
+    job.run_type !== 'action' &&
+    job.connector_key &&
+    hasDaemonBuiltinConnector(job.connector_key)
+  ) {
+    const message = `operation_backend_unavailable: '${job.connector_key}' implements action runs only, not '${job.run_type ?? 'unknown'}'`;
     try {
       await reportTerminalFailure(client, job, message, 'error_message');
     } catch (error) {
@@ -533,7 +536,7 @@ async function executeActionRun(
     throw new Error('Invalid action run: missing run_id, connector_key, or action_key');
   }
 
-  if (job.execution_backend === 'daemon_builtin') {
+  if (hasDaemonBuiltin(connector_key, action_key)) {
     return await executeDaemonBuiltinActionRun(client, job, cfg);
   }
 
@@ -659,7 +662,7 @@ async function executeDaemonBuiltinActionRun(
   }
   if (job.compiled_code) {
     const message =
-      'operation_backend_unavailable: daemon_builtin payload must not contain compiled_code';
+      'operation_backend_unavailable: a daemon built-in payload must not contain compiled_code';
     await completeActionOnce(client, {
       run_id,
       worker_id: client.id,

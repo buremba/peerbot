@@ -35,13 +35,52 @@ function describeShellFailure(output: ShellRunOutput): string {
   return `Shell command exited with code ${output.exit_code}`;
 }
 
+/**
+ * Every connector action this daemon implements in-process, keyed
+ * `<connectorKey>/<actionKey>`.
+ *
+ * This registry is the daemon's ANSWER to "can I run this?", and nothing else
+ * is. The gateway used to answer it instead, by shipping a routing marker
+ * derived from the connector's manifest — which forced the implementation into
+ * the manifest, and therefore into the manifest hash, so the same contract
+ * could not be offered by a second endpoint. Routing is local; the contract is
+ * shared.
+ */
+const DAEMON_BUILTINS: Record<
+  string,
+  (input: Record<string, unknown>, shutdownSignal?: AbortSignal) => Promise<ShellRunOutput>
+> = {
+  'os.shell/run': runShellBuiltin,
+};
+
+function builtinId(connectorKey: string, actionKey: string): string {
+  return `${connectorKey}/${actionKey}`;
+}
+
+/** Whether this daemon implements one exact connector action itself. */
+export function hasDaemonBuiltin(connectorKey: string, actionKey: string): boolean {
+  return Object.hasOwn(DAEMON_BUILTINS, builtinId(connectorKey, actionKey));
+}
+
+/**
+ * Whether this daemon implements any action of a connector. A run of another
+ * kind (a feed sync, an auth exchange) against such a connector is a routing
+ * fault rather than work to attempt over the compiled runtime, which has no
+ * code for it.
+ */
+export function hasDaemonBuiltinConnector(connectorKey: string): boolean {
+  const prefix = `${connectorKey}/`;
+  return Object.keys(DAEMON_BUILTINS).some((id) => id.startsWith(prefix));
+}
+
 export async function executeDaemonBuiltin(params: {
   connectorKey: string;
   actionKey: string;
   input: Record<string, unknown>;
   shutdownSignal?: AbortSignal;
 }): Promise<DaemonBuiltinResult> {
-  if (params.connectorKey !== 'os.shell' || params.actionKey !== 'run') {
+  const builtin = DAEMON_BUILTINS[builtinId(params.connectorKey, params.actionKey)];
+  if (!builtin) {
     return {
       ok: false,
       code: 'operation_backend_unavailable',
@@ -50,7 +89,7 @@ export async function executeDaemonBuiltin(params: {
   }
 
   try {
-    const output = await runShellBuiltin(params.input, params.shutdownSignal);
+    const output = await builtin(params.input, params.shutdownSignal);
     if (!output.success) {
       return {
         ok: false,

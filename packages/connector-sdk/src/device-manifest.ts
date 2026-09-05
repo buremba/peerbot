@@ -1,8 +1,5 @@
 export type DeviceManifestSchema = Record<string, unknown>;
 
-/** Execution owner declared by a device-manifest wire artifact. */
-export type DeviceManifestExecution = 'bridge' | 'daemon_builtin';
-
 export interface DeviceConnectorManifest {
   key: string;
   version: string;
@@ -12,7 +9,6 @@ export interface DeviceConnectorManifest {
   required_capability: string;
   runtime: {
     platforms: string[];
-    execution?: DeviceManifestExecution;
     scopes?: string[];
     nix?: { packages?: string[] } | null;
   };
@@ -23,9 +19,17 @@ export interface DeviceConnectorManifest {
   manifest_hash?: string | null;
 }
 
+/**
+ * How a device implements a connector is the ENDPOINT's business, never the
+ * contract's. Anything declared here is hashed into the manifest identity, so
+ * a field naming the implementation (a native bridge, a daemon built-in) would
+ * give two endpoints of the same contract two different hashes — and an
+ * organization elects exactly one manifest per key, so the losing endpoint
+ * silently stops being claimable. `platforms` is a compatibility set, not an
+ * ownership claim; each endpoint dispatches from its own registry.
+ */
 export interface DeviceConnectorRuntimeInfo {
   platforms: readonly string[];
-  execution: 'bridge';
   scopes?: readonly string[];
   nix?: { readonly packages?: readonly string[] } | null;
 }
@@ -105,7 +109,6 @@ export function serializeDeviceConnector(definition: DeviceConnectorDefinition):
     required_capability: definition.requiredCapability,
     runtime: {
       platforms: [...definition.runtime.platforms],
-      execution: definition.runtime.execution,
       scopes: definition.runtime.scopes ? [...definition.runtime.scopes] : undefined,
       nix: definition.runtime.nix
         ? {
@@ -156,12 +159,11 @@ function validateDeviceConnector(specification: DeviceConnectorSpec): DeviceConn
   if (!isRecord(runtime) || !Array.isArray(runtime.platforms) || runtime.platforms.length === 0) {
     throw new Error('runtime.platforms is required');
   }
-  if (runtime.execution !== 'bridge') throw new Error("runtime.execution must be 'bridge'");
   if (!runtime.platforms.every((platform) => typeof platform === 'string' && platform.trim() !== '')) {
     throw new Error('runtime.platforms must contain non-empty strings');
   }
-  if (!runtime.platforms.includes('macos')) {
-    throw new Error("bridge device connectors must include the 'macos' platform");
+  if ('execution' in runtime) {
+    throw new Error('runtime.execution is not part of a device contract; each endpoint dispatches locally');
   }
   rejectExecutableHandlers(specification);
   validateAuthSchema(specification.authSchema);

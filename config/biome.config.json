@@ -40,6 +40,7 @@
       "!**/packages/embeddings/**",
       "!**/packages/owletto/**",
       "!**/packages/device-connectors/generated/**",
+      "!**/packages/connector-worker/src/daemon/generated/**",
       "!**/apps/**",
       "!**/scripts/lobu/**",
       "!**/benchmarks/**",

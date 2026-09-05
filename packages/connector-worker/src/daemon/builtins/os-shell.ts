@@ -1,16 +1,18 @@
 /**
  * os.shell as a daemon builtin — the ONLY implementation.
  *
- * A device serves shell through whichever backend its manifest declares:
- * `daemon_builtin` (this file, for headless servers/VMs/pods) or
- * `native_bridge` (the Mac app's own `os_shell.json`). There is deliberately no
- * gateway-compiled connector: shell execution needs a real process, which the
- * isolate lane does not have, and running it on the daemon's own supervisor is
- * what lets a device whose connector compiler is broken still be recovered.
+ * Every endpoint that offers the shared `os.shell` contract implements it
+ * locally: this file on a headless server/VM/pod, the Mac app's own bridge on a
+ * Mac. Neither implementation is named in the contract — it is hashed, and a
+ * contract that carried its implementation could not be offered by both. There
+ * is deliberately no gateway-compiled connector either: shell execution needs a
+ * real process, which the isolate lane does not have, and running it on the
+ * daemon's own supervisor is what lets a device whose connector compiler is
+ * broken still be recovered.
  *
  * Keep the CONTRACT — the argv (`bash --noprofile --norc -c`), the timeout
  * bounds, the 1MB output cap and the returned shape — in step with
- * `HEADLESS_OS_SHELL_MANIFEST` in `../device-manifests.ts`, which is what the
+ * the generated headless manifest in `../device-manifests.ts`, which is what the
  * gateway and the agent see.
  *
  * This runs in the daemon's own process, so it REPLACES the environment rather

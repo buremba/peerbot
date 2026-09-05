@@ -403,6 +403,39 @@ describe('waitForDeviceActionRun', () => {
     expect(out.error_message).toContain('180000ms');
   });
 
+  // A declared maximum is tenant input: an organization installs the connector
+  // definition it is read from. A definition claiming a day-long action must
+  // not hold the gateway request for a day.
+  it('caps a budget an installed definition declares beyond the absolute ceiling', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id, {
+      navigate: {
+        key: 'navigate',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            timeout_ms: { type: 'integer', minimum: 100, maximum: 86_400_000 },
+          },
+        },
+      },
+    });
+    const connId = await insertChromeConnection(org.id);
+    const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 86_400_000 });
+    let syntheticNow = Date.now();
+    await claim(runId, WORKER_ID, syntheticNow);
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+      queueMs: 60_000,
+      postClaimMs: 95_000,
+      pollMs: 1,
+      now: () => syntheticNow,
+      sleep: async () => {
+        syntheticNow += 180_000;
+      },
+    });
+    expect(out.status).toBe('timeout');
+    expect(out.error_message).toContain('180000ms');
+  });
+
   // The default is a floor: a device that requests a SHORT budget still gets
   // the full default wait, so a run that dies at 1s is reported by the device
   // rather than terminalized here at 31s.

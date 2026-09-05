@@ -98,6 +98,14 @@ const POST_CLAIM_BUDGET_MS = 95_000; // extension's 90s watchdog + 5s buffer
 // After the requested budget elapses the device still has to tear the process
 // group down (SIGTERM grace, reaping) and deliver the terminal result.
 const ACTION_COMPLETION_GRACE_MS = 30_000;
+// Hard ceiling on any derived budget. `timeout_ms.maximum` is declared by a
+// connector definition an organization can install, so it is tenant input, not
+// a platform constant: without this a definition declaring `maximum: 86400000`
+// would hold a gateway request open for a day. 180s is the wall-clock ceiling
+// the rest of the product already enforces (`MAX_SCRIPT_TIMEOUT_MS`), and the
+// shipped shell contract's 150s maximum plus completion grace lands exactly on
+// it, so nothing legitimate is clipped today.
+const MAX_POST_CLAIM_BUDGET_MS = 180_000;
 const POLL_MS = 500;
 
 /**
@@ -114,7 +122,9 @@ const POLL_MS = 500;
  * default. Only a JSON number counts as a request; a string "150000" or a
  * fractional value is not a budget. The default is a floor, never a ceiling: a
  * request SHORTER than it leaves the wait as it was, since a device that gives
- * up early reports the failure itself.
+ * up early reports the failure itself. A declared maximum is tenant input, so
+ * the result is capped at {@link MAX_POST_CLAIM_BUDGET_MS} however large the
+ * definition claims its action may run.
  */
 async function resolvePostClaimBudgetMs(
   sql: DbClient,
@@ -149,7 +159,8 @@ async function resolvePostClaimBudgetMs(
   const requested = positiveIntegerMs(rows[0]?.requested);
   const declaredMax = positiveIntegerMs(rows[0]?.declared_max);
   if (requested == null || declaredMax == null) return defaultMs;
-  return Math.max(defaultMs, Math.min(requested, declaredMax) + ACTION_COMPLETION_GRACE_MS);
+  const declared = Math.min(requested, declaredMax) + ACTION_COMPLETION_GRACE_MS;
+  return Math.max(defaultMs, Math.min(declared, MAX_POST_CLAIM_BUDGET_MS));
 }
 
 /** `->>` renders a JSON number as its literal text; anything else is not a budget. */

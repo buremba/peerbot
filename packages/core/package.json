@@ -183,6 +183,18 @@
       "import": "./dist/refs.js",
       "require": "./dist/refs.js"
     },
+    "./contracts/tools/save-memory": {
+      "types": "./dist/contracts/tools/save-memory.d.ts",
+      "bun": "./src/contracts/tools/save-memory.ts",
+      "import": "./dist/contracts/tools/save-memory.js",
+      "require": "./dist/contracts/tools/save-memory.js"
+    },
+    "./contracts/tools/delete-knowledge": {
+      "types": "./dist/contracts/tools/delete-knowledge.d.ts",
+      "bun": "./src/contracts/tools/delete-knowledge.ts",
+      "import": "./dist/contracts/tools/delete-knowledge.js",
+      "require": "./dist/contracts/tools/delete-knowledge.js"
+    },
     "./contracts/tools/read-knowledge": {
       "types": "./dist/contracts/tools/read-knowledge.d.ts",
       "bun": "./src/contracts/tools/read-knowledge.ts",

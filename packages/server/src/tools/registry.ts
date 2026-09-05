@@ -1,7 +1,9 @@
 /**
  * MCP Tool Registry
  *
- * This file defines all MCP tools and imports their Typebox schemas from tool files.
+ * This file defines all MCP tools and imports their Typebox schemas from the tool
+ * file that owns each one, or from `@lobu/core/contracts/tools/*` for the schemas
+ * shared with the connector SDK.
  * Typebox provides compile-time type safety and runtime JSON schema generation.
  *
  * Glossary — "namespace" in tool descriptions below means three different things,
@@ -17,6 +19,7 @@
  * `search_memory`'s top-level `agent_id` arg) — not any of the above.
  */
 
+import { SaveContentSchema } from '@lobu/core/contracts/tools/save-memory';
 import { getPublicReadableActions, getRequiredAccessLevel } from '../auth/tool-access';
 import type { Env } from '../index';
 import { LOBU_INTERACTION_RESOURCE_URI } from '../mcp-app-resource-uris';
@@ -39,7 +42,7 @@ import {
   invokeEventAction,
 } from './invoke_event_action';
 import { ResolvePathResultSchema, ResolvePathSchema, resolvePath } from './resolve_path';
-import { SaveContentResultSchema, SaveContentSchema, saveContent } from './save_content';
+import { SaveContentResultSchema, saveContent } from './save_content';
 import {
   QuerySchema,
   querySdkScript,

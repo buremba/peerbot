@@ -6,6 +6,8 @@
  * than as a registered MCP tool.
  */
 
+import type { DeleteContentArgs } from "@lobu/core/contracts/tools/delete-knowledge";
+import type { SaveContentInput } from "@lobu/core/contracts/tools/save-memory";
 import type { Env } from "../../index";
 import { deleteContent } from "../../tools/delete_content";
 import { getContent, type PublicGetContentArgs } from "../../tools/get_content";
@@ -24,37 +26,14 @@ import type {} from "./knowledge.typecheck";
  */
 export type KnowledgeSearchInput = PublicSearchArgs;
 
-interface KnowledgeSaveBase {
-	entity_ids?: number[];
-	semantic_type: string;
-	metadata?: Record<string, unknown>;
-	title?: string;
-	slug?: string;
-	author?: string;
-	payload_data?: Record<string, unknown>;
-	payload_template?: Record<string, unknown>;
-	attachments?: Array<Record<string, unknown>>;
-	source_url?: string;
-	parent_event_id?: number;
-	idempotency_key?: string;
-	occurred_at?: string;
-	automation_source?: { automation_id: number; run_id: number };
-}
-
-export type KnowledgeSaveInput =
-	| (KnowledgeSaveBase & {
-			payload_type?: "text" | "markdown";
-			content: string;
-	  })
-	| (KnowledgeSaveBase & {
-			payload_type: "json_template";
-			payload_template: Record<string, unknown>;
-			content?: string;
-	  })
-	| (KnowledgeSaveBase & {
-			payload_type: "media" | "empty";
-			content?: string;
-	  });
+/**
+ * `client.knowledge.save` takes the `save_memory` contract's own input type,
+ * declared once in core and shared with `@lobu/connector-sdk`. The hand-written
+ * union here had drifted: it advertised a `slug` field the validator rejects
+ * and omitted `supersedes_event_id`. Pinned by `KnowledgeSaveInputContract`
+ * in `./knowledge.typecheck`.
+ */
+export type KnowledgeSaveInput = SaveContentInput;
 
 /**
  * `client.knowledge.read` forwards straight to `getContent`, so its input IS
@@ -67,9 +46,7 @@ export type KnowledgeSaveInput =
  */
 export type KnowledgeReadInput = PublicGetContentArgs;
 
-export type KnowledgeDeleteInput =
-	| number
-	| { content_id?: number; content_ids?: number[]; reason?: string };
+export type KnowledgeDeleteInput = number | DeleteContentArgs;
 
 export interface KnowledgeNamespace {
 	search(input: KnowledgeSearchInput): Promise<unknown>;

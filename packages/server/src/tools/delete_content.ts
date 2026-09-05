@@ -17,7 +17,7 @@
  * the same (insert an event with `supersedes_event_id`).
  */
 
-import { type Static, Type } from '@sinclair/typebox';
+import { type DeleteContentArgs, DeleteContentSchema } from '@lobu/core/contracts/tools/delete-knowledge';
 import { hasRequiredMcpScope } from '../auth/tool-access';
 import { getDb, pgBigintArray } from '../db/client';
 import type { Env } from '../index';
@@ -28,27 +28,6 @@ import { isSystemContext } from './access-control';
 import { TOMBSTONE_SEMANTIC_TYPE } from './constants';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
-
-const DeleteContentSchema = Type.Object({
-  content_id: Type.Optional(
-    Type.Number({
-      description: 'Single content id to delete. Provide either this or `content_ids`.',
-    })
-  ),
-  content_ids: Type.Optional(
-    Type.Array(Type.Number(), {
-      description: 'Batch of content ids to delete. Provide either this or `content_id`.',
-    })
-  ),
-  reason: Type.Optional(
-    Type.String({
-      description:
-        'Optional human-readable reason; persisted on the tombstone for audit trails.',
-    })
-  ),
-});
-
-type DeleteContentArgs = Static<typeof DeleteContentSchema>;
 
 interface DeleteContentResult {
   deleted_ids: number[];

@@ -5,9 +5,10 @@ import {
   type DeviceConnectorManifest,
 } from "@lobu/connector-sdk";
 import { macDeviceConnectorSpecs } from "./mac-definitions.js";
+import { osShellDeviceConnector } from "./os-shell.js";
 
 export const macDeviceConnectorDefinitions = defineDeviceConnector(
-  [...macDeviceConnectorSpecs].sort((left, right) =>
+  [...macDeviceConnectorSpecs, osShellDeviceConnector].sort((left, right) =>
     left.key.localeCompare(right.key)
   )
 ) as readonly DeviceConnectorDefinition[];

@@ -362,7 +362,7 @@ describe('scheduled feed device liveness', () => {
       // must never cost a worker its compiled lane. If it did, every
       // execution-pinned compiled connection on a self-hosted device would stop
       // being claimed with no error anywhere.
-      backendCapacity: { daemon_builtin: 1, compiled_connector: 1 },
+      backendCapacity: { compiled_connector: 1 },
     };
     const chromeContext: DueFeedClaimContext = {
       isUserScopedWorker: true,

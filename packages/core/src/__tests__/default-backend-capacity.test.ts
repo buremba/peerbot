@@ -1,8 +1,7 @@
 /**
- * `headless` is the default platform of `lobu daemon`, and `startDaemonCommand`
- * calls `assertExternalDepsResolvable()` / `assertConnectorRuntimeLoadable()`
- * before its first poll — so a headless daemon that is polling at all has
- * already proven it can execute compiled connectors.
+ * `startDaemonCommand` calls `assertExternalDepsResolvable()` /
+ * `assertConnectorRuntimeLoadable()` before its first poll — so a daemon that
+ * is polling at all has already proven it can execute compiled connectors.
  *
  * An earlier draft advertised `compiled_connector: 0` for headless on the
  * theory that a recovery daemon keeps its compiler runtime closed. It does not,
@@ -18,31 +17,19 @@ import {
 } from "../contracts/worker/protocol.js";
 
 describe("defaultBackendCapacity", () => {
-  test("keeps the compiled lane open on every platform", () => {
-    for (const platform of [
-      "headless",
-      "macos",
-      "chrome-extension",
-      "ios",
-      null,
-      undefined,
-    ]) {
-      expect(
-        defaultBackendCapacity(platform)[EXECUTION_BACKENDS.compiledConnector]
-      ).toBeGreaterThan(0);
-    }
+  test("keeps the compiled lane open", () => {
+    expect(
+      defaultBackendCapacity()[EXECUTION_BACKENDS.compiledConnector]
+    ).toBeGreaterThan(0);
   });
 
-  test("grants the daemon builtin only to the platform that runs a daemon", () => {
-    expect(
-      defaultBackendCapacity("headless")[EXECUTION_BACKENDS.daemonBuiltin]
-    ).toBeGreaterThan(0);
-    // The Chrome extension and the macOS app poll the gateway directly rather
-    // than running `lobu daemon`, so they own no in-process builtin.
-    for (const platform of ["macos", "chrome-extension", null]) {
-      expect(
-        defaultBackendCapacity(platform)[EXECUTION_BACKENDS.daemonBuiltin]
-      ).toBeUndefined();
-    }
+  // Capacity describes what the SERVER may hand over as code. A connector the
+  // endpoint implements itself is routed from that endpoint's own registry and
+  // needs no advertised backend, so there is nothing platform-specific left to
+  // advertise and no second key to grant.
+  test("advertises the compiled lane and nothing else", () => {
+    expect(Object.keys(defaultBackendCapacity())).toEqual([
+      EXECUTION_BACKENDS.compiledConnector,
+    ]);
   });
 });

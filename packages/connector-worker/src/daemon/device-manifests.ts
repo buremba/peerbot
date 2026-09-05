@@ -1,69 +1,22 @@
-/**
- * Device manifests the connector-worker daemon declares on poll, keyed by
- * platform. A headless device (server/VM/pod) advertises the os.shell
- * connector so an org can create a connection pinned to it and run shell
- * commands through the daemon's built-in shell backend.
- */
+import headlessDeviceConnectorManifests from './generated/headless-device-connector-manifests.json' with { type: 'json' };
 
 /**
- * os.shell manifest for headless platforms. Mirrors the macOS manifest's
- * run action (packages/owletto/apps/mac/.../os_shell.json) but targets
- * headless workers, where the connector-worker daemon's builtin serves it.
+ * Device manifests this daemon declares on poll, keyed by the platform it
+ * registered as.
  *
- * This manifest and `builtins/os-shell.ts` are the whole of os.shell: there is
- * no bundled connector for the gateway to compile, so a device that advertises
- * neither backend has no shell at all.
+ * The contents are GENERATED from `@lobu/device-connectors`
+ * (`bun run generate` there; CI re-checks it) rather than written here, because
+ * a device contract is shared with every other endpoint that implements it —
+ * `os.shell` also ships inside the Mac app. The manifest is hashed to form the
+ * connector's identity and an organization elects exactly one manifest per
+ * key, so two hand-maintained copies mean one endpoint wins the election and
+ * the other silently stops being claimable. Generating both from one source
+ * makes divergence impossible to express.
+ *
+ * The artifact is checked in rather than imported across the package boundary:
+ * `@lobu/device-connectors` is private, while this package is published and
+ * installed by the CLI, so a runtime dependency on it would not resolve.
  */
-export const HEADLESS_OS_SHELL_MANIFEST: Record<string, unknown> = {
-  key: 'os.shell',
-  version: '0.2.0',
-  name: 'Shell',
-  description:
-    'Run shell commands on this device through Lobu. Returns structured stdout/stderr/exit_code. Commands see the device\'s real filesystem and PATH but a minimal environment (no profile, no inherited secrets) - gate with approval.',
-  required_capability: 'os.shell',
-  runtime: { platforms: ['headless'], execution: 'daemon_builtin' },
-  auth_schema: { methods: [{ type: 'none' }] },
-  feeds_schema: {},
-  actions_schema: {
-    run: {
-      key: 'run',
-      kind: 'write',
-      name: 'Run command',
-      description:
-        'Run a shell command on the device and return stdout, stderr, and exit_code. Executes through `bash --noprofile --norc -c`, so pipes, redirects, and && chains work, but shell profile/rc files are NOT loaded - use absolute paths rather than relying on aliases or a login PATH. Prefer one focused command per call.',
-      requiresApproval: true,
-      inputSchema: {
-        type: 'object',
-        required: ['command'],
-        properties: {
-          command: {
-            type: 'string',
-            minLength: 1,
-            maxLength: 20000,
-          },
-          cwd: { type: 'string' },
-          timeout_ms: { type: 'integer', minimum: 100, maximum: 150000, default: 60000 },
-          stdin: { type: 'string', maxLength: 1000000 },
-        },
-        additionalProperties: false,
-      },
-      outputSchema: {
-        type: 'object',
-        additionalProperties: true,
-        properties: {
-          stdout: { type: 'string' },
-          stderr: { type: 'string' },
-          exit_code: { type: 'integer' },
-          success: { type: 'boolean' },
-          timed_out: { type: 'boolean' },
-          duration_ms: { type: 'integer' },
-        },
-      },
-    },
-  },
-};
-
-/** Manifests a device daemon declares, keyed by platform. */
 export const DEVICE_MANIFESTS_BY_PLATFORM: Record<string, unknown[]> = {
-  headless: [HEADLESS_OS_SHELL_MANIFEST],
+  headless: headlessDeviceConnectorManifests,
 };

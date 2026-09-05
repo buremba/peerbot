@@ -12,7 +12,7 @@ const validSpec = () => ({
   version: '0.1.0',
   name: 'Test device connector',
   requiredCapability: 'calendar',
-  runtime: { execution: 'bridge' as const, platforms: ['macos'] },
+  runtime: { platforms: ['macos'] },
   feeds: {
     events: {
       key: 'events',
@@ -25,32 +25,42 @@ const validSpec = () => ({
 });
 
 describe('defineDeviceConnector', () => {
-  test('serializes the bridge marker and never executable handlers', () => {
+  test('serializes no implementation marker and never executable handlers', () => {
     const definition = defineDeviceConnector(validSpec());
     const manifest = serializeDeviceConnector(definition);
 
-    expect(manifest.runtime).toEqual({ execution: 'bridge', platforms: ['macos'] });
+    expect(manifest.runtime).toEqual({ platforms: ['macos'] });
     expect(manifest.auth_schema).toEqual({ methods: [{ type: 'none' }] });
     expect(manifest.feeds_schema.events).toEqual(validSpec().feeds.events);
     expect(typeof (manifest.feeds_schema.events as Record<string, unknown>).sync).toBe('undefined');
     expect(typeof (manifest.feeds_schema.events as Record<string, unknown>).read).toBe('undefined');
   });
 
-  test('rejects missing identity, capability, platforms, and non-Mac bridge use', () => {
+  test('rejects missing identity, capability, platforms, and a declared implementation', () => {
     for (const field of ['key', 'version', 'name', 'requiredCapability'] as const) {
       const spec = validSpec();
       delete (spec as Record<string, unknown>)[field];
       expect(() => defineDeviceConnector(spec)).toThrow(`${field} is required`);
     }
-    expect(() => defineDeviceConnector({ ...validSpec(), runtime: { execution: 'bridge' } })).toThrow(
+    expect(() => defineDeviceConnector({ ...validSpec(), runtime: {} })).toThrow(
       'runtime.platforms is required',
     );
+    // The manifest is hashed to form the connector's identity, so naming the
+    // endpoint that implements it would give two endpoints of one contract two
+    // hashes — and an organization elects exactly one manifest per key.
     expect(() =>
       defineDeviceConnector({
         ...validSpec(),
-        runtime: { execution: 'bridge', platforms: ['linux'] },
-      }),
-    ).toThrow("must include the 'macos' platform");
+        runtime: { platforms: ['macos'], execution: 'bridge' },
+      } as never),
+    ).toThrow('runtime.execution is not part of a device contract');
+  });
+
+  test('accepts a contract shared by several platforms', () => {
+    const manifest = serializeDeviceConnector(
+      defineDeviceConnector({ ...validSpec(), runtime: { platforms: ['headless', 'macos'] } }),
+    );
+    expect(manifest.runtime).toEqual({ platforms: ['headless', 'macos'] });
   });
 
   test('rejects executable handlers and malformed feed/action schemas', () => {
@@ -93,7 +103,7 @@ describe('defineDeviceConnector', () => {
     );
   });
 
-  test('keeps server-executed Connector SDK definitions distinct from bridge manifests', () => {
+  test('keeps server-executed Connector SDK definitions distinct from device manifests', () => {
     const ordinary = defineConnector({
       key: 'ordinary',
       version: '1.0.0',
@@ -108,7 +118,7 @@ describe('device manifest canonicalization', () => {
   test('is stable across object insertion order and changes on schema/version changes', () => {
     const first = serializeDeviceConnector(validSpec());
     const reordered = {
-      runtime: { platforms: ['macos'], execution: 'bridge' as const },
+      runtime: { platforms: ['macos'] },
       feeds_schema: first.feeds_schema,
       required_capability: first.required_capability,
       auth_schema: first.auth_schema,

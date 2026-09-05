@@ -1724,7 +1724,7 @@ jobs:
             exit 0
           fi
           changed=$(git diff --name-only "$BASE_SHA"...HEAD)
-          if echo "$changed" | grep -E '^(packages/owletto($|/)|packages/cli/|packages/connector-worker/|packages/core/|config/macos/lobu-auth\.entitlements$|scripts/(build-mac-auth-cli|build-mac-device-daemon|test-mac-device-daemon-package|check-mac-device-daemon-graph|verify-mac-device-daemon|with-owletto-mac-daemon)\.|package\.json$|bun\.lock$|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
+          if echo "$changed" | grep -E '^(packages/owletto($|/)|packages/cli/|packages/connector-worker/|packages/core/|packages/device-connectors/|config/macos/lobu-auth\.entitlements$|scripts/(build-mac-auth-cli|build-mac-device-daemon|test-mac-device-daemon-package|check-mac-device-daemon-graph|verify-mac-device-daemon|with-owletto-mac-daemon)\.|package\.json$|bun\.lock$|\.github/workflows/mac-release\.yml$|\.github/workflows/ci\.yml$|\.github/actions/setup-submodule(/|$)|\.gitmodules$)' >/dev/null; then
             echo "mac=true" >> "$GITHUB_OUTPUT"
           else
             echo "mac=false" >> "$GITHUB_OUTPUT"
@@ -1812,8 +1812,16 @@ jobs:
       # only when someone pasted a swiftc line out of a file header, which is
       # how AutomationDecodingTests stopped compiling on 2026-07-05 and stayed
       # broken. Runs before the app build so a failure names the assertion.
+      # LOBU_CANONICAL_MAC_MANIFESTS turns DeviceConnectorManifestParityTests
+      # from a semantic check into a byte comparison against the artifact this
+      # repo generates from packages/device-connectors. The Mac app ships its own
+      # copy of that file, synced by hand; without the mount the two drifted for
+      # days (os.shell 0.1.0 shipped while the server contract was 0.2.0) and
+      # every CI run stayed green.
       - name: Run standalone Swift tests
         if: steps.submodule.outputs.stubbed != 'true'
+        env:
+          LOBU_CANONICAL_MAC_MANIFESTS: ${{ github.workspace }}/packages/device-connectors/generated/macos-device-connector-manifests.json
         run: packages/owletto/apps/mac/Tests/run-tests.sh
 
       # The wrapper compiles the device daemon into the submodule's resource

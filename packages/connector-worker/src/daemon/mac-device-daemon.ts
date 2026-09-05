@@ -226,6 +226,42 @@ async function rejectUnsupportedRun(client: WorkerClient, job: PollResponse): Pr
   await reportTerminalFailure(client, job, message, 'error_message');
 }
 
+async function rejectUnadvertisedConnector(
+  client: WorkerClient,
+  job: PollResponse
+): Promise<void> {
+  const message = `macOS device daemon advertises no native implementation of '${job.connector_key ?? 'unknown'}'`;
+  await reportTerminalFailure(client, job, message, 'error_message');
+}
+
+/**
+ * Whether the native bridge implements this run's connector.
+ *
+ * The daemon answers from the inventory the Mac app itself declared over the
+ * bridge — the same manifests it advertises to the gateway — so what it will
+ * execute and what it claims to offer cannot drift apart. It used to answer
+ * from a routing marker the gateway derived from the connector manifest, which
+ * meant the implementation had to be written into the manifest and hashed into
+ * the contract's identity; a contract carrying its implementation cannot be
+ * shared with a second endpoint.
+ *
+ * A payload carrying `compiled_code` is not bridge work by construction: the
+ * gateway ships code only for connectors the device does NOT implement.
+ */
+export function bridgeImplementsRun(
+  job: PollResponse,
+  advertisementProvider: MutableWorkerAdvertisementProvider | undefined
+): boolean {
+  if (!job.connector_key || job.compiled_code) return false;
+  const manifests = advertisementProvider?.snapshot().manifests ?? [];
+  return manifests.some(
+    (manifest) =>
+      typeof manifest === 'object' &&
+      manifest !== null &&
+      (manifest as { key?: unknown }).key === job.connector_key
+  );
+}
+
 export function createMacDeviceDaemon(
   options: MacDeviceDaemonOptions,
   dependencies: {
@@ -333,7 +369,10 @@ export function createMacDeviceDaemon(
       if (job.run_type === 'chat_message') {
         return executeDeviceChatRun(client, job, automationConfig);
       }
-      if (job.execution_backend === 'native_bridge') {
+      if (job.run_type === 'sync' || job.run_type === 'action' || job.run_type === 'auth') {
+        if (!bridgeImplementsRun(job, dependencies.advertisementProvider)) {
+          return rejectUnadvertisedConnector(client, job);
+        }
         if (!nativeBridge) {
           return rejectUnsupportedRun(client, job);
         }

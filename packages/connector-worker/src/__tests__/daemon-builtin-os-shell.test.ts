@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executeRun } from '../daemon/executor.js';
-import { executeDaemonBuiltin } from '../daemon/builtins/index.js';
+import { executeDaemonBuiltin, hasDaemonBuiltin } from '../daemon/builtins/index.js';
 import { runShellBuiltin } from '../daemon/builtins/os-shell.js';
 
 function processIsLive(pid: number): boolean {
@@ -67,6 +67,12 @@ function stubClient() {
       id: 'headless:test',
       async heartbeat() {},
       async completeAction(input: Record<string, unknown>) {
+        completions.push(input);
+      },
+      // A non-action run terminates through the generic completion instead;
+      // without it a rejected sync run reports nowhere and the test would pass
+      // on the returned error alone.
+      async complete(input: Record<string, unknown>) {
         completions.push(input);
       },
     },
@@ -229,7 +235,6 @@ describe('daemon-builtin os.shell', () => {
         connector_key: 'os.shell',
         connector_version: '0.2.0',
         connector_manifest_hash: 'test-manifest-hash',
-        execution_backend: 'daemon_builtin',
         action_key: 'run',
         action_input: {
           command: "printf 'lobu-shell-ok\\n'",
@@ -256,23 +261,43 @@ describe('daemon-builtin os.shell', () => {
     });
   });
 
-  test('fails closed when the declared built-in is not registered', async () => {
+  // Routing is the daemon's own decision, taken from its registry, so an
+  // unregistered pair can never be dispatched here by mistake. The registry
+  // still fails closed if one is asked for directly.
+  test('fails closed when a built-in is not registered', async () => {
+    expect(hasDaemonBuiltin('os.shell', 'run')).toBe(true);
+    expect(hasDaemonBuiltin('os.shell', 'not_an_action')).toBe(false);
+    expect(hasDaemonBuiltin('missing.builtin', 'run')).toBe(false);
+
+    const result = await executeDaemonBuiltin({
+      connectorKey: 'missing.builtin',
+      actionKey: 'run',
+      input: {},
+    });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.code).toBe('operation_backend_unavailable');
+  });
+
+  // A connector the daemon implements ships no code, so a run of any other kind
+  // has nothing to fall through to; naming the real fault beats failing later
+  // in the compiled path for want of a bundle.
+  test('refuses a non-action run for a connector it implements', async () => {
     const { client, completions } = stubClient();
     const result = await executeRun(
       client as never,
       {
         run_id: 465,
-        run_type: 'action',
-        connector_key: 'missing.builtin',
-        execution_backend: 'daemon_builtin',
-        action_key: 'run',
+        run_type: 'sync',
+        connector_key: 'os.shell',
+        feed_key: 'anything',
         action_input: {},
       },
       {}
     );
 
     expect(result.error).toStartWith('operation_backend_unavailable:');
-    expect(completions[0]).toMatchObject({ status: 'failed' });
+    expect(result.error).toContain('action runs only');
+    expect(completions[0]).toMatchObject({ run_id: 465, status: 'failed' });
   });
 
   test('rejects a contradictory compiled payload', async () => {
@@ -283,7 +308,6 @@ describe('daemon-builtin os.shell', () => {
         run_id: 466,
         run_type: 'action',
         connector_key: 'os.shell',
-        execution_backend: 'daemon_builtin',
         compiled_code: 'must not execute',
         action_key: 'run',
         action_input: { command: 'exit 0' },
@@ -306,7 +330,6 @@ describe('daemon-builtin os.shell', () => {
         connector_key: 'os.shell',
         connector_version: '0.2.0',
         connector_manifest_hash: 'test-manifest-hash',
-        execution_backend: 'daemon_builtin',
         action_key: 'run',
         action_input: {
           command: 'sleep 10 & wait',
@@ -335,7 +358,6 @@ describe('daemon-builtin os.shell', () => {
       run_type: 'action',
       connector_key: 'os.shell',
       connector_version: '0.2.0',
-      execution_backend: 'daemon_builtin',
       action_key: 'run',
       action_input: { command: "printf out; printf err >&2; exit 7", cwd: process.cwd() },
     }, {}, { heartbeatIntervalMs: 5_000 });
@@ -364,7 +386,6 @@ describe('daemon-builtin os.shell', () => {
       run_type: 'action',
       connector_key: 'os.shell',
       connector_version: '0.2.0',
-      execution_backend: 'daemon_builtin',
       action_key: 'run',
       action_input: { command: 'printf success', cwd: process.cwd() },
     }, {}, { heartbeatIntervalMs: 5_000 })).resolves.toEqual({ itemsCollected: 0 });
@@ -390,7 +411,6 @@ describe('daemon-builtin os.shell', () => {
       run_type: 'action',
       connector_key: 'os.shell',
       connector_version: '0.2.0',
-      execution_backend: 'daemon_builtin',
       action_key: 'run',
       action_input: { command: 'printf err >&2; exit 7', cwd: process.cwd() },
     }, {}, { heartbeatIntervalMs: 5_000 })).resolves.toMatchObject({ itemsCollected: 0, error: expect.stringContaining('exited with code 7') });

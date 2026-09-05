@@ -18,8 +18,19 @@ import {
   createTestEvent,
 } from '../setup/test-fixtures';
 import { post } from '../setup/test-helpers';
-import { HEADLESS_OS_SHELL_MANIFEST } from '@lobu/connector-worker/daemon/device-manifests';
+import { DEVICE_MANIFESTS_BY_PLATFORM } from '@lobu/connector-worker/daemon/device-manifests';
 import { COMPILE_CONFIG_HASH } from '@lobu/connector-worker/compile';
+
+// The exact contract the headless daemon advertises, read from the daemon's own
+// generated artifact rather than restated here: the point of these tests is
+// that the shipped manifest is claimable, which a local copy could not prove.
+const HEADLESS_OS_SHELL_MANIFEST = (DEVICE_MANIFESTS_BY_PLATFORM.headless ?? []).find(
+  (entry) => (entry as { key?: string }).key === 'os.shell',
+) as Record<string, unknown> | undefined;
+if (!HEADLESS_OS_SHELL_MANIFEST) {
+  throw new Error('headless daemon advertises no os.shell manifest');
+}
+const HEADLESS_OS_SHELL_VERSION = HEADLESS_OS_SHELL_MANIFEST.version as string;
 
 const CONNECTOR_KEY = 'apple.test_device_manifest';
 
@@ -171,7 +182,7 @@ async function readChromeConnectorRows(orgId: string) {
 }
 
 /** Queue an approved os.shell action run against the device's auto-wired connection. */
-async function seedHeadlessShellRun(orgId: string, version = '0.2.0') {
+async function seedHeadlessShellRun(orgId: string, version = HEADLESS_OS_SHELL_VERSION) {
   const sql = getTestDb();
   const [connection] = (await sql`
     SELECT id FROM connections
@@ -625,15 +636,15 @@ describe('device connector manifests', () => {
     expect(versionRows[0]?.source_path).toBe(`device-manifest://macos/${CONNECTOR_KEY}@0.1.0`);
   });
 
-  it('marks only the exact authorized bridge artifact in the poll response', async () => {
+  it('marks only the exact authorized device artifact in the poll response', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
-    const bridgeManifest = manifest({
-      runtime: { platforms: ['macos'], execution: 'bridge' },
-    });
+    const bridgeManifest = manifest({ runtime: { platforms: ['macos'] } });
 
     const body = await pollClaimingDueFeed(workerId, [bridgeManifest]);
 
-    expect(body.execution_backend).toBe('native_bridge');
+    // The contract identity, and no routing marker: which local backend serves
+    // the run is the device's own decision.
+    expect(body.execution_backend).toBeUndefined();
     expect(body.connector_version).toBe('0.1.0');
     expect(body.connector_manifest_hash).toBe(
       deviceManifestHash(bridgeManifest as DeviceConnectorManifest),
@@ -688,20 +699,21 @@ describe('device connector manifests', () => {
       },
     });
     expect(unauthorizedResponse.status).toBe(200);
-    const unauthorizedBody = (await unauthorizedResponse.json()) as { execution_backend?: string };
-    expect(unauthorizedBody.execution_backend).toBeUndefined();
+    const unauthorizedBody = (await unauthorizedResponse.json()) as {
+      connector_manifest_hash?: string;
+    };
+    expect(unauthorizedBody.connector_manifest_hash).toBeUndefined();
   });
 
-  it('claims a bridge manifest after reconciliation when auth_schema is omitted', async () => {
+  it('claims a device manifest after reconciliation when auth_schema is omitted', async () => {
     const { workerId } = await seedDeviceOwner();
     const bridgeManifest = manifest({
-      runtime: { platforms: ['macos'], execution: 'bridge' },
+      runtime: { platforms: ['macos'] },
       auth_schema: undefined,
     });
 
     const body = await pollClaimingDueFeed(workerId, [bridgeManifest]);
 
-    expect(body.execution_backend).toBe('native_bridge');
     expect(body.connector_manifest_hash).toBe(
       deviceManifestHash(bridgeManifest as DeviceConnectorManifest),
     );
@@ -710,9 +722,7 @@ describe('device connector manifests', () => {
   it('keeps a persisted pre-operations bridge manifest authorized and scheduled', async () => {
     const { orgId, workerId } = await seedDeviceOwner();
     const sql = getTestDb();
-    const currentManifest = manifest({
-      runtime: { platforms: ['macos'], execution: 'bridge' },
-    });
+    const currentManifest = manifest({ runtime: { platforms: ['macos'] } });
     const snapshotFeed = {
       ...(currentManifest.feeds_schema.snapshots as Record<string, unknown>),
     };
@@ -784,7 +794,6 @@ describe('device connector manifests', () => {
     const body = (await claimResponse.json()) as Record<string, unknown>;
     expect(body.connector_key).toBe(CONNECTOR_KEY);
     expect(body.feed_key).toBe('snapshots');
-    expect(body.execution_backend).toBe('native_bridge');
     expect(body.connector_manifest_hash).toBe(legacyHash);
   });
 
@@ -1207,13 +1216,12 @@ describe('device connector manifests', () => {
     expect(await readDefinition(orgId)).not.toBeNull();
   });
 
-  it('routes an os.shell run to the daemon builtin on builtin capacity alone', async () => {
+  it('claims an os.shell run without any advertised backend capacity', async () => {
     const { orgId, workerId } = await seedDeviceOwner('headless');
-    // The daemon declares os.shell as `runtime.execution: 'daemon_builtin'`, so
-    // the gateway has to classify the run onto that backend AND tell the worker
-    // which backend it picked. Without the marker the worker falls through to
-    // its compiled path and imports the connector compiler for a run the
-    // gateway deliberately shipped no code for.
+    // The daemon implements os.shell itself, so the gateway ships no code and
+    // names no backend: routing is the endpoint's own decision, taken from its
+    // local registry. What the gateway owes the device is the contract identity
+    // it must recognise, and nothing more.
     const registered = await poll(
       workerId,
       [HEADLESS_OS_SHELL_MANIFEST],
@@ -1226,17 +1234,21 @@ describe('device connector manifests', () => {
     const sql = getTestDb();
     const [version] = (await sql`
       SELECT source_path, compiled_code FROM connector_versions
-      WHERE connector_key = 'os.shell' AND version = '0.2.0'
+      WHERE connector_key = 'os.shell' AND version = ${HEADLESS_OS_SHELL_VERSION}
       LIMIT 1
     `) as unknown as Array<{ source_path: string | null; compiled_code: string | null }>;
-    expect(version?.source_path).toBe('device-manifest://headless/os.shell@0.2.0');
+    expect(version?.source_path).toBe(
+      `device-manifest://headless/os.shell@${HEADLESS_OS_SHELL_VERSION}`,
+    );
     expect(version?.compiled_code).toBeNull();
 
     const runId = await seedHeadlessShellRun(orgId);
 
-    // A daemon whose connector compiler failed to load still owns the builtin;
-    // advertising `compiled_connector: 0` is exactly the recovery case this
-    // backend exists for, so builtin capacity alone must admit the run.
+    // A daemon whose connector compiler failed to load still implements its own
+    // connectors; advertising `compiled_connector: 0` is exactly the recovery
+    // case this must survive. Capacity gates code the SERVER hands over, and a
+    // manifest-backed run hands over none, so it is admitted on no capacity at
+    // all.
     const claimed = await poll(
       workerId,
       [HEADLESS_OS_SHELL_MANIFEST],
@@ -1244,36 +1256,32 @@ describe('device connector manifests', () => {
       { 'os.shell': true },
       {
         capacityAvailable: 1,
-        backendCapacity: { daemon_builtin: 1, compiled_connector: 0 },
+        backendCapacity: { compiled_connector: 0 },
       },
     );
     expect(claimed.status).toBe(200);
     const body = (await claimed.json()) as Record<string, unknown>;
     expect(body.run_id).toBe(runId);
     expect(body.connector_key).toBe('os.shell');
-    expect(body.execution_backend).toBe('daemon_builtin');
+    expect(body.execution_backend).toBeUndefined();
     expect(body.connector_manifest_hash).toBe(
       deviceManifestHash(HEADLESS_OS_SHELL_MANIFEST as unknown as DeviceConnectorManifest),
     );
     expect(body.compiled_code).toBeUndefined();
   });
 
-  it('runs os.shell natively for a legacy definition that declares no execution backend', async () => {
+  it('runs os.shell natively for a legacy definition installed before device manifests', async () => {
     // The shape three production organizations are actually in, and the one
-    // that made deleting the gateway-compiled `os_shell.ts` risky:
-    //   - the org's `connector_definitions` row predates `runtime.execution`,
-    //     so it declares NEITHER `bridge` NOR `daemon_builtin` and
-    //     `classifySelectedConnectorExecution` returns no backend;
-    //   - the pinned version resolves to the SHARED artifact whose
-    //     `source_path` is the bundled `os_shell.ts`, so it is not
-    //     manifest-backed either.
+    // that made deleting the gateway-compiled `os_shell.ts` risky: the pinned
+    // version resolves to the SHARED artifact whose `source_path` is the
+    // bundled `os_shell.ts`, so the run is not manifest-backed and the device
+    // does not own it by contract.
     // With the bundled source present the gateway used to compile and ship
-    // bytes. With it gone, `deviceExecutesConnectorNatively` must fall through
-    // to the capability branch and let the device run its own shell -- if it
-    // instead reached `resolveConnectorCode` the already-claimed run would be
-    // failed with "No bundled source or stored compiled code". Shell needs a
-    // real process, which no isolate has, so the device is the only correct
-    // executor here regardless.
+    // bytes. With it gone, the capability branch must let the device run its
+    // own shell -- if it instead reached `resolveConnectorCode` the
+    // already-claimed run would be failed with "No bundled source or stored
+    // compiled code". Shell needs a real process, which no isolate has, so the
+    // device is the only correct executor here regardless.
     const sql = getTestDb();
     const { userId, orgId, workerId } = await seedDeviceOwner('macos');
     await sql`
@@ -1343,7 +1351,81 @@ describe('device connector manifests', () => {
     expect(stored.status).not.toBe('failed');
   });
 
-  it('leaves an os.shell run queued for a daemon advertising no builtin capacity', async () => {
+  // THE consolidation regression. Two of this user's endpoints implement
+  // os.shell — the Mac app and a headless daemon — and an organization elects
+  // exactly ONE definition per connector key. While each endpoint authored its
+  // own manifest the two hashed differently, so whichever lost the election was
+  // denied claim authorization and went silently unreachable: polling, healthy,
+  // capability advertised, and never handed a run. Shipping ONE contract from
+  // both endpoints is what fixes it, and provenance must not re-split them —
+  // the definition is registered by whichever endpoint polled first, so a claim
+  // check that compared the artifact's source platform would deny the other.
+  it('authorizes both endpoints of a contract shared across platforms', async () => {
+    const { userId, orgId, workerId: headlessWorkerId } = await seedDeviceOwner('headless');
+    const sql = getTestDb();
+    const macWorkerId = `wk-${generateSecureToken(6)}`;
+    await sql`
+      INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
+      VALUES (${userId}, ${macWorkerId}, 'macos', '0.1.0', ${sql.json([])}, 'Test Mac', ${orgId})
+    `;
+
+    // The headless daemon registers the definition first.
+    expect(
+      (
+        await poll(headlessWorkerId, [HEADLESS_OS_SHELL_MANIFEST], 'headless', {
+          'os.shell': true,
+        })
+      ).status,
+    ).toBe(200);
+    const [version] = (await sql`
+      SELECT source_path, compiled_code_hash FROM connector_versions
+      WHERE connector_key = 'os.shell' AND version = ${HEADLESS_OS_SHELL_VERSION}
+      LIMIT 1
+    `) as unknown as Array<{ source_path: string; compiled_code_hash: string }>;
+    expect(version.source_path).toBe(
+      `device-manifest://headless/os.shell@${HEADLESS_OS_SHELL_VERSION}`,
+    );
+
+    // The Mac endpoint advertises the SAME contract, byte for byte, and so
+    // resolves to the same hash the org already elected.
+    expect(
+      (
+        await poll(macWorkerId, [HEADLESS_OS_SHELL_MANIFEST], 'macos', { 'os.shell': true })
+      ).status,
+    ).toBe(200);
+    expect(version.compiled_code_hash).toBe(
+      deviceManifestHash(HEADLESS_OS_SHELL_MANIFEST as unknown as DeviceConnectorManifest),
+    );
+
+    // Pin the connection to the Mac endpoint and let it claim. The definition
+    // and its artifact were registered by the HEADLESS endpoint, so this is the
+    // exact case that used to fail: identity is the contract hash, which both
+    // endpoints advertise, not the platform that happened to register it.
+    const [macDevice] = (await sql`
+      SELECT id FROM device_workers WHERE worker_id = ${macWorkerId} LIMIT 1
+    `) as unknown as Array<{ id: string }>;
+    await sql`
+      UPDATE connections SET device_worker_id = ${macDevice.id}
+      WHERE organization_id = ${orgId} AND connector_key = 'os.shell'
+    `;
+
+    const runId = await seedHeadlessShellRun(orgId);
+    const claimed = await poll(
+      macWorkerId,
+      [HEADLESS_OS_SHELL_MANIFEST],
+      'macos',
+      { 'os.shell': true },
+      { capacityAvailable: 1 },
+    );
+    expect(claimed.status).toBe(200);
+    const body = (await claimed.json()) as Record<string, unknown>;
+    expect(body.run_id).toBe(runId);
+    expect(body.connector_key).toBe('os.shell');
+    expect(body.compiled_code).toBeUndefined();
+    expect(body.connector_manifest_hash).toBe(version.compiled_code_hash);
+  });
+
+  it('leaves an os.shell run queued for a daemon that stops advertising the contract', async () => {
     const { orgId, workerId } = await seedDeviceOwner('headless');
     const registered = await poll(
       workerId,
@@ -1355,18 +1437,16 @@ describe('device connector manifests', () => {
     expect(registered.status).toBe(200);
     const runId = await seedHeadlessShellRun(orgId);
 
-    // Compiled capacity cannot stand in for the builtin: the artifact is a
-    // manifest with no code, so a daemon that lost its builtin has nothing to
-    // run it with and must leave the run for a later poll.
+    // Authorization is the advertised contract, not capacity: capacity now
+    // describes only code the server hands over, and this artifact carries
+    // none. A daemon that no longer offers os.shell — the switch turned off,
+    // an implementation withdrawn — must leave the run for a poll that does.
     const claimed = await poll(
       workerId,
-      [HEADLESS_OS_SHELL_MANIFEST],
+      [],
       'headless',
       { 'os.shell': true },
-      {
-        capacityAvailable: 1,
-        backendCapacity: { daemon_builtin: 0, compiled_connector: 1 },
-      },
+      { capacityAvailable: 1, backendCapacity: { compiled_connector: 1 } },
     );
     expect(claimed.status).toBe(200);
     const body = (await claimed.json()) as Record<string, unknown>;

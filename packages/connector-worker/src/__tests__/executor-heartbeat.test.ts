@@ -159,20 +159,22 @@ describe('executor heartbeats (lobu#860)', () => {
     expect(intervalsEverScheduledMs).toContain(30_000);
   });
 
-  test('generic compiled executor refuses native bridge runs', async () => {
+  // The daemon routes from its own registry, so a connector it implements never
+  // reaches the compiled path — including when a payload contradicts itself by
+  // carrying code for one.
+  test('generic compiled executor refuses a contradictory built-in payload', async () => {
     const client = makeStubClient();
     const job = {
       run_id: 101,
       run_type: 'action',
-      execution_backend: 'native_bridge',
-      connector_key: 'apple.files',
-      action_key: 'open',
-      action_input: {},
+      connector_key: 'os.shell',
+      action_key: 'run',
+      action_input: { command: 'true' },
       compiled_code: 'must-not-execute',
     } as any;
 
     const result = await executeRun(client as any, job, {} as any);
-    expect(result.error).toContain('native_bridge runs must be handled by the native bridge daemon');
+    expect(result.error).toContain('must not contain compiled_code');
     expect(executeCompiledConnectorMock).not.toHaveBeenCalled();
   });
 

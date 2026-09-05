@@ -1,7 +1,8 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import { deviceManifestHash } from "@lobu/connector-sdk/device-manifest-hash";
 import { validateDeviceConnectorManifests } from "../../../server/src/worker-api/device-manifests";
+import { headlessDeviceConnectorManifests } from "../headless.js";
 import {
   macDeviceConnectorDefinitions,
   macDeviceConnectorManifests,
@@ -26,7 +27,7 @@ const expectedOriginHashes: Record<string, string> = {
   "local.directory":
     "6846173d4a56d58677375f654cb10f04844b275280ec1cfb18d4d24b0fca89ee",
   "os.shell":
-    "f7c1cf1b0adad1cb0bfc130e41039963c723c31f589a1b8bbf08f2beb6cab374",
+    "6b099c370806197f55f1c69776b3e2fff84f6522e4172aa1cd0445911e46e2df",
 };
 
 describe("Mac device connector registry", () => {
@@ -40,15 +41,13 @@ describe("Mac device connector registry", () => {
 
   test("matches the merged Owletto Mac manifests semantically", () => {
     for (const manifest of macDeviceConnectorManifests) {
-      const withoutBridgeMarker = {
-        ...manifest,
-        runtime: { ...manifest.runtime },
-      };
-      delete withoutBridgeMarker.runtime.execution;
-      expect(deviceManifestHash(withoutBridgeMarker)).toBe(
+      expect(deviceManifestHash(manifest)).toBe(
         expectedOriginHashes[manifest.key]
       );
       expect(manifest.runtime.platforms).toContain("macos");
+      // Nothing about HOW an endpoint implements the contract may enter the
+      // manifest: it is hashed, so it would fork the identity per platform.
+      expect(manifest.runtime).not.toHaveProperty("execution");
       expect(manifest.auth_schema).toEqual({ methods: [{ type: "none" }] });
     }
     expect(
@@ -69,6 +68,36 @@ describe("Mac device connector registry", () => {
         },
       },
     });
+  });
+
+  // os.shell is implemented by two endpoints — the Mac app's native bridge and
+  // the headless daemon's built-in — and an organization elects exactly ONE
+  // manifest per key. Byte-identical serialization is what lets both endpoints
+  // be authorized against that single definition; the moment the two artifacts
+  // differ, whichever device advertises the losing hash is denied claim
+  // authorization and goes silently unreachable while still polling healthy.
+  test("os.shell serializes identically for the Mac and headless endpoints", () => {
+    const mac = macDeviceConnectorManifests.find((m) => m.key === "os.shell");
+    const headless = headlessDeviceConnectorManifests.find(
+      (m) => m.key === "os.shell"
+    );
+    expect(mac).toBeDefined();
+    expect(JSON.stringify(headless)).toBe(JSON.stringify(mac));
+    expect(deviceManifestHash(headless!)).toBe(deviceManifestHash(mac!));
+    expect(mac?.runtime.platforms).toEqual(["headless", "macos"]);
+  });
+
+  test("the checked-in headless artifact is generated from the registry", () => {
+    const artifact = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../../connector-worker/src/daemon/generated/headless-device-connector-manifests.json",
+          import.meta.url
+        ),
+        "utf8"
+      )
+    );
+    expect(artifact).toEqual(headlessDeviceConnectorManifests);
   });
 
   test("apple.photos advertises only what the PhotoKit bridge populates", () => {
@@ -128,5 +157,31 @@ describe("Mac device connector registry", () => {
       )
     );
     expect(artifact).toEqual(macDeviceConnectorManifests);
+  });
+
+  // The Mac app does not import this package: it ships its own copy of the
+  // generated artifact inside the owletto submodule and advertises THAT to the
+  // server. When the copies diverge, the app advertises a manifest the
+  // server's active definition no longer matches, and its runs are never
+  // claimable. os.shell shipped at 0.1.0 for days after the spec here moved to
+  // 0.2.0 because nothing compared the two files. Byte parity is the contract:
+  // the generator emits deterministic, sorted JSON, so a re-sync is a copy.
+  // Skipped only when the submodule is a stub (fork CI without the deploy key).
+  test("the Mac app bundles this exact generated artifact", () => {
+    const canonical = new URL(
+      "../../generated/macos-device-connector-manifests.json",
+      import.meta.url
+    );
+    const bundled = new URL(
+      "../../../owletto/apps/mac/Owletto/ConnectorManifests/macos-device-connector-manifests.json",
+      import.meta.url
+    );
+    if (!existsSync(bundled)) {
+      console.warn(
+        "owletto submodule not checked out; Mac manifest parity not verified"
+      );
+      return;
+    }
+    expect(readFileSync(bundled, "utf8")).toBe(readFileSync(canonical, "utf8"));
   });
 });

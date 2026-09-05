@@ -153,12 +153,25 @@ The OAuth token is available at `ctx.credentials?.accessToken`. The full credent
 ```typescript
 interface SyncCredentials {
   provider: string;              // e.g. 'github'
-  accessToken: string;           // The OAuth access token
-  refreshToken?: string | null;  // For token refresh
+  accessToken: string;           // Opaque per-run placeholder for the OAuth access token (see below)
+  refreshToken?: string | null;  // Never populated for a run (see below)
   expiresAt?: string | null;     // Token expiration (ISO string)
   scope?: string | null;         // Granted scopes
 }
 ```
+
+A run never receives a refresh token: the gateway refreshes tokens itself and
+the wire contract carries the access token alone.
+
+Send the token in a request header, the way `createHttpClient({ token })` and
+`requireBearerClient` do. On the isolate lane `accessToken` is a
+`lobu_secret_<uuid>` placeholder: the host swaps the real value back into the
+header after the request passes the egress policy, so a token that reaches a
+log, a checkpoint or an event is a handle that dies with the run. A placeholder
+in a URL is refused before the request leaves (`EgressDenied`), and one in a
+request body goes upstream verbatim (the provider rejects it). Over plain
+`http:` it is resolved only for the run's own machine: a loopback or reserved
+address the allowlist names exactly.
 
 ### `browser` - Browser session (cookies/CDP)
 
@@ -558,7 +571,7 @@ Connectors can also be installed manually via `client.connections.installConnect
 3. Host and guest speak the SDK shapes (`SyncContext` / `ActionContext` / `AuthContext` in, `SyncResult` / `ActionResult` / `AuthResult` out, no envelope) across named host capabilities. Sync events stream up as the connector emits them.
 4. `IsolateExecutor` defaults to a 10-minute wall clock and a 512 MB heap for every run; interactive auth runs disable the fixed timeout while waiting for the user.
 5. The guest has no filesystem, no ambient environment, and no socket of its own: everything it can reach is a named capability the host granted — `fetch` and, for the DB connectors, a host-dialled TCP socket — plus the explicit values supplied in `job.env`.
-6. Connection credentials and config flow through the typed job context (`ctx.credentials`, `ctx.config`, or auth's `previousCredentials`). The worker API token is never forwarded to connector code.
+6. Connection credentials and config flow through the typed job context (`ctx.credentials`, `ctx.config`, or auth's `previousCredentials`). The worker API token is never forwarded to connector code. `ctx.credentials.accessToken` is a per-run placeholder the host resolves at the wire (see "`oauth` - OAuth providers" above); `ctx.config` and `previousCredentials` still carry real values.
 
 For source-backed bundled connectors, the worker recompiles a `.ts` file after its mtime changes. Built deployments still require rebuild/redeploy, while project-local connector changes require another `lobu apply` to install a new organization-scoped version.
 

@@ -96,10 +96,11 @@ interface InstallationTokenProvider {
 ```
 - **GitHub:** App JWT (`GITHUB_APP_ID`+private key) → `POST /app/installations/{id}/access_tokens` (~1h, cache+refresh).
 - **Slack:** bot token obtained at OAuth-install; `mintToken` resolves the stored ref (no minting).
-- **Worker-creds invariant:** the worker receives a **`lobu_secret_<uuid>` placeholder**; the gateway
-  secret-proxy swaps it for the freshly-minted installation token **at egress** (same mechanism as all
-  other creds). Private keys + minting stay gateway-side; workers never hold the real token. (This corrects
-  the v1 "inject as SyncCredentials.accessToken" which violated the invariant.)
+- **Worker-creds invariant:** connector code receives a **`lobu_secret_<uuid>` placeholder** and never
+  the installation token. As shipped, the token travels to the worker HOST as `credentials.accessToken`
+  and the isolate lane's own vault (`connector-worker/src/egress/credentials.ts`) mints the placeholder
+  and swaps it back **at egress**, in the same grammar the gateway secret-proxy uses on its own route.
+  Private keys + minting stay gateway-side, and the host holds the token for one run only.
 
 ### 4.3 Shared-endpoint webhook router (provider plugins)
 `POST /api/v1/app-webhooks/:provider` →

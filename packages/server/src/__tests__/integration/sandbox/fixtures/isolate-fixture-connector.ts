@@ -4,8 +4,9 @@
  * Each `scenario` config value exercises one boundary of the connector isolate
  * lane: chunked emit and checkpoint hooks, host-mediated fetch with streamed
  * bodies, timers, console redaction, runaway CPU and heap, thrown errors, a
- * throwing timer callback, an oversized bridge message, auth artifacts and
- * chrome dispatch. It is never registered as a real connector.
+ * throwing timer callback, an oversized bridge message, auth artifacts, chrome
+ * dispatch, and the credential placeholder the guest is handed in place of its
+ * access token. It is never registered as a real connector.
  */
 import {
 	type ActionContext,
@@ -299,6 +300,45 @@ export default class IsolateFixtureConnector extends ConnectorRuntime<Record<str
 						timeoutReason: (timeoutSignal.reason as Error).name,
 					},
 				};
+			}
+			case "credential": {
+				// Spends the token the way every bundled connector does (a bearer
+				// header) and in a custom header, then reports everything it could
+				// see of the credential: its own copy, the job and config literals
+				// the runner embeds, and the environment.
+				const token = ctx.credentials?.accessToken ?? "";
+				const res = await fetch(String(ctx.config.url), {
+					headers: { authorization: `Bearer ${token}`, "x-fixture-token": token },
+				});
+				const echoed = (await res.json()) as { headers: Record<string, string | undefined> };
+				const globals = globalThis as unknown as Record<string, unknown>;
+				return {
+					events: [],
+					checkpoint: {
+						guestToken: token,
+						credentialKeys: Object.keys(ctx.credentials ?? {}).sort(),
+						upstreamAuthorization: echoed.headers.authorization ?? null,
+						upstreamFixtureToken: echoed.headers["x-fixture-token"] ?? null,
+						visible: [
+							JSON.stringify(ctx.credentials),
+							JSON.stringify(ctx.config),
+							JSON.stringify(process.env),
+							String(globals.__job_json ?? ""),
+							String(globals.__config_json ?? ""),
+						].join("\n"),
+					},
+				};
+			}
+			case "credential_in_url": {
+				// A token in the query string is refused before the request leaves.
+				const token = ctx.credentials?.accessToken ?? "";
+				let refused: { name: string; message: string } | null = null;
+				try {
+					await fetch(`${String(ctx.config.url)}?access_token=${token}`);
+				} catch (error) {
+					refused = { name: (error as Error).name, message: (error as Error).message };
+				}
+				return { events: [], checkpoint: { refused } };
 			}
 			default:
 				throw new Error(`unknown scenario ${scenario}`);

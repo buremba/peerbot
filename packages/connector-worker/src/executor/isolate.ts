@@ -13,7 +13,11 @@
  * guest one chunk per `fetchRead`, under a byte cap) and `socketOpen` (the
  * WinterCG `connect` the DB connectors need: a real TCP socket the HOST dials
  * at an address the same transport resolved and validated under the DB egress
- * policy).
+ * policy). The job's OAuth access token does not cross into the guest either:
+ * it is replaced by a per-run placeholder (`../egress/credentials.ts`) that the
+ * host swaps back into the request header at `fetch`, once the egress decision
+ * has admitted the destination. The run's other secret channels (`config`,
+ * `sessionState`, `previousCredentials`) are not behind that vault yet.
  *
  * This is the only executor `executor/select.ts` builds; a bundle that still
  * requires a Node builtin is rejected before any isolate work with
@@ -24,8 +28,9 @@ import net from 'node:net';
 import tls from 'node:tls';
 import type { EventEnvelope } from '@lobu/connector-sdk';
 import { decideEgress } from '@lobu/connector-sdk/egress-policy';
-import { type EgressAddressPolicy, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
+import { type EgressAddressPolicy, isReservedIp, stripIpv6Brackets } from '@lobu/connector-sdk/ip-reachability';
 import { normalizeDomainPattern } from '@lobu/core';
+import { CredentialVault } from '../egress/credentials.js';
 import {
   EgressDispatcher,
   fetchPublicUrl,
@@ -84,7 +89,7 @@ export interface IsolateExecutorOptions {
    * ever narrow what a run reaches, never widen the DB boundary.
    */
   allowedDomains: readonly string[];
-  /** Where redacted console lines and the lane's egress refusals go (default: the worker's stdout/stderr). */
+  /** Where redacted console lines, the lane's egress refusals and its credential spends go (default: the worker's stdout/stderr). */
   logSink: (level: IsolateLogLevel, line: string) => void;
   /**
    * Name resolution for host-dialled sockets and `fetch`. The egress
@@ -354,6 +359,33 @@ function parseGuestJson(value: unknown, what: string): unknown {
 /** The run's console channel: redacted, capped by `logBytes`, and part of the tail an error report carries. */
 type RunLog = (level: IsolateLogLevel, line: string) => void;
 
+/** What one run's `fetch` capability dials and resolves with. */
+interface RunNetwork {
+  egress: EgressDispatcher;
+  vault: CredentialVault;
+  /** `placeholder\nhost` pairs already logged: one audit line per credential per host, however chatty the connector. */
+  spends: Set<string>;
+  log: RunLog;
+}
+
+/**
+ * The job as the guest receives it: the OAuth access token behind a placeholder
+ * the vault resolves at `fetch`. The gateway resolves the token per run, so the
+ * host holds it only for this run and the guest never holds it at all;
+ * `provider`, `expiresAt` and `scope` are bookkeeping a connector may branch on
+ * and stay readable. An absent token stays absent rather than becoming a
+ * (truthy) placeholder — connectors read `credentials.accessToken` as the "am I
+ * authenticated" flag and pick an anonymous endpoint when it is empty.
+ */
+function concealCredentials(job: ExecutorJob, vault: CredentialVault): ExecutorJob {
+  if (!('credentials' in job) || !job.credentials) return job;
+  const { provider, accessToken, expiresAt, scope } = job.credentials;
+  return {
+    ...job,
+    credentials: { provider, accessToken: accessToken ? vault.mint(accessToken) : accessToken, expiresAt, scope },
+  };
+}
+
 /**
  * The lane's egress refusal. Named AND prefixed so a run can tell a policy
  * decision from an upstream failure whichever of the two the guest surfaces.
@@ -479,6 +511,12 @@ export class IsolateExecutor implements SyncExecutor {
     // with it, so a worker that builds an executor per job never accumulates
     // idle keep-alive sockets.
     const egress = new EgressDispatcher({ exemptHosts: this.exactAllowedHosts, lookup: this.options.lookup });
+    // The run's credential vault: the guest gets placeholders, the host keeps
+    // the values and resolves them into request headers at `fetch`. Cleared
+    // with the run, so a placeholder that leaks into a checkpoint or a log is
+    // dead by the time anyone reads it.
+    const vault = new CredentialVault();
+    const guestJob = concealCredentials(job, vault);
     let host: IsolateHost | null = null;
 
     interface ActiveSocket {
@@ -540,6 +578,7 @@ export class IsolateExecutor implements SyncExecutor {
       pendingSleeps.clear();
       closeAllFetches();
       closeAllSockets();
+      vault.clear();
       host?.terminate(state);
     };
 
@@ -574,6 +613,8 @@ export class IsolateExecutor implements SyncExecutor {
       return undefined;
     };
 
+    const network: RunNetwork = { egress, vault, spends: new Set<string>(), log };
+
     const fetchOpen = async (request: unknown, body: unknown): Promise<HostFetchReply> => {
       const req = request as GuestFetchRequest;
       if (!req || typeof req !== 'object' || typeof req.url !== 'string' || typeof req.id !== 'number') {
@@ -589,7 +630,7 @@ export class IsolateExecutor implements SyncExecutor {
       activeFetches.set(req.id, active);
       let response: HostFetchResponse;
       try {
-        response = await this.hostFetch(req, body, active.controller.signal, egress, log);
+        response = await this.hostFetch(req, body, active.controller.signal, network);
       } catch (error) {
         activeFetches.delete(req.id);
         throw error;
@@ -950,7 +991,7 @@ export class IsolateExecutor implements SyncExecutor {
     };
 
     try {
-      const source = `var __job_json = ${jsonLiteral(job)};\nvar __config_json = ${jsonLiteral(mergedConfig)};\n${compiledCode}\n${GUEST_RUNNER}`;
+      const source = `var __job_json = ${jsonLiteral(guestJob)};\nvar __config_json = ${jsonLiteral(mergedConfig)};\n${compiledCode}\n${GUEST_RUNNER}`;
       let raw: unknown;
       try {
         raw = await host.run(source, { timeoutMs: this.options.timeoutMs });
@@ -1006,6 +1047,7 @@ export class IsolateExecutor implements SyncExecutor {
       pendingSleeps.clear();
       closeAllFetches();
       closeAllSockets();
+      vault.clear();
       void egress.destroy().catch(() => undefined);
       host.dispose();
     }
@@ -1033,8 +1075,7 @@ export class IsolateExecutor implements SyncExecutor {
     request: GuestFetchRequest,
     body: unknown,
     signal: AbortSignal,
-    egress: EgressDispatcher,
-    log: RunLog
+    net: RunNetwork
   ): Promise<HostFetchResponse> {
     let url = new URL(request.url);
     // The guest `fetch` rejects other schemes, but `__lobuHost.async('fetchOpen')`
@@ -1049,9 +1090,39 @@ export class IsolateExecutor implements SyncExecutor {
       body instanceof Uint8Array ? body : body instanceof ArrayBuffer ? new Uint8Array(body) : null;
     const redirectMode = request.redirect;
     let redirected = false;
+    /** Headers a placeholder was resolved into: they never follow a redirect off this origin, whatever their name. */
+    const credentialHeaders = new Set<string>();
 
     for (let hop = 0; ; hop++) {
-      await this.assertHostAllowed('fetch', url.hostname, log);
+      await this.assertHostAllowed('fetch', url.hostname, net.log);
+      if (hop === 0) {
+        // Placeholders resolve only now, with the destination admitted, and only
+        // into a destination that may carry a credential: HTTPS, or the run's
+        // own machine -- a loopback or reserved literal (or `localhost`) that the
+        // allowlist names exactly, the same exemption that lets a self-hosted
+        // install or a fixture reach a local service. A public name stays HTTPS
+        // only even when named exactly. Real values exist in `headers` from here
+        // on and nowhere the guest can read. A refusal is the lane's egress
+        // refusal: logged once host-side and named so the guest can tell it
+        // from an upstream failure.
+        const bareHost = stripIpv6Brackets(url.hostname);
+        let spent: ReturnType<CredentialVault['swapHeaders']>;
+        try {
+          spent = net.vault.swapHeaders(headers, url, {
+            plaintextAllowed:
+              this.exactAllowedHosts.includes(bareHost) && (bareHost === 'localhost' || isReservedIp(bareHost)),
+          });
+        } catch (error) {
+          throw refuse(net.log, `fetch to ${url.hostname}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        for (const spend of spent) {
+          credentialHeaders.add(spend.header);
+          const key = `${spend.placeholder}\n${url.hostname}`;
+          if (net.spends.has(key)) continue;
+          net.spends.add(key);
+          net.log('info', `credential ${spend.placeholder.slice(-12)} spent on ${url.hostname} in header ${spend.header}`);
+        }
+      }
       let response: Response;
       try {
         // The ENFORCING half of the check: a public-looking name may resolve
@@ -1069,7 +1140,7 @@ export class IsolateExecutor implements SyncExecutor {
             signal,
             redirect: 'manual',
           },
-          egress
+          net.egress
         );
       } catch (error) {
         if (signal.aborted) {
@@ -1080,7 +1151,7 @@ export class IsolateExecutor implements SyncExecutor {
         const where = refusedAddress(error);
         if (where !== null) {
           throw refuse(
-            log,
+            net.log,
             `fetch to ${url.hostname}${where} is not permitted (reserved and internal hosts are never reachable)`
           );
         }
@@ -1099,6 +1170,7 @@ export class IsolateExecutor implements SyncExecutor {
         if (next.origin !== url.origin) {
           headers = new Headers(headers);
           for (const name of CROSS_ORIGIN_SENSITIVE_HEADERS) headers.delete(name);
+          for (const name of credentialHeaders) headers.delete(name);
         }
         if (response.status === 303 || ((response.status === 301 || response.status === 302) && method === 'POST')) {
           method = 'GET';

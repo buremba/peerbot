@@ -24,7 +24,6 @@ import { getErrorMessage } from "@lobu/core";
 interface ExecutionOAuthCredentials {
   provider: string;
   accessToken: string;
-  refreshToken?: string | null;
   expiresAt?: string | null;
   scope?: string | null;
 }
@@ -82,7 +81,6 @@ export async function resolveExecutionAuth(
       credentials = {
         provider: appAuthProfile?.provider ?? 'managed',
         accessToken: accessToken.access_token,
-        refreshToken: null,
         expiresAt: accessToken.expires_at ?? null,
         scope: null,
       };
@@ -136,7 +134,6 @@ export async function resolveExecutionAuth(
         credentials = {
           provider: tokens.provider,
           accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken,
           expiresAt: tokens.expiresAt ? new Date(tokens.expiresAt).toISOString() : null,
           scope: tokens.scope,
         };
@@ -431,10 +428,11 @@ function recordAppInstallationTenancyTrip(params: {
  * Worker-creds invariant: the minted token is returned as `credentials`
  * (provider/accessToken/expiresAt), the existing channel a connector reads its
  * token from — identical to OAuth. The App private key, the signed App JWT, and
- * the GitHub `/access_tokens` exchange never leave the gateway. The end-state
- * `lobu_secret_<uuid>` placeholder + secret-proxy egress swap for the
- * connector-worker HTTP path is the documented seam (the connector worker does
- * not yet route outbound HTTP through the secret-proxy); see the PR notes.
+ * the GitHub `/access_tokens` exchange never leave the gateway, and the token
+ * itself stops at the worker HOST: the isolate lane hands connector code a
+ * per-run `lobu_secret_<uuid>` placeholder and swaps the value back into the
+ * request header at `fetch` (`CredentialVault` in the connector worker's
+ * `egress/credentials.ts`, minting the secret proxy's grammar).
  *
  * Lifecycle: a missing/inactive install, a cross-tenant or wrong-provider
  * install reference, or a mint failure all resolve to
@@ -623,7 +621,6 @@ async function resolveAppInstallationCredential(
     credentials: {
       provider: install.provider,
       accessToken: minted.token,
-      refreshToken: null,
       expiresAt: minted.expiresAt,
       scope: null,
     },

@@ -232,18 +232,32 @@ export type { ReactionContext } from './reaction-sdk.js';
 export type { ReactionClient } from './reaction-client-types.js';
 export type {
   CardElement,
-  EntityCreateInput,
-  EntityLinkInput,
-  EntityListFilter,
-  EntityUpdateInput,
   KnowledgeReadInput,
   KnowledgeSaveInput,
   KnowledgeSaveResult,
   KnowledgeSearchInput,
   NotificationsSendInput,
   NotificationsSendResult,
-  OperationsListRunsInput,
 } from './reaction-client-types.js';
+// Every object input a `ReactionClient` method takes is the server contract's
+// own per-action type, re-exported so a script can name the argument it builds.
+export type { ConnectionListInput } from '@lobu/core/contracts/tools/manage-connections';
+export type {
+  EntityCreateInput,
+  EntityDeleteInput,
+  EntityGetInput,
+  EntityLinkInput,
+  EntityListInput,
+  EntityListLinksInput,
+  EntityUnlinkInput,
+  EntityUpdateInput,
+  EntityUpdateLinkInput,
+} from '@lobu/core/contracts/tools/manage-entity';
+export type {
+  OperationExecuteInput,
+  OperationListAvailableInput,
+  OperationListRunsInput,
+} from '@lobu/core/contracts/tools/manage-operations';
 export type { Env } from './types.js';
 
 // =============================================================================

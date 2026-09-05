@@ -451,11 +451,55 @@ describe('guest ReadableStream reader', () => {
     expect(await reader.read()).toEqual({ value: undefined, done: true });
   });
 
+  it('an error the source reports after a cancel is dropped: a later read still reports done', async () => {
+    const guest = instantiateGuest();
+    let fail: ((error: Error) => void) | null = null;
+    const reader = new guest.ReadableStream({
+      pull: (controller: { error: (error: Error) => void }) => {
+        fail = (error: Error) => controller.error(error);
+      },
+    }).getReader();
+    const pending = reader.read();
+    await reader.cancel();
+    expect(await pending).toEqual({ value: undefined, done: true });
+    // The in-flight pull answers after the cancel, as a fetchRead killed by
+    // fetchAbort does with its AbortError.
+    fail?.(new Error('aborted after cancel'));
+    expect(await reader.read()).toEqual({ value: undefined, done: true });
+  });
+
   it('marks the stream disturbed on the first read, which is what Response.bodyUsed reports', async () => {
     const guest = instantiateGuest();
     const stream = new guest.ReadableStream(pullSource(['a']).source);
     expect(stream._disturbed).toBe(false);
     await stream.getReader().read();
     expect(stream._disturbed).toBe(true);
+  });
+});
+
+/**
+ * `Response.clone()` tees a streamed body on every other runtime; here it
+ * throws for one, since nothing bundled clones a network response and a tee
+ * nobody reads is surface for its own sake. A guest-constructed body still
+ * clones, so the narrowing is pinned exactly where it applies.
+ */
+describe('guest Response.clone', () => {
+  it('clones a guest-constructed body and refuses a streamed one', async () => {
+    const guest = instantiateGuest();
+    const built = new guest.Response('payload', { status: 201, headers: { 'x-a': '1' } });
+    const copy = built.clone();
+    expect(copy.status).toBe(201);
+    expect(copy.headers.get('x-a')).toBe('1');
+    expect(await copy.text()).toBe('payload');
+    expect(await built.text()).toBe('payload');
+
+    const streamed = new guest.Response(new guest.ReadableStream({ pull: (c: { close: () => void }) => c.close() }));
+    expect(streamed.body).not.toBeNull();
+    expect(() => streamed.clone()).toThrow(TypeError);
+    expect(() => streamed.clone()).toThrow(/streamed body cannot be cloned/);
+    // Refusing to clone did not consume the body.
+    expect(streamed.bodyUsed).toBe(false);
+    expect(await streamed.text()).toBe('');
+    expect(() => streamed.clone()).toThrow(/already been consumed/);
   });
 });

@@ -1646,6 +1646,11 @@ var exports = module.exports;
         settleWaiters({ value: undefined, done: true });
       },
       error: function (err) {
+        // Like enqueue: an error the source reports after a close or a cancel
+        // is dropped, so a read from then on still reports done. The fetch
+        // body reaches this when a cancel kills its in-flight pull, which
+        // answers with an AbortError only after the cancel has ended the stream.
+        if (isClosed) return;
         streamError = err;
         if (waiters.length > 0) settleWaiters(Promise.reject(err));
       }

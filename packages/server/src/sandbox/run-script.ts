@@ -10,7 +10,8 @@
  * terminates the run by disposing the isolate (uncatchable by the guest).
  * Extracted named exports keep the old hard-fail semantics because a partial
  * schema would be worse than none. Other caps: 180s wall-clock max
- * (device-bound operations may wait up to ~155s), and 30s per `ctx.sleep()`.
+ * (a device-bound operation can consume most of it — see
+ * `MAX_SCRIPT_TIMEOUT_MS`), and 30s per `ctx.sleep()`.
  * `client.org()` is stateless — each guest call carries
  * `orgPath` so the host re-walks org swaps without holding refs.
  */
@@ -177,7 +178,14 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 	traceBytes: 131_072,
 	messageBytes: 4_194_304,
 };
-/** Device action waits allow 60s queue + 95s post-claim; sandbox must outlive that. */
+/**
+ * Device action waits allow a 60s queue budget plus a post-claim budget of 95s
+ * by default, or the action's declared `timeout_ms` maximum plus a 30s
+ * completion grace (see tools/admin/device-action-wait.ts). The sandbox must
+ * outlive the common case; the waiter also honors the script's own abort, so a
+ * script that hits this ceiling mid-wait finalizes its device run rather than
+ * leaking it.
+ */
 export const MAX_SCRIPT_TIMEOUT_MS = 180_000;
 export const MAX_SLEEP_MS = 30_000;
 const MAX_TRACE_ARGS_BYTES = 8192;

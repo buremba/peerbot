@@ -9,7 +9,7 @@
  */
 
 import { DEVICE_ACTION_QUEUE_BUDGET_MS } from '../../config/intervals';
-import { getDb } from '../../db/client';
+import { type DbClient, getDb } from '../../db/client';
 import { classifyRunOutcome } from '../../runs/run-outcome';
 import { describeDeviceLastSeen } from '../../utils/device-liveness';
 
@@ -78,17 +78,97 @@ async function sleepUnlessAborted(ms: number, abortSignal?: AbortSignal): Promis
 //     allow up to the shared device-action queue budget for it to arrive.
 //
 //   - POST-CLAIM (status='running'): how long the device has to
-//     execute, after it claimed the run. The chrome extension's own
-//     per-run watchdog (tools.js RUN_TIMEOUT_MS=90s) caps this; we
-//     allow that + buffer so the gateway never times out a
-//     legitimately-running tool.
+//     execute, after it claimed the run. The default matches the chrome
+//     extension's own per-run watchdog (background.js RUN_TIMEOUT_MS=90s)
+//     plus a buffer, so the gateway never times out a legitimately-running
+//     tool.
+//     An action whose declared input schema bounds a `timeout_ms` budget (a
+//     shell command, for one) is allowed the run's requested value, clamped
+//     to that declared maximum, plus a completion grace: by contract the
+//     device is still executing well past the watchdog, and a flat 95s here
+//     terminalized those runs while the device was mid-command, so their
+//     output was lost. The caller's abort signal bounds the whole wait
+//     regardless of either budget.
 //
 // Without the two-phase split, a slow poll cycle (worker offline for
 // 20-30s) could exhaust a flat-100s deadline before the worker even
 // claimed the run, marking it timeout while the worker was about to
 // pick it up.
-const POST_CLAIM_BUDGET_MS = 95_000; // matches extension's 90s + 5s buffer
+const POST_CLAIM_BUDGET_MS = 95_000; // extension's 90s watchdog + 5s buffer
+// After the requested budget elapses the device still has to tear the process
+// group down (SIGTERM grace, reaping) and deliver the terminal result.
+const ACTION_COMPLETION_GRACE_MS = 30_000;
+// Hard ceiling on any derived budget. `timeout_ms.maximum` is declared by a
+// connector definition an organization can install, so it is tenant input, not
+// a platform constant: without this a definition declaring `maximum: 86400000`
+// would hold a gateway request open for a day. 180s is the wall-clock ceiling
+// the rest of the product already enforces (`MAX_SCRIPT_TIMEOUT_MS`), and the
+// shipped shell contract's 150s maximum plus completion grace lands exactly on
+// it, so nothing legitimate is clipped today.
+const MAX_POST_CLAIM_BUDGET_MS = 180_000;
 const POLL_MS = 500;
+
+/**
+ * Post-claim budget for one run, read ONCE before polling: `action_input` is
+ * immutable after creation and can be large (a shell action's stdin runs to a
+ * megabyte), so it has no business in the 500ms poll.
+ *
+ * The action's declared input schema is the contract. When it bounds
+ * `timeout_ms` with a `maximum`, the device has committed to executing for up
+ * to that long, so the wait honors the run's requested value — clamped to the
+ * declared maximum, which is also what input validation enforced at creation —
+ * plus completion grace. A requested value under an action that declares no
+ * maximum is ignored, and a run whose definition no longer resolves keeps the
+ * default. Only a JSON number counts as a request; a string "150000" or a
+ * fractional value is not a budget. The default is a floor, never a ceiling: a
+ * request SHORTER than it leaves the wait as it was, since a device that gives
+ * up early reports the failure itself. A declared maximum is tenant input, so
+ * the result is capped at {@link MAX_POST_CLAIM_BUDGET_MS} however large the
+ * definition claims its action may run.
+ */
+async function resolvePostClaimBudgetMs(
+  sql: DbClient,
+  runId: number,
+  organizationId: string,
+  defaultMs: number
+): Promise<number> {
+  const rows = (await sql`
+    SELECT
+      CASE
+        WHEN jsonb_typeof(r.action_input->'timeout_ms') = 'number'
+          THEN r.action_input->>'timeout_ms'
+      END AS requested,
+      COALESCE(
+        def.actions_schema->r.action_key->'input_schema',
+        def.actions_schema->r.action_key->'inputSchema'
+      )->'properties'->'timeout_ms'->>'maximum' AS declared_max
+    FROM runs r
+    LEFT JOIN LATERAL (
+      SELECT cd.actions_schema
+      FROM connector_definitions cd
+      WHERE cd.organization_id = r.organization_id
+        AND cd.key = r.connector_key
+        AND cd.status = 'active'
+        AND (r.connector_version IS NULL OR cd.version = r.connector_version)
+      ORDER BY cd.updated_at DESC, cd.id DESC
+      LIMIT 1
+    ) def ON true
+    WHERE r.id = ${runId} AND r.organization_id = ${organizationId}
+    LIMIT 1
+  `) as Array<{ requested: string | null; declared_max: string | null }>;
+  const requested = positiveIntegerMs(rows[0]?.requested);
+  const declaredMax = positiveIntegerMs(rows[0]?.declared_max);
+  if (requested == null || declaredMax == null) return defaultMs;
+  const declared = Math.min(requested, declaredMax) + ACTION_COMPLETION_GRACE_MS;
+  return Math.max(defaultMs, Math.min(declared, MAX_POST_CLAIM_BUDGET_MS));
+}
+
+/** `->>` renders a JSON number as its literal text; anything else is not a budget. */
+function positiveIntegerMs(value: string | null | undefined): number | null {
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
 
 interface DeviceActionRunOutcome {
   status: 'completed' | 'failed' | 'timeout';
@@ -100,6 +180,10 @@ interface DeviceActionRunOutcome {
 
 interface WaitForDeviceActionRunOptions {
   queueMs: number;
+  /**
+   * Default post-claim budget. An action whose declared schema bounds a
+   * `timeout_ms` budget may extend it; see {@link resolvePostClaimBudgetMs}.
+   */
   postClaimMs: number;
   pollMs: number;
   /** Clock the deadlines are measured against. Defaults to `Date.now`. */
@@ -147,6 +231,12 @@ export async function waitForDeviceActionRunWithOptions(
   const sleep = options.sleep ?? ((ms: number) => sleepUnlessAborted(ms, options.abortSignal));
   const queueDeadline = now() + options.queueMs;
   let claimedAtMs: number | null = null;
+  const postClaimMs = await resolvePostClaimBudgetMs(
+    sql,
+    runId,
+    organizationId,
+    options.postClaimMs
+  );
 
   while (true) {
     const rows = (await sql`
@@ -191,7 +281,7 @@ export async function waitForDeviceActionRunWithOptions(
     if (options.abortSignal?.aborted) break;
     const currentTimeMs = now();
     if (claimedAtMs != null) {
-      if (currentTimeMs - claimedAtMs >= options.postClaimMs) break;
+      if (currentTimeMs - claimedAtMs >= postClaimMs) break;
     } else {
       if (currentTimeMs >= queueDeadline) break;
     }
@@ -266,7 +356,7 @@ export async function waitForDeviceActionRunWithOptions(
     status: 'timeout',
     error_message:
       deviceDiagnostic == null
-        ? `Run ${runId} claimed but the device worker didn't finish within ${options.postClaimMs}ms.`
+        ? `Run ${runId} claimed but the device worker didn't finish within ${postClaimMs}ms.`
         : `Run ${runId} was never claimed within ${options.queueMs}ms — ${deviceDiagnostic}.`,
   };
 }

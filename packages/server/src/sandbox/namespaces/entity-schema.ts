@@ -4,80 +4,60 @@
  * and `action`.
  *
  * Field names mirror the handler: plain `slug` for the type identifier,
- * `source_entity_type_slug` / `target_entity_type_slug` / `relationship_type_slug`
- * for add_rule.
+ * `source_entity_type_slug` / `target_entity_type_slug` for add_rule.
  */
 
+import type { FlatActionInput } from "@lobu/core/contracts/tools/action-input";
+import type { ManageEntitySchemaArgs } from "@lobu/core/contracts/tools/manage-entity-schema";
 import type { Env } from "../../index";
 import { manageEntitySchema } from "../../tools/admin/manage_entity_schema";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller, idArg } from "./action-call";
 
-export interface EntitySchemaAddRuleInput {
-	slug: string;
-	source_entity_type_slug: string;
-	target_entity_type_slug: string;
-	relationship_type_slug?: string;
-	description?: string;
-}
+/**
+ * The contract's fields one action reads; `R` names the ones it requires.
+ * `schema_type` and `action` are not inputs — each method fills them in.
+ */
+type Input<
+	K extends keyof ManageEntitySchemaArgs,
+	R extends K = never,
+> = FlatActionInput<ManageEntitySchemaArgs, K, R>;
+type TypeFields = "slug" | "name" | "description" | "metadata_schema";
+type EntityTypeFields =
+	| TypeFields
+	| "icon"
+	| "color"
+	| "event_kinds"
+	| "backing"
+	| "metrics_config"
+	| "rules_source";
+type RelationshipTypeFields = TypeFields | "inverse_type_slug" | "status";
 
 export interface EntitySchemaNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	listTypes(input?: { list_scope?: "accessible" | "organization" }): Promise<unknown>;
+	listTypes(input?: Input<"list_scope">): Promise<unknown>;
 	getType(slug: string): Promise<unknown>;
-	createType(input: {
-		slug: string;
-		name: string;
-		description?: string;
-		icon?: string;
-		color?: string;
-		metadata_schema?: Record<string, unknown>;
-		event_kinds?: Record<string, unknown> | null;
-		/**
-		 * Make the type derived (a SQL view); `null`/omit ⇒ a stored type. With
-		 * `connection`, the view runs LIVE against that connection's external DB
-		 * (read-only pushdown) instead of the org's internal tables.
-		 */
-		backing?: { sql: string; connection?: string } | null;
-		/** Declared metric contract (eventSets/measures/dimensions/segments); `null` clears it. */
-		metrics_config?: Record<string, unknown> | null;
-	}): Promise<unknown>;
-	updateType(input: {
-		slug: string;
-		name?: string;
-		description?: string;
-		icon?: string;
-		color?: string;
-		metadata_schema?: Record<string, unknown>;
-		event_kinds?: Record<string, unknown> | null;
-		/** Set/clear the derived view; omit to leave backing unchanged. With
-		 *  `connection`, the view reads live from that external connection (pushdown). */
-		backing?: { sql: string; connection?: string } | null;
-		/** Set/clear declared metrics; `null` clears, omit to leave unchanged. */
-		metrics_config?: Record<string, unknown> | null;
-	}): Promise<unknown>;
-	deleteType(input: { slug: string }): Promise<unknown>;
+	createType(input: Input<EntityTypeFields, "slug" | "name">): Promise<unknown>;
+	updateType(input: Input<EntityTypeFields, "slug">): Promise<unknown>;
+	deleteType(input: Input<"slug", "slug">): Promise<unknown>;
 	auditType(slug: string): Promise<unknown>;
 
-	listRelTypes(input?: { list_scope?: "accessible" | "organization" }): Promise<unknown>;
+	listRelTypes(input?: Input<"list_scope" | "include_deleted">): Promise<unknown>;
 	getRelType(slug: string): Promise<unknown>;
-	createRelType(input: {
-		slug: string;
-		name: string;
-		description?: string;
-		inverse_type_slug?: string | null;
-	}): Promise<unknown>;
-	updateRelType(input: {
-		slug: string;
-		name?: string;
-		description?: string;
-		inverse_type_slug?: string | null;
-	}): Promise<unknown>;
-	deleteRelType(input: { slug: string }): Promise<unknown>;
+	createRelType(
+		input: Input<RelationshipTypeFields | "is_symmetric", "slug" | "name">,
+	): Promise<unknown>;
+	updateRelType(input: Input<RelationshipTypeFields, "slug">): Promise<unknown>;
+	deleteRelType(input: Input<"slug", "slug">): Promise<unknown>;
 
-	addRule(input: EntitySchemaAddRuleInput): Promise<unknown>;
-	removeRule(input: { slug: string; rule_id: number }): Promise<unknown>;
-	listRules(input: { slug: string }): Promise<unknown>;
+	addRule(
+		input: Input<
+			"slug" | "source_entity_type_slug" | "target_entity_type_slug",
+			"slug" | "source_entity_type_slug" | "target_entity_type_slug"
+		>,
+	): Promise<unknown>;
+	removeRule(input: Input<"slug" | "rule_id", "rule_id">): Promise<unknown>;
+	listRules(input: Input<"slug", "slug">): Promise<unknown>;
 }
 
 export function buildEntitySchemaNamespace(

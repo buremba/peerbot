@@ -7,17 +7,14 @@
  * reachable via `automations.manage({ action, ... })`.
  */
 
-import type { Env } from "../../index";
+import type { FlatActionInput } from "@lobu/core/contracts/tools/action-input";
 import type {
 	AutomationClaimNextWindowResult,
-	AutomationExecutionConfig,
-	AutomationSource,
-	AutomationTrigger,
 	AutomationTriggerResult,
 	ListAutomationsArgs,
 	ManageAutomationsResult,
 } from "@lobu/core/contracts/tools/manage-automations";
-import type { AgentKind } from "@lobu/core/contracts/worker/device-automation";
+import type { Env } from "../../index";
 import {
 	type ManageAutomationsArgs,
 	manageAutomations,
@@ -30,6 +27,11 @@ type AutomationId = string;
 type AutomationActionInput = Omit<ManageAutomationsArgs, "action" | "automation_id"> & {
 	automation_id?: AutomationId;
 };
+/** The contract's fields one action reads; `R` names the ones it requires. */
+type Input<
+	K extends keyof ManageAutomationsArgs,
+	R extends K = never,
+> = FlatActionInput<ManageAutomationsArgs, K, R>;
 
 export type AutomationListFilter = ListAutomationsArgs;
 
@@ -43,94 +45,102 @@ export type AutomationCreateResult =
 	| Extract<ManageAutomationsResult, { action: "create" }>
 	| (Omit<AutomationPendingApprovalResult, "action"> & { action: "create" });
 
-export interface AutomationCreateInput {
-	/** Attach the Automation to an entity. Omit for an org-scoped/global Automation. */
-	entity_id?: number;
-	prompt: string;
-	sources?: AutomationSource[];
-	triggers?: AutomationTrigger[];
-	slug?: string;
-	name?: string;
-	description?: string;
-	outputs?: Record<string, unknown>;
-	classifiers?: Record<string, unknown>;
-	reactions_guidance?: string;
-	reaction_script?: string;
-	managed_agent_id?: string | null;
-	device_worker_id?: string;
-	agent_kind?: AgentKind;
-	model_config?: Record<string, unknown>;
-	execution_config?: AutomationExecutionConfig;
-	tags?: string[];
-}
+/**
+ * `slug` is the only hard requirement (`handleCreate`). The instruction
+ * requirement is satisfied by `prompt`, `skills`, OR `reaction_script`, and an
+ * event trigger with execution 'turn' may omit all three
+ * (`assertAutomationInstructions`) — so none of them is required here.
+ */
+export type AutomationCreateInput = Input<
+	| "entity_id"
+	| "prompt"
+	| "skills"
+	| "sources"
+	| "triggers"
+	| "slug"
+	| "name"
+	| "description"
+	| "outputs"
+	| "classifiers"
+	| "reactions_guidance"
+	| "reaction_script"
+	| "managed_agent_id"
+	| "device_worker_id"
+	| "agent_kind"
+	| "delivery_target"
+	| "min_cooldown_seconds"
+	| "model_config"
+	| "execution_config"
+	| "tags",
+	"slug"
+>;
 
-export interface AutomationUpdateInput {
-	automation_id: AutomationId;
-	triggers?: AutomationTrigger[];
-	managed_agent_id?: string | null;
-	device_worker_id?: string | null;
-	agent_kind?: AgentKind | null;
-	model_config?: Record<string, unknown>;
-	/** `null` clears a previously-saved config back to NULL/defaults. */
-	execution_config?: AutomationExecutionConfig | null;
-}
+/**
+ * `tags` is patchable here even though the schema annotates it `[create]` —
+ * `handleUpdate` lists it in `updatedFields` and writes it. Omitting it is the
+ * drift `FlatActionInput` exists to prevent: a field the schema accepts that no
+ * typed caller can reach.
+ */
+export type AutomationUpdateInput = Input<
+	| "automation_id"
+	| "triggers"
+	| "managed_agent_id"
+	| "device_worker_id"
+	| "agent_kind"
+	| "delivery_target"
+	| "min_cooldown_seconds"
+	| "model_config"
+	| "execution_config"
+	| "tags",
+	"automation_id"
+>;
 
-export interface AutomationCompleteWindowInput {
-	automation_id: AutomationId;
-	/** JWT obtained from knowledge.read for this Automation run/window. */
-	window_token?: string;
-	/** Multiple page JWTs obtained from knowledge.read for the same Automation run/window. */
-	window_tokens?: string[];
-	extracted_data: Record<string, unknown>;
-	client_id?: string;
-	model?: string;
-	/** Automation run id from the dispatch prompt or Automation list. */
-	run_id: number;
-	run_metadata?: Record<string, unknown>;
-	template_version_id?: number;
-}
+export type AutomationCompleteWindowInput = Input<
+	| "automation_id"
+	| "window_token"
+	| "window_tokens"
+	| "extracted_data"
+	| "client_id"
+	| "model"
+	| "run_id"
+	| "run_metadata"
+	| "template_version_id",
+	"automation_id" | "extracted_data" | "run_id"
+>;
 
-export interface AutomationClaimNextWindowInput {
-	automation_id: AutomationId;
-	lease_seconds?: number;
-	limit?: number;
-	/** Existing lease run id when fetching the next source page. */
-	run_id?: number;
-	before_occurred_at?: string;
-	before_id?: number;
-}
+export type AutomationClaimNextWindowInput = Input<
+	| "automation_id"
+	| "lease_seconds"
+	| "limit"
+	| "run_id"
+	| "before_occurred_at"
+	| "before_id",
+	"automation_id"
+>;
 
 export interface AutomationCreateVersionInput extends AutomationActionInput {
 	automation_id: AutomationId;
 }
 
-export interface AutomationVersionDetailsInput {
-	automation_id: AutomationId;
-	version?: number;
-}
+export type AutomationVersionDetailsInput = Input<
+	"automation_id" | "version",
+	"automation_id"
+>;
 
-export interface AutomationSubmitFeedbackInput {
-	automation_id: AutomationId;
-	run_id: number;
-	corrections: Array<{
-		field_path: string;
-		mutation?: "set" | "remove" | "add";
-		value?: unknown;
-		note?: string;
-	}>;
-}
+export type AutomationSubmitFeedbackInput = Input<
+	"automation_id" | "run_id" | "corrections",
+	"automation_id" | "run_id" | "corrections"
+>;
 
-export interface AutomationGetFeedbackInput {
-	automation_id: AutomationId;
-	run_id?: number;
-	limit?: number;
-}
+export type AutomationGetFeedbackInput = Input<
+	"automation_id" | "run_id" | "limit",
+	"automation_id"
+>;
 
-export interface AutomationCreateFromVersionInput {
-	version_id: number;
-	entity_ids: number[];
-	name_pattern?: string;
-}
+export type AutomationCreateFromVersionInput = Input<
+	"version_id" | "entity_ids" | "name_pattern",
+	"version_id" | "entity_ids"
+>;
 
 export interface AutomationsNamespace {
 	/** Raw escape hatch for any manage_automations action. Prefer named methods. */

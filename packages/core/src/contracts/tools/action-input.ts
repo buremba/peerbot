@@ -19,9 +19,23 @@
  * Only for contracts whose input schema is a `Type.Union` of per-action
  * variants, each carrying a single-literal `action`. A flat `Type.Object`
  * contract has nothing to `Extract` — its `action` is a union-typed field, not
- * a discriminator.
+ * a discriminator — so it uses `FlatActionInput` below.
  */
 export type ActionInput<
   Args extends { action: string },
   Action extends Args["action"],
 > = Omit<Extract<Args, { action: Action }>, "action">;
+
+/**
+ * For a FLAT contract — one `Type.Object` whose non-discriminator fields are
+ * all optional because they span every action — the fields one action reads,
+ * with `R` naming the ones that action requires. A key not on the contract
+ * fails to compile, so an SDK method's shape cannot drift from the schema's
+ * fields; `R` still has to be checked against the handler, since a flat schema
+ * cannot express per-action required-ness.
+ */
+export type FlatActionInput<
+  Args extends object,
+  K extends keyof Args,
+  R extends K = never,
+> = Pick<Args, Exclude<K, R>> & Required<Pick<Args, R>>;

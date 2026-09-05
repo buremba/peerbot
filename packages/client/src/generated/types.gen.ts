@@ -5001,7 +5001,7 @@ export type ManageAutomationsData = {
       finalize_nudges?: number;
     };
     /**
-     * [create] Tags for filtering
+     * [create/update] Tags for filtering
      */
     tags?: Array<string>;
     /**

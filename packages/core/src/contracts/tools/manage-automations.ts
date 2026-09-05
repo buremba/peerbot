@@ -754,7 +754,9 @@ export const ManageAutomationsSchema = Type.Object(
       Type.Union([Type.Null(), AutomationExecutionConfigSchema])
     ),
     tags: Type.Optional(
-      Type.Array(Type.String(), { description: "[create] Tags for filtering" })
+      Type.Array(Type.String(), {
+        description: "[create/update] Tags for filtering",
+      })
     ),
 
     // Version management

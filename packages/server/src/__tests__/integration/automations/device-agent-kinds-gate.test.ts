@@ -107,8 +107,8 @@ async function setup(opts: {
   })) as { automation_id: string };
   const automationId = Number(automation.automation_id);
 
-  // AutomationCreateInput doesn't expose device_worker_id / agent_kind; set
-  // them directly, as manual-trigger.test.ts does.
+  // Pin the automation to the device directly rather than through
+  // automations.create, as manual-trigger.test.ts does.
   await sql`
     UPDATE automations
     SET device_worker_id = ${deviceWorkerId}::uuid,

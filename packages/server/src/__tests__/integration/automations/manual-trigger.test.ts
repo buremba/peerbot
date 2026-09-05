@@ -112,9 +112,9 @@ async function setupDevicePinnedAutomation(opts: { workerId: string }): Promise<
   })) as { automation_id: string };
   const automationId = Number(automation.automation_id);
 
-  // Pin the automation to the device. `AutomationCreateInput` doesn't expose
-  // device_worker_id / agent_kind, so set them directly — matches how
-  // automation-contract.test.ts pins automations for the #802 dispatcher tests.
+  // Pin the automation to the device directly rather than through
+  // automations.create — matches how automation-contract.test.ts pins
+  // automations for the #802 dispatcher tests.
   await sql`
     UPDATE automations
     SET device_worker_id = ${deviceWorkerId}::uuid,

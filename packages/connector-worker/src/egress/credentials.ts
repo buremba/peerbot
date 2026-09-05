@@ -88,6 +88,14 @@ export class CredentialVault {
     for (const [name, value] of headers) {
       if (!containsCredentialPlaceholder(value)) continue;
       if (!options.plaintextAllowed) parseCredentialedHttpsUrl(url);
+      if (containsCredentialPlaceholder(value.replace(PLACEHOLDER_PATTERN, ''))) {
+        // The prefix without a well-formed id behind it: not something this lane
+        // minted. Checked on what the GUEST sent, before the swap, because a
+        // resolved value is allowed to be placeholder-shaped itself -- an agent
+        // turn's provider key is the gateway's own `lobu_secret_` placeholder,
+        // which this vault conceals behind one of its own.
+        throw new TypeError(`the credential placeholder in header ${name} is not valid for this run`);
+      }
       const swapped = value.replace(PLACEHOLDER_PATTERN, (placeholder) => {
         const real = this.values.get(placeholder);
         if (real === undefined) {
@@ -96,10 +104,6 @@ export class CredentialVault {
         spends.push({ placeholder, header: name });
         return real;
       });
-      if (containsCredentialPlaceholder(swapped)) {
-        // The prefix without a well-formed id behind it: not something this lane minted.
-        throw new TypeError(`the credential placeholder in header ${name} is not valid for this run`);
-      }
       resolved.push([name, swapped]);
     }
     for (const [name, value] of resolved) headers.set(name, value);

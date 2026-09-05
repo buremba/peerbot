@@ -31,7 +31,10 @@ import {
   buildAutomationRunWorkerAccess,
   buildDeviceChatRunWorkerAccess,
 } from '../gateway/services/run-worker-access';
-import { readSnapshotJsonl } from '../gateway/services/transcript-snapshot';
+import {
+  readSnapshotJsonl,
+  transcriptText,
+} from '../gateway/services/transcript-snapshot';
 import { resolvePublicOrigin } from '../utils/public-origin';
 import { getDb, parsePgTextArray, pgTextArray } from '../db/client';
 import type { Outputs } from '../types/automations';
@@ -89,21 +92,6 @@ const DEVICE_CHAT_DISPATCH_ERROR =
   'The selected device could not start this message.';
 
 const DUE_FEEDS_LOCK_KEY = 71001;
-
-function transcriptText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .map((part) =>
-      part &&
-      typeof part === 'object' &&
-      (part as Record<string, unknown>).type === 'text'
-        ? String((part as Record<string, unknown>).text ?? '')
-        : ''
-    )
-    .filter(Boolean)
-    .join('\n');
-}
 
 /**
  * Fail a run that this worker already claimed. Approval-gated actions also
@@ -457,6 +445,15 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // apply. Gated in the shared fleet claim lane; only active in cloud mode.
   const workerHardensDbEgress = capabilities.db_egress_hardening === true;
 
+  // An agent turn runs Lobu's own agent-session guest bundle through
+  // IsolateExecutor. `executeRun`'s default arm is a connector sync, so a
+  // daemon that predates this lane would claim the row and then fail it as a
+  // malformed connector run. Gate the claim on the worker SAYING it can run
+  // one: the two sides agree by string equality, so an old worker simply never
+  // matches. Fleet only — an agent turn carries the org's provider proxy and
+  // has no business on a user's device.
+  const workerRunsAgentTurns = capabilities.agent_turn === true;
+
   // Device-worker registry: upsert device_workers row for user-scoped workers
   // so /api/me/devices can enumerate them. Also ensure advertised capability
   // connectors are fully wired. Best-effort — never fail the poll.
@@ -779,6 +776,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                 runManifestHash: tx`run_cv.artifact_hash`,
                 runRuntime: tx`cd.run_runtime`,
               })}
+            )
+            -- (1a) Agent turns: one conversation turn as one isolate job.
+            --      Fleet-only, and only for a worker that advertises the lane.
+            OR (
+              ${!isUserScopedWorker && workerRunsAgentTurns}
+              AND r.run_type = 'agent_turn'
             )
             -- (1b) Embedding backfills have no connector identity. They are
             -- server-side work and may only be claimed by the trusted fleet.
@@ -1165,6 +1168,47 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // therefore into the hash, so one contract could not be served by two
   // endpoints.
   const isDeviceOwnedRun = isUserScopedWorker && row.connector_manifest_backed;
+
+  // An agent turn ships its whole envelope in `action_input`: the producer
+  // already resolved the model, the prompt, the transcript and the gateway
+  // proxy, so there is nothing for the poll to look up. The provider
+  // credential is lifted OUT of the payload and onto the response's
+  // `credentials`, so the worker host conceals it behind a per-run placeholder
+  // the way it does a connector's OAuth token — the guest never sees either.
+  if (row.run_type === 'agent_turn') {
+    const envelope = (row.action_input ?? {}) as {
+      turn?: Record<string, unknown>;
+      credential?: unknown;
+    };
+    const turn = envelope.turn;
+    const credential = envelope.credential;
+    if (!turn || typeof credential !== 'string' || credential.length === 0) {
+      const failure = 'agent turn run has an incomplete execution envelope';
+      await failClaimedWorkerRun({
+        runId: row.run_id,
+        workerId: worker_id,
+        errorMessage: failure,
+      });
+      logger.error({ run_id: row.run_id }, failure);
+      return c.json({
+        next_poll_seconds: 1,
+        skipped_run_id: row.run_id,
+        error: failure,
+        ...pollMetadata,
+      });
+    }
+    return c.json({
+      ...pollMetadata,
+      run_id: row.run_id,
+      run_type: 'agent_turn',
+      organization_id: row.organization_id,
+      payload: { turn },
+      credentials: {
+        provider: String((turn.provider as { provider?: unknown } | undefined)?.provider ?? 'unknown'),
+        accessToken: credential,
+      },
+    });
+  }
 
   // Device chat reuses the ordinary messages/chat_message row. The poll
   // response is only an execution envelope: ownership/routing remain on the

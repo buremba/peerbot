@@ -65,6 +65,15 @@ export const RunTypeSchema = Type.Union([
   Type.Literal("chat_message"),
   Type.Literal("embed_backfill"),
   Type.Literal("auth"),
+  /**
+   * One conversation turn executed as one isolate job, claimed only by a fleet
+   * worker that advertises the lane and run through `IsolateExecutor`. Distinct
+   * from `chat_message`, a lobu-queue row the gateway drains to a subprocess
+   * worker — or, when the agent is device-pinned, hands to that device through
+   * this same poll. A daemon that predates this lane must never claim an
+   * `agent_turn`: its dispatch would fall through to a connector sync.
+   */
+  Type.Literal("agent_turn"),
 ]);
 
 /** Categorized run exit reason on the failed-run path. */
@@ -276,6 +285,47 @@ export const DeviceChatPollPayloadSchema = Type.Object({
   context: AutomationPollContextSchema,
 });
 
+/**
+ * `payload` of an agent-turn poll response.
+ *
+ * The provider credential is deliberately NOT here: it rides the response's
+ * ordinary `credentials.accessToken`, so the worker host conceals it behind a
+ * per-run placeholder exactly as it does a connector's OAuth token. Its value
+ * is the gateway's own `lobu_secret_` placeholder for the agent, which only the
+ * gateway's secret proxy at `base_url` can resolve — the worker never holds a
+ * real provider key at either hop.
+ */
+export const AgentTurnPollPayloadSchema = Type.Object({
+  turn: Type.Object({
+    agent_id: Type.String({ minLength: 1 }),
+    conversation_id: Type.String({ minLength: 1 }),
+    message_id: Type.String({ minLength: 1 }),
+    /** What the human said, verbatim. */
+    message_text: Type.String({ maxLength: 32_000 }),
+    system_prompt: Type.String(),
+    /** The transcript this turn continues, oldest first, in pi's message shape. */
+    messages: Type.Array(Type.Record(Type.String(), Type.Unknown())),
+    provider: Type.Object({
+      api: Type.Union([
+        Type.Literal("anthropic-messages"),
+        Type.Literal("openai-completions"),
+      ]),
+      provider: Type.String({ minLength: 1 }),
+      model_id: Type.String({ minLength: 1 }),
+      /** The gateway's agent-scoped secret-proxy base URL. */
+      base_url: Type.String({ minLength: 1 }),
+      max_tokens: Type.Optional(Type.Integer({ minimum: 1 })),
+    }),
+    /**
+     * Hosts the turn may reach. An agent turn is deny-all by default, unlike a
+     * connector's open one, so this is normally just the gateway.
+     */
+    allowed_hosts: Type.Array(Type.String({ minLength: 1 })),
+    /** Shadow runs report their result and never reach the conversation. */
+    shadow: Type.Boolean(),
+  }),
+});
+
 /** `POST /api/workers/poll` response body (a claimed run, or a poll-again). */
 export const PollResponseSchema = Type.Object({
   next_poll_seconds: Type.Optional(Type.Number()),
@@ -342,7 +392,11 @@ export const PollResponseSchema = Type.Object({
    * matching completion endpoint. No connector code or credentials are shipped.
    */
   payload: Type.Optional(
-    Type.Union([AutomationPollPayloadSchema, DeviceChatPollPayloadSchema])
+    Type.Union([
+      AutomationPollPayloadSchema,
+      DeviceChatPollPayloadSchema,
+      AgentTurnPollPayloadSchema,
+    ])
   ),
 });
 
@@ -528,6 +582,38 @@ export const CompleteDeviceChatResponseSchema = Type.Object({
   idempotent: Type.Optional(Type.Boolean()),
 });
 
+/**
+ * `POST /api/workers/complete-agent-turn`.
+ *
+ * `transcript` is what the turn produced, to resume the next one from. A shadow
+ * run reports it and nothing else happens; when the lane becomes authoritative
+ * the same body carries the reply.
+ */
+export const CompleteAgentTurnRequestSchema = Type.Object({
+  run_id: Type.Integer(),
+  worker_id: Type.String(),
+  status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
+  text: Type.Optional(Type.String()),
+  stop_reason: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  usage: Type.Optional(
+    Type.Union([
+      Type.Object({ input: Type.Integer(), output: Type.Integer() }),
+      Type.Null(),
+    ])
+  ),
+  transcript: Type.Optional(
+    Type.Array(Type.Record(Type.String(), Type.Unknown()))
+  ),
+  error: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  exit_reason: Type.Optional(WorkerExitReasonSchema),
+});
+
+export const CompleteAgentTurnResponseSchema = Type.Object({
+  ok: Type.Boolean(),
+  status: Type.Union([Type.Literal("completed"), Type.Literal("failed")]),
+  idempotent: Type.Optional(Type.Boolean()),
+});
+
 // ── auth signalling ─────────────────────────────────────────────────────────
 
 /** `POST /api/workers/emit-auth-artifact`. */
@@ -625,6 +711,13 @@ export type CompleteDeviceChatRequest = Static<
 >;
 export type CompleteDeviceChatResponse = Static<
   typeof CompleteDeviceChatResponseSchema
+>;
+export type AgentTurnPollPayload = Static<typeof AgentTurnPollPayloadSchema>;
+export type CompleteAgentTurnRequest = Static<
+  typeof CompleteAgentTurnRequestSchema
+>;
+export type CompleteAgentTurnResponse = Static<
+  typeof CompleteAgentTurnResponseSchema
 >;
 export type ActivatePageRequest = Static<typeof ActivatePageRequestSchema>;
 export type ActivatePageResponse = Static<typeof ActivatePageResponseSchema>;

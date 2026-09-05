@@ -503,3 +503,148 @@ describe('guest Response.clone', () => {
     expect(() => streamed.clone()).toThrow(/already been consumed/);
   });
 });
+
+/**
+ * The Stainless HTTP clients every pi LLM provider is built on branch on
+ * `body instanceof FormData` with no `globalThis.FormData &&` guard, on the
+ * request path each provider call takes. A guest without the constructor
+ * therefore cannot reach any provider at all, which is why the lane carries
+ * one. It holds text fields only: `Blob` and `File` are not on this lane, so a
+ * non-primitive part is refused instead of stringified into "[object Object]".
+ */
+describe('guest FormData', () => {
+  function instantiateFetchGuest(): { guest: any; opened: Array<{ request: any; body: Uint8Array | undefined }> } {
+    const hostSync = createPreludeHostSync();
+    const opened: Array<{ request: any; body: Uint8Array | undefined }> = [];
+    const guest: any = {
+      __host_sync: {
+        applySync: (_receiver: unknown, args: any[]) => {
+          const [name, ...rest] = args;
+          const fn = hostSync[String(name)];
+          if (!fn) return { __lobu: 1, ok: true, value: null };
+          try {
+            return { __lobu: 1, ok: true, value: fn(...rest) };
+          } catch (error) {
+            const err = error as Error;
+            return { __lobu: 1, ok: false, error: { name: err.name, message: err.message } };
+          }
+        },
+      },
+      __host_async: {
+        apply: (_receiver: unknown, args: any[]) => {
+          const [name, ...rest] = args;
+          if (name === 'fetchOpen') {
+            opened.push({ request: rest[0], body: rest[1] as Uint8Array | undefined });
+            return Promise.resolve({
+              __lobu: 1,
+              ok: true,
+              value: { status: 204, statusText: 'No Content', url: rest[0].url, redirected: false, headers: [], hasBody: false },
+            });
+          }
+          return Promise.resolve({ __lobu: 1, ok: true, value: null });
+        },
+      },
+      __host_env_json: '{}',
+      atob: (x: string) => Buffer.from(x, 'base64').toString('binary'),
+      btoa: (x: string) => Buffer.from(x, 'binary').toString('base64'),
+      TextEncoder,
+      TextDecoder,
+    };
+    new Function('globalThis', GUEST_PRELUDE)(guest);
+    return { guest, opened };
+  }
+
+  it('answers the unguarded `body instanceof FormData` branch the provider SDKs take', () => {
+    const { guest } = instantiateFetchGuest();
+    expect(typeof guest.FormData).toBe('function');
+    expect(new guest.FormData() instanceof guest.FormData).toBe(true);
+    // The SDKs reach the check with a plain JSON object on the messages path.
+    expect({ model: 'claude' } instanceof guest.FormData).toBe(false);
+    expect(Object.prototype.toString.call(new guest.FormData())).toBe('[object FormData]');
+  });
+
+  it('keeps every appended value and replaces in place on set', () => {
+    const { guest } = instantiateFetchGuest();
+    const form = new guest.FormData();
+    form.append('a', '1');
+    form.append('b', '2');
+    form.append('a', '3');
+    expect(form.getAll('a')).toEqual(['1', '3']);
+    expect(form.get('a')).toBe('1');
+    expect(form.get('missing')).toBe(null);
+    expect(form.has('b')).toBe(true);
+    form.set('a', '9');
+    expect(Array.from(form)).toEqual([
+      ['a', '9'],
+      ['b', '2'],
+    ]);
+    form.delete('a');
+    expect(Array.from(form.keys())).toEqual(['b']);
+    expect(Array.from(form.values())).toEqual(['2']);
+  });
+
+  it('stringifies primitives and refuses the parts this lane cannot carry', () => {
+    const { guest } = instantiateFetchGuest();
+    const form = new guest.FormData();
+    form.append('n', 42);
+    form.append('t', true);
+    expect(form.getAll('n')).toEqual(['42']);
+    expect(form.getAll('t')).toEqual(['true']);
+    expect(() => form.append('f', { name: 'x' })).toThrow(
+      'FormData on the isolate lane holds text fields only; Blob and File parts are not available'
+    );
+    expect(form.has('f')).toBe(false);
+  });
+
+  it('sends a multipart body with a random boundary the field values cannot close', async () => {
+    const { guest, opened } = instantiateFetchGuest();
+    const form = new guest.FormData();
+    form.append('plain', 'hello');
+    // A value that spells out a terminator, and a name with the three
+    // characters the header line cannot carry raw.
+    form.append('sneaky\r\n"x"', '--boundary--');
+    await guest.fetch('https://api.example.test/upload', { method: 'POST', body: form });
+
+    expect(opened.length).toBe(1);
+    const contentType = opened[0].request.headers.find((h: string[]) => h[0] === 'content-type')?.[1] as string;
+    const boundary = /^multipart\/form-data; boundary=(----LobuFormBoundary[0-9a-f]{32})$/.exec(contentType)?.[1];
+    expect(boundary).toBeDefined();
+    const text = Buffer.from(opened[0].body as Uint8Array).toString('utf8');
+    expect(text).toBe(
+      `--${boundary}\r\n` +
+        'Content-Disposition: form-data; name="plain"\r\n\r\n' +
+        'hello\r\n' +
+        `--${boundary}\r\n` +
+        'Content-Disposition: form-data; name="sneaky%0D%0A%22x%22"\r\n\r\n' +
+        '--boundary--\r\n' +
+        `--${boundary}--\r\n`
+    );
+  });
+
+  it('gives every body its own boundary', async () => {
+    const { guest, opened } = instantiateFetchGuest();
+    for (let i = 0; i < 2; i++) {
+      const form = new guest.FormData();
+      form.append('i', String(i));
+      await guest.fetch('https://api.example.test/upload', { method: 'POST', body: form });
+    }
+    const boundaries = opened.map(
+      (o) => (o.request.headers.find((h: string[]) => h[0] === 'content-type')?.[1] as string)
+    );
+    expect(boundaries[0]).not.toBe(boundaries[1]);
+  });
+
+  it('does not overwrite a content-type the caller already set', async () => {
+    const { guest, opened } = instantiateFetchGuest();
+    const form = new guest.FormData();
+    form.append('a', '1');
+    await guest.fetch('https://api.example.test/upload', {
+      method: 'POST',
+      body: form,
+      headers: { 'content-type': 'multipart/form-data; boundary=caller' },
+    });
+    expect(opened[0].request.headers.find((h: string[]) => h[0] === 'content-type')?.[1]).toBe(
+      'multipart/form-data; boundary=caller'
+    );
+  });
+});

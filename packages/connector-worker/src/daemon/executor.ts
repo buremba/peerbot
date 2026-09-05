@@ -13,6 +13,7 @@ import {
   hasDaemonBuiltin,
   hasDaemonBuiltinConnector,
 } from './builtins/index.js';
+import { executeAgentTurnRun } from './agent-turn.js';
 import { executeDeviceChatRun } from './device-chat.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 import { attachedInteractiveSession, attachInteractiveSession } from './interactive-session.js';
@@ -249,6 +250,8 @@ export async function executeRun(
         return await executeAutomationRun(client, job, cfg);
       case 'chat_message':
         return await executeDeviceChatRun(client, job, cfg);
+      case 'agent_turn':
+        return await executeAgentTurnRun(client, job, env, cfg);
       case 'embed_backfill':
         return await executeEmbedBackfillRun(client, job, env, cfg);
       case 'auth':

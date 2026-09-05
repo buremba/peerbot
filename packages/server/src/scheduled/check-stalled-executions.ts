@@ -212,7 +212,10 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
   // the executor beat at least once; rows with none are judged on
   // COALESCE(claimed_at, created_at). One threshold covers both paths.
   const staleWhereSql = buildStaleRunWhereSql({
-    runTypes: ['sync', 'action', 'embed_backfill', 'auth'],
+    // `agent_turn` joins the connector lanes because it runs on the SAME
+    // worker with the same claim + heartbeat contract; without it a crashed
+    // fleet worker leaves the turn `running` forever.
+    runTypes: ['sync', 'action', 'embed_backfill', 'auth', 'agent_turn'],
     heartbeatSemantics: 'any-heartbeat',
     heartbeatStaleInterval: `${thresholdSeconds} seconds`,
     coarseStaleInterval: `${thresholdSeconds} seconds`,

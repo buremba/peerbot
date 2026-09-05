@@ -67,6 +67,25 @@ describe("CredentialVault.swapHeaders", () => {
     expect(() => vault.swapHeaders(headers, HTTPS, { plaintextAllowed: false })).toThrow(TypeError);
   });
 
+  test("resolves a secret that is itself placeholder-shaped, because an agent turn's key is one", () => {
+    // The whole reason the malformed-prefix check reads what the GUEST sent
+    // rather than what the swap produced. An agent turn's provider credential
+    // is the gateway's own `lobu_secret_<uuid>`, which this vault conceals
+    // behind one of its own; checking after the swap would see the gateway's
+    // placeholder in the resolved value, fail to find it in this run's vault,
+    // and refuse a credential that is exactly right.
+    const vault = new CredentialVault();
+    const gatewayPlaceholder = `${CREDENTIAL_PLACEHOLDER_PREFIX}${randomUUID()}`;
+    const token = vault.mint(gatewayPlaceholder);
+    expect(token).not.toBe(gatewayPlaceholder);
+    const headers = new Headers({ "x-api-key": token });
+
+    const spends = vault.swapHeaders(headers, HTTPS, { plaintextAllowed: false });
+
+    expect(headers.get("x-api-key")).toBe(gatewayPlaceholder);
+    expect(spends).toEqual([{ placeholder: token, header: "x-api-key" }]);
+  });
+
   test("refuses a placeholder in the URL before touching the headers", () => {
     const vault = new CredentialVault();
     const token = vault.mint("tok_real");

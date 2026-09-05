@@ -65,7 +65,10 @@ export function startEmbeddedConnectorWorker(
       // dispatch db-egress-hardened connector runs (e.g. postgres) here. This
       // in-process worker ships the same code as the gateway, so it always
       // folds in the gateway's authoritative db_egress_policy.
-      capabilities: { db_egress_hardening: true },
+      // ...and the agent-turn lane, which runs Lobu's own guest bundle through
+      // the same isolate executor. Advertising it is what lets the gateway
+      // hand this process an `agent_turn` row at all.
+      capabilities: { db_egress_hardening: true, agent_turn: true },
       pollIntervalMs: intervals.embeddedWorkerPollIntervalMs,
       maxConcurrentJobs: 1,
     },

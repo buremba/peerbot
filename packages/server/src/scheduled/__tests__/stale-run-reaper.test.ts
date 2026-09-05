@@ -52,7 +52,13 @@ interface SeedRunOpts {
 	status: "pending" | "claimed" | "running" | "completed";
 	lastHeartbeatAgoSeconds: number | null;
 	claimedAtAgoSeconds?: number | null;
-	runType?: "sync" | "action" | "embed_backfill" | "auth" | "automation";
+	runType?:
+		| "sync"
+		| "action"
+		| "embed_backfill"
+		| "auth"
+		| "automation"
+		| "agent_turn";
 	feedId?: number | null;
 	createdAtAgoSeconds?: number;
 	/** Defaults to 'auto' (worker-claimable). Set 'pending' for a human-approval run. */
@@ -1139,5 +1145,34 @@ describe("reapStaleRuns — dry runs are reaped but never resurrected", () => {
       FROM feeds WHERE id = ${feedId}
     `) as unknown as Array<Record<string, unknown>>;
 		expect(after).toEqual(before);
+	});
+});
+
+describe("agent turn lane", () => {
+	test("reaps a stale agent turn and leaves a heartbeating one running", async () => {
+		// The isolate turn lane runs on the SAME worker with the same claim and
+		// heartbeat contract, so it belongs to this sweep. Without it a crashed
+		// fleet worker leaves the turn `running` for good.
+		const stale = await seedRun({
+			status: "running",
+			runType: "agent_turn",
+			lastHeartbeatAgoSeconds: STALE_THRESHOLD_SECONDS * 2,
+			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+		});
+		const live = await seedRun({
+			status: "running",
+			runType: "agent_turn",
+			lastHeartbeatAgoSeconds: 1,
+			claimedAtAgoSeconds: STALE_THRESHOLD_SECONDS * 3,
+		});
+
+		const result = await reapStaleRuns();
+
+		expect(result.reaped).toBe(1);
+		expect(await statusOf(stale)).toBe("timeout");
+		expect(await statusOf(live)).toBe("running");
+		// The retry arm is sync-only: a turn is never re-run behind the user's
+		// back, it just ends.
+		expect(result.retriesCreated).toBe(0);
 	});
 });

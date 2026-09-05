@@ -46,9 +46,14 @@
  * boundary because an async rejection also surfaces as an unhandled rejection
  * in the host process.
  *
- * Deliberately absent (no bundled isolate-eligible connector or SDK root path
- * uses them): `Request`, `structuredClone`, `FormData`, `Blob`. Add one only
- * with a real connector that needs it.
+ * `FormData` carries text fields only and serialises itself to a multipart
+ * body; the Stainless clients pi's LLM providers are built on test
+ * `body instanceof FormData` unguarded on every request, so the guest
+ * cannot reach a provider without it.
+ *
+ * Deliberately absent (no isolate-eligible connector or SDK root path uses
+ * them): `Request`, `structuredClone`, `Blob`. Add one only with a real
+ * caller that needs it.
  *
  * Written as sloppy-mode ES2020 with no template literals so the string can
  * live in this module verbatim. `String.raw` keeps the regex escapes intact.
@@ -79,6 +84,7 @@ export const PRELUDE_GLOBALS = [
   'AbortController',
   'AbortSignal',
   'Headers',
+  'FormData',
   'Response',
   'fetch',
   'crypto',
@@ -941,6 +947,111 @@ var exports = module.exports;
   global.Headers = Headers;
 
   // ---------------------------------------------------------------------------
+  // FormData
+  // ---------------------------------------------------------------------------
+
+  // Text fields only. Blob and File are not on this lane, so every part is a
+  // string; a non-primitive value is refused rather than stringified into
+  // "[object Object]". Present because the Stainless clients pi's providers use
+  // evaluate "body instanceof FormData" UNGUARDED on every request they send
+  // (@anthropic-ai/sdk client.mjs, openai client.mjs), so a guest without the
+  // constructor cannot reach any LLM at all.
+
+  function formDataValue(value) {
+    if (value !== null && typeof value === 'object') {
+      throw new TypeError('FormData on the isolate lane holds text fields only; Blob and File parts are not available');
+    }
+    return String(value);
+  }
+
+  // WHATWG "escape a form field name": normalise the line breaks, then
+  // percent-encode the three characters that would break the header line.
+  function escapeFormName(name) {
+    return String(name)
+      .replace(/\r\n|\r|\n/g, '\r\n')
+      .replace(/"/g, '%22')
+      .replace(/\r/g, '%0D')
+      .replace(/\n/g, '%0A');
+  }
+
+  function FormData(form) {
+    if (!(this instanceof FormData)) throw new TypeError("Class constructor FormData cannot be invoked without 'new'");
+    if (form !== undefined && form !== null) throw new TypeError('FormData constructor: no HTMLFormElement on the isolate lane');
+    this._entries = [];
+  }
+  FormData.prototype.append = function (name, value) {
+    this._entries.push([String(name), formDataValue(value)]);
+  };
+  FormData.prototype.set = function (name, value) {
+    var key = String(name);
+    var v = formDataValue(value);
+    var replaced = false;
+    var kept = [];
+    for (var i = 0; i < this._entries.length; i++) {
+      if (this._entries[i][0] !== key) {
+        kept.push(this._entries[i]);
+      } else if (!replaced) {
+        replaced = true;
+        kept.push([key, v]);
+      }
+    }
+    if (!replaced) kept.push([key, v]);
+    this._entries = kept;
+  };
+  FormData.prototype.get = function (name) {
+    var key = String(name);
+    for (var i = 0; i < this._entries.length; i++) if (this._entries[i][0] === key) return this._entries[i][1];
+    return null;
+  };
+  FormData.prototype.getAll = function (name) {
+    var key = String(name);
+    var out = [];
+    for (var i = 0; i < this._entries.length; i++) if (this._entries[i][0] === key) out.push(this._entries[i][1]);
+    return out;
+  };
+  FormData.prototype.has = function (name) {
+    var key = String(name);
+    for (var i = 0; i < this._entries.length; i++) if (this._entries[i][0] === key) return true;
+    return false;
+  };
+  FormData.prototype.delete = function (name) {
+    var key = String(name);
+    var kept = [];
+    for (var i = 0; i < this._entries.length; i++) if (this._entries[i][0] !== key) kept.push(this._entries[i]);
+    this._entries = kept;
+  };
+  FormData.prototype.forEach = function (callback, thisArg) {
+    if (typeof callback !== 'function') throw new TypeError('The "callback" argument must be of type function');
+    for (var i = 0; i < this._entries.length; i++) callback.call(thisArg, this._entries[i][1], this._entries[i][0], this);
+  };
+  FormData.prototype.entries = function () {
+    return this._entries.map(function (e) { return [e[0], e[1]]; })[Symbol.iterator]();
+  };
+  FormData.prototype.keys = function () {
+    return this._entries.map(function (e) { return e[0]; })[Symbol.iterator]();
+  };
+  FormData.prototype.values = function () {
+    return this._entries.map(function (e) { return e[1]; })[Symbol.iterator]();
+  };
+  FormData.prototype[Symbol.iterator] = FormData.prototype.entries;
+  Object.defineProperty(FormData.prototype, Symbol.toStringTag, { value: 'FormData', configurable: true });
+  global.FormData = FormData;
+
+  // Serialise to a multipart/form-data body. The boundary is random per body so
+  // a field value can never close the envelope early.
+  function encodeFormData(form) {
+    var boundary = '----LobuFormBoundary' + crypto.randomUUID().replace(/-/g, '');
+    var text = '';
+    for (var i = 0; i < form._entries.length; i++) {
+      text += '--' + boundary + '\r\n';
+      text += 'Content-Disposition: form-data; name="' + escapeFormName(form._entries[i][0]) + '"\r\n\r\n';
+      text += form._entries[i][1] + '\r\n';
+    }
+    text += '--' + boundary + '--\r\n';
+    return { bytes: utf8Encode(text), contentType: 'multipart/form-data; boundary=' + boundary };
+  }
+
+  // ---------------------------------------------------------------------------
   // Response / fetch
   // ---------------------------------------------------------------------------
 
@@ -953,7 +1064,8 @@ var exports = module.exports;
     if (body instanceof URLSearchParams) return { bytes: utf8Encode(body.toString()), contentType: 'application/x-www-form-urlencoded;charset=UTF-8' };
     if (body instanceof ArrayBuffer) return { bytes: new Uint8Array(body.slice(0)), contentType: null };
     if (ArrayBuffer.isView(body)) return { bytes: new Uint8Array(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)), contentType: null };
-    throw new TypeError('Unsupported body type on the isolate lane: pass a string, URLSearchParams, ArrayBuffer or ArrayBufferView');
+    if (body instanceof FormData) return encodeFormData(body);
+    throw new TypeError('Unsupported body type on the isolate lane: pass a string, URLSearchParams, FormData, ArrayBuffer or ArrayBufferView');
   }
 
   // A guest-constructed body: its bytes handed over once, then end of stream.

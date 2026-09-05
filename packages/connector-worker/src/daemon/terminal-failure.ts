@@ -37,6 +37,18 @@ export async function reportTerminalFailure(
     });
     return;
   }
+  if (job.run_type === 'agent_turn') {
+    // The generic route refuses an agent turn with a 409, so a failure that
+    // fell through to it would leave the run parked until the stale sweep.
+    await client.completeAgentTurn({
+      run_id: job.run_id,
+      worker_id: client.id,
+      status: 'failed',
+      error: message,
+      exit_reason: exitReason,
+    });
+    return;
+  }
   if (job.run_type === 'automation') {
     await client.completeAutomation(job.run_id, {
       worker_id: client.id,

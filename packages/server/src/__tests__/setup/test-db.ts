@@ -557,7 +557,7 @@ async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
   try {
     // runs.run_type needs the connector lanes plus the lobu-queue lanes. Keep
     // this in sync with the latest constraint definition in
-    // db/migrations/20260816000010_automation_vocabulary.sql.
+    // db/migrations/20260905220000_runs_agent_turn_run_type.sql.
     //
     // This runs on every cleanupTestDatabase(), so a lane missing here is
     // re-narrowed away between tests: the migration applies at setup, the first
@@ -568,7 +568,7 @@ async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
       ALTER TABLE IF EXISTS runs ADD CONSTRAINT runs_run_type_check
         CHECK (run_type IN (
           'sync','action','automation','automation_eval','embed_backfill','auth',
-          'chat_message','schedule','agent_run','internal','task'
+          'chat_message','agent_turn','schedule','agent_run','internal','task'
         ));
     `);
     // connections.status needs 'pending_auth'

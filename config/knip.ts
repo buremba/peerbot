@@ -31,6 +31,10 @@ const config: KnipConfig = {
         "src/mac-device-daemon.ts",
         "src/daemon/index.ts",
         "src/compile-connector.ts",
+        // The agent-session guest. esbuild resolves it by PATH at runtime
+        // (agent-turn/bundle.ts) so it can be compiled for the isolate, which
+        // is exactly the import knip cannot see.
+        "src/agent-turn/guest-entry.ts",
         "src/**/*.test.ts",
       ],
       ignoreDependencies: [

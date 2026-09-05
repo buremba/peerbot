@@ -1,3 +1,4 @@
+import type { AgentTurnEvent, AgentTurnInput, AgentTurnOutput } from '../agent-turn/types.js';
 import type {
   AuthResult,
   ConnectorWebhookSchema,
@@ -78,6 +79,19 @@ export type ExecutorJob =
       env: Record<string, string | undefined>;
     }
   | {
+      // One turn of an agent conversation. Not connector code: `compiledCode`
+      // is Lobu's own agent-session guest bundle. `credentials.accessToken` is
+      // the gateway's own `lobu_secret_` placeholder for this agent, so the
+      // worker never holds a real provider key either — it rides the lane's
+      // ordinary credential path and the guest sees the vault's placeholder.
+      mode: 'agent_turn';
+      turn: AgentTurnInput;
+      config: Record<string, unknown>;
+      credentials: SyncCredentials | null;
+      sessionState: Record<string, unknown> | null;
+      env: Record<string, string | undefined>;
+    }
+  | {
       // Tear down the provider subscription created by `webhook_register` when
       // the connection is removed.
       mode: 'webhook_unregister';
@@ -138,10 +152,16 @@ export type ExecutorResult =
       webhookScheme: ConnectorWebhookSchema | null;
     }
   | {
+      mode: 'agent_turn';
+      turn: AgentTurnOutput;
+    }
+  | {
       mode: 'webhook_unregister';
     };
 
 export interface ExecutionHooks {
+  /** Agent turns: the guest emitted a token or ended a message, mid-stream. */
+  onTurnEvent?: (event: AgentTurnEvent) => Promise<void> | void;
   /** Sync runs: connector streamed a chunk of events (and we should persist them). */
   onEventChunk?: (events: EventEnvelope[]) => Promise<void> | void;
   /** Sync runs: connector pushed an incremental checkpoint update. */

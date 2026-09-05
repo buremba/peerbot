@@ -1,0 +1,124 @@
+/**
+ * The daemon arm for an agent turn: one conversation turn as one isolate job.
+ *
+ * There is no separate executor. The turn is an `ExecutorJob` mode, so it runs
+ * through `selectExecutor` exactly as a connector does and inherits that lane's
+ * egress dispatcher, credential vault, wall clock, memory limit and log budget.
+ * What this module adds is only the envelope: the guest bundle, the allowlist,
+ * and reporting the result.
+ */
+
+import type { AgentTurnPollPayload, PollResponse } from '@lobu/core/contracts/worker/protocol';
+import { agentGuestBundle } from '../agent-turn/bundle.js';
+import type { AgentTurnEvent } from '../agent-turn/types.js';
+import { selectExecutor } from '../executor/select.js';
+import type { ExecutorConfig } from './executor.js';
+import type { ExecutorClient } from './client.js';
+import { log } from './log.js';
+
+function isAgentTurnPayload(value: unknown): value is AgentTurnPollPayload {
+  return !!value && typeof value === 'object' && 'turn' in value;
+}
+
+export async function executeAgentTurnRun(
+  client: ExecutorClient,
+  job: PollResponse,
+  env: Record<string, string | undefined>,
+  cfg: ExecutorConfig
+): Promise<{ itemsCollected: number; error?: string }> {
+  const runId = job.run_id;
+  if (!runId) return { itemsCollected: 0, error: 'agent turn run missing its run id' };
+
+  const fail = async (error: string) => {
+    await client.completeAgentTurn({
+      run_id: runId,
+      worker_id: client.id,
+      status: 'failed',
+      error,
+      exit_reason: 'error_message',
+    });
+    return { itemsCollected: 0, error };
+  };
+
+  // The run is already claimed, so a rejected envelope must be REPORTED, not
+  // returned: a local return leaves the turn parked until the stale sweep.
+  const payload = job.payload;
+  if (!isAgentTurnPayload(payload)) {
+    return fail('agent turn run received a non-turn payload envelope');
+  }
+  const turn = payload.turn;
+  if (!job.credentials?.accessToken) {
+    return fail('agent turn run arrived without its provider credential');
+  }
+
+  let deltas = 0;
+  // The connector-lane reaper writes a claimed run off once its heartbeat goes
+  // stale, and a turn's wall clock is far longer than that threshold. Beat on
+  // the same interval every other lane does, so a live turn is never reaped and
+  // a crashed worker's turn still is.
+  const heartbeat = setInterval(() => {
+    void client
+      .heartbeat(runId, { items_collected_so_far: deltas })
+      .catch((err) => log.debug('[agent-turn] heartbeat failed:', err));
+  }, cfg.heartbeatIntervalMs);
+  try {
+    const guestCode = await agentGuestBundle();
+    // Same executor seam every other lane uses (`resolveJobExecution`): an
+    // injected one owns its own limits, otherwise build the isolate here.
+    const executor =
+      cfg.executor ??
+      (await selectExecutor({
+        timeoutMs: cfg.timeoutMs,
+        // Deny-all but the hosts the gateway named — normally just itself. A
+        // connector's open default would let a prompt-injected turn reach the
+        // whole internet.
+        allowedDomains: turn.allowed_hosts,
+      }));
+    const result = await executor.execute(
+      guestCode,
+      {
+        mode: 'agent_turn',
+        turn: {
+          provider: {
+            api: turn.provider.api,
+            provider: turn.provider.provider,
+            modelId: turn.provider.model_id,
+            baseUrl: turn.provider.base_url,
+            ...(turn.provider.max_tokens !== undefined ? { maxTokens: turn.provider.max_tokens } : {}),
+          },
+          systemPrompt: turn.system_prompt,
+          messages: turn.messages,
+          userMessage: turn.message_text,
+        },
+        config: {},
+        credentials: job.credentials,
+        sessionState: null,
+        env,
+      },
+      {
+        onTurnEvent: (event: AgentTurnEvent) => {
+          if (event.type === 'text_delta') deltas += 1;
+        },
+      }
+    );
+    if (result.mode !== 'agent_turn') {
+      return fail(`agent turn produced a ${result.mode} result`);
+    }
+    await client.completeAgentTurn({
+      run_id: runId,
+      worker_id: client.id,
+      status: 'completed',
+      text: result.turn.text,
+      stop_reason: result.turn.stopReason,
+      usage: result.turn.usage,
+      transcript: result.turn.messages,
+      exit_reason: 'ok',
+    });
+    log.info(`[agent-turn] run ${runId} completed after ${deltas} deltas`);
+    return { itemsCollected: 0 };
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  } finally {
+    clearInterval(heartbeat);
+  }
+}

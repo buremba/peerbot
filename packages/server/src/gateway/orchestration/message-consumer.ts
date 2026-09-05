@@ -34,6 +34,7 @@ import {
 } from "../infrastructure/queue/index.js";
 import { armTurnTimeout, failTurnIfPending } from "./turn-liveness.js";
 import { recordAgentRunInput } from "./agent-run-input.js";
+import { enqueueAgentTurnShadow } from "./agent-turn-shadow.js";
 import {
   buildCanonicalConversationKey,
   type DeploymentManager,
@@ -41,6 +42,7 @@ import {
   type OrchestratorConfig,
 } from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { threadIdFromApiConversationId } from "../services/api-conversation-id.js";
 import {
@@ -657,6 +659,22 @@ export class MessageConsumer {
             logger.error("Failed to track deployment failure:", trackError);
           }
         );
+      });
+
+      // 3) Shadow the same turn onto the isolate lane when the operator has
+      // selected this agent. It observes the turn queued above and never
+      // reaches the conversation, so it goes last: `ensureWorkerExists` is
+      // fired-and-forgotten precisely so a cold worker starts booting without
+      // waiting on anything, and the shadow's own work (catalog, provider
+      // resolution, agent settings, snapshot read, INSERT) is several round
+      // trips that must not sit in front of that boot.
+      // `enqueueAgentTurnShadow` never throws, and for an agent the operator
+      // has not selected it returns on an env-var read before touching the
+      // database — the unselected path costs the enqueue nothing.
+      await enqueueAgentTurnShadow(data, {
+        agentSettings: this.agentSettingsStore,
+        catalog: this.deploymentManager.getProviderCatalogService?.(),
+        publicOrigin: getConfiguredPublicOrigin(),
       });
 
       queueSpan?.setStatus({ code: SpanStatusCode.OK });

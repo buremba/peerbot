@@ -400,18 +400,45 @@ describe("Automation trigger execution contract", () => {
 		},
 	);
 
-	it.each(["expired", "unrecognized", "malformed_external"] as const)(
+	it("expires an external lease before retriggering fresh work", async () => {
+		const { sql, workspace, automation, claim } =
+			await createExternallyClaimedAutomation("device_worker");
+		await sql`
+      UPDATE runs
+      SET expires_at = NOW() - INTERVAL '1 second'
+      WHERE id = ${claim.run_id}
+    `;
+
+		const retriggered = (await workspace.owner.automations.trigger({
+			automation_id: automation.automation_id,
+		})) as AutomationTriggerResult;
+
+		expect(retriggered.run_id).not.toBe(claim.run_id);
+		expect(retriggered.created).toBe(true);
+		expect(retriggered.execution.lane).toBe("device_worker");
+		const [expired] = await sql<{ status: string; error_message: string | null }>`
+      SELECT status, error_message
+      FROM runs
+      WHERE id = ${claim.run_id}
+    `;
+		expect(expired).toEqual({
+			status: "timeout",
+			error_message: "External Automation window lease expired",
+		});
+		await expect(
+			workspace.owner.automations.claimNextWindow({
+				automation_id: automation.automation_id,
+				run_id: claim.run_id,
+			}),
+		).rejects.toThrow(/does not own an active lease/);
+	});
+
+	it.each(["unrecognized", "malformed_external"] as const)(
 		"fails closed for an %s claimed execution",
 		async (claimState) => {
 			const { sql, workspace, automation, claim } =
 				await createExternallyClaimedAutomation("managed_agent");
-			if (claimState === "expired") {
-				await sql`
-          UPDATE runs
-          SET expires_at = NOW() - INTERVAL '1 second'
-          WHERE id = ${claim.run_id}
-        `;
-			} else if (claimState === "unrecognized") {
+			if (claimState === "unrecognized") {
 				await sql`
           UPDATE runs
           SET claimed_by = 'unrecognized-trigger-claim', expires_at = NULL
@@ -437,9 +464,7 @@ describe("Automation trigger execution contract", () => {
         WHERE id = ${claim.run_id}
       `;
 			expect(after.status).toBe("running");
-			if (claimState === "expired") {
-				expect(after.claimed_by).toMatch(/^external:/);
-			} else if (claimState === "unrecognized") {
+			if (claimState === "unrecognized") {
 				expect(after.claimed_by).toBe("unrecognized-trigger-claim");
 			} else {
 				expect(after.claimed_by).toBe('external:{"user_id":"partial"}');

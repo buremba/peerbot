@@ -1,5 +1,5 @@
 import { getDb } from "../db/client";
-import { fetchPublicUrl } from "../gateway/proxy/ssrf-guard";
+import { fetchPublicUrl } from "@lobu/connector-worker/egress";
 import { discoverTools } from "../mcp-proxy/client";
 import type { DiscoveredTool, McpProxyConfig } from "../mcp-proxy/types";
 import { errorMessage } from "../utils/errors";

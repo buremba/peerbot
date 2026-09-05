@@ -52,6 +52,10 @@
       "types": "./dist/net.d.ts",
       "import": "./dist/net.js"
     },
+    "./egress-policy": {
+      "types": "./dist/egress-policy.d.ts",
+      "import": "./dist/egress-policy.js"
+    },
     "./browser/cdp": {
       "types": "./dist/browser/cdp.d.ts",
       "import": "./dist/browser/cdp.js"

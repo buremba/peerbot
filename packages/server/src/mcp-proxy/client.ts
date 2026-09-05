@@ -14,7 +14,7 @@ import {
 import {
   fetchCredentialedPublicUrl,
   fetchPublicUrl,
-} from '../gateway/proxy/ssrf-guard';
+} from '@lobu/connector-worker/egress';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';

@@ -18,7 +18,7 @@ import {
 import {
 	fetchPublicUrl,
 	isInternalUrl,
-} from "../../proxy/ssrf-guard.js";
+} from "@lobu/connector-worker/egress";
 import {
 	buildSessionKey,
 	buildUpstreamHeaders,

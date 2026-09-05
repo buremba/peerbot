@@ -1,13 +1,26 @@
 import type { LookupAddress } from "node:dns";
-import * as dns from "node:dns/promises";
 import * as http from "node:http";
 import * as net from "node:net";
-import { domainToASCII } from "node:url";
 import type { WorkerTokenData } from "@lobu/core";
 import { createLogger, verifyEgressProxyToken } from "@lobu/core";
+import {
+  canonicalizeHostname,
+  decideEgress,
+  type EgressDecision,
+  isUnrestrictedMode,
+} from "@lobu/connector-sdk/egress-policy";
+import {
+  normalizeIpLiteral,
+  stripIpv6Brackets,
+} from "@lobu/connector-sdk/ip-reachability";
+import {
+  DnsResolutionError,
+  MalformedHostError,
+  PrivateAddressError,
+  resolvePublicAddresses,
+} from "@lobu/connector-worker/egress";
 import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import {
-  isUnrestrictedMode,
   loadAllowedDomains,
   loadDisallowedDomains,
 } from "../config/network-allowlist.js";
@@ -18,11 +31,6 @@ import type { GrantStore } from "../permissions/grant-store.js";
 import type { PolicyStore } from "../permissions/policy-store.js";
 import { EgressJudge } from "./egress-judge/judge.js";
 import type { JudgeDecision } from "./egress-judge/types.js";
-import {
-  isReservedIp,
-  normalizeIpLiteral,
-  stripIpv6Brackets,
-} from "@lobu/connector-sdk/ip-reachability";
 
 const logger = createLogger("http-proxy");
 
@@ -127,22 +135,14 @@ export function setProxyEgressJudge(judge: EgressJudge): void {
  * `judge` carries the verdict so the caller can surface the reason to
  * the client and emit a structured audit log.
  */
-interface AccessDecision {
-  allowed: boolean;
-  source: "global" | "grant" | "judge";
-  judge?: JudgeDecision;
-}
+type AccessDecision = EgressDecision<JudgeDecision>;
 
 /**
- * Unified domain access check: global config → grant store → LLM judge.
- *
- * 1. If denied by global blocklist → block
- * 2. If denied by a per-agent deny grant → block (authoritative: overrides
- *    the global allowlist, allow grants, and the judge)
- * 3. If allowed by global allowlist → allow
- * 4. If not in global list → check grantStore.hasGrant() → allow
- * 5. If still not decided and the agent has a judged-domain rule for the
- *    host → invoke the LLM judge → allow/block based on verdict
+ * Domain access check for one proxied request. The decision order itself —
+ * global denylist → per-agent deny grant → global allowlist → per-agent allow
+ * grant → LLM judge → deny — is `decideEgress` in
+ * `@lobu/connector-sdk/egress-policy`, shared with every other egress
+ * enforcement point. This function only binds the proxy's stores to it.
  */
 async function checkDomainAccess(
   config: ResolvedNetworkConfig,
@@ -156,126 +156,97 @@ async function checkDomainAccess(
     userId?: string;
   }
 ): Promise<AccessDecision> {
-  const global = config;
-
-  // Canonicalize once so the denylist, allowlist, grant store, and judge all
-  // match the same name (closes the trailing-dot FQDN blocklist bypass).
-  hostname = canonicalizeHostname(hostname);
-
-  // Global blocklist always takes precedence
-  if (
-    global.deniedDomains.length > 0 &&
-    matchesDomainPattern(hostname, global.deniedDomains)
-  ) {
-    return { allowed: false, source: "global" };
-  }
-
-  // A per-agent deny grant is authoritative: it overrides the global
-  // allowlist, per-agent allow grants, AND the egress judge — a judge
-  // "allow" must never resurrect an explicitly denied domain.
   // Pass `organizationId` explicitly — `GrantStore` falls back to the ALS
   // org context when omitted, but the raw Node HTTP proxy never sets ALS
   // and the WHERE clause would drop its `organization_id` predicate,
   // leaking grants/denies across tenants that share an agent id.
-  if (proxyGrantStore && agentId) {
-    const denied = await proxyGrantStore.isDenied(
-      agentId,
-      hostname,
-      organizationId
-    );
-    if (denied) {
-      logger.debug(`Domain ${hostname} denied via grant (agent: ${agentId})`);
-      return { allowed: false, source: "grant" };
-    }
-  }
+  const grantStore = proxyGrantStore;
+  const tenant =
+    grantStore && agentId
+      ? {
+          isDenied: async (host: string) => {
+            const denied = await grantStore.isDenied(
+              agentId,
+              host,
+              organizationId
+            );
+            if (denied) {
+              logger.debug(`Domain ${host} denied via grant (agent: ${agentId})`);
+            }
+            return denied;
+          },
+          hasGrant: async (host: string) => {
+            const granted = await grantStore.hasGrant(
+              agentId,
+              host,
+              organizationId
+            );
+            if (granted) {
+              logger.debug(`Domain ${host} allowed via grant (agent: ${agentId})`);
+            }
+            return granted;
+          },
+        }
+      : undefined;
 
-  // Check if globally allowed (unrestricted or in allowlist)
-  const globallyAllowed = isHostnameAllowed(
-    hostname,
-    global.allowedDomains,
-    global.deniedDomains
-  );
-
-  if (globallyAllowed) {
-    return { allowed: true, source: "global" };
-  }
-
-  // Not globally allowed — check grant store for per-agent access
-  if (proxyGrantStore && agentId) {
-    const granted = await proxyGrantStore.hasGrant(
-      agentId,
-      hostname,
-      organizationId
-    );
-    if (granted) {
-      logger.debug(`Domain ${hostname} allowed via grant (agent: ${agentId})`);
-      return { allowed: true, source: "grant" };
-    }
-  }
-
-  // Fall through to the LLM egress judge when a matching rule exists.
   // PolicyStore is keyed by `(orgId, agentId)`; without an org id we refuse
   // to consult it — falling through to an unkeyed lookup would let another
   // tenant's policy decide our verdict.
-  if (proxyPolicyStore && proxyEgressJudge && agentId && organizationId) {
-    const rule = proxyPolicyStore.resolve(organizationId, agentId, hostname);
-    if (rule) {
-      const decision = await proxyEgressJudge.decide(
-        {
-          agentId,
-          organizationId,
-          hostname,
-          method: requestContext?.method,
-          path: requestContext?.path,
-        },
-        rule
-      );
-      const allowed = decision.verdict === "allow";
-      if (!allowed) {
-        // Egress denials share the guardrail audit trail: a judge DENY writes a
-        // `guardrail-trip` event (stage `egress`) just like message-pipeline
-        // guardrails. Enforcement stays here in the proxy — this is audit only.
-        // Fire-and-forget: `recordGuardrailTrip` never rejects, so we don't
-        // await it on the egress hot path. `agentId`/`organizationId` are both
-        // guaranteed present by the enclosing guard.
-        void recordGuardrailTrip({
-          organizationId,
-          agentId,
-          conversationId: requestContext?.conversationId,
-          userId: requestContext?.userId,
-          stage: "egress",
-          guardrail: decision.judgeName,
-          reason: decision.reason,
-          metadata: {
-            hostname,
-            verdict: decision.verdict,
-            judgeSource: decision.source,
-          },
-        });
-      }
-      return {
-        allowed,
-        source: "judge",
-        judge: decision,
-      };
-    }
-  }
+  const policyStore = proxyPolicyStore;
+  const egressJudge = proxyEgressJudge;
+  const judge =
+    policyStore && egressJudge && agentId && organizationId
+      ? async (host: string) => {
+          const rule = policyStore.resolve(organizationId, agentId, host);
+          if (!rule) return null;
+          const decision = await egressJudge.decide(
+            {
+              agentId,
+              organizationId,
+              hostname: host,
+              method: requestContext?.method,
+              path: requestContext?.path,
+            },
+            rule
+          );
+          const allowed = decision.verdict === "allow";
+          if (!allowed) {
+            // Egress denials share the guardrail audit trail: a judge DENY writes a
+            // `guardrail-trip` event (stage `egress`) just like message-pipeline
+            // guardrails. Enforcement stays here in the proxy — this is audit only.
+            // Fire-and-forget: `recordGuardrailTrip` never rejects, so we don't
+            // await it on the egress hot path.
+            void recordGuardrailTrip({
+              organizationId,
+              agentId,
+              conversationId: requestContext?.conversationId,
+              userId: requestContext?.userId,
+              stage: "egress",
+              guardrail: decision.judgeName,
+              reason: decision.reason,
+              metadata: {
+                hostname: host,
+                verdict: decision.verdict,
+                judgeSource: decision.source,
+              },
+            });
+          }
+          return { allowed, decision };
+        }
+      : undefined;
 
-  return { allowed: false, source: "global" };
+  return decideEgress<JudgeDecision>({
+    hostname,
+    global: config,
+    tenant,
+    judge,
+  });
 }
 
 interface ProxyCredentials {
   deploymentName: string;
   token: string;
 }
-
-// The IP-literal normalization + reserved-range blocklist live in the shared
-// `@lobu/connector-sdk/ip-reachability` module (imported above). `isReservedIp`
-// and `normalizeIpLiteral` are the single source of truth for every SSRF guard
-// in the monorepo — the gateway proxy, the database egress guard, and the
-// connector SDK's URL guard all consume it, so none of them can drift.
-// `isBlockedIpAddress` is just the proxy-local alias.
-const isBlockedIpAddress = isReservedIp;
 
 type DnsLookupAllFn = (
   hostname: string,
@@ -286,7 +257,6 @@ let dnsLookupOverride: DnsLookupAllFn | null = null;
 let upstreamRequestTimeoutMs = 30_000;
 
 export const __testOnly = {
-  isBlockedIpAddress,
   checkDomainAccess,
   canonicalizeHostname,
   /**
@@ -314,78 +284,63 @@ export const __testOnly = {
   },
 };
 
+/**
+ * Resolve the tunnel target through the shared egress transport
+ * (`@lobu/connector-worker/egress`): IP literals are normalized and checked,
+ * names are resolved once and the WHOLE answer set must be public, and the
+ * caller dials the exact address returned — never re-resolving, so a resolver
+ * that flips between a public and an internal answer (DNS rebinding) cannot
+ * slip past the blocklist. This function only maps the transport's typed
+ * errors onto the proxy's status lines.
+ *
+ * Adopting the transport also adopts its pre-DNS name rules: `localhost`,
+ * `*.localhost`, `*.local` and `*.internal` are refused before a lookup
+ * instead of being resolved and then blocked on the answer. Same 403, one
+ * round trip earlier, and an internal name that happens to resolve publicly
+ * no longer gets through.
+ */
 async function resolveAndValidateTarget(
   rawHostname: string
 ): Promise<TargetResolutionResult> {
-  const hostname = stripIpv6Brackets(rawHostname);
-
-  // Route the target literal through the single IP-normalization funnel
-  // before anything else. This catches IPv4-mapped IPv6, NAT64, zone IDs
-  // and compressed forms, and rejects anything that looks like an IP but
-  // doesn't cleanly parse.
-  const normalized = normalizeIpLiteral(hostname);
-  if (normalized.kind === "invalid") {
-    return {
-      ok: false,
-      statusCode: 403,
-      clientMessage: `403 Forbidden - Malformed target host: ${hostname}`,
-      reason: `target host is not a valid address (${hostname})`,
-    };
-  }
-  if (normalized.kind !== "not-ip") {
-    if (isBlockedIpAddress(hostname)) {
+  const override = dnsLookupOverride;
+  try {
+    const addresses = await resolvePublicAddresses(rawHostname, {
+      lookup: override
+        ? (hostname) => override(hostname, { all: true, verbatim: true })
+        : undefined,
+    });
+    return { ok: true, resolvedIp: addresses[0]?.address };
+  } catch (error) {
+    if (error instanceof MalformedHostError) {
       return {
         ok: false,
         statusCode: 403,
-        clientMessage: `403 Forbidden - Target IP not allowed: ${hostname}`,
-        reason: `target is local/private IP (${hostname})`,
+        clientMessage: `403 Forbidden - Malformed target host: ${rawHostname}`,
+        reason: error.message,
       };
     }
-    // Pin the connection to the normalized literal — for IPv4-mapped /
-    // NAT64 inputs this is the bare IPv4 we actually validated.
-    return { ok: true, resolvedIp: normalized.value };
+    if (error instanceof PrivateAddressError) {
+      const literal =
+        normalizeIpLiteral(stripIpv6Brackets(rawHostname)).kind !== "not-ip";
+      return {
+        ok: false,
+        statusCode: 403,
+        clientMessage: literal
+          ? `403 Forbidden - Target IP not allowed: ${rawHostname}`
+          : `403 Forbidden - Target resolves to local/private IP: ${rawHostname}`,
+        reason: error.message,
+      };
+    }
+    if (error instanceof DnsResolutionError) {
+      return {
+        ok: false,
+        statusCode: 502,
+        clientMessage: `Bad Gateway: Could not resolve target host ${rawHostname}`,
+        reason: error.message,
+      };
+    }
+    throw error;
   }
-
-  let addresses: LookupAddress[];
-  try {
-    addresses = dnsLookupOverride
-      ? await dnsLookupOverride(hostname, { all: true, verbatim: true })
-      : await dns.lookup(hostname, { all: true, verbatim: true });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "unknown error";
-    return {
-      ok: false,
-      statusCode: 502,
-      clientMessage: `Bad Gateway: Could not resolve target host ${hostname}`,
-      reason: `DNS lookup failed for ${hostname}: ${message}`,
-    };
-  }
-
-  if (addresses.length === 0) {
-    return {
-      ok: false,
-      statusCode: 502,
-      clientMessage: `Bad Gateway: No DNS results for ${hostname}`,
-      reason: `DNS lookup returned no addresses for ${hostname}`,
-    };
-  }
-
-  const blockedAddress = addresses.find((addr) =>
-    isBlockedIpAddress(addr.address)
-  );
-  if (blockedAddress) {
-    return {
-      ok: false,
-      statusCode: 403,
-      clientMessage: `403 Forbidden - Target resolves to local/private IP: ${hostname}`,
-      reason: `${hostname} resolved to blocked IP ${blockedAddress.address}`,
-    };
-  }
-
-  // Return the exact IP we validated. Callers connect to this address, never
-  // re-resolving the hostname — a resolver that flips between a public and an
-  // internal answer (DNS rebinding) therefore can't slip past the blocklist.
-  return { ok: true, resolvedIp: addresses[0]?.address };
 }
 
 /**
@@ -495,91 +450,6 @@ async function validateProxyAuth(
   }
 
   return { deploymentName: creds.deploymentName, tokenData };
-}
-
-/**
- * Check if a hostname matches any domain patterns
- * Supports exact matches and wildcard patterns (.example.com matches *.example.com)
- */
-/**
- * Canonicalize a hostname for allow/deny/judge matching. WHATWG URL parsing and
- * the CONNECT host parser both preserve a trailing dot (`evil.com.`), which DNS
- * resolves identically to `evil.com` but which configured allow/deny/judge
- * patterns never carry. Without stripping it, a trailing-dot host slips past the
- * blocklist in unrestricted+blocklist mode (matches neither the exact nor the
- * `.suffix` pattern) while the plain form is blocked. Strip trailing dots so
- * every matcher sees the same name DNS will ultimately resolve.
- *
- * It also IDNA/punycode-normalizes the host. The HTTP path derives the host
- * from `new URL().hostname` (already `xn--` ASCII), but the CONNECT path's raw
- * parser returns the host verbatim (possibly Unicode). Configured allow/deny
- * patterns are stored as punycode (see `normalizeDomainPattern`), so a Unicode
- * CONNECT host would otherwise never match its punycode blocklist entry (and
- * CONNECT vs HTTP would disagree for the same IDN host). Routing both through
- * `domainToASCII` makes every matcher see the one canonical ASCII name.
- */
-function canonicalizeHostname(hostname: string): string {
-  const stripped = hostname.replace(/\.+$/, "");
-  const ascii = domainToASCII(stripped);
-  return (ascii !== "" ? ascii : stripped).toLowerCase();
-}
-
-function matchesDomainPattern(hostname: string, patterns: string[]): boolean {
-  const lowerHostname = hostname.toLowerCase();
-
-  for (const pattern of patterns) {
-    const lowerPattern = pattern.toLowerCase();
-
-    if (lowerPattern.startsWith(".")) {
-      // Wildcard pattern: .example.com matches *.example.com
-      const domain = lowerPattern.substring(1);
-      if (lowerHostname === domain || lowerHostname.endsWith(`.${domain}`)) {
-        return true;
-      }
-    } else if (lowerPattern === lowerHostname) {
-      // Exact match
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
- * Check if a hostname is allowed based on allowlist/blocklist configuration.
- * Rules:
- * - deniedDomains are checked first (take precedence)
- * - allowedDomains are checked second
- * - If allowedDomains contains "*", unrestricted mode is enabled
- * - If allowedDomains is empty, complete isolation (deny all)
- */
-function isHostnameAllowed(
-  hostname: string,
-  allowedDomains: string[],
-  deniedDomains: string[]
-): boolean {
-  // Unrestricted mode - allow all except explicitly disallowed
-  if (isUnrestrictedMode(allowedDomains)) {
-    if (deniedDomains.length === 0) {
-      return true; // No blocklist, allow all
-    }
-    return !matchesDomainPattern(hostname, deniedDomains);
-  }
-
-  // Complete isolation mode - deny all
-  if (allowedDomains.length === 0) {
-    return false;
-  }
-
-  // Allowlist mode - check if allowed
-  const isAllowed = matchesDomainPattern(hostname, allowedDomains);
-
-  // Even if allowed, check blocklist
-  if (isAllowed && deniedDomains.length > 0) {
-    return !matchesDomainPattern(hostname, deniedDomains);
-  }
-
-  return isAllowed;
 }
 
 /**

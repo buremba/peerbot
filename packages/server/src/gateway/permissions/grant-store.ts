@@ -5,11 +5,12 @@ import {
   type Grant,
   type GrantKind,
 } from "@lobu/core";
-import { getDb, pgTextArray } from "../../db/client.js";
 import {
-  allowReachesJudged,
-  egressGuardrailsToPolicyBundle,
-} from "./policy-store.js";
+  patternReaches,
+  wildcardParentPatterns,
+} from "@lobu/connector-sdk/egress-policy";
+import { getDb, pgTextArray } from "../../db/client.js";
+import { egressGuardrailsToPolicyBundle } from "./policy-store.js";
 import { orgScope, requireOrgId } from "../../lobu/stores/org-context.js";
 
 const logger = createLogger("grant-store");
@@ -80,17 +81,15 @@ function buildGrantCandidates(pattern: string, kind: GrantKind): string[] {
   }
 
   // Domain wildcard: every ancestor suffix covers the host — "a.b.example.com"
-  // is covered by ".b.example.com" AND ".example.com", matching the proxy's
-  // `matchesDomainPattern` which suffix-matches at any depth. Candidates stay
-  // most-specific-first so `hasGrant`'s precedence loop is deterministic. The
-  // literal "*." variant is kept for rows stored before write-normalization
-  // collapsed it to the ".suffix" form.
+  // is covered by ".b.example.com" AND ".example.com", matching the shared
+  // `matchesDomainPattern` (`@lobu/connector-sdk/egress-policy`) that the
+  // proxy's global lists use, which suffix-matches at any depth. Candidates stay
+  // most-specific-first so `hasGrant`'s precedence loop is deterministic, and
+  // the literal "*." variant is kept for rows stored before write-normalization
+  // collapsed it to the ".suffix" form. The apex's own wildcard is deliberately
+  // absent: grant semantics say `.example.com` covers subdomains only.
   if (kind === "domain") {
-    const parts = pattern.split(".");
-    for (let i = 1; i < parts.length - 1; i++) {
-      const tail = parts.slice(i).join(".");
-      candidates.push(`.${tail}`, `*.${tail}`);
-    }
+    candidates.push(...wildcardParentPatterns(pattern));
   }
 
   return candidates;
@@ -152,7 +151,7 @@ export class GrantStore {
     // write) cannot shadow a domain judge at all.
     if (kind === "domain" && !denied) {
       const judged = await readJudgedDomains(agentId, orgId);
-      if (judged.some((j) => allowReachesJudged(j, pattern))) {
+      if (judged.some((j) => patternReaches(j, pattern))) {
         logger.info(
           "Skipped allow grant — the egress judge governs this domain",
           { agentId, pattern }

@@ -1,4 +1,5 @@
 import { createLogger, normalizeDomainPatterns } from "@lobu/core";
+import { isUnrestrictedMode } from "@lobu/connector-sdk/egress-policy";
 
 const logger = createLogger("network-allowlist");
 
@@ -81,13 +82,6 @@ export function loadAllowedDomains(): string[] {
     }`
   );
   return parsed;
-}
-
-/**
- * Check if unrestricted mode is enabled
- */
-export function isUnrestrictedMode(allowedDomains: string[]): boolean {
-  return allowedDomains.length === 1 && allowedDomains[0] === "*";
 }
 
 /**

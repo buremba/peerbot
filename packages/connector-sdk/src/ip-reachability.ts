@@ -4,7 +4,7 @@
  * Three call sites need the same answer to "is this host an internal
  * address?", and each layers its own policy on top of this one classifier:
  *
- *  - `packages/server/src/gateway/proxy/ssrf-guard.ts` — transport layer:
+ *  - `packages/connector-worker/src/egress/transport.ts` — transport layer:
  *    resolves DNS and pins the socket to a validated answer.
  *  - `packages/connectors/src/db-egress-guard.ts` — policy layer:
  *    `allow-private` (self-hosted) vs `block-private` (untrusted cloud),

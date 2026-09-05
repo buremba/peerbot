@@ -6,7 +6,7 @@
  */
 
 import logger from '../utils/logger';
-import { fetchCredentialedPublicUrl } from '../gateway/proxy/ssrf-guard';
+import { fetchCredentialedPublicUrl } from '@lobu/connector-worker/egress';
 import { cancelResponseBody } from '../utils/bounded-response';
 import {
   readConnectorOAuthResponse,

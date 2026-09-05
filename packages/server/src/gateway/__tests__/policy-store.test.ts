@@ -269,8 +269,9 @@ describe("findSuppressedJudgedDomains", () => {
   });
 
   test("wildcardCoversRoot: the GLOBAL allowlist's `.suffix` DOES cover the root", () => {
-    // `matchesDomainPattern` in the proxy treats `.example.com` as matching
-    // `example.com` too, so for WORKER_ALLOWED_DOMAINS the same pair is a hit.
+    // The shared `matchesDomainPattern` the proxy's global lists use treats
+    // `.example.com` as matching `example.com` too, so for
+    // WORKER_ALLOWED_DOMAINS the same pair is a hit.
     expect(
       findSuppressedJudgedDomains([judge()], ["*.example.com"], {
         wildcardCoversRoot: true,

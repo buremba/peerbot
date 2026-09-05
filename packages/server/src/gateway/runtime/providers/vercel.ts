@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createLogger, normalizeDomainPattern } from "@lobu/core";
+import { patternReaches } from "@lobu/connector-sdk/egress-policy";
 import { nixPackageAttrRef } from "@lobu/connector-sdk/nix-package";
 import { type NetworkPolicy, Sandbox } from "@vercel/sandbox";
 import {
@@ -239,24 +240,24 @@ function normalizeAllowedDomain(domain: string): string | null {
  * `denied` (same forms) in either direction. The sandbox network policy can
  * only express an allow list, so any allow entry a deny covers — or that
  * covers a deny — must be dropped rather than granted (fail closed).
+ *
+ * Compared in the shared `.suffix` grammar with any `:port` qualifier
+ * stripped, so "evil.example.com:443" cannot dodge a deny on
+ * "evil.example.com". Both sides pass `wildcardCoversRoot: true`, which is the
+ * fail-closed choice here: it widens what counts as an overlap, and an overlap
+ * only ever drops an allow entry.
  */
 function overlapsDeny(entry: string, denied: string[]): boolean {
-  // Compare bare hostnames: strip the wildcard prefix AND any :port
-  // qualifier, so "evil.example.com:443" cannot dodge a deny on
-  // "evil.example.com".
-  const bare = (p: string) =>
-    (p.startsWith("*.") ? p.slice(2) : p).replace(/:\d+$/, "");
-  const isWild = (p: string) => p.startsWith("*.");
-  const covers = (pattern: string, host: string) =>
-    isWild(pattern)
-      ? host === bare(pattern) || host.endsWith(`.${bare(pattern)}`)
-      : host === pattern;
-  return denied.some(
-    (deny) =>
-      covers(deny, bare(entry)) ||
-      covers(entry, bare(deny)) ||
-      bare(deny) === bare(entry)
-  );
+  const toPattern = (p: string) =>
+    p.replace(/:\d+$/, "").replace(/^\*\./, ".");
+  const allow = toPattern(entry);
+  return denied.some((deny) => {
+    const covering = toPattern(deny);
+    return (
+      patternReaches(covering, allow, { wildcardCoversRoot: true }) ||
+      patternReaches(allow, covering, { wildcardCoversRoot: true })
+    );
+  });
 }
 
 /**

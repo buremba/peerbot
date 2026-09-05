@@ -17,8 +17,8 @@ import { intervals } from "../../config/intervals.js";
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
 import type { GrantStore } from "../permissions/grant-store.js";
+import { patternReaches } from "@lobu/connector-sdk/egress-policy";
 import {
-  allowReachesJudged,
   egressGuardrailsToPolicyBundle,
   type PolicyStore,
 } from "../permissions/policy-store.js";
@@ -810,7 +810,7 @@ export class DeploymentManager {
     // unaffected — a deny grant outranks the judge by design.
     const expectedDomains = new Map<string, boolean>();
     const expectAllowUnlessJudged = (pattern: string) => {
-      if (judgedDomains.some((j) => allowReachesJudged(j, pattern))) return;
+      if (judgedDomains.some((j) => patternReaches(j, pattern))) return;
       expectedDomains.set(pattern, false);
     };
     for (const domain of messageData.networkConfig?.allowedDomains ?? []) {

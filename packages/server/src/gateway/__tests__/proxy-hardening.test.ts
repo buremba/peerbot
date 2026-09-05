@@ -17,10 +17,10 @@
  *
  * NOTE: NAT64 address translation (64:ff9b::/96 prefix) IS handled. The IP
  * normalization + reserved-range matcher live in the shared
- * `@lobu/connector-sdk/ip-reachability` (`isReservedIp`); `isBlockedIpAddress`
- * is the proxy-local alias for it. A 64:ff9b::7f00:1 literal decodes to
- * 127.0.0.1 and is blocked — see http-proxy.test.ts and
- * ssrf-guard-matcher.test.ts.
+ * `@lobu/connector-sdk/ip-reachability` (`isReservedIp`), which the proxy
+ * reaches through the shared `@lobu/connector-worker/egress` transport. A
+ * 64:ff9b::7f00:1 literal decodes to 127.0.0.1 and is blocked — see
+ * http-proxy.test.ts and ip-reachability-matcher.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -31,6 +31,7 @@ import {
   __resetEncryptionKeyCacheForTests,
   generateWorkerTokenPair,
 } from "@lobu/core";
+import { isReservedIp } from "@lobu/connector-sdk/ip-reachability";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { CircuitBreaker } from "../proxy/egress-judge/circuit-breaker.js";
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
@@ -157,138 +158,138 @@ const NOOP_REVOKED_STORE = {
   isRevokedCached: () => false,
 } as unknown as Parameters<typeof setProxyRevokedTokenStore>[0];
 
-// ─── isBlockedIpAddress — unit tests ─────────────────────────────────────────
+// ─── isReservedIp — unit tests ─────────────────────────────────────────
 
-describe("isBlockedIpAddress — unit coverage", () => {
+describe("isReservedIp — unit coverage", () => {
   // ── Private IPv4 ranges ────────────────────────────────────────────────
 
   test("blocks 0.0.0.0 (unspecified IPv4 / 0.0.0.0/8)", () => {
-    expect(__testOnly.isBlockedIpAddress("0.0.0.0")).toBe(true);
+    expect(isReservedIp("0.0.0.0")).toBe(true);
   });
 
   test("blocks 127.0.0.1 (loopback / 127.0.0.0/8)", () => {
-    expect(__testOnly.isBlockedIpAddress("127.0.0.1")).toBe(true);
+    expect(isReservedIp("127.0.0.1")).toBe(true);
   });
 
   test("blocks 127.255.255.254 (within loopback /8)", () => {
-    expect(__testOnly.isBlockedIpAddress("127.255.255.254")).toBe(true);
+    expect(isReservedIp("127.255.255.254")).toBe(true);
   });
 
   test("blocks 10.0.0.1 (RFC-1918 10.0.0.0/8)", () => {
-    expect(__testOnly.isBlockedIpAddress("10.0.0.1")).toBe(true);
+    expect(isReservedIp("10.0.0.1")).toBe(true);
   });
 
   test("blocks 192.168.1.1 (RFC-1918 192.168.0.0/16)", () => {
-    expect(__testOnly.isBlockedIpAddress("192.168.1.1")).toBe(true);
+    expect(isReservedIp("192.168.1.1")).toBe(true);
   });
 
   test("blocks 172.16.0.1 (RFC-1918 172.16.0.0/12 lower boundary)", () => {
-    expect(__testOnly.isBlockedIpAddress("172.16.0.1")).toBe(true);
+    expect(isReservedIp("172.16.0.1")).toBe(true);
   });
 
   test("blocks 172.31.255.255 (RFC-1918 172.16.0.0/12 upper boundary)", () => {
-    expect(__testOnly.isBlockedIpAddress("172.31.255.255")).toBe(true);
+    expect(isReservedIp("172.31.255.255")).toBe(true);
   });
 
   test("allows 172.32.0.1 (just outside 172.16.0.0/12 range)", () => {
-    expect(__testOnly.isBlockedIpAddress("172.32.0.1")).toBe(false);
+    expect(isReservedIp("172.32.0.1")).toBe(false);
   });
 
   test("blocks 169.254.0.1 (link-local / 169.254.0.0/16)", () => {
-    expect(__testOnly.isBlockedIpAddress("169.254.0.1")).toBe(true);
+    expect(isReservedIp("169.254.0.1")).toBe(true);
   });
 
   test("blocks 100.64.0.1 (CGNAT / 100.64.0.0/10)", () => {
-    expect(__testOnly.isBlockedIpAddress("100.64.0.1")).toBe(true);
+    expect(isReservedIp("100.64.0.1")).toBe(true);
   });
 
   test("does not block a public IPv4 (8.8.8.8)", () => {
-    expect(__testOnly.isBlockedIpAddress("8.8.8.8")).toBe(false);
+    expect(isReservedIp("8.8.8.8")).toBe(false);
   });
 
   // ── IPv6 ranges ────────────────────────────────────────────────────────
 
   test("blocks ::1 (IPv6 loopback)", () => {
-    expect(__testOnly.isBlockedIpAddress("::1")).toBe(true);
+    expect(isReservedIp("::1")).toBe(true);
   });
 
   test("blocks :: (IPv6 unspecified)", () => {
-    expect(__testOnly.isBlockedIpAddress("::")).toBe(true);
+    expect(isReservedIp("::")).toBe(true);
   });
 
   test("blocks fe80::1 (IPv6 link-local / fe80::/10)", () => {
-    expect(__testOnly.isBlockedIpAddress("fe80::1")).toBe(true);
+    expect(isReservedIp("fe80::1")).toBe(true);
   });
 
   test("blocks fc00::1 (IPv6 unique-local / fc00::/7)", () => {
-    expect(__testOnly.isBlockedIpAddress("fc00::1")).toBe(true);
+    expect(isReservedIp("fc00::1")).toBe(true);
   });
 
   test("blocks ff01::1 (IPv6 multicast / ff00::/8)", () => {
-    expect(__testOnly.isBlockedIpAddress("ff01::1")).toBe(true);
+    expect(isReservedIp("ff01::1")).toBe(true);
   });
 
   test("does not block a public IPv6 (2606:4700:4700::1111)", () => {
-    expect(__testOnly.isBlockedIpAddress("2606:4700:4700::1111")).toBe(false);
+    expect(isReservedIp("2606:4700:4700::1111")).toBe(false);
   });
 
   // ── IPv4-mapped IPv6 — dotted form ─────────────────────────────────────
 
   test("blocks ::ffff:127.0.0.1 (IPv4-mapped loopback — dotted form)", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(isReservedIp("::ffff:127.0.0.1")).toBe(true);
   });
 
   test("blocks ::ffff:192.168.1.1 (IPv4-mapped private — dotted form)", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:192.168.1.1")).toBe(true);
+    expect(isReservedIp("::ffff:192.168.1.1")).toBe(true);
   });
 
   test("allows ::ffff:8.8.8.8 (IPv4-mapped public — dotted form)", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:8.8.8.8")).toBe(false);
+    expect(isReservedIp("::ffff:8.8.8.8")).toBe(false);
   });
 
   // ── IPv4-mapped IPv6 — hex form ─────────────────────────────────────────
   // The proxy's parseMappedIpv4HexAddress converts ::ffff:hhhh:hhhh → IPv4.
 
   test("blocks ::ffff:7f00:1 (IPv4-mapped loopback 127.0.0.1 — hex form)", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:7f00:1")).toBe(true);
+    expect(isReservedIp("::ffff:7f00:1")).toBe(true);
   });
 
   test("blocks ::ffff:c0a8:101 (IPv4-mapped 192.168.1.1 — hex form)", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:c0a8:101")).toBe(true);
+    expect(isReservedIp("::ffff:c0a8:101")).toBe(true);
   });
 
   test("allows ::ffff:808:808 (IPv4-mapped 8.8.8.8 — hex form)", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:808:808")).toBe(false);
+    expect(isReservedIp("::ffff:808:808")).toBe(false);
   });
 
   // ── Zone IDs ───────────────────────────────────────────────────────────
   // The proxy strips zone IDs via ip.split("%", 1)[0] before checking.
 
   test("blocks ::1%lo (loopback with zone ID)", () => {
-    expect(__testOnly.isBlockedIpAddress("::1%lo")).toBe(true);
+    expect(isReservedIp("::1%lo")).toBe(true);
   });
 
   test("blocks fe80::1%eth0 (link-local with zone ID)", () => {
-    expect(__testOnly.isBlockedIpAddress("fe80::1%eth0")).toBe(true);
+    expect(isReservedIp("fe80::1%eth0")).toBe(true);
   });
 
   // ── Non-IP literals fall through to DNS ───────────────────────────────
 
   test("returns false for a hostname (not an IP literal — falls through to DNS)", () => {
-    expect(__testOnly.isBlockedIpAddress("example.com")).toBe(false);
+    expect(isReservedIp("example.com")).toBe(false);
   });
 
   // NAT64 well-known prefix (64:ff9b::/96) translates to IPv4 destinations.
-  // `isBlockedIpAddress` now decodes the trailing 32 bits and runs them
+  // `isReservedIp` decodes the trailing 32 bits and runs them
   // through the IPv4 blocklist, so a synthesised loopback address must be
   // blocked the same way `127.0.0.1` is.
 
   test("NAT64: 64:ff9b::7f00:1 (→127.0.0.1) is blocked", () => {
-    expect(__testOnly.isBlockedIpAddress("64:ff9b::7f00:1")).toBe(true);
+    expect(isReservedIp("64:ff9b::7f00:1")).toBe(true);
   });
 
   test("NAT64: expanded form 64:ff9b:0:0:0:0:7f00:1 is blocked", () => {
-    expect(__testOnly.isBlockedIpAddress("64:ff9b:0:0:0:0:7f00:1")).toBe(true);
+    expect(isReservedIp("64:ff9b:0:0:0:0:7f00:1")).toBe(true);
   });
 });
 
@@ -486,6 +487,24 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
     });
 
     const res = await connectRequest(proxyPort, "localhost", 443, auth());
+    expect(res.statusLine).toContain("403");
+  });
+
+  test("CONNECT to an internal-suffix name is blocked even when DNS answers public", async () => {
+    // The shared transport refuses `localhost`/`.localhost`/`.local`/
+    // `.internal` before it resolves them, so an internal name whose resolver
+    // hands back a public address no longer tunnels. Pin that: this DNS mock
+    // returns 8.8.8.8, which the answer-set check alone would let through.
+    process.env.WORKER_ALLOWED_DOMAINS = "*";
+    await startProxy();
+    __testOnly.setDnsLookup(async () => [{ address: "8.8.8.8", family: 4 }]);
+
+    const res = await connectRequest(
+      proxyPort,
+      "metadata.internal",
+      443,
+      auth()
+    );
     expect(res.statusLine).toContain("403");
   });
 

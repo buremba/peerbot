@@ -16,6 +16,7 @@ import {
   generateWorkerTokenPair,
   verifyEgressProxyToken,
 } from "@lobu/core";
+import { isReservedIp } from "@lobu/connector-sdk/ip-reachability";
 import type { RevokedTokenStore } from "../auth/revoked-token-store.js";
 import {
   __testOnly,
@@ -425,22 +426,22 @@ describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
   });
 
   test("rejects request to IPv4-mapped IPv6 loopback (hex form)", async () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:7f00:1")).toBe(true);
+    expect(isReservedIp("::ffff:7f00:1")).toBe(true);
   });
 
   test("rejects NAT64 loopback — compressed form (64:ff9b::7f00:1 → 127.0.0.1)", async () => {
-    expect(__testOnly.isBlockedIpAddress("64:ff9b::7f00:1")).toBe(true);
+    expect(isReservedIp("64:ff9b::7f00:1")).toBe(true);
   });
 
   test("rejects NAT64 link-local — expanded form (64:ff9b:0:0:0:0:a9fe:a9fe → 169.254.169.254)", async () => {
     // Regression: startsWith("64:ff9b::") missed this fully-expanded spelling.
-    expect(__testOnly.isBlockedIpAddress("64:ff9b:0:0:0:0:a9fe:a9fe")).toBe(
+    expect(isReservedIp("64:ff9b:0:0:0:0:a9fe:a9fe")).toBe(
       true
     );
   });
 
   test("allows NAT64 public address — expanded form (64:ff9b:0:0:0:0:808:808 → 8.8.8.8)", async () => {
-    expect(__testOnly.isBlockedIpAddress("64:ff9b:0:0:0:0:808:808")).toBe(
+    expect(isReservedIp("64:ff9b:0:0:0:0:808:808")).toBe(
       false
     );
   });

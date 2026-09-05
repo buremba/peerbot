@@ -3,6 +3,7 @@ import type { LookupAddress } from "node:dns";
 import * as http from "node:http";
 import * as net from "node:net";
 import { generateWorkerTokenPair } from "@lobu/core";
+import { isReservedIp } from "@lobu/connector-sdk/ip-reachability";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   __testOnly,
@@ -130,43 +131,43 @@ function connectReq(
   });
 }
 
-describe("IP normalization (isBlockedIpAddress)", () => {
+describe("IP normalization (isReservedIp, the classifier the proxy transport uses)", () => {
   it("blocks IPv4-mapped IPv6 loopback — dotted form", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(isReservedIp("::ffff:127.0.0.1")).toBe(true);
   });
 
   it("blocks IPv4-mapped IPv6 loopback — hex form", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:7f00:1")).toBe(true);
+    expect(isReservedIp("::ffff:7f00:1")).toBe(true);
     // 7f00:0001 is another spelling of 127.0.0.1 loopback.
-    expect(__testOnly.isBlockedIpAddress("::ffff:7f00:0001")).toBe(true);
+    expect(isReservedIp("::ffff:7f00:0001")).toBe(true);
   });
 
   it("blocks NAT64-wrapped internal IPv4 (64:ff9b::/96)", () => {
-    expect(__testOnly.isBlockedIpAddress("64:ff9b::7f00:1")).toBe(true);
-    expect(__testOnly.isBlockedIpAddress("64:ff9b::127.0.0.1")).toBe(true);
+    expect(isReservedIp("64:ff9b::7f00:1")).toBe(true);
+    expect(isReservedIp("64:ff9b::127.0.0.1")).toBe(true);
     // link-local 169.254.169.254 (cloud metadata) wrapped in NAT64
-    expect(__testOnly.isBlockedIpAddress("64:ff9b::a9fe:a9fe")).toBe(true);
+    expect(isReservedIp("64:ff9b::a9fe:a9fe")).toBe(true);
   });
 
   it("strips zone IDs before checking", () => {
-    expect(__testOnly.isBlockedIpAddress("fe80::1%eth0")).toBe(true);
-    expect(__testOnly.isBlockedIpAddress("::1%lo0")).toBe(true);
+    expect(isReservedIp("fe80::1%eth0")).toBe(true);
+    expect(isReservedIp("::1%lo0")).toBe(true);
   });
 
   it("fails closed on malformed IP-looking literals", () => {
-    expect(__testOnly.isBlockedIpAddress("::ffff:zzzz:1")).toBe(true);
-    expect(__testOnly.isBlockedIpAddress("64:ff9b::nope")).toBe(true);
-    expect(__testOnly.isBlockedIpAddress("fe80::g%eth0")).toBe(true);
+    expect(isReservedIp("::ffff:zzzz:1")).toBe(true);
+    expect(isReservedIp("64:ff9b::nope")).toBe(true);
+    expect(isReservedIp("fe80::g%eth0")).toBe(true);
   });
 
   it("permits genuine public addresses", () => {
-    expect(__testOnly.isBlockedIpAddress("8.8.8.8")).toBe(false);
-    expect(__testOnly.isBlockedIpAddress("::ffff:8.8.8.8")).toBe(false);
-    expect(__testOnly.isBlockedIpAddress("2606:4700:4700::1111")).toBe(false);
+    expect(isReservedIp("8.8.8.8")).toBe(false);
+    expect(isReservedIp("::ffff:8.8.8.8")).toBe(false);
+    expect(isReservedIp("2606:4700:4700::1111")).toBe(false);
   });
 
   it("treats hostnames as not-an-IP (caller resolves them)", () => {
-    expect(__testOnly.isBlockedIpAddress("example.com")).toBe(false);
+    expect(isReservedIp("example.com")).toBe(false);
   });
 });
 

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { LookupAddress } from "node:dns";
 import {
-  __ssrfGuardTestOnly,
+  __egressTransportTestOnly,
   fetchCredentialedPublicUrl,
   fetchPublicUrl,
   parseCredentialedHttpsUrl,
   PrivateAddressError,
-} from "../proxy/ssrf-guard.js";
+} from "../egress/transport.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -20,7 +20,7 @@ describe("public URL transport boundary", () => {
       { address: "2606:4700:4700::1111", family: 6 },
       { address: "1.1.1.1", family: 4 },
     ];
-    const lookup = __ssrfGuardTestOnly.createGuardedLookup(async () => answers);
+    const lookup = __egressTransportTestOnly.createGuardedLookup(async () => answers);
 
     const selected = await new Promise<{ address: string; family: number }>(
       (resolve, reject) => {
@@ -39,9 +39,9 @@ describe("public URL transport boundary", () => {
     let blocked: Error | null = null;
     const connect = (() => {
       dialed = true;
-    }) as Parameters<typeof __ssrfGuardTestOnly.connectPublicTarget>[2];
+    }) as Parameters<typeof __egressTransportTestOnly.connectPublicTarget>[2];
 
-    __ssrfGuardTestOnly.connectPublicTarget(
+    __egressTransportTestOnly.connectPublicTarget(
       {
         hostname: "127.0.0.1",
         host: "127.0.0.1:80",
@@ -72,9 +72,9 @@ describe("public URL transport boundary", () => {
     };
     const connect = ((received: Record<string, unknown>) => {
       forwarded = received;
-    }) as Parameters<typeof __ssrfGuardTestOnly.connectPublicTarget>[2];
+    }) as Parameters<typeof __egressTransportTestOnly.connectPublicTarget>[2];
 
-    __ssrfGuardTestOnly.connectPublicTarget(
+    __egressTransportTestOnly.connectPublicTarget(
       options,
       () => undefined,
       connect
@@ -156,7 +156,7 @@ describe("surfacing the blocked-target decision", () => {
       throw new TypeError("fetch failed", { cause: blocked });
     }) as typeof globalThis.fetch;
 
-    expect(fetchPublicUrl("https://metadata.example/")).rejects.toBe(blocked);
+    await expect(fetchPublicUrl("https://metadata.example/")).rejects.toBe(blocked);
   });
 
   test("unwraps a blocked target nested in an AggregateError", async () => {
@@ -167,7 +167,7 @@ describe("surfacing the blocked-target decision", () => {
       });
     }) as typeof globalThis.fetch;
 
-    expect(fetchPublicUrl("https://multi.example/")).rejects.toBe(blocked);
+    await expect(fetchPublicUrl("https://multi.example/")).rejects.toBe(blocked);
   });
 
   test("identifies the error by class, not by message text", async () => {
@@ -181,7 +181,7 @@ describe("surfacing the blocked-target decision", () => {
       throw new TypeError("fetch failed", { cause: blocked });
     }) as typeof globalThis.fetch;
 
-    expect(fetchPublicUrl("https://reworded.example/")).rejects.toBe(blocked);
+    await expect(fetchPublicUrl("https://reworded.example/")).rejects.toBe(blocked);
   });
 
   test("leaves an ordinary upstream failure untouched", async () => {
@@ -192,6 +192,6 @@ describe("surfacing the blocked-target decision", () => {
       throw outage;
     }) as typeof globalThis.fetch;
 
-    expect(fetchPublicUrl("https://upstream.example/")).rejects.toBe(outage);
+    await expect(fetchPublicUrl("https://upstream.example/")).rejects.toBe(outage);
   });
 });

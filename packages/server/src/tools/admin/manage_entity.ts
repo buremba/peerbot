@@ -1882,6 +1882,44 @@ async function lockOrganizationForSemanticEvent(
 	`;
 }
 
+interface RelationshipTypeRow {
+	id: number | string;
+	is_symmetric: boolean;
+	slug: string | null;
+	purpose: string | null;
+}
+
+/**
+ * Schema search path for relationship types: tenant first, then any
+ * visibility='public' catalog. Mirrors createEntity's resolver so a tenant
+ * can use a canonical relationship type like `works_at` defined in
+ * public-uk-finance without registering a local copy. Tenant-local types
+ * win when both exist.
+ */
+async function resolveRelationshipType(
+	slug: string,
+	organizationId: string,
+): Promise<RelationshipTypeRow> {
+	const sql = getDb();
+	const rows = await sql<RelationshipTypeRow>`
+    SELECT rt.id, rt.is_symmetric, rt.slug, rt.purpose
+    FROM entity_relationship_types rt
+    LEFT JOIN organization o ON o.id = rt.organization_id
+    WHERE rt.slug = ${slug}
+      AND rt.deleted_at IS NULL
+      AND (
+        rt.organization_id = ${organizationId}
+        OR o.visibility = 'public'
+      )
+    ORDER BY (rt.organization_id = ${organizationId}) DESC, rt.id ASC
+    LIMIT 1
+  `;
+	if (rows.length === 0) {
+		throw new ToolUserError(`Relationship type "${slug}" not found`, 404);
+	}
+	return rows[0];
+}
+
 async function handleLink(
 	args: ManageEntityArgs,
 	env: Env,
@@ -1899,37 +1937,17 @@ async function handleLink(
 	validateNoSelfReference(args.from_entity_id, args.to_entity_id);
 	await validateScopeRule(args.from_entity_id, args.to_entity_id, env, ctx);
 
-	// Schema search path for relationship types: tenant first, then any
-	// visibility='public' catalog. Mirrors createEntity's resolver so a tenant
-	// can use a canonical relationship type like `works_at` defined in
-	// public-uk-finance without registering a local copy. Tenant-local types
-	// win when both exist.
-	const typeRows = await sql`
-    SELECT rt.id, rt.is_symmetric, rt.slug, rt.purpose
-    FROM entity_relationship_types rt
-    LEFT JOIN organization o ON o.id = rt.organization_id
-    WHERE rt.slug = ${args.relationship_type_slug}
-      AND rt.deleted_at IS NULL
-      AND (
-        rt.organization_id = ${ctx.organizationId}
-        OR o.visibility = 'public'
-      )
-    ORDER BY (rt.organization_id = ${ctx.organizationId}) DESC, rt.id ASC
-    LIMIT 1
-  `;
-  if (typeRows.length === 0) {
-		throw new ToolUserError(
-			`Relationship type "${args.relationship_type_slug}" not found`,
-			404,
-		);
-  }
+	const relType = await resolveRelationshipType(
+		args.relationship_type_slug,
+		ctx.organizationId,
+	);
   // An authorization-bearing type is what the ACL gates read. Minting one of its
   // edges here would be minting access, so this surface refuses them outright —
   // classification is only a trust boundary if the classified rows stop being
   // generically writable.
-  assertNotAclManagedEdge(typeRows[0], 'link');
-  const typeId = Number(typeRows[0].id);
-  const isSymmetric = Boolean(typeRows[0].is_symmetric);
+  assertNotAclManagedEdge(relType, 'link');
+  const typeId = Number(relType.id);
+  const isSymmetric = Boolean(relType.is_symmetric);
 
   await validateTypeRule(typeId, args.from_entity_id, args.to_entity_id, sql);
 
@@ -2017,19 +2035,93 @@ async function handleLink(
 	return { action: "link", relationship: created };
 }
 
+/**
+ * `unlink` and `update_link` accept either the `relationship_id` or the same
+ * `{from, to, type}` triple `link` takes — which is the only addressing the SDK
+ * signatures ever exposed. `idx_entity_relationships_live_triple` makes the
+ * triple unique among live rows, so it names at most one edge.
+ *
+ * A symmetric edge is stored in one orientation only — same-org pairs are
+ * canonicalized by id at link time, cross-org pairs keep the caller's org as
+ * `from` — and the caller has no way to know which. So for a symmetric type
+ * either orientation of the endpoints resolves the same row.
+ *
+ * This resolves an id and nothing more: the ACL, ownership, and org-scope
+ * guards the by-id path already runs (`lockEdgeForMutation`,
+ * `retractManualRelationshipClaim`) still run downstream, unchanged.
+ */
+async function resolveRelationshipId(
+	args: ManageEntityArgs,
+	ctx: ToolContext,
+	action: "unlink" | "update_link",
+): Promise<number> {
+	const { relationship_id: namedId } = args;
+	const fromId = args.from_entity_id;
+	const toId = args.to_entity_id;
+	const typeSlug = args.relationship_type_slug;
+
+	if (!fromId || !toId || !typeSlug) {
+		if (namedId) return namedId;
+		throw new ToolUserError(
+			`relationship_id, or from_entity_id + to_entity_id + relationship_type_slug, is required for ${action}`,
+			400,
+		);
+	}
+
+	// Same search path as `link`, so an edge minted against a canonical public
+	// type is addressable the way it was created.
+	const relType = await resolveRelationshipType(typeSlug, ctx.organizationId);
+	const isSymmetric = Boolean(relType.is_symmetric);
+
+	const sql = getDb();
+	const rows = await sql<{ id: number | string }>`
+    SELECT id
+    FROM entity_relationships
+    WHERE organization_id = ${ctx.organizationId}
+      AND relationship_type_id = ${Number(relType.id)}
+      AND deleted_at IS NULL
+      AND (
+        (from_entity_id = ${fromId} AND to_entity_id = ${toId})
+        OR (
+          ${isSymmetric}::boolean
+          AND from_entity_id = ${toId}
+          AND to_entity_id = ${fromId}
+        )
+      )
+    -- At most one live row can match (idx_entity_relationships_live_triple),
+    -- but order anyway so legacy data cannot make the pick arbitrary.
+    ORDER BY id ASC
+    LIMIT 1
+  `;
+	if (rows.length === 0)
+		throw new ToolUserError(
+			`No relationship of type "${typeSlug}" between entities ${fromId} and ${toId}`,
+			404,
+		);
+	const resolved = Number(rows[0].id);
+	// Both addressings supplied and they disagree. Letting the id win would
+	// have `unlink` delete an edge the caller never named, so refuse instead of
+	// picking one.
+	if (namedId && Number(namedId) !== resolved)
+		throw new ToolUserError(
+			`relationship_id ${namedId} is not the "${typeSlug}" relationship between entities ${fromId} and ${toId} (that is relationship ${resolved}); pass one or the other`,
+			400,
+		);
+	return resolved;
+}
+
 async function handleUnlink(
 	args: ManageEntityArgs,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	if (!args.relationship_id)
-		throw new ToolUserError("relationship_id is required for unlink", 400);
+	const relationshipId = await resolveRelationshipId(args, ctx, "unlink");
 
   const sql = getDb();
 
 	const result = await sql.begin(async (tx) => {
 		const retracted = await retractManualRelationshipClaim(tx, {
 			organizationId: ctx.organizationId,
-			relationshipId: args.relationship_id!,
+			relationshipId,
 			updatedBy: ctx.userId,
 		});
 		if (retracted.relationshipRemoved) {
@@ -2062,8 +2154,8 @@ async function handleUnlink(
 		action: "unlink",
 		success: true,
 		message: result.relationshipRemoved
-			? `Relationship ${args.relationship_id} deleted`
-			: `Manual claim removed from relationship ${args.relationship_id}; source claims still retain it`,
+			? `Relationship ${relationshipId} deleted`
+			: `Manual claim removed from relationship ${relationshipId}; source claims still retain it`,
 	};
 }
 
@@ -2071,8 +2163,7 @@ async function handleUpdateLink(
 	args: ManageEntityArgs,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	if (!args.relationship_id)
-		throw new ToolUserError("relationship_id is required for update_link", 400);
+	const relationshipId = await resolveRelationshipId(args, ctx, "update_link");
 
   const sql = getDb();
 
@@ -2080,7 +2171,7 @@ async function handleUpdateLink(
 		await lockOrganizationForSemanticEvent(tx, ctx.organizationId);
 		const edge = await lockEdgeForMutation(
 			tx,
-			args.relationship_id!,
+			relationshipId,
 			ctx.organizationId,
 			"update_link",
 		);
@@ -2116,12 +2207,12 @@ async function handleUpdateLink(
         source = COALESCE(${args.source ?? null}, source),
         updated_by = ${ctx.userId},
         updated_at = current_timestamp
-      WHERE id = ${args.relationship_id} AND deleted_at IS NULL
+      WHERE id = ${relationshipId} AND deleted_at IS NULL
       RETURNING metadata, confidence, source
     `;
 		const relationship = await tx.unsafe<RelationshipRow>(
 			`SELECT ${RELATIONSHIP_SELECT} ${RELATIONSHIP_JOINS} WHERE r.id = $1`,
-			[args.relationship_id],
+			[relationshipId],
 		);
 		const after = updatedRows[0];
 		const changes = [

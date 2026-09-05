@@ -988,15 +988,15 @@ export type ManageEntityData = {
      */
     dry_run?: boolean;
     /**
-     * [link] Source entity ID
+     * [link/unlink/update_link] Source entity ID. For unlink/update_link, supply this triple instead of relationship_id to address the edge by its endpoints.
      */
     from_entity_id?: number;
     /**
-     * [link] Target entity ID
+     * [link/unlink/update_link] Target entity ID
      */
     to_entity_id?: number;
     /**
-     * [link/list_links] Relationship type slug
+     * [link/unlink/update_link/list_links] Relationship type slug
      */
     relationship_type_slug?: string;
     /**
@@ -1008,7 +1008,7 @@ export type ManageEntityData = {
      */
     source?: "ui" | "llm" | "feed" | "api";
     /**
-     * [update_link/unlink] Relationship ID
+     * [update_link/unlink] Relationship ID. Optional when from_entity_id + to_entity_id + relationship_type_slug identify the edge.
      */
     relationship_id?: number;
     /**

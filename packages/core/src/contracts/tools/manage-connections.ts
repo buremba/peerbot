@@ -978,6 +978,20 @@ export type RollbackConnectorVersionInput = ActionInput<
   "rollback_connector_version"
 >;
 
+export type ConnectionListInput = ActionInput<ConnectionsArgs, "list">;
+export type ToggleConnectorLoginInput = ActionInput<
+  ConnectionsArgs,
+  "toggle_connector_login"
+>;
+export type UpdateConnectorAuthInput = ActionInput<
+  ConnectionsArgs,
+  "update_connector_auth"
+>;
+export type UpdateConnectorDefaultConfigInput = ActionInput<
+  ConnectionsArgs,
+  "update_connector_default_config"
+>;
+
 /**
  * Union of all action variants. Defined from the variants directly (rather
  * than from the derived union schema in manage_connections.ts) so the handler

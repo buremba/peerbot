@@ -11,8 +11,12 @@
  *     session state).
  */
 
-import type { ActionInput } from "@lobu/core/contracts/tools/action-input";
-import type { ManageAuthProfilesArgs } from "@lobu/core/contracts/tools/manage-auth-profiles";
+import type {
+	AuthProfileCreateInput,
+	AuthProfileDeleteInput,
+	AuthProfileListInput,
+	AuthProfileUpdateInput,
+} from "@lobu/core/contracts/tools/manage-auth-profiles";
 import type { Env } from "../../index";
 import { manageAuthProfiles } from "../../tools/admin/manage_auth_profiles";
 import type { ToolContext } from "../../tools/registry";
@@ -21,23 +25,6 @@ import { createActionCaller, idArg } from "./action-call";
 // The `profile_kind` on list/create covers the four caller-manageable kinds
 // only. The stored enum also has `interactive`, which the contract deliberately
 // omits: interactive-connection setup mints those profiles itself.
-export type AuthProfileListInput = ActionInput<
-	ManageAuthProfilesArgs,
-	"list_auth_profiles"
->;
-export type AuthProfileCreateInput = ActionInput<
-	ManageAuthProfilesArgs,
-	"create_auth_profile"
->;
-export type AuthProfileUpdateInput = ActionInput<
-	ManageAuthProfilesArgs,
-	"update_auth_profile"
->;
-/** `delete` takes the slug positionally; the rest of the action rides in `options`. */
-export type AuthProfileDeleteOptions = Omit<
-	ActionInput<ManageAuthProfilesArgs, "delete_auth_profile">,
-	"auth_profile_slug"
->;
 
 export interface AuthProfilesNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
@@ -48,7 +35,7 @@ export interface AuthProfilesNamespace {
 	update(input: AuthProfileUpdateInput): Promise<unknown>;
 	delete(
 		auth_profile_slug: string,
-		options?: AuthProfileDeleteOptions,
+		options?: Omit<AuthProfileDeleteInput, "auth_profile_slug">,
 	): Promise<unknown>;
 }
 

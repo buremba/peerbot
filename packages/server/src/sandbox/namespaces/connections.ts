@@ -7,16 +7,18 @@
  * follow the handler schema.
  */
 
-import type { ActionInput } from "@lobu/core/contracts/tools/action-input";
 import type {
 	ConnectionConnectInput,
 	ConnectionConnectManagedInput,
 	ConnectionCreateInput,
-	ConnectionsArgs,
+	ConnectionListInput,
 	ConnectionUpdateInput,
 	GetConnectorSourceInput,
 	InstallConnectorInput,
 	RollbackConnectorVersionInput,
+	ToggleConnectorLoginInput,
+	UpdateConnectorAuthInput,
+	UpdateConnectorDefaultConfigInput,
 	UpdateConnectorSourceInput,
 	ValidateConnectorSourceInput,
 } from "@lobu/core/contracts/tools/manage-connections";
@@ -25,38 +27,19 @@ import { manageConnections } from "../../tools/admin/manage_connections";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller, idArg } from "./action-call";
 
-export type ConnectionsConnectInput = ConnectionConnectInput;
-export type ConnectionsConnectManagedInput = ConnectionConnectManagedInput;
-export type ConnectionsCreateInput = ConnectionCreateInput;
-export type ConnectionsUpdateInput = ConnectionUpdateInput;
-export type ConnectionsInstallConnectorInput = InstallConnectorInput;
-export type ConnectionsListInput = ActionInput<ConnectionsArgs, "list">;
-export type ConnectionsToggleConnectorLoginInput = ActionInput<
-	ConnectionsArgs,
-	"toggle_connector_login"
->;
-export type ConnectionsUpdateConnectorAuthInput = ActionInput<
-	ConnectionsArgs,
-	"update_connector_auth"
->;
-export type ConnectionsUpdateConnectorDefaultConfigInput = ActionInput<
-	ConnectionsArgs,
-	"update_connector_default_config"
->;
-
 export interface ConnectionsNamespace {
 	/** Raw escape hatch for any manage_connections action. Prefer named methods. */
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	list(input?: ConnectionsListInput): Promise<unknown>;
+	list(input?: ConnectionListInput): Promise<unknown>;
 	get(connection_id: number): Promise<unknown>;
-	create(input: ConnectionsCreateInput): Promise<unknown>;
-	connect(input: ConnectionsConnectInput): Promise<unknown>;
-	connectManaged(input: ConnectionsConnectManagedInput): Promise<unknown>;
-	update(input: ConnectionsUpdateInput): Promise<unknown>;
+	create(input: ConnectionCreateInput): Promise<unknown>;
+	connect(input: ConnectionConnectInput): Promise<unknown>;
+	connectManaged(input: ConnectionConnectManagedInput): Promise<unknown>;
+	update(input: ConnectionUpdateInput): Promise<unknown>;
 	delete(connection_id: number): Promise<unknown>;
 	reauthenticate(connection_id: number): Promise<unknown>;
 	test(connection_id: number): Promise<unknown>;
-	installConnector(input: ConnectionsInstallConnectorInput): Promise<unknown>;
+	installConnector(input: InstallConnectorInput): Promise<unknown>;
 	uninstallConnector(connector_key: string): Promise<unknown>;
 	getConnectorSource(input: GetConnectorSourceInput): Promise<unknown>;
 	validateConnectorSource(
@@ -67,13 +50,13 @@ export interface ConnectionsNamespace {
 		input: RollbackConnectorVersionInput,
 	): Promise<unknown>;
 	toggleConnectorLogin(
-		input: ConnectionsToggleConnectorLoginInput,
+		input: ToggleConnectorLoginInput,
 	): Promise<unknown>;
 	updateConnectorAuth(
-		input: ConnectionsUpdateConnectorAuthInput,
+		input: UpdateConnectorAuthInput,
 	): Promise<unknown>;
 	updateConnectorDefaultConfig(
-		input: ConnectionsUpdateConnectorDefaultConfigInput,
+		input: UpdateConnectorDefaultConfigInput,
 	): Promise<unknown>;
 }
 

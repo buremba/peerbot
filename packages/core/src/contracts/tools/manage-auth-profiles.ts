@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 
 // ============================================
 // Schema
@@ -221,3 +222,20 @@ export const ManageAuthProfilesSchema = Type.Union([
 ]);
 
 export type ManageAuthProfilesArgs = Static<typeof ManageAuthProfilesSchema>;
+
+export type AuthProfileListInput = ActionInput<
+  ManageAuthProfilesArgs,
+  "list_auth_profiles"
+>;
+export type AuthProfileCreateInput = ActionInput<
+  ManageAuthProfilesArgs,
+  "create_auth_profile"
+>;
+export type AuthProfileUpdateInput = ActionInput<
+  ManageAuthProfilesArgs,
+  "update_auth_profile"
+>;
+export type AuthProfileDeleteInput = ActionInput<
+  ManageAuthProfilesArgs,
+  "delete_auth_profile"
+>;

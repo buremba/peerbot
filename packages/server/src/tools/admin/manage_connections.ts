@@ -24,6 +24,8 @@
  * - update_connector_auth: Update reusable default auth profiles for an installed org connector
  */
 
+import type { Static } from "@sinclair/typebox";
+import type { ConnectionsArgs } from "./manage_connections/schemas";
 import { action, defineActionTool } from "./action-tool";
 import {
 	handleReauthenticate,
@@ -136,5 +138,17 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 
 export const ManageConnectionsSchema = manageConnectionsTool.schema;
 export const manageConnections = manageConnectionsTool.run;
+
+type AssertTrue<T extends true> = T;
+type SameUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+/**
+ * @internal Compile-time fixture. core hand-lists `ConnectionsArgs` (it cannot
+ * see this tool's union without a circular type) and derives every
+ * `*Input` from that list, so a variant dispatched here but missing there
+ * would have no derivable input and nothing would say so. Pin the two.
+ */
+export type ConnectionsArgsCoverEveryDispatchedVariant = AssertTrue<
+	SameUnion<Static<typeof ManageConnectionsSchema>, ConnectionsArgs>
+>;
 // Re-export so the admin registry entry can wire `outputSchema`.
 export { ManageConnectionsResultSchema } from "./manage_connections/schemas";

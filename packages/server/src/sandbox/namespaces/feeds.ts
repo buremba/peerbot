@@ -5,30 +5,29 @@
  * data surface this feed will sync.
  */
 
-import type { ActionInput } from "@lobu/core/contracts/tools/action-input";
-import type { ManageFeedsArgs } from "@lobu/core/contracts/tools/manage-feeds";
+import type {
+	FeedCreateInput,
+	FeedDeleteInput,
+	FeedListInput,
+	FeedReadInput,
+	FeedReadManyInput,
+	FeedTriggerInput,
+	FeedUpdateInput,
+} from "@lobu/core/contracts/tools/manage-feeds";
 import type { Env } from "../../index";
 import { manageFeeds } from "../../tools/admin/manage_feeds";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
-export type FeedsListInput = ActionInput<ManageFeedsArgs, "list_feeds">;
-export type FeedsGetInput = ActionInput<ManageFeedsArgs, "read_feed">;
-export type FeedsReadManyInput = ActionInput<ManageFeedsArgs, "read_feeds">;
-export type FeedsCreateInput = ActionInput<ManageFeedsArgs, "create_feed">;
-export type FeedsUpdateInput = ActionInput<ManageFeedsArgs, "update_feed">;
-export type FeedsDeleteInput = ActionInput<ManageFeedsArgs, "delete_feed">;
-export type FeedsTriggerInput = ActionInput<ManageFeedsArgs, "trigger_feed">;
-
 export interface FeedsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	list(input?: FeedsListInput): Promise<unknown>;
-	get(input: FeedsGetInput): Promise<unknown>;
-	readMany(input: FeedsReadManyInput): Promise<unknown>;
-	create(input: FeedsCreateInput): Promise<unknown>;
-	update(input: FeedsUpdateInput): Promise<unknown>;
-	delete(input: FeedsDeleteInput): Promise<unknown>;
-	trigger(input: FeedsTriggerInput): Promise<unknown>;
+	list(input?: FeedListInput): Promise<unknown>;
+	get(input: FeedReadInput): Promise<unknown>;
+	readMany(input: FeedReadManyInput): Promise<unknown>;
+	create(input: FeedCreateInput): Promise<unknown>;
+	update(input: FeedUpdateInput): Promise<unknown>;
+	delete(input: FeedDeleteInput): Promise<unknown>;
+	trigger(input: FeedTriggerInput): Promise<unknown>;
 }
 
 export function buildFeedsNamespace(

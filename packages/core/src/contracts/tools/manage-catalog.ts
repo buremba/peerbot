@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 
 export const ListCatalogAction = Type.Object({
   action: Type.Literal("list_catalog", {
@@ -96,3 +97,9 @@ export type ManageCatalogResult = Static<typeof ManageCatalogResultSchema>;
 export type ListCatalogArgs = Static<typeof ListCatalogAction>;
 export type ListInstalledArgs = Static<typeof ListInstalledAction>;
 export type ManageCatalogArgs = Static<typeof ManageCatalogSchema>;
+
+export type CatalogListInput = ActionInput<ManageCatalogArgs, "list_catalog">;
+export type CatalogListInstalledInput = ActionInput<
+  ManageCatalogArgs,
+  "list_installed"
+>;

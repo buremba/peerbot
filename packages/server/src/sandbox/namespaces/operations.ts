@@ -5,39 +5,26 @@
  * (PR-2) intercepts these calls instead of sending them.
  */
 
-import type { ActionInput } from "@lobu/core/contracts/tools/action-input";
-import type { ManageOperationsArgs } from "@lobu/core/contracts/tools/manage-operations";
+import type {
+	OperationApproveInput,
+	OperationExecuteInput,
+	OperationListAvailableInput,
+	OperationListRunsInput,
+	OperationRejectInput,
+} from "@lobu/core/contracts/tools/manage-operations";
 import type { Env } from "../../index";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller, idArg } from "./action-call";
 
-export type OperationsListAvailableInput = ActionInput<
-	ManageOperationsArgs,
-	"list_available"
->;
-export type OperationsExecuteInput = ActionInput<
-	ManageOperationsArgs,
-	"execute"
->;
-export type OperationsListRunsInput = ActionInput<
-	ManageOperationsArgs,
-	"list_runs"
->;
-export type OperationsApproveInput = ActionInput<
-	ManageOperationsArgs,
-	"approve"
->;
-export type OperationsRejectInput = ActionInput<ManageOperationsArgs, "reject">;
-
 export interface OperationsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	listAvailable(input?: OperationsListAvailableInput): Promise<unknown>;
-	execute(input: OperationsExecuteInput): Promise<unknown>;
-	listRuns(input?: OperationsListRunsInput): Promise<unknown>;
+	listAvailable(input?: OperationListAvailableInput): Promise<unknown>;
+	execute(input: OperationExecuteInput): Promise<unknown>;
+	listRuns(input?: OperationListRunsInput): Promise<unknown>;
 	getRun(run_id: number): Promise<unknown>;
-	approve(input: OperationsApproveInput): Promise<unknown>;
-	reject(input: OperationsRejectInput): Promise<unknown>;
+	approve(input: OperationApproveInput): Promise<unknown>;
+	reject(input: OperationRejectInput): Promise<unknown>;
 }
 
 export function buildOperationsNamespace(

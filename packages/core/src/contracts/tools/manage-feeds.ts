@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 import { paginationFields } from "./pagination";
 
 // ============================================
@@ -300,3 +301,11 @@ export const ManageFeedsSchema = Type.Union([
 ]);
 
 export type ManageFeedsArgs = Static<typeof ManageFeedsSchema>;
+
+export type FeedListInput = ActionInput<ManageFeedsArgs, "list_feeds">;
+export type FeedReadInput = ActionInput<ManageFeedsArgs, "read_feed">;
+export type FeedReadManyInput = ActionInput<ManageFeedsArgs, "read_feeds">;
+export type FeedCreateInput = ActionInput<ManageFeedsArgs, "create_feed">;
+export type FeedUpdateInput = ActionInput<ManageFeedsArgs, "update_feed">;
+export type FeedDeleteInput = ActionInput<ManageFeedsArgs, "delete_feed">;
+export type FeedTriggerInput = ActionInput<ManageFeedsArgs, "trigger_feed">;

@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 import { MAX_TOOL_PAGE_OFFSET, MAX_TOOL_PAGE_SIZE } from "./pagination";
 
 // manage_operations is flattened to one MCP object, so duplicate properties
@@ -525,3 +526,21 @@ export const ManageOperationsSchema = Type.Union([
 ]);
 
 export type ManageOperationsArgs = Static<typeof ManageOperationsSchema>;
+
+export type OperationListAvailableInput = ActionInput<
+  ManageOperationsArgs,
+  "list_available"
+>;
+export type OperationExecuteInput = ActionInput<
+  ManageOperationsArgs,
+  "execute"
+>;
+export type OperationListRunsInput = ActionInput<
+  ManageOperationsArgs,
+  "list_runs"
+>;
+export type OperationApproveInput = ActionInput<
+  ManageOperationsArgs,
+  "approve"
+>;
+export type OperationRejectInput = ActionInput<ManageOperationsArgs, "reject">;

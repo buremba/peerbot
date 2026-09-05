@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 
 // ============================================
 // Schema
@@ -155,3 +156,9 @@ export const ManageSchedulesSchema = Type.Union([
 ]);
 
 export type ManageSchedulesArgs = Static<typeof ManageSchedulesSchema>;
+
+export type ScheduleListInput = ActionInput<ManageSchedulesArgs, "list">;
+export type ScheduleCreateInput = ActionInput<ManageSchedulesArgs, "create">;
+export type ScheduleUpdateInput = ActionInput<ManageSchedulesArgs, "update">;
+export type SchedulePauseInput = ActionInput<ManageSchedulesArgs, "pause">;
+export type ScheduleCancelInput = ActionInput<ManageSchedulesArgs, "cancel">;

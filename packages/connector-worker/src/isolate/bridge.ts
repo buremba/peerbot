@@ -24,7 +24,7 @@
  *  - `dispose()` on a disposed isolate throws; guard with `isDisposed`.
  */
 
-import { GUEST_PRELUDE, PRELUDE_HOST_SYNC } from './prelude.js';
+import { createPreludeHostSync, GUEST_PRELUDE } from './prelude.js';
 import type { IsolatedVm, IvmIsolate, IvmReference } from './ivm-types.js';
 
 export type HostSyncCapability = (...args: unknown[]) => unknown;
@@ -44,7 +44,7 @@ export interface IsolateHostOptions {
   messageBytes: number;
   /** `process.env` visible to the guest. */
   env: Record<string, string | undefined>;
-  /** The run's own sync capabilities; the prelude's host halves (`PRELUDE_HOST_SYNC`) are always installed too. */
+  /** The run's own sync capabilities; a fresh set of the prelude's host halves (`createPreludeHostSync`) is always installed too. */
   sync: Record<string, HostSyncCapability>;
   async: Record<string, HostAsyncCapability>;
 }
@@ -106,7 +106,7 @@ export class IsolateHost {
     this.isolate = isolate;
     this.context = context;
     this.options = options;
-    this.sync = { ...PRELUDE_HOST_SYNC, ...options.sync };
+    this.sync = { ...createPreludeHostSync(), ...options.sync };
   }
 
   static async create(options: IsolateHostOptions): Promise<IsolateHost> {

@@ -13,7 +13,8 @@
  *     unchanged;
  *  3. a fixture connector exercises each boundary: chunked emit, checkpoint
  *     hooks, chrome dispatch, auth artifacts/signals, domain-restricted fetch,
- *     the body cap, wall-clock and heap limits, error shape parity, redaction;
+ *     bodies streamed chunk by chunk (with abort and cancel), the body cap,
+ *     wall-clock and heap limits, error shape parity, redaction;
  *  4. the guest's URL / URLSearchParams / TextEncoder / TextDecoder / atob /
  *     btoa are compared against Node's over 100+ inputs each. The host computes
  *     them for the guest, so this checks the bridge wiring (typed arrays, error
@@ -126,6 +127,26 @@ let baseUrl: string;
 let port: number;
 /** Requests the fixture server has answered: a denied fetch must not move it. */
 let hits = 0;
+/** `/sse` writes its next chunk only when `/ack` releases it; `acks` counts the releases. */
+let releaseSse: (() => void) | null = null;
+let acks = 0;
+/** `/drip` responses the client closed before the server ended them. */
+let dripClosed = 0;
+
+/** The `/sse` body: a multi-byte character split across the first two chunks, then a second event. */
+const SSE_CHUNKS = [
+	Buffer.concat([Buffer.from("data: caf", "utf8"), Buffer.from([0xc3])]),
+	Buffer.concat([Buffer.from([0xa9]), Buffer.from("\n\ndata: second\n\n", "utf8")]),
+];
+const SSE_TEXT = "data: café\n\ndata: second\n\n";
+
+async function until(check: () => boolean, ms = 5_000): Promise<void> {
+	const deadline = Date.now() + ms;
+	while (!check()) {
+		if (Date.now() > deadline) throw new Error("condition not met in time");
+		await new Promise((r) => setTimeout(r, 20));
+	}
+}
 
 async function runIsolate(
 	code: string,
@@ -216,6 +237,44 @@ beforeAll(async () => {
 					res.writeHead(200, { "content-type": "application/octet-stream" });
 					res.end("x".repeat(4096));
 					return;
+				case "/empty":
+					res.writeHead(204);
+					res.end();
+					return;
+				case "/sse": {
+					// Each chunk after the first waits for the client to acknowledge
+					// the previous one through /ack, so a client that has not READ a
+					// chunk can never be sent the next; the body ends after the last
+					// acknowledgement.
+					res.writeHead(200, { "content-type": "text/event-stream" });
+					let index = 0;
+					const step = () => {
+						if (index < SSE_CHUNKS.length) {
+							res.write(SSE_CHUNKS[index]);
+							index += 1;
+							releaseSse = step;
+						} else {
+							releaseSse = null;
+							res.end();
+						}
+					};
+					step();
+					return;
+				}
+				case "/ack":
+					acks += 1;
+					res.writeHead(200);
+					res.end("ok");
+					releaseSse?.();
+					return;
+				case "/drip":
+					// One chunk, then the body stays open until the client goes away.
+					res.writeHead(200, { "content-type": "text/event-stream" });
+					res.write("data: first\n\n");
+					res.on("close", () => {
+						dripClosed += 1;
+					});
+					return;
 				case "/redirect":
 					res.writeHead(302, { location: "/ok" });
 					res.end();
@@ -237,6 +296,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+	server?.closeAllConnections();
 	await new Promise<void>((resolveClose) => server?.close(() => resolveClose()));
 });
 
@@ -572,6 +632,69 @@ describe("isolate lane: fixture connector", () => {
 		expect(hits).toBe(before);
 	});
 
+	it("streams a response body to the guest chunk by chunk, decoding a character split across chunks", async () => {
+		acks = 0;
+		const streamed = await runIsolate(
+			fixtureIsolateCode,
+			syncJob({ scenario: "stream", url: `${baseUrl}/sse`, ackUrl: `${baseUrl}/ack` }),
+			{ allowedDomains: ["127.0.0.1"], timeoutMs: 15_000 },
+		);
+		// Two chunks, each acknowledged before the server wrote the next: the
+		// guest saw the first while the body was still open. The split `é`
+		// (0xC3 in chunk one, 0xA9 in chunk two) comes out whole because the
+		// guest's TextDecoder kept the partial sequence across the two decodes.
+		expect(checkpointOf(streamed.result)).toEqual({
+			chunks: ["data: caf", "é\n\ndata: second\n\n"],
+			tail: "",
+			text: SSE_TEXT,
+			usedBeforeRead: false,
+			usedAfterRead: true,
+		});
+		expect(acks).toBe(2);
+	});
+
+	it("aborting the signal after the headers errors the body stream and releases the upstream socket", async () => {
+		const before = dripClosed;
+		const aborted = await runIsolate(
+			fixtureIsolateCode,
+			syncJob({ scenario: "stream_abort", url: `${baseUrl}/drip`, afterUrl: `${baseUrl}/ok` }),
+			{ allowedDomains: ["127.0.0.1"], timeoutMs: 15_000 },
+		);
+		expect(checkpointOf(aborted.result)).toEqual({
+			first: "data: first\n\n",
+			rejection: "AbortError",
+			after: "hello from the fixture server",
+		});
+		await until(() => dripClosed === before + 1);
+	});
+
+	it("cancelling the body releases the upstream socket and leaves the run running", async () => {
+		const before = dripClosed;
+		const cancelled = await runIsolate(
+			fixtureIsolateCode,
+			syncJob({ scenario: "stream_cancel", url: `${baseUrl}/drip`, afterUrl: `${baseUrl}/ok` }),
+			{ allowedDomains: ["127.0.0.1"], timeoutMs: 15_000 },
+		);
+		expect(checkpointOf(cancelled.result)).toEqual({
+			first: "data: first\n\n",
+			after: "hello from the fixture server",
+			bodyUsed: true,
+		});
+		await until(() => dripClosed === before + 1);
+	});
+
+	it("gives a body-less response a null body and an empty text, and every other response a stream", async () => {
+		const empty = await runIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/empty` }), {
+			allowedDomains: ["127.0.0.1"],
+		});
+		expect(checkpointOf(empty.result)).toMatchObject({ status: 204, hasBody: false, bytes: 0, text: "" });
+
+		const full = await runIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
+			allowedDomains: ["127.0.0.1"],
+		});
+		expect(checkpointOf(full.result)).toMatchObject({ status: 200, hasBody: true });
+	});
+
 	it("caps the response body", async () => {
 		const failure = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/big` }), {
 			allowedDomains: ["127.0.0.1"],
@@ -586,6 +709,18 @@ describe("isolate lane: fixture connector", () => {
 			fetchBodyBytes: 8192,
 		});
 		expect(checkpointOf(fits.result).bytes).toBe(4096);
+
+		// The cap is charged as the guest pulls, never for what it did not take:
+		// `/drip` is unbounded, which no buffering lane could ever fit under a
+		// cap, yet reading its first chunk and cancelling is fine at the minimum.
+		const before = dripClosed;
+		const partial = await runIsolate(
+			fixtureIsolateCode,
+			syncJob({ scenario: "stream_cancel", url: `${baseUrl}/drip`, afterUrl: `${baseUrl}/ok` }),
+			{ allowedDomains: ["127.0.0.1"], fetchBodyBytes: 1024 },
+		);
+		expect(checkpointOf(partial.result)).toMatchObject({ first: "data: first\n\n" });
+		await until(() => dripClosed === before + 1);
 	});
 
 	it("kills a synchronous infinite loop at the wall-clock budget", async () => {

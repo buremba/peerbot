@@ -18,15 +18,19 @@
  *    an uncaught exception ended the forked child this replaced.
  *  - `process = { env }` from the job env.
  *  - `TextEncoder`/`TextDecoder` and `atob`/`btoa`: object shells whose
- *    byte-level work the host does with Node's own codecs.
+ *    byte-level work the host does with Node's own codecs. A decode with
+ *    `{ stream: true }` opens a Node `TextDecoder` on the host that keeps the
+ *    partial sequence between chunks until the flushing decode releases it.
  *  - `URL` over the host `urlParse`/`urlSet` capabilities: the host runs Node's
  *    own URL, so both lanes agree on every input by construction.
  *    `URLSearchParams` keeps its list guest-side, parses and serializes through
  *    the host, and writes back through `search`.
  *  - `AbortController`/`AbortSignal`.
- *  - `Headers`, `Response` and `fetch` over the host `fetch` capability. The
- *    host performs the network call and returns status, headers and a bounded
- *    body; there are no streams on this lane (`Response.body` is null).
+ *  - `Headers`, `Response` and `fetch` over the host `fetchOpen` / `fetchRead`
+ *    capabilities. The host performs the network call and answers with status
+ *    and headers as soon as they arrive; the body is a pull `ReadableStream`
+ *    the guest drains one host chunk at a time, exactly as a socket's
+ *    `readable` is, so an SSE response is consumed as it streams.
  *  - `crypto`: `getRandomValues`/`randomUUID`, plus the `subtle` operations
  *    postgres.js needs to answer an md5 or SCRAM-SHA-256 challenge, all
  *    computed by Node on the host. `require('node:crypto')` additionally
@@ -146,12 +150,55 @@ function asPairs(value: unknown): [string, string][] {
 }
 
 /**
- * Host halves of prelude globals that delegate to Node. `IsolateHost` installs
- * them under every run, so they are part of the guest's standard library
- * rather than a capability a particular executor grants. Pure conversions
- * only: no network, no filesystem.
+ * Streaming `TextDecoder`s one guest may hold open at once. A decoder opened
+ * with `{ stream: true }` and never flushed (a stream that errored mid-way)
+ * stays on the host until the run ends, so the count is bounded here rather
+ * than by a hostile guest's loop; an honest guest holds one per open body.
  */
-export const PRELUDE_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> = {
+const MAX_OPEN_TEXT_DECODERS = 1024;
+
+/**
+ * Host halves of prelude globals that delegate to Node. `IsolateHost` installs
+ * a fresh set under every run, so they are part of the guest's standard
+ * library rather than a capability a particular executor grants. Pure
+ * conversions only: no network, no filesystem. The one piece of state is the
+ * registry of streaming `TextDecoder`s, which is why this is a factory and not
+ * a table: a decoder's partial sequence belongs to one run.
+ */
+export function createPreludeHostSync(): Record<string, (...args: unknown[]) => unknown> {
+  const decoders = new Map<number, TextDecoder>();
+  let nextDecoderId = 1;
+  return {
+    ...STATELESS_HOST_SYNC,
+    /** Open a streaming decoder; the guest holds the id until its flushing decode. */
+    textDecoderOpen: (encoding: unknown, fatal: unknown, ignoreBOM: unknown): number => {
+      if (decoders.size >= MAX_OPEN_TEXT_DECODERS) {
+        throw new RangeError(`textDecoderOpen: more than ${MAX_OPEN_TEXT_DECODERS} streaming decoders are open`);
+      }
+      const id = nextDecoderId++;
+      decoders.set(id, new TextDecoder(String(encoding), { fatal: Boolean(fatal), ignoreBOM: Boolean(ignoreBOM) }));
+      return id;
+    },
+    /**
+     * Decode one chunk on an open streaming decoder. A decode without `stream`
+     * flushes and releases it, the point at which the spec resets a decoder's
+     * state; a fatal error mid-stream keeps it, as the spec does.
+     */
+    textDecoderDecode: (id: unknown, bytes: unknown, stream: unknown): string => {
+      const key = Number(id);
+      const decoder = decoders.get(key);
+      if (!decoder) throw new TypeError(`textDecoderDecode: no open streaming decoder ${String(id)}`);
+      const flush = !stream;
+      try {
+        return decoder.decode(asBytes(bytes, 'textDecoderDecode'), { stream: !flush });
+      } finally {
+        if (flush) decoders.delete(key);
+      }
+    },
+  };
+}
+
+const STATELESS_HOST_SYNC: Record<string, (...args: unknown[]) => unknown> = {
   urlParse: (input: unknown, base: unknown): GuestUrlRecord =>
     guestUrlRecord(base === undefined || base === null ? new URL(String(input)) : new URL(String(input), String(base))),
   urlSet: (href: unknown, name: unknown, value: unknown): GuestUrlRecord => {
@@ -485,12 +532,24 @@ var exports = module.exports;
     this._encoding = hostSync('textEncodingName', label === undefined ? 'utf-8' : String(label));
     this._fatal = !!(options && options.fatal);
     this._ignoreBOM = !!(options && options.ignoreBOM);
+    // The host decoder holding this decoder's partial sequence while a
+    // { stream: true } sequence of decodes is in progress; null between them.
+    this._streamId = null;
   }
   Object.defineProperty(TextDecoder.prototype, 'encoding', { get: function () { return this._encoding; }, enumerable: true });
   Object.defineProperty(TextDecoder.prototype, 'fatal', { get: function () { return this._fatal; }, enumerable: true });
   Object.defineProperty(TextDecoder.prototype, 'ignoreBOM', { get: function () { return this._ignoreBOM; }, enumerable: true });
-  TextDecoder.prototype.decode = function decode(input) {
-    return hostSync('textDecode', this._encoding, toBytes(input, 'TextDecoder.decode'), this._fatal, this._ignoreBOM);
+  TextDecoder.prototype.decode = function decode(input, options) {
+    var bytes = toBytes(input, 'TextDecoder.decode');
+    var stream = !!(options && options.stream);
+    if (this._streamId === null) {
+      if (!stream) return hostSync('textDecode', this._encoding, bytes, this._fatal, this._ignoreBOM);
+      this._streamId = hostSync('textDecoderOpen', this._encoding, this._fatal, this._ignoreBOM);
+    }
+    var id = this._streamId;
+    // The flushing decode releases the host decoder whether or not it throws.
+    if (!stream) this._streamId = null;
+    return hostSync('textDecoderDecode', id, bytes, stream);
   };
 
   global.TextEncoder = TextEncoder;
@@ -897,29 +956,88 @@ var exports = module.exports;
     throw new TypeError('Unsupported body type on the isolate lane: pass a string, URLSearchParams, ArrayBuffer or ArrayBufferView');
   }
 
+  // A guest-constructed body: its bytes handed over once, then end of stream.
+  function bytesStream(bytes) {
+    var sent = false;
+    return new ReadableStream({
+      pull: function (controller) {
+        if (sent) {
+          controller.close();
+          return;
+        }
+        sent = true;
+        controller.enqueue(bytes);
+      }
+    });
+  }
+
+  // Drain a body stream into one Uint8Array for text() / json() / arrayBuffer().
+  function readAllBytes(stream) {
+    var reader = stream.getReader();
+    var chunks = [];
+    var total = 0;
+    function step() {
+      return reader.read().then(function (result) {
+        if (result.done) {
+          reader.releaseLock();
+          var out = new Uint8Array(total);
+          var offset = 0;
+          for (var i = 0; i < chunks.length; i++) {
+            out.set(chunks[i], offset);
+            offset += chunks[i].length;
+          }
+          return out;
+        }
+        var chunk = toBytes(result.value, 'Response body');
+        chunks.push(chunk);
+        total += chunk.length;
+        return step();
+      });
+    }
+    return step();
+  }
+
   function Response(body, init) {
     if (!(this instanceof Response)) throw new TypeError("Class constructor Response cannot be invoked without 'new'");
     init = init || {};
     var status = init.status === undefined ? 200 : Number(init.status);
     if (!Number.isInteger(status) || status < 200 || status > 599) throw new RangeError('init["status"] must be in the range of 200 to 599, inclusive.');
-    var extracted = extractBody(body);
-    this._bytes = extracted.bytes;
-    this._bodyUsed = false;
     this.status = status;
     this.statusText = init.statusText === undefined ? (STATUS_TEXT[status] || '') : String(init.statusText);
     this.headers = new Headers(init.headers);
-    if (extracted.contentType && !this.headers.has('content-type')) this.headers.set('content-type', extracted.contentType);
     this.url = init.url === undefined ? '' : String(init.url);
     this.redirected = !!init.redirected;
     this.type = 'basic';
-    // Streams are not available on this lane; the body is always buffered.
-    this.body = null;
+    this._bodyUsed = false;
+    if (body instanceof ReadableStream) {
+      this._bytes = null;
+      this._stream = body;
+    } else {
+      var extracted = extractBody(body);
+      this._bytes = extracted.bytes;
+      this._stream = null;
+      if (extracted.contentType && !this.headers.has('content-type')) this.headers.set('content-type', extracted.contentType);
+    }
   }
   Object.defineProperty(Response.prototype, 'ok', { get: function () { return this.status >= 200 && this.status <= 299; }, enumerable: true });
-  Object.defineProperty(Response.prototype, 'bodyUsed', { get: function () { return this._bodyUsed; }, enumerable: true });
+  // A ReadableStream for every non-null body, as on every other runtime: a
+  // network response streams from the host, a guest-constructed one yields its
+  // bytes once. Null for a body-less response.
+  Object.defineProperty(Response.prototype, 'body', {
+    get: function () {
+      if (this._stream === null && this._bytes !== null) this._stream = bytesStream(this._bytes);
+      return this._stream;
+    },
+    enumerable: true
+  });
+  Object.defineProperty(Response.prototype, 'bodyUsed', {
+    get: function () { return this._bodyUsed || !!(this._stream && this._stream._disturbed); },
+    enumerable: true
+  });
   Response.prototype._consume = function () {
-    if (this._bodyUsed) return Promise.reject(new TypeError('Body is unusable: Body has already been read'));
+    if (this.bodyUsed) return Promise.reject(new TypeError('Body is unusable: Body has already been read'));
     this._bodyUsed = true;
+    if (this._stream) return readAllBytes(this._stream);
     return Promise.resolve(this._bytes || new Uint8Array(0));
   };
   Response.prototype.arrayBuffer = function () {
@@ -935,7 +1053,10 @@ var exports = module.exports;
     return this.text().then(function (text) { return JSON.parse(text); });
   };
   Response.prototype.clone = function () {
-    if (this._bodyUsed) throw new TypeError('Response.clone: Body has already been consumed.');
+    if (this.bodyUsed) throw new TypeError('Response.clone: Body has already been consumed.');
+    // Cloning a streamed body means teeing it, which nothing on this lane
+    // does; a guest-constructed body still has its bytes to copy.
+    if (this._bytes === null && this._stream !== null) throw new TypeError('Response.clone: a streamed body cannot be cloned on the isolate lane');
     return new Response(this._bytes ? new Uint8Array(this._bytes) : null, {
       status: this.status, statusText: this.statusText, headers: this.headers, url: this.url, redirected: this.redirected
     });
@@ -957,6 +1078,15 @@ var exports = module.exports;
   global.Response = Response;
 
   var fetchSeq = 0;
+
+  // The error a body stream ends with when the host reports one: an abort is
+  // the signal's own reason, anything else the host's description.
+  function bodyStreamError(desc, signal) {
+    if (desc && desc.name === 'AbortError') {
+      return signal && signal.aborted && signal.reason !== undefined ? signal.reason : abortError();
+    }
+    return makeError(desc);
+  }
 
   function fetch(input, init) {
     return new Promise(function (resolve) { resolve(); }).then(function () {
@@ -984,21 +1114,66 @@ var exports = module.exports;
       var redirect = init.redirect === undefined ? 'follow' : String(init.redirect);
       if (redirect !== 'follow' && redirect !== 'manual' && redirect !== 'error') throw new TypeError('Invalid redirect mode: ' + redirect);
       var id = ++fetchSeq;
+      // The abort listener lives as long as the response does, headers AND
+      // body: an abort after the headers arrived errors the body stream, as it
+      // does on every other runtime.
       var onAbort = null;
+      var finished = false;
+      function finish() {
+        if (finished) return;
+        finished = true;
+        if (onAbort) signal.removeEventListener('abort', onAbort);
+      }
       if (signal) {
         onAbort = function () { try { hostSync('fetchAbort', id); } catch (e) {} };
         signal.addEventListener('abort', onAbort, { once: true });
       }
       var request = { id: id, url: parsed.href, method: method, headers: headers._sortedEntries(), redirect: redirect };
-      return hostAsync('fetch', request, extracted.bytes === null ? undefined : extracted.bytes).then(
+      return hostAsync('fetchOpen', request, extracted.bytes === null ? undefined : extracted.bytes).then(
         function (reply) {
-          if (onAbort) signal.removeEventListener('abort', onAbort);
-          return new Response(reply.body, {
+          var body = null;
+          if (!reply.hasBody) {
+            finish();
+          } else {
+            // One host chunk per read, the way a socket's readable pulls: the
+            // host holds nothing the guest has not asked for yet.
+            body = new ReadableStream({
+              pull: function (controller) {
+                if (signal && signal.aborted) {
+                  finish();
+                  controller.error(bodyStreamError({ name: 'AbortError' }, signal));
+                  return;
+                }
+                return hostAsync('fetchRead', id).then(
+                  function (res) {
+                    if (res.error) {
+                      finish();
+                      controller.error(bodyStreamError(res.error, signal));
+                    } else if (res.done || res.data === null) {
+                      finish();
+                      controller.close();
+                    } else {
+                      controller.enqueue(toBytes(res.data, 'fetch body'));
+                    }
+                  },
+                  function (err) {
+                    finish();
+                    controller.error(err);
+                  }
+                );
+              },
+              cancel: function () {
+                finish();
+                try { hostSync('fetchAbort', id); } catch (e) {}
+              }
+            });
+          }
+          return new Response(body, {
             status: reply.status, statusText: reply.statusText, headers: reply.headers, url: reply.url, redirected: reply.redirected
           });
         },
         function (err) {
-          if (onAbort) signal.removeEventListener('abort', onAbort);
+          finish();
           if (signal && signal.aborted) throw signal.reason === undefined ? abortError() : signal.reason;
           throw err;
         }
@@ -1444,39 +1619,35 @@ var exports = module.exports;
   // ---------------------------------------------------------------------------
   function ReadableStream(underlyingSource) {
     this._source = underlyingSource || {};
+    // Set by the first read; Response.bodyUsed reports it.
+    this._disturbed = false;
   }
   ReadableStream.prototype.getReader = function () {
     var self = this;
     var queue = [];
-    var pendingRead = null;
+    var waiters = [];
     var isClosed = false;
     var streamError = null;
 
+    function settleWaiters(result) {
+      while (waiters.length > 0) waiters.shift()(result);
+    }
+
     var controller = {
       enqueue: function (chunk) {
-        if (pendingRead) {
-          var r = pendingRead;
-          pendingRead = null;
-          r({ value: chunk, done: false });
-        } else {
-          queue.push(chunk);
-        }
+        // A chunk the source still delivers after a close or a cancel is
+        // dropped: every read from that point on already reports done.
+        if (isClosed) return;
+        if (waiters.length > 0) waiters.shift()({ value: chunk, done: false });
+        else queue.push(chunk);
       },
       close: function () {
         isClosed = true;
-        if (pendingRead) {
-          var r = pendingRead;
-          pendingRead = null;
-          r({ value: undefined, done: true });
-        }
+        settleWaiters({ value: undefined, done: true });
       },
       error: function (err) {
         streamError = err;
-        if (pendingRead) {
-          var r = pendingRead;
-          pendingRead = null;
-          r(Promise.reject(err));
-        }
+        if (waiters.length > 0) settleWaiters(Promise.reject(err));
       }
     };
 
@@ -1486,6 +1657,7 @@ var exports = module.exports;
 
     return {
       read: function () {
+        self._disturbed = true;
         if (streamError) return Promise.reject(streamError);
         if (queue.length > 0) {
           return Promise.resolve({ value: queue.shift(), done: false });
@@ -1494,10 +1666,11 @@ var exports = module.exports;
           return Promise.resolve({ value: undefined, done: true });
         }
         // The waiter is registered BEFORE pull(), because a source that
-        // enqueues synchronously would otherwise push into the queue while
-        // pendingRead was still null and leave this read hanging forever.
+        // enqueues synchronously would otherwise push into the queue while no
+        // waiter was registered and leave this read hanging forever. Reads
+        // queue in order: each pull answers the oldest waiter.
         var waiter = new Promise(function (resolve) {
-          pendingRead = resolve;
+          waiters.push(resolve);
         });
         if (self._source && self._source.pull) {
           self._source.pull(controller);
@@ -1505,7 +1678,14 @@ var exports = module.exports;
         return waiter;
       },
       releaseLock: function () {},
+      // Cancelling ends the stream: the queue is dropped and every read from
+      // here on reports done. Without that a later read would pull the source
+      // again -- for a fetch body or a socket, a read on what the cancel just
+      // released.
       cancel: function (reason) {
+        isClosed = true;
+        queue.length = 0;
+        settleWaiters({ value: undefined, done: true });
         if (self._source && self._source.cancel) {
           return Promise.resolve(self._source.cancel(reason));
         }

@@ -2985,32 +2985,85 @@ export type ManageCatalogResponse =
   ManageCatalogResponses[keyof ManageCatalogResponses];
 
 export type ManageAgentsData = {
-  body: {
-    /**
-     * Action to perform
-     */
-    action: "list" | "get" | "create" | "update" | "delete";
-    /**
-     * [get/create/update/delete] Agent ID (lowercase slug, e.g. "support").
-     */
-    agent_id?: string;
-    /**
-     * [create/update] Display name for the agent.
-     */
-    name?: string;
-    /**
-     * [create/update] Agent description.
-     */
-    description?: string;
-    /**
-     * [create/update] Agent identity / system prompt (Markdown).
-     */
-    identity_md?: string;
-    /**
-     * [create/update] Default model as an explicit "<provider>/<model>" ref (e.g. "anthropic/claude-sonnet-5"). Validated against the org's connected providers. Without it the agent inherits the org default model; if the org has none the agent is not runnable. Pass an empty string to clear it and fall back to the org default.
-     */
-    default_model?: string;
-  };
+  body:
+    | {
+        /**
+         * List org agents.
+         */
+        action: "list";
+      }
+    | {
+        /**
+         * Fetch one agent.
+         */
+        action: "get";
+        /**
+         * Agent ID (lowercase slug, e.g. "support").
+         */
+        agent_id: string;
+      }
+    | {
+        /**
+         * Create an agent owned by the caller (queued for approval).
+         */
+        action: "create";
+        /**
+         * Agent ID (lowercase slug, e.g. "support").
+         */
+        agent_id: string;
+        /**
+         * [create/update] Display name for the agent.
+         */
+        name: string;
+        /**
+         * [create/update] Agent description.
+         */
+        description?: string;
+        /**
+         * [create/update] Agent identity / system prompt (Markdown).
+         */
+        identity_md?: string;
+        /**
+         * [create/update] Default model as an explicit "<provider>/<model>" ref (e.g. "anthropic/claude-sonnet-5"). Validated against the org's connected providers. Without it the agent inherits the org default model; if the org has none the agent is not runnable. Pass an empty string to clear it and fall back to the org default.
+         */
+        default_model?: string;
+      }
+    | {
+        /**
+         * Patch agent fields (queued for approval).
+         */
+        action: "update";
+        /**
+         * Agent ID (lowercase slug, e.g. "support").
+         */
+        agent_id: string;
+        /**
+         * [create/update] Display name for the agent.
+         */
+        name?: string;
+        /**
+         * [create/update] Agent description.
+         */
+        description?: string;
+        /**
+         * [create/update] Agent identity / system prompt (Markdown).
+         */
+        identity_md?: string;
+        /**
+         * [create/update] Default model as an explicit "<provider>/<model>" ref (e.g. "anthropic/claude-sonnet-5"). Validated against the org's connected providers. Without it the agent inherits the org default model; if the org has none the agent is not runnable. Pass an empty string to clear it and fall back to the org default.
+         */
+        default_model?: string;
+      }
+    | {
+        /**
+         * Delete an agent (queued for approval).
+         */
+        action: "delete";
+        /**
+         * Agent ID (lowercase slug, e.g. "support").
+         */
+        agent_id: string;
+      };
   path: {
     /**
      * Organization slug (workspace identifier)

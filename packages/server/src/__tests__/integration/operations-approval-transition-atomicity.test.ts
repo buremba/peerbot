@@ -190,9 +190,10 @@ async function seedAgentAskRun(
 
 /**
  * A pending `manage_agents` builder run whose apply is guaranteed to THROW:
- * `applyDelete` requires `agent_id`, and the family's `isValidProposal` only
- * checks the proposal is non-null, so the run claims cleanly and then fails in
- * the out-of-transaction apply — the window `failBuilderRun` writes back into.
+ * the `delete` variant requires `agent_id`, so re-validating the persisted
+ * proposal fails, and the family's `isValidProposal` only checks the proposal
+ * is non-null — the run claims cleanly and then fails in the out-of-transaction
+ * apply, the window `failBuilderRun` writes back into.
  */
 async function seedThrowingBuilderRun(
 	organizationId: string,
@@ -851,7 +852,7 @@ describe("approval-run transition atomicity", () => {
 		`;
 		expect(run.status).toBe("failed");
 		expect(String(run.claimed_by)).toMatch(/^gateway-inline-/);
-		expect(String(run.error_message)).toMatch(/agent_id is required/i);
+		expect(String(run.error_message)).toMatch(/Invalid arguments for manage_agents: .*agent_id/);
 		expect((await currentApprovalCard(runId, orgId))?.interaction_status).toBe(
 			"failed",
 		);

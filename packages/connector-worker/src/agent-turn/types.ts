@@ -25,7 +25,6 @@ export interface AgentTurnProvider {
    * the guest a credential the vault never minted, and the vault refuses those.
    */
   apiKey?: string;
-  headers?: Record<string, string>;
   maxTokens?: number;
 }
 

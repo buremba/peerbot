@@ -41,7 +41,6 @@ function buildModel(input: AgentTurnInput): Record<string, unknown> {
     // turn, one request, and the gateway owns the history it sends.
     contextWindow: 200_000,
     maxTokens: input.provider.maxTokens ?? 8192,
-    ...(input.provider.headers ? { headers: input.provider.headers } : {}),
   };
 }
 

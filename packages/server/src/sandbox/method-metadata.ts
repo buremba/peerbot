@@ -1004,10 +1004,10 @@ export default async (_ctx, client) => {
 	},
 	"classifiers.create": {
 		summary:
-			"Create a classifier template. Requires `slug`, `name`, and `attribute_key`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list. OMIT `automation_id` for an org-level classifier, which is the only kind `apply` and the reconciliation job can match; pass it only to scope the classifier to one Automation.",
+			"Create a classifier template. Requires `slug`, `name`, `attribute_key`, and `attribute_values`. `attribute_values` is an OBJECT keyed by value slug — each entry needs a `description` and `examples` (string array), not a flat list. OMIT `automation_id` for an org-level classifier, which is the only kind `apply` and the reconciliation job can match; pass it only to scope the classifier to one Automation.",
 		access: "admin",
 		signature:
-			"classifiers.create(input: { slug: string; name: string; attribute_key: string; automation_id?: string; attribute_values?: Record<string, { description: string; examples: string[] }>; entity_id?: number; min_similarity?: number; fallback_value?: unknown; description?: string }): Promise<unknown>",
+			"classifiers.create(input: { slug: string; name: string; attribute_key: string; attribute_values: Record<string, { description: string; examples: string[]; embedding?: number[] | null }>; automation_id?: string; entity_id?: number; description?: string; min_similarity?: number; fallback_value?: unknown; created_by?: string; embedding_model?: string }): Promise<unknown>",
 		example:
 			"await client.classifiers.create({ slug: 'sentiment', name: 'Sentiment', attribute_key: 'sentiment', attribute_values: { positive: { description: 'Positive tone', examples: ['Great work!'] } } });",
 	},

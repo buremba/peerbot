@@ -651,9 +651,12 @@ describe('tool invocation audit coverage', () => {
   });
 
   it('records resolved tool failures as failed', async () => {
+    // A failure the HANDLER resolves, not one the arg validator throws:
+    // manage_classifiers' per-action schema now supplies `classifier_id`'s
+    // required-ness, so an omitted id raises instead of returning a result.
     const result = (await executeTool(
       'manage_classifiers',
-      { action: 'delete' },
+      { action: 'delete', classifier_id: 999999 },
       {} as Env,
       authCtxFor('pat')
     )) as { success: boolean };

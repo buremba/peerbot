@@ -60,6 +60,11 @@ export interface ExecutorClient {
     runId: number,
     req: CompleteDeviceChatRequest
   ): Promise<CompleteDeviceChatResponse>;
+  /**
+   * Report an agent turn. Fleet-only, so it posts to the shared worker route
+   * rather than the device-scoped `/me/runs/...` family.
+   */
+  completeAgentTurn(req: CompleteAgentTurnRequest): Promise<CompleteAgentTurnResponse>;
   /** MCP endpoint + bearer the automation arm wires into the spawned CLI. */
   readonly mcpWiring?: { url: string; bearer?: string };
   /** Terminal ACP transcript upload authenticated by the per-run agent token. */
@@ -83,6 +88,8 @@ export interface ExecutorClient {
  */
 export type {
   CompleteActionRequest,
+  CompleteAgentTurnRequest,
+  CompleteAgentTurnResponse,
   CompleteAuthRequest,
   CompleteAutomationRequest,
   CompleteAutomationResponse,
@@ -104,6 +111,8 @@ export type {
 } from "@lobu/core/contracts/worker/protocol";
 import type {
   CompleteActionRequest,
+  CompleteAgentTurnRequest,
+  CompleteAgentTurnResponse,
   CompleteAuthRequest,
   CompleteAutomationRequest,
   CompleteAutomationResponse,
@@ -546,6 +555,10 @@ export class WorkerClient implements ExecutorClient {
       );
     }
     return interpretCompleteAutomationResponse(body);
+  }
+
+  async completeAgentTurn(req: CompleteAgentTurnRequest): Promise<CompleteAgentTurnResponse> {
+    return this.requestJson<CompleteAgentTurnResponse>('/api/workers/complete-agent-turn', req);
   }
 
   async completeDeviceChat(

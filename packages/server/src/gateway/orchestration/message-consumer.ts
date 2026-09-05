@@ -34,6 +34,7 @@ import {
 } from "../infrastructure/queue/index.js";
 import { armTurnTimeout, failTurnIfPending } from "./turn-liveness.js";
 import { recordAgentRunInput } from "./agent-run-input.js";
+import { enqueueAgentTurnShadow } from "./agent-turn-shadow.js";
 import {
   buildCanonicalConversationKey,
   type DeploymentManager,
@@ -41,6 +42,7 @@ import {
   type OrchestratorConfig,
 } from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { threadIdFromApiConversationId } from "../services/api-conversation-id.js";
 import {
@@ -598,6 +600,18 @@ export class MessageConsumer {
         { traceId, traceparent: childTraceparent, deploymentName },
         "Enqueued message to thread queue"
       );
+
+      // 1b) Shadow the same turn onto the isolate lane when the operator has
+      // selected this agent. Deliberately AFTER the real send: the message is
+      // already on the worker queue, so nothing here can delay or fail the turn
+      // it observes. `enqueueAgentTurnShadow` never throws, and for an agent the
+      // operator has not selected it returns on an env-var read before touching
+      // the database — the unselected path costs the enqueue nothing.
+      await enqueueAgentTurnShadow(data, {
+        agentSettings: this.agentSettingsStore,
+        catalog: this.deploymentManager.getProviderCatalogService?.(),
+        publicOrigin: getConfiguredPublicOrigin(),
+      });
 
       // 2) Ensure worker exists in the background (don't block queue send)
       // Pass traceparent for propagation to worker deployment

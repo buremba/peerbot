@@ -145,11 +145,15 @@ export async function startDaemonCommand(
     );
   }
 
-  // Fleet workers advertise the DB-egress contract by default. Device workers
-  // advertise only their declared, server-authorized capabilities.
+  // Fleet workers advertise the DB-egress contract and the agent-turn lane by
+  // default; device workers advertise only their declared, server-authorized
+  // capabilities. `agent_turn` is what stops a gateway that already emits the
+  // new run type from handing one to a worker binary that predates the lane:
+  // the two sides agree by string equality, so an old worker never matches and
+  // its dispatch default (a connector sync) is never reached.
   const workerCapabilities: Record<string, boolean> = platform
     ? Object.fromEntries(capabilities.map((name) => [name, true]))
-    : { db_egress_hardening: true };
+    : { db_egress_hardening: true, agent_turn: true };
   // Auto-discover device identity from the host when not passed: a device
   // worker defaults to `<platform>:<short-hostname>` and a hostname label. An
   // interactive daemon instead derives its id from the exact inherited

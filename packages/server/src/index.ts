@@ -731,6 +731,7 @@ app.route("/api", createSkillRoutes());
 import {
 	activatePageRun,
 	completeActionRun,
+	completeAgentTurnRun,
 	completeAuthRun,
 	completeEmbeddings,
 	completeAutomationRun,
@@ -926,6 +927,9 @@ app.post("/api/workers/heartbeat", heartbeat);
 app.post("/api/workers/stream", streamContent);
 app.post("/api/workers/complete", completeWorkerJob);
 app.post("/api/workers/complete-action", completeActionRun);
+// Fleet-only, deliberately absent from `allowedPathsForUserWorker`: an agent
+// turn carries the organization's provider proxy and never runs on a device.
+app.post("/api/workers/complete-agent-turn", completeAgentTurnRun);
 
 // Bridge that lets connector-worker fleets dispatch chrome connector actions
 // against a paired Owletto extension. See dispatch-chrome-action.ts.

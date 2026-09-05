@@ -44,6 +44,7 @@ import { IsolateHost, IsolateHostError, type IsolateTerminalState } from '../iso
 import { assertIsolateEligible } from '../isolate/eligibility.js';
 import type { IsolatedVm } from '../isolate/ivm-types.js';
 import { isolatedVmUnavailableReason, loadIsolatedVm } from '../isolate/load.js';
+import type { AgentTurnEvent } from '../agent-turn/types.js';
 import { buildConnectorConfig } from './connector-config.js';
 import type {
   ExecutionHooks,
@@ -330,7 +331,33 @@ const GUEST_RUNNER = String.raw`
     };
   }
 
+  // An agent turn does not duck-type a connector class: the bundle is Lobu's
+  // own agent-session guest and exports one entry point.
+  async function executeAgentTurn(mod) {
+    if (!mod || typeof mod.runAgentTurn !== 'function') {
+      throw new Error('the agent guest bundle does not export runAgentTurn()');
+    }
+    // The provider key reaches the guest here and nowhere else: the host has
+    // already replaced it with this run's vault placeholder.
+    var turnInput = Object.assign({}, job.turn, {
+      provider: Object.assign({}, job.turn.provider, {
+        apiKey: job.credentials ? job.credentials.accessToken : undefined
+      })
+    });
+    var output = await mod.runAgentTurn(turnInput, function (event) {
+      // Fire-and-forget on purpose: a delta must not stall the token stream
+      // waiting for the host, and the host reports its own hook failures by
+      // terminating the run.
+      H.async('emitTurnEvent', JSON.stringify(event));
+    });
+    return { mode: 'agent_turn', turn: output };
+  }
+
   try {
+    if (job.mode === 'agent_turn') {
+      var turnResult = await executeAgentTurn(module.exports);
+      return JSON.stringify({ ok: true, result: turnResult });
+    }
     var RuntimeClass = findRuntimeClass(module.exports);
     if (!RuntimeClass) throw new Error('No ConnectorRuntime class found. Expected a class with sync() and execute() methods.');
     var instance = new RuntimeClass();
@@ -727,6 +754,13 @@ export class IsolateExecutor implements SyncExecutor {
           const events: EventEnvelope[] = Array.isArray(parsed) ? (parsed as EventEnvelope[]) : [];
           await queueHook(async () => {
             await hooks?.onEventChunk?.(events);
+          });
+          return undefined;
+        },
+        emitTurnEvent: async (json: unknown) => {
+          const event = parseGuestJson(json, 'emitTurnEvent') as AgentTurnEvent;
+          await queueHook(async () => {
+            await hooks?.onTurnEvent?.(event);
           });
           return undefined;
         },

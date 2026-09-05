@@ -928,15 +928,33 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 		if (denied) return denied;
 
 		const sql = getDb();
-		const deviceChat = await sql<{ id: number }>`
-      SELECT id FROM runs
+		// The two lanes that own their own completion route, resolved in ONE
+		// primary-key read: this runs on every generic completion, so each extra
+		// round trip is paid by every connector run.
+		const [dedicatedLane] = await sql<{
+			agent_turn: boolean;
+			device_chat: boolean;
+		}>`
+      SELECT
+        run_type = 'agent_turn' AS agent_turn,
+        (run_type = 'chat_message'
+          AND queue_name = 'messages'
+          AND action_input->'executionTarget'->>'kind' = 'device') AS device_chat
+      FROM runs
       WHERE id = ${req.run_id}
-        AND run_type = 'chat_message'
-        AND queue_name = 'messages'
-        AND action_input->'executionTarget'->>'kind' = 'device'
       LIMIT 1
     `;
-		if (deviceChat.length > 0) {
+		if (dedicatedLane?.agent_turn) {
+			// An agent turn carries a transcript and a reply; finalizing it with
+			// sync semantics would drop both and mark the turn done. Same shape as
+			// the device-chat guard below: refuse, leave the run in progress, and
+			// let the lane's own endpoint (or the stale-run reaper) terminalize it.
+			return c.json(
+				{ error: "Agent turn runs must use the complete-agent-turn endpoint" },
+				409
+			);
+		}
+		if (dedicatedLane?.device_chat) {
 			// Device chat has a dedicated completion adapter that persists the
 			// transcript and publishes the thread_response awaited by Activity. Keep
 			// the run in progress when an older daemon calls the generic sync route;

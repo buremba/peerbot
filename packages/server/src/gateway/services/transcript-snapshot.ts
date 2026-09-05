@@ -44,3 +44,27 @@ export async function readSnapshotJsonl(args: {
   `;
 	return rows[0]?.snapshot_jsonl ?? null;
 }
+
+/**
+ * Flatten one transcript entry's `content` to plain text.
+ *
+ * A snapshot entry carries either a bare string or pi's block array, and every
+ * consumer that rebuilds a conversation from a snapshot (the device-chat poll
+ * envelope, the isolate turn's history) needs the same reduction: text blocks
+ * joined, everything else dropped. Kept here with the reader so the two do not
+ * drift.
+ */
+export function transcriptText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) =>
+			part &&
+			typeof part === "object" &&
+			(part as Record<string, unknown>).type === "text"
+				? String((part as Record<string, unknown>).text ?? "")
+				: ""
+		)
+		.filter(Boolean)
+		.join("\n");
+}

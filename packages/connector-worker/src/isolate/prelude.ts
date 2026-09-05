@@ -1670,7 +1670,39 @@ var exports = module.exports;
         openPromise = openPromise.then(function () {
           return hostAsync('socketStartTls', socketId, opts ? JSON.stringify(opts) : '{}');
         });
-        return socketObj;
+        // Cloudflare's Direct-Sockets contract: startTls() CONSUMES this socket
+        // and returns a NEW one, so the ORIGINAL socket's closed promise
+        // settles once the transport is up. postgres.js's workerd build derives
+        // secureConnect from exactly that, and only then releases the
+        // startup/auth packet, so a pre-upgrade closed that never settles parks
+        // the driver until its connect_timeout -- a write CONNECT_TIMEOUT on a
+        // socket that connected fine. Settle the pre-upgrade closed off the
+        // host's TLS result, and give the upgraded socket a fresh closed that
+        // only settles on a real close. Both facades share one host socket id
+        // and the (now startTls-chained) openPromise, so reads and writes still
+        // serialize behind the upgrade and land on the encrypted socket. The
+        // upgraded facade has no startTls: this socket is spent, and a second
+        // upgrade would stack TLS on TLS host-side.
+        var priorResolve = closedResolve;
+        var priorReject = closedReject;
+        closedPromise = new Promise(function (resolve, reject) {
+          closedResolve = resolve;
+          closedReject = reject;
+        });
+        openPromise.then(
+          // No value: closed fulfils with undefined per the Direct-Sockets
+          // contract, not with the host capability's return.
+          function () {
+            priorResolve();
+          },
+          priorReject
+        );
+        return {
+          readable: readable,
+          writable: writable,
+          closed: closedPromise,
+          close: socketObj.close
+        };
       }
     };
 

@@ -20,12 +20,6 @@ export interface SocketAddress {
 
 export interface SocketOptions {
   secureTransport?: 'off' | 'on' | 'starttls';
-  allowHalfOpen?: boolean;
-}
-
-export interface SocketInfo {
-  remoteAddress: string;
-  localAddress?: string;
 }
 
 export interface Socket {

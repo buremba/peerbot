@@ -1224,17 +1224,25 @@ var exports = module.exports;
   Buffer.isBuffer = function (obj) {
     return obj instanceof Uint8Array;
   };
-  Buffer.alloc = function (size, fill) {
+  Buffer.alloc = function (size, fill, encoding) {
     var u8 = new Uint8Array(size);
-    if (fill !== undefined) u8.fill(typeof fill === 'number' ? fill : 0);
+    if (fill === undefined || fill === 0) return u8;
+    if (typeof fill === 'number') { u8.fill(fill & 255); return u8; }
+    // Node repeats a string / byte fill across the buffer; a silent zero fill
+    // here would corrupt every padded protocol frame built with alloc(n, 'x').
+    var pattern = Buffer.from(fill, encoding);
+    if (pattern.length === 0) return u8;
+    for (var i = 0; i < size; i++) u8[i] = pattern[i % pattern.length];
     return u8;
   };
   Buffer.allocUnsafe = function (size) {
     return new Uint8Array(size);
   };
-  Buffer.byteLength = function (str) {
-    var encoded = utf8Encode(String(str));
-    return encoded ? encoded.length : String(str).length;
+  Buffer.byteLength = function (str, encoding) {
+    if (str instanceof ArrayBuffer) return str.byteLength;
+    if (str && typeof str === 'object' && typeof str.byteLength === 'number') return str.byteLength;
+    // Honour the encoding: byteLength('ff', 'hex') is 1, not 2.
+    return Buffer.from(String(str), encoding).length;
   };
   Buffer.concat = function (list, length) {
     if (!length) {
@@ -1284,7 +1292,9 @@ var exports = module.exports;
       return u8Fallback;
     }
     if (data instanceof Uint8Array) {
-      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      // Node COPIES a typed array (only Buffer.from(arrayBuffer) shares
+      // memory), so a guest mutating the result must not mutate the source.
+      return new Uint8Array(data);
     }
     if (Array.isArray(data)) {
       return new Uint8Array(data);
@@ -1293,7 +1303,7 @@ var exports = module.exports;
       return new Uint8Array(data);
     }
     if (data && data.buffer instanceof ArrayBuffer) {
-      return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      return new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
     }
     return Buffer.from(String(data));
   };

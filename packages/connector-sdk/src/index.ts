@@ -263,6 +263,5 @@ export type {
   ConnectFn,
   Socket,
   SocketAddress,
-  SocketInfo,
   SocketOptions,
 } from './net.js';

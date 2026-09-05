@@ -1718,7 +1718,6 @@ export async function handleApprove(
 		resolved.operation,
 		(run.action_input ?? {}) as Record<string, unknown>,
 		run.created_by_user_id,
-		env,
 		undefined,
 		{ deferTerminalWrite: true, claimedBy: inlineOwner },
 	);

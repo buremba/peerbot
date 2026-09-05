@@ -5,7 +5,7 @@
  * The DB socket lives in the connector isolate (behind the worker egress
  * controls), never in the gateway. Feed source reads use the separate
  * per-feed `read` capability below. Reuses the same inline-run path as
- * operations.execute (feed-sync.ts).
+ * operations.execute.
  */
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';

@@ -15,6 +15,7 @@
  * the Postgres `connections` row. No in-memory cross-pod state.
  */
 
+import { connectorRunEnv } from '@lobu/connector-worker/env';
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import type { ConnectorWebhookSchema } from '@lobu/connector-sdk';
 import { getDb } from '../db/client';
@@ -22,6 +23,8 @@ import { PostgresSecretStore } from '../lobu/stores/postgres-secret-store';
 import { orgContext } from '../lobu/stores/org-context';
 import { persistSecretValue } from '../gateway/secrets/index';
 import { resolveBaseUrl } from '../auth/base-url';
+import { isCloudMode } from '../utils/cloud-mode';
+import { findBundledConnectorFile } from '../utils/connector-catalog';
 import { resolveConnectorCodeForKey } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
@@ -179,9 +182,10 @@ export async function registerConnectorWebhook(params: {
       const baseUrl = resolveBaseUrl({ request: params.request ?? null }).replace(/\/+$/, '');
       const callbackUrl = `${baseUrl}/api/v1/webhooks/${connectionId}`;
 
-      const envStrings = Object.fromEntries(
-        Object.entries(process.env).filter(([, value]) => typeof value === 'string')
-      ) as Record<string, string | undefined>;
+      const envStrings = connectorRunEnv({
+        organizationSupplied: findBundledConnectorFile(connection.connector_key) === null,
+        cloud: isCloudMode(),
+      });
 
       const result = await executeCompiledConnector({
         compiledCode,
@@ -292,9 +296,10 @@ export async function unregisterConnectorWebhook(params: {
         logMessage: 'Failed to resolve webhook teardown credentials',
       });
 
-      const envStrings = Object.fromEntries(
-        Object.entries(process.env).filter(([, value]) => typeof value === 'string')
-      ) as Record<string, string | undefined>;
+      const envStrings = connectorRunEnv({
+        organizationSupplied: findBundledConnectorFile(connection.connector_key) === null,
+        cloud: isCloudMode(),
+      });
 
       const result = await executeCompiledConnector({
         compiledCode,

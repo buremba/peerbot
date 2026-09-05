@@ -1,3 +1,4 @@
+import { connectorRunEnv } from "@lobu/connector-worker/env";
 import { executeCompiledConnector } from "@lobu/connector-worker/executor/runtime";
 import {
 	deepRedactSecrets,
@@ -35,6 +36,8 @@ import {
 } from "../../../../runs/page-activation";
 import { createConnectorOperationRun } from "../../../../runs/queue-service";
 import { getAuthProfileById } from "../../../../utils/auth-profiles";
+import { isCloudMode } from "../../../../utils/cloud-mode";
+import { findBundledConnectorFile } from "../../../../utils/connector-catalog";
 import { resolveConnectorCodeForKey } from "../../../../utils/ensure-connector-installed";
 import { ToolUserError } from "../../../../utils/errors";
 import { resolveExecutionAuth } from "../../../../utils/execution-context";
@@ -108,7 +111,8 @@ async function completeRunInline(
 
 /**
  * Build the `config` an inline connector action sees. Precedence low → high:
- * process env, then resolved connection credentials, then the connection's own
+ * the connector run env (`connectorRunEnv`, the same whitelist a fleet worker
+ * gets), then resolved connection credentials, then the connection's own
  * `config` (authoritative — mirrors the sync path's
  * `mergeEnv(env, connectionCredentials, feedConfig)`). Connection config is
  * last so an action can read e.g. a Deliveroo connection's `restaurants_url`.
@@ -158,7 +162,6 @@ async function executeLocalActionInline(
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
 	requesterUserId: string | null,
-	env: Env,
 	abortSignal: AbortSignal | undefined,
 	deferTerminalWrite: boolean,
 	claimedBy: string,
@@ -200,9 +203,14 @@ async function executeLocalActionInline(
 		});
 
 	try {
-		const envStrings = Object.fromEntries(
-			Object.entries(env).filter(([, value]) => typeof value === "string"),
-		);
+		// The same whitelist a fleet worker hands connector code — never the
+		// gateway's own env, which would expose ENCRYPTION_KEY, DATABASE_URL and
+		// WORKER_API_TOKEN to whatever code this run executes.
+		const envStrings = connectorRunEnv({
+			organizationSupplied:
+				findBundledConnectorFile(connection.connector_key) === null,
+			cloud: isCloudMode(),
+		});
 		const result = await executeCompiledConnector({
 			compiledCode,
 			job: {
@@ -366,7 +374,6 @@ export async function executeOperationInline(
 	operation: OperationDescriptor,
 	actionInput: Record<string, unknown>,
 	requesterUserId: string | null,
-	env: Env,
 	abortSignal: AbortSignal | undefined,
 	options: InlineExecutionOptions,
 ): Promise<InlineExecutionResult> {
@@ -379,7 +386,6 @@ export async function executeOperationInline(
 			operation,
 			actionInput,
 			requesterUserId,
-			env,
 			abortSignal,
 			deferTerminalWrite,
 			options.claimedBy,
@@ -479,7 +485,7 @@ async function replayExistingOperationRun(
 export async function handleExecute(
 	args: Static<typeof ExecuteAction>,
 	ctx: ToolContext,
-	env: Env,
+	_env: Env,
 ): Promise<ManageOperationsResult> {
 	const sql = getDb();
 	const browserContext = deriveBrowserActionContext(ctx);
@@ -971,7 +977,6 @@ export async function handleExecute(
 		operation,
 		input,
 		visibilityUserId,
-		env,
 		ctx.abortSignal,
 		{ claimedBy: claim.claimedBy },
 	);

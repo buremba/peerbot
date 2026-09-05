@@ -282,3 +282,30 @@ describe('guest node:crypto', () => {
     expect(nodeCrypto.webcrypto).toBe(guest.crypto);
   });
 });
+
+describe('guest Buffer shim — Node semantics connector code relies on', () => {
+  it('Buffer.from(Uint8Array) copies rather than aliasing the source', () => {
+    const guest = instantiateGuest();
+    const source = new Uint8Array([1, 2, 3]);
+    const copy = guest.Buffer.from(source);
+    copy[0] = 9;
+    expect(source[0]).toBe(1);
+    expect(Array.from(copy)).toEqual([9, 2, 3]);
+  });
+
+  it('Buffer.byteLength honours the encoding and accepts byte sources', () => {
+    const guest = instantiateGuest();
+    expect(guest.Buffer.byteLength('aGk=', 'base64')).toBe(2);
+    expect(guest.Buffer.byteLength('h\u00e9llo')).toBe(6);
+    expect(guest.Buffer.byteLength(new Uint8Array(4))).toBe(4);
+    expect(guest.Buffer.byteLength(new ArrayBuffer(5))).toBe(5);
+  });
+
+  it('Buffer.alloc repeats a string fill instead of zeroing', () => {
+    const guest = instantiateGuest();
+    expect(Array.from(guest.Buffer.alloc(5, 'ab'))).toEqual([97, 98, 97, 98, 97]);
+    expect(Array.from(guest.Buffer.alloc(3, 7))).toEqual([7, 7, 7]);
+    expect(Array.from(guest.Buffer.alloc(2))).toEqual([0, 0]);
+    expect(Array.from(guest.Buffer.alloc(3, new Uint8Array([5, 6])))).toEqual([5, 6, 5]);
+  });
+});

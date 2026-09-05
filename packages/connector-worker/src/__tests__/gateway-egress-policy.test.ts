@@ -61,3 +61,60 @@ describe('resolveEffectiveEnv — gateway egress policy is non-downgradable', ()
     expect(effective.WORKER_API_TOKEN).toBe('t');
   });
 });
+
+/**
+ * Deployment provider credentials follow the RUN's provenance. Under
+ * block-private a job carrying `compiled_code` is organization-supplied (the
+ * gateway omits the bytes for connectors the image ships), so the operator's
+ * GitHub / Reddit / Maps apps never reach tenant code, while a bundled
+ * connector the worker compiles from its own image keeps them.
+ */
+describe('resolveEffectiveEnv — deployment provider keys follow provenance', () => {
+  const workerEnv: Env = {
+    GITHUB_TOKEN: 'gh-operator',
+    GOOGLE_MAPS_API_KEY: 'maps-operator',
+    REDDIT_CLIENT_ID: 'reddit-id',
+    REDDIT_CLIENT_SECRET: 'reddit-secret',
+    REDDIT_USER_AGENT: 'lobu/1.0',
+    LOBU_DB_EGRESS_POLICY: 'allow-private',
+  };
+  const jobWith = (
+    policy: PollResponse['db_egress_policy'],
+    compiledCode?: string,
+  ): PollResponse => ({
+    run_id: 7,
+    run_type: 'sync',
+    connector_key: 'reddit',
+    db_egress_policy: policy,
+    compiled_code: compiledCode,
+  });
+  const secrets = ['gh-operator', 'maps-operator', 'reddit-id', 'reddit-secret'];
+
+  test('block-private + stored code (organization-supplied) strips every deployment provider key', () => {
+    const effective = resolveEffectiveEnv(workerEnv, jobWith('block-private', 'module.exports = {};'));
+    expect(effective.GITHUB_TOKEN).toBeUndefined();
+    expect(effective.GOOGLE_MAPS_API_KEY).toBeUndefined();
+    expect(effective.REDDIT_CLIENT_ID).toBeUndefined();
+    expect(effective.REDDIT_CLIENT_SECRET).toBeUndefined();
+    for (const secret of secrets) expect(Object.values(effective)).not.toContain(secret);
+    // The strip is by key set: the rest of the env is untouched.
+    expect(effective.REDDIT_USER_AGENT).toBe('lobu/1.0');
+    expect(effective.LOBU_DB_EGRESS_POLICY).toBe('block-private');
+  });
+
+  test('block-private without stored code (image-shipped, worker compiles) keeps them', () => {
+    const effective = resolveEffectiveEnv(workerEnv, jobWith('block-private'));
+    expect(effective.REDDIT_CLIENT_SECRET).toBe('reddit-secret');
+    expect(effective.GITHUB_TOKEN).toBe('gh-operator');
+  });
+
+  test('allow-private keeps them even for stored code — the self-hosted operator owns both', () => {
+    const effective = resolveEffectiveEnv(workerEnv, jobWith('allow-private', 'module.exports = {};'));
+    expect(effective.REDDIT_CLIENT_SECRET).toBe('reddit-secret');
+  });
+
+  test('an empty compiled_code string is not stored code', () => {
+    const effective = resolveEffectiveEnv(workerEnv, jobWith('block-private', ''));
+    expect(effective.REDDIT_CLIENT_SECRET).toBe('reddit-secret');
+  });
+});

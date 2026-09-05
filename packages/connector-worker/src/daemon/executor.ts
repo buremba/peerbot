@@ -16,6 +16,7 @@ import { log } from './log.js';
 import { reportTerminalFailure } from './terminal-failure.js';
 import { completeActionOnce } from './terminal-delivery.js';
 import type { SyncExecutor, ExecutorResult } from '../executor/interface.js';
+import { withoutDeploymentProviderKeys } from '../env.js';
 
 /**
  * Resolve the executable compiled code for a job.
@@ -165,6 +166,13 @@ const DEFAULT_CONFIG: ExecutorConfig = {
  *
  * The gateway allow-host list replaces any worker-local value. A missing list
  * means no exemptions, so a worker cannot widen the gateway's boundary.
+ *
+ * Deployment provider credentials (`DEPLOYMENT_PROVIDER_ENV_KEYS`) follow the
+ * run's PROVENANCE: under block-private a job that arrives with `compiled_code`
+ * is organization-supplied (the gateway omits the bytes for connectors the
+ * image ships, so this worker compiles those from its own image), and tenant
+ * code never sees the operator's provider apps. The keys stay for image-shipped
+ * code, which is how a bundled Reddit feed on a shared worker authenticates.
  */
 export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
   const workerPolicy = (env as Record<string, string | undefined>).LOBU_DB_EGRESS_POLICY;
@@ -174,11 +182,12 @@ export function resolveEffectiveEnv(env: Env, job: PollResponse): Env {
     workerPolicy === 'block-private' || gatewayPolicy === 'block-private'
       ? 'block-private'
       : (gatewayPolicy ?? workerPolicy ?? 'allow-private');
-  return {
+  const merged: Env = {
     ...env,
     LOBU_DB_EGRESS_POLICY: effective,
     LOBU_DB_EGRESS_ALLOW_HOSTS: job.db_egress_allow_hosts ?? '',
   };
+  return effective === 'block-private' && job.compiled_code ? withoutDeploymentProviderKeys(merged) : merged;
 }
 
 /**

@@ -6,7 +6,9 @@
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import { getDb, parsePgNumberArray } from '../db/client';
-import { dbEgressConfig } from '../utils/cloud-mode';
+import { dbEgressConfig, isCloudMode } from '../utils/cloud-mode';
+import { findBundledConnectorFile } from '../utils/connector-catalog';
+import { connectorRunEnv } from '@lobu/connector-worker/env';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
@@ -143,7 +145,12 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
         ...dbEgressConfig(),
       },
       checkpoint: feed.checkpoint,
-      env: process.env as Record<string, string | undefined>,
+      // The same whitelist a fleet worker hands connector code — never the
+      // gateway's own env. See connectorRunEnv / the class-wide guard test.
+      env: connectorRunEnv({
+        organizationSupplied: findBundledConnectorFile(feed.connector_key) === null,
+        cloud: isCloudMode(),
+      }),
       sessionState,
       credentials,
       feedKey: feed.feed_key,

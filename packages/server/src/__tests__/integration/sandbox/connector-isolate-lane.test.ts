@@ -53,7 +53,7 @@ const CONNECTOR_BUILTIN_IMPORTS: Record<string, string[]> = {
 	linear: ["crypto"],
 	// Reaches its database over the isolate's Direct Sockets bridge, so it needs
 	// no transport builtin; what is left is all prelude-provided.
-	postgres: ["buffer", "events", "module", "stream"],
+	postgres: ["buffer", "events", "stream"],
 };
 
 /**

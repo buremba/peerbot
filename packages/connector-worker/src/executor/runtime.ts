@@ -21,7 +21,8 @@ export async function executeCompiledConnector(params: {
    * executor chosen here; an injected `executor` owns its own budget.
    */
   timeoutMs?: number;
-  /** Hosts the connector may fetch. Unset or empty uses default egress. */
+  /** Hosts the connector may reach, in the shared egress grammar. Unset is
+   *  unrestricted; an EMPTY list denies everything. */
   allowedDomains?: readonly string[];
 }): Promise<ExecutorResult> {
   const executor =

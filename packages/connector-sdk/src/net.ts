@@ -4,9 +4,11 @@
  * Exposes TCP connection primitives to pure-JS V8 isolates without requiring
  * `node:net` or `node:tls`. The isolate prelude installs `globalThis.connect`
  * (and answers `require('cloudflare:sockets')` with the same function), so the
- * guest never opens a socket itself: the HOST dials, after resolving the name
- * and applying the DB egress policy (`LOBU_DB_EGRESS_POLICY` /
- * `LOBU_DB_EGRESS_ALLOW_HOSTS`) to the resolved addresses.
+ * guest never opens a socket itself: the HOST dials through the one egress
+ * transport (`@lobu/connector-worker/egress`), after checking the name against
+ * the run's allowlist and applying the DB egress policy
+ * (`LOBU_DB_EGRESS_POLICY` / `LOBU_DB_EGRESS_ALLOW_HOSTS`) to every resolved
+ * address; the socket is pinned to the address that passed.
  *
  * Nothing installs `connect` outside that runtime — a Cloudflare Worker would
  * have to import `cloudflare:sockets` itself — so calling this anywhere else

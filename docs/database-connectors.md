@@ -78,55 +78,79 @@ scrapers' block-all-private-IPs rule can't be reused.
 - **Untrusted multi-tenant cloud:** a tenant-supplied `DATABASE_URL` (metadata
   IPs, internal CIDRs, another tenant's DB) is an exfil/scan vector. **Allowed,
   hardened.** Under `LOBU_CLOUD_MODE=1` the server injects the `block-private`
-  egress policy on every run path, which classifies + rejects internal hosts,
-  pins the socket to the validated IP, and forces TLS (below). There is no
-  per-connector cloud allow/deny list: every connector runs inside the isolate,
-  so the egress policy is the boundary. The one connector-keyed registry left is
-  `DB_EGRESS_HARDENED_CONNECTOR_KEYS` (`worker-api/connector-claim-lanes.ts`),
-  which records who has shipped the hardening above so claim eligibility can
-  require it — a future warehouse connector (Snowflake, BigQuery) joins it when
-  it ships the same pre-connect check.
+  egress policy on every run path; the isolate host then refuses internal
+  addresses and dials only the validated IP, and the connector forces TLS
+  (below). There is no per-connector cloud allow/deny list: every connector
+  runs inside the isolate, so the egress policy is the boundary. The one
+  connector-keyed registry left is `DB_EGRESS_HARDENED_CONNECTOR_KEYS`
+  (`worker-api/connector-claim-lanes.ts`), which names the connectors that open
+  a raw tenant-supplied DB socket, so in cloud mode only a fleet worker
+  advertising `db_egress_hardening` may CLAIM one of their runs — it closes the
+  rolling-deploy window where a new gateway hands a claimed run to an old
+  worker. A future warehouse connector (Snowflake, BigQuery) joins it when it
+  ships.
 
-**Egress guard (`packages/connectors/src/db-egress-guard.ts`).** The connector
-runs a pre-connect host check on `sync()`, `read()`, and `query()`. Policy comes from
-`ctx.config.LOBU_DB_EGRESS_POLICY`, injected by the server from cloud mode:
+**Address policy (the host's, through the one egress transport).** The
+connector never resolves or dials: every socket it opens is a host capability
+(`socketOpen` in `packages/connector-worker/src/executor/isolate.ts`) that
+resolves the `DATABASE_URL` host through `@lobu/connector-worker/egress`
+(`resolveEgressAddresses`) — the same module the gateway proxy, the MCP proxy
+and the isolate's `fetch` dial through — and dials only an address that passed.
+The policy axis is `@lobu/connector-sdk/ip-reachability`'s
+`EgressAddressPolicy`, read from `LOBU_DB_EGRESS_POLICY` (injected by the
+server from cloud mode; on this axis a missing or misspelt value fails closed
+to `block-private` — the connector-side TLS reader below defaults the other
+way, to the trusted `allow-private`, so both job producers always set the key
+rather than relying on either default):
 
-- `allow-private` (self-hosted, the default) — allows loopback / RFC1918 / CGNAT
-  / ULA, but still blocks link-local + cloud metadata (`169.254/16`), multicast,
-  and the unspecified address (no DB lives there).
-- `block-private` (cloud) — blocks **every** non-public address unless the
+- `allow-private` (self-hosted, the default off cloud) — allows loopback /
+  RFC1918 / CGNAT / ULA, but still refuses link-local (`169.254/16`), cloud
+  metadata in every spelling (the next bullet enumerates them), multicast, the
+  reserved and broadcast range, and the unspecified address (no DB lives
+  there).
+- `block-private` (cloud) — refuses **every** non-public address unless the
   operator explicitly lists that exact URL host in the comma-separated
   `LOBU_DB_EGRESS_ALLOW_HOSTS` deployment variable. An exemption lowers only
-  that host to the `allow-private` floor; metadata/link-local, unspecified,
-  multicast, and reserved addresses remain blocked. Hostnames are resolved and
-  rejected if ANY returned address is blocked (multi-record rebind), with
+  that host to the `allow-private` floor; metadata endpoints — including the
+  ones that sit inside ranges the floor permits (AWS IMDS over IPv6 in ULA,
+  Alibaba in CGNAT, Oracle) — remain refused. Hostnames are resolved once and
+  refused if ANY returned address is blocked (multi-record rebind), with
   IPv4-mapped / NAT64 / zone-id normalization and fail-closed on malformed
-  literals. On top of classify-and-reject (`buildDbEgressHardening`):
-  - **Resolve-then-pin:** each hostname is resolved once at guard time and the
-    postgres.js pool gets a custom `socket` factory that dials the validated IP
-    directly — the driver never re-resolves DNS, closing the rebind TOCTOU
-    across pool reconnects. Multi-host failover URLs pin every host and keep the
-    driver's rotation. The TLS `servername` stays the ORIGINAL hostname, so
-    SNI-routed servers (and cert verification, when enabled) see the configured
-    name, not the IP.
-  - **Forced TLS:** the connection is encrypted regardless of URL params.
-    `sslmode=disable` (or `ssl=false`) is rejected with a clear error; absent /
-    `allow` / `prefer` / `require` become `require` (encrypt always);
-    `verify-ca` / `verify-full` pass through untouched. The floor is `require`
-    rather than `verify-full` because tenant DBs commonly present self-signed /
-    private-CA certs — upgrading the floor once per-connection CA upload exists
-    is the noted follow-up.
+  literals; `localhost` and the internal suffixes are refused by name before
+  DNS.
+- **Resolve-then-pin** is the transport's, not a driver option: the host dials
+  exactly the address it validated, so the driver never re-resolves DNS and the
+  rebind TOCTOU is closed across pool reconnects. The TLS `servername` stays
+  the ORIGINAL hostname, so SNI-routed servers see the configured name.
+
+**TLS (`packages/connectors/src/db-egress-guard.ts`).** The one policy piece
+that stays connector-side, because nothing on the wire tells the host that a
+socket carries database credentials and postgres.js only upgrades when the pool
+was handed `ssl`:
+
+- **Forced TLS under `block-private`:** the connection is encrypted regardless
+  of URL params. `sslmode=disable` (or `ssl=false`) is rejected with a clear
+  error before any socket opens; absent / `allow` / `prefer` / `require`
+  become `require` (encrypt always). The floor is `require` rather than
+  `verify-full` because tenant DBs commonly present self-signed / private-CA
+  certs — upgrading the floor once per-connection CA upload exists is the noted
+  follow-up.
+- **Verification the lane cannot deliver is refused under every policy:** the
+  guest's `startTls` carries only the server name, so a URL asking for
+  `verify-ca` / `verify-full` (or `sslrootcert=system`) fails closed rather
+  than connecting encrypted-but-unverified behind a verifying-looking URL.
 
 The allow-host setting is global operator deployment config, not connection or
-tenant config. Entries must match the bare host extracted from `DATABASE_URL`
+tenant config. Entries must match the bare host from `DATABASE_URL` exactly
 (IPv6 without URL brackets); CIDRs, wildcards, ports, and bracketed IPv6 forms
-are rejected. Allowlisted names are still resolved once, validated against the
-floor, pinned to the validated address, and connected with forced TLS.
+are rejected at parse time so a typo cannot leave an exemption silently
+inactive. Exempted names are still resolved once, validated against the floor,
+and dialled at the validated address with forced TLS.
 
 **Deferred (explicit follow-up):** a per-org destination allowlist ("this org
-may only reach these DB hosts"). block-private + pin + forced TLS protects the
-platform boundary; an allowlist is an enterprise policy feature layered on top
-later.
+may only reach these DB hosts"). block-private + host-side pinning + forced TLS
+protects the platform boundary; an allowlist is an enterprise policy feature
+layered on top later.
 
 ## Entitlement boundary (design-only — not yet built)
 

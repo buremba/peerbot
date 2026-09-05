@@ -11,7 +11,8 @@ export interface ExecutorSelection {
   timeoutMs?: number;
   /** V8 heap limit in MB. Unset keeps the default (512). */
   memoryMb?: number;
-  /** Hosts the connector may fetch. Unset or empty uses default egress. */
+  /** Hosts the connector may reach, in the shared egress grammar. Unset is
+   *  unrestricted; an EMPTY list denies everything. */
   allowedDomains?: readonly string[];
   /** Console sink override (tests). */
   logSink?: IsolateExecutorOptions['logSink'];

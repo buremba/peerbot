@@ -82,8 +82,9 @@ export function buildConnectorWorkerEnv(): Env {
     // gateway that says block-private raises the floor even if this worker's
     // LOBU_CLOUD_MODE is unset (which would otherwise leave allow-private and the
     // SSRF guard OFF). This value is the fallback when the gateway response
-    // predates that field. DB connectors reject internal/metadata hosts under
-    // block-private; self-hosted (allow-private) reaches its own private DB.
+    // predates that field. The isolate HOST refuses internal/metadata addresses
+    // for a DB socket under block-private (`socketOpen` in `executor/isolate.ts`);
+    // self-hosted (allow-private) reaches its own private DB.
     LOBU_DB_EGRESS_POLICY: cloudModeOn() ? 'block-private' : 'allow-private',
   };
 }

@@ -1,11 +1,14 @@
 /**
- * `@lobu/connector-worker/egress` — the Node egress transport the gateway
- * dials through. Policy lives in `@lobu/connector-sdk/egress-policy`; this
- * subpath only knows how to dial.
+ * `@lobu/connector-worker/egress` — the Node egress transport the gateway and
+ * the connector isolate lane dial through. Policy lives in
+ * `@lobu/connector-sdk/egress-policy` and `@lobu/connector-sdk/ip-reachability`;
+ * this subpath only knows how to dial.
  */
 export {
   __egressTransportTestOnly,
   DnsResolutionError,
+  type EgressAddressOptions,
+  EgressDispatcher,
   MalformedHostError,
   PrivateAddressError,
   type ResolveAllAddresses,
@@ -13,5 +16,6 @@ export {
   fetchPublicUrl,
   isInternalUrl,
   parseCredentialedHttpsUrl,
-  resolvePublicAddresses,
+  parseExemptHosts,
+  resolveEgressAddresses,
 } from './transport.js';

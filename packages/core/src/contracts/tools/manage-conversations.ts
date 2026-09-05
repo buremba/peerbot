@@ -1,75 +1,77 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 
 // ============================================
-// Typebox Schema (Flattened for MCP)
+// Schema
 // ============================================
 
-export const ManageConversationsSchema = Type.Object({
-  action: Type.Union(
-    [
-      Type.Literal("list", {
-        description: "List an agent's conversations, newest-first.",
-      }),
-      Type.Literal("get", {
-        description:
-          "Fetch one conversation by its (platform, conversation_id).",
-      }),
-      Type.Literal("send", {
-        description:
-          "Send a message to an agent conversation and (by default) return its reply. " +
-          "Runs the turn against the conversation's pinned sandbox realm.",
-      }),
-    ],
-    { description: "Action to perform" }
-  ),
+const AgentId = Type.String({
+  description: 'Target agent id (lowercase slug, e.g. "researcher").',
+});
 
-  agent_id: Type.String({
-    description:
-      'Target agent id (lowercase slug, e.g. "researcher"). Required for every action.',
+// The wire schema flattens this union into ONE MCP object and merges duplicate
+// properties first-occurrence-wins, so a property carried by more than one
+// variant must read true for every one of them.
+const ConversationId = Type.String({
+  description:
+    "The stored conversation id. Required for `get`; optional for `send`, " +
+    "where it resumes that exact web conversation and wins over `thread` " +
+    "(omit it to target the caller's default web thread).",
+});
+
+export const ListConversationsAction = Type.Object({
+  action: Type.Literal("list", {
+    description: "List an agent's conversations, newest-first.",
   }),
+  agent_id: AgentId,
+});
 
+export const GetConversationAction = Type.Object({
+  action: Type.Literal("get", {
+    description: "Fetch one conversation by its (platform, conversation_id).",
+  }),
+  agent_id: AgentId,
   platform: Type.Optional(
     Type.String({
       description:
-        '[get] Conversation platform ("web" for app-owned conversations, or a channel platform like "slack"). Defaults to "web".',
+        'Conversation platform ("web" for app-owned conversations, or a channel platform like "slack"). Defaults to "web".',
     })
   ),
-  conversation_id: Type.Optional(
-    Type.String({
-      description:
-        "[get] The stored conversation id. For [send], omit to target the caller's default web thread, " +
-        "or pass a `thread` to open/resume a named web thread.",
-    })
-  ),
+  conversation_id: ConversationId,
+});
 
+export const SendConversationMessageAction = Type.Object({
+  action: Type.Literal("send", {
+    description:
+      "Send a message to an agent conversation and (by default) return its reply. " +
+      "Runs the turn against the conversation's pinned sandbox realm.",
+  }),
+  agent_id: AgentId,
+  conversation_id: Type.Optional(ConversationId),
   thread: Type.Optional(
     Type.String({
       description:
-        "[send] Optional web thread name. Distinct threads keep separate history + separate pinned sandbox. Omit for the default thread.",
+        "Optional web thread name. Distinct threads keep separate history + separate pinned sandbox. Omit for the default thread.",
     })
   ),
-  text: Type.Optional(
-    Type.String({
-      description: "[send] Message text to deliver to the agent.",
-    })
-  ),
+  text: Type.String({ description: "Message text to deliver to the agent." }),
   model: Type.Optional(
     Type.String({
       description:
-        "[send] Optional per-message model override as a `provider/model` ref. Wins over the agent/org default.",
+        "Optional per-message model override as a `provider/model` ref. Wins over the agent/org default.",
     })
   ),
   wait: Type.Optional(
     Type.Boolean({
       description:
-        "[send] When true (default), block until the agent's turn completes and return its reply. " +
+        "When true (default), block until the agent's turn completes and return its reply. " +
         "When false, enqueue and return immediately with the message id.",
     })
   ),
   timeout_ms: Type.Optional(
     Type.Number({
       description:
-        "[send, wait=true] Max time to wait for the reply. Default 45000, capped at 170000 — " +
+        "[wait=true] Max time to wait for the reply. Default 45000, capped at 170000 — " +
         "kept inside run_sdk's own wall-clock budget so a no-reply call returns a graceful " +
         'status:"timeout" instead of aborting the whole script. For a longer wait, raise BOTH ' +
         "this and the run_sdk/query_sdk timeout_ms. On timeout the turn keeps running (the answer " +
@@ -80,11 +82,27 @@ export const ManageConversationsSchema = Type.Object({
   ),
 });
 
+export const ManageConversationsSchema = Type.Union([
+  ListConversationsAction,
+  GetConversationAction,
+  SendConversationMessageAction,
+]);
+
 // ============================================
 // Type Definitions
 // ============================================
 
 export type ManageConversationsArgs = Static<typeof ManageConversationsSchema>;
+
+export type ConversationListInput = ActionInput<
+  ManageConversationsArgs,
+  "list"
+>;
+export type ConversationGetInput = ActionInput<ManageConversationsArgs, "get">;
+export type ConversationSendInput = ActionInput<
+  ManageConversationsArgs,
+  "send"
+>;
 
 /** One conversation as surfaced by list/get. */
 export interface ConversationRecord {

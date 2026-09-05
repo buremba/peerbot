@@ -6,6 +6,11 @@
  * turn against one; the reply reads back on the same conversation id.
  */
 
+import type {
+  ConversationGetInput,
+  ConversationListInput,
+  ConversationSendInput,
+} from "@lobu/core/contracts/tools/manage-conversations";
 import { Type } from "@sinclair/typebox";
 import type { Env } from "../../index";
 import { setCurrentMcpConversationTitle } from "../../lobu/stores/mcp-client-conversations";
@@ -17,39 +22,13 @@ import { createActionCaller } from "./action-call";
 
 const SetTitleSchema = Type.Object({ title: Type.String() });
 
-export interface ConversationsListInput {
-  agent_id: string;
-}
-
-export interface ConversationsGetInput {
-  agent_id: string;
-  /** Defaults to "web" (the app-owned realm). */
-  platform?: string;
-  conversation_id: string;
-}
-
-export interface ConversationsSendInput {
-  agent_id: string;
-  /** Resume an exact conversation; wins over `thread`. */
-  conversation_id?: string;
-  /** Open/resume a named web thread (own history + own pinned sandbox). */
-  thread?: string;
-  text: string;
-  /** Per-message `provider/model` override. */
-  model?: string;
-  /** Await the reply (default true); false returns immediately with the id. */
-  wait?: boolean;
-  /** [wait=true] Max wait (ms). Default 45000, capped at 170000. */
-  timeout_ms?: number;
-}
-
 export interface ConversationsNamespace {
   /** Set display-only text for the current MCP host conversation. */
   setTitle(input: { title: string }): Promise<{ title: string }>;
   manage(input: Record<string, unknown>): Promise<unknown>;
-  list(input: ConversationsListInput): Promise<unknown>;
-  get(input: ConversationsGetInput): Promise<unknown>;
-  send(input: ConversationsSendInput): Promise<unknown>;
+  list(input: ConversationListInput): Promise<unknown>;
+  get(input: ConversationGetInput): Promise<unknown>;
+  send(input: ConversationSendInput): Promise<unknown>;
 }
 
 export function buildConversationsNamespace(

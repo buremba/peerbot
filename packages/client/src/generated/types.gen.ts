@@ -3051,44 +3051,69 @@ export type ManageAgentsResponse =
   ManageAgentsResponses[keyof ManageAgentsResponses];
 
 export type ManageConversationsData = {
-  body: {
-    /**
-     * Action to perform
-     */
-    action: "list" | "get" | "send";
-    /**
-     * Target agent id (lowercase slug, e.g. "researcher"). Required for every action.
-     */
-    agent_id: string;
-    /**
-     * [get] Conversation platform ("web" for app-owned conversations, or a channel platform like "slack"). Defaults to "web".
-     */
-    platform?: string;
-    /**
-     * [get] The stored conversation id. For [send], omit to target the caller's default web thread, or pass a `thread` to open/resume a named web thread.
-     */
-    conversation_id?: string;
-    /**
-     * [send] Optional web thread name. Distinct threads keep separate history + separate pinned sandbox. Omit for the default thread.
-     */
-    thread?: string;
-    /**
-     * [send] Message text to deliver to the agent.
-     */
-    text?: string;
-    /**
-     * [send] Optional per-message model override as a `provider/model` ref. Wins over the agent/org default.
-     */
-    model?: string;
-    /**
-     * [send] When true (default), block until the agent's turn completes and return its reply. When false, enqueue and return immediately with the message id.
-     */
-    wait?: boolean;
-    /**
-     * [send, wait=true] Max time to wait for the reply. Default 45000, capped at 170000 — kept inside run_sdk's own wall-clock budget so a no-reply call returns a graceful status:"timeout" instead of aborting the whole script. For a longer wait, raise BOTH this and the run_sdk/query_sdk timeout_ms. On timeout the turn keeps running (the answer is not lost); the reply is not retrievable through `get`.
-     */
-    timeout_ms?: number;
-  };
+  body:
+    | {
+        /**
+         * List an agent's conversations, newest-first.
+         */
+        action: "list";
+        /**
+         * Target agent id (lowercase slug, e.g. "researcher").
+         */
+        agent_id: string;
+      }
+    | {
+        /**
+         * Fetch one conversation by its (platform, conversation_id).
+         */
+        action: "get";
+        /**
+         * Target agent id (lowercase slug, e.g. "researcher").
+         */
+        agent_id: string;
+        /**
+         * Conversation platform ("web" for app-owned conversations, or a channel platform like "slack"). Defaults to "web".
+         */
+        platform?: string;
+        /**
+         * The stored conversation id. Required for `get`; optional for `send`, where it resumes that exact web conversation and wins over `thread` (omit it to target the caller's default web thread).
+         */
+        conversation_id: string;
+      }
+    | {
+        /**
+         * Send a message to an agent conversation and (by default) return its reply. Runs the turn against the conversation's pinned sandbox realm.
+         */
+        action: "send";
+        /**
+         * Target agent id (lowercase slug, e.g. "researcher").
+         */
+        agent_id: string;
+        /**
+         * The stored conversation id. Required for `get`; optional for `send`, where it resumes that exact web conversation and wins over `thread` (omit it to target the caller's default web thread).
+         */
+        conversation_id?: string;
+        /**
+         * Optional web thread name. Distinct threads keep separate history + separate pinned sandbox. Omit for the default thread.
+         */
+        thread?: string;
+        /**
+         * Message text to deliver to the agent.
+         */
+        text: string;
+        /**
+         * Optional per-message model override as a `provider/model` ref. Wins over the agent/org default.
+         */
+        model?: string;
+        /**
+         * When true (default), block until the agent's turn completes and return its reply. When false, enqueue and return immediately with the message id.
+         */
+        wait?: boolean;
+        /**
+         * [wait=true] Max time to wait for the reply. Default 45000, capped at 170000 — kept inside run_sdk's own wall-clock budget so a no-reply call returns a graceful status:"timeout" instead of aborting the whole script. For a longer wait, raise BOTH this and the run_sdk/query_sdk timeout_ms. On timeout the turn keeps running (the answer is not lost); the reply is not retrievable through `get`.
+         */
+        timeout_ms?: number;
+      };
   path: {
     /**
      * Organization slug (workspace identifier)

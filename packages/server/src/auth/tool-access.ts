@@ -77,8 +77,9 @@ export const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
 	]),
 	// A member sends a message to their own agent's conversation. `send` runs the
 	// turn in the conversation's pinned sandbox; the handler binds the
-	// conversation to ctx.userId and fences on agent-in-org. list/get are
-	// read-tier (PUBLIC_READ_ACTIONS).
+	// conversation to ctx.userId and fences on agent-in-org. list/get carry no
+	// write/admin entry, so they fall through to the READ tier — they are NOT
+	// public-readable (a listing exposes conversation titles).
 	manage_conversations: new Set(["send"]),
 };
 

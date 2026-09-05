@@ -26,13 +26,25 @@ import {
 	type ApprovalAttribution as ApprovalAttributionType,
 } from "@lobu/core/contracts/interaction-envelope";
 import {
-	type ManageEntityArgs,
+	CreateEntityAction,
+	DeleteEntityAction,
+	GetEntityAction,
+	LinkEntitiesAction,
+	ListEntitiesAction,
+	ListLinksAction,
 	type ManageEntityResult,
 	ManageEntityResultSchema,
 	ManageEntitySchema,
+	MergeEntitiesAction,
 	type RelationshipCountByType,
 	type RelationshipRow,
+	ResolveDuplicatesAction,
+	UnlinkEntitiesAction,
+	UnmergeEntityAction,
+	UpdateEntityAction,
+	UpdateLinkAction,
 } from "@lobu/core/contracts/tools/manage-entity";
+import type { Static } from "@sinclair/typebox";
 import {
 	deferEntityCreate,
 	runMutationGate,
@@ -117,13 +129,12 @@ import { trackAutomationReaction } from "../../utils/automation-reactions";
 import { isAdminOrOwnerRole } from "../access-control";
 import { MEMBER_ENTITY_TYPE_SLUG } from "../constants";
 import type { ToolContext } from "../registry";
-import { withValidatedArgs } from "../validate-args";
 import {
 	buildEntityViewUrl,
 	getOrgUrlContext,
 	toEntityInfo,
 } from "../view-urls";
-import { defineFlatActionTool, flatAction } from "./action-tool";
+import { action, defineActionTool } from "./action-tool";
 import { proposeEntityDelete, proposeEntityMerge } from "./entity-field-approval";
 
 export { ManageEntityResultSchema, ManageEntitySchema };
@@ -145,7 +156,7 @@ function capitalize(value: string): string {
  * automation_source.
  */
 function actingPrincipalFor(
-	args: ManageEntityArgs | undefined,
+	args: Attributed | undefined,
 	ctx: ToolContext,
 ): Promise<ActingPrincipal> {
 	return resolveActingPrincipal(getDb(), {
@@ -204,7 +215,7 @@ function recordToolDenial(params: {
  * Default is auto (unrestricted within org); a policy can deny by type.
  */
 async function assertEntityReadAllowed(
-	args: ManageEntityArgs | undefined,
+	args: Attributed | undefined,
 	ctx: ToolContext,
 	entityTypeSlug: string | null | undefined,
 ): Promise<void> {
@@ -233,112 +244,132 @@ async function assertEntityReadAllowed(
 // Main Function (Action Router)
 // ============================================
 
-const runManageEntity = defineFlatActionTool<
-	ManageEntityArgs,
-	ManageEntityResult
->("manage_entity", {
-	create: flatAction((args, ctx, env) => handleCreate(args, env, ctx)),
-	update: flatAction(
-		(args, ctx, env) => handleUpdate(args.entity_id!, args, env, ctx),
-		{
-			requires: ["entity_id"],
-		},
+/** The one field the principal seam reads off any variant that carries it. */
+type Attributed = Pick<Static<typeof CreateEntityAction>, "automation_source">;
+
+/** How `unlink`/`update_link` address an edge: by id, by endpoint triple, or both. */
+type EdgeAddress = Pick<
+	Static<typeof UnlinkEntitiesAction>,
+	"relationship_id" | "from_entity_id" | "to_entity_id" | "relationship_type_slug"
+>;
+
+/**
+ * The mutations a reaction record is kept for, and the fields that record
+ * carries. Everything but `action` is optional because no single tracked
+ * variant declares all of them: `create` has no `entity_id`, `update` and
+ * `link` have no `entity_type`, and `link` has no `name`.
+ */
+interface TrackedMutationArgs extends Attributed {
+	action: "create" | "update" | "link";
+	entity_id?: number;
+	entity_type?: string;
+	name?: string;
+}
+
+type Handler<A> = (
+	args: A,
+	ctx: ToolContext,
+	env: Env,
+) => Promise<ManageEntityResult>;
+
+// Variants in the contract's order, so the derived union matches the exposed
+// `ManageEntitySchema`. Each handler receives its own variant's args; the
+// per-action access tiers are enforced by `routeAction` before dispatch.
+const manageEntityTool = defineActionTool("manage_entity", {
+	create: action(
+		CreateEntityAction,
+		trackedMutation((args, ctx, env) => handleCreate(args, env, ctx)),
 	),
-	list: flatAction((args, ctx, env) => handleList(args, env, ctx)),
-	get: flatAction(
-		(args, ctx, env) =>
-			handleGet(args.entity_id!, env, ctx, args.include_deleted ?? false),
-		{
-			requires: ["entity_id"],
-		},
+	update: action(
+		UpdateEntityAction,
+		trackedMutation((args, ctx, env) => handleUpdate(args, env, ctx)),
 	),
-	delete: flatAction(
-		(args, ctx, env) =>
-			handleDelete(
-				args.entity_id!,
-				args.force_delete_tree ?? false,
-				env,
-				ctx,
-				args,
-			),
-		{ requires: ["entity_id"] },
+	list: action(ListEntitiesAction, (args, ctx, env) =>
+		handleList(args, env, ctx),
 	),
-	link: flatAction((args, ctx, env) => handleLink(args, env, ctx)),
-	unlink: flatAction(handleUnlink),
-	update_link: flatAction(handleUpdateLink),
-	list_links: flatAction(handleListLinks),
-	merge: flatAction((args, ctx) => handleMerge(args, ctx), {
-		requires: ["winner_entity_id"],
-	}),
-	resolve_duplicates: flatAction((args, ctx) =>
-		handleResolveDuplicates(args, ctx),
+	get: action(GetEntityAction, (args, ctx, env) =>
+		handleGet(args.entity_id, env, ctx, args.include_deleted ?? false),
 	),
-	unmerge: flatAction((args, ctx) => handleUnmerge(args, ctx), {
-		requires: ["entity_id"],
-	}),
+	delete: action(DeleteEntityAction, (args, ctx, env) =>
+		handleDelete(args, env, ctx),
+	),
+	link: action(
+		LinkEntitiesAction,
+		trackedMutation((args, ctx, env) => handleLink(args, env, ctx)),
+	),
+	unlink: action(UnlinkEntitiesAction, handleUnlink),
+	update_link: action(UpdateLinkAction, handleUpdateLink),
+	list_links: action(ListLinksAction, handleListLinks),
+	merge: action(MergeEntitiesAction, handleMerge),
+	resolve_duplicates: action(ResolveDuplicatesAction, handleResolveDuplicates),
+	unmerge: action(UnmergeEntityAction, handleUnmerge),
 });
 
-export const manageEntity = withValidatedArgs(
-	"manage_entity",
-	ManageEntitySchema,
-	manageEntityImpl,
-);
+export const manageEntity = manageEntityTool.run;
 
-async function manageEntityImpl(
-	args: ManageEntityArgs,
-	env: Env,
+/**
+ * Record an Automation reaction for a mutating action once its handler
+ * returns. Reaction tracking took the declared source verbatim — no session
+ * precedence, no ownership check — so an unowned id credited another
+ * Automation's feedback record. Still gated on the caller HAVING declared a
+ * source: resolving one for every reaction session would start tracking
+ * mutations that were never tracked before, which is a product change, not
+ * this fix.
+ */
+function trackedMutation<A extends TrackedMutationArgs>(
+	handler: Handler<A>,
+): Handler<A> {
+	return async (args, ctx, env) => {
+		const result = await handler(args, ctx, env);
+		await trackEntityReaction(args, result, ctx);
+		return result;
+	};
+}
+
+async function trackEntityReaction(
+	args: TrackedMutationArgs,
+	result: ManageEntityResult,
 	ctx: ToolContext,
-): Promise<ManageEntityResult> {
-	const result = await runManageEntity(args, env, ctx);
-
-	// Track automation reaction for mutating actions.
-	// Reaction tracking took the declared source verbatim — no session
-	// precedence, no ownership check — so an unowned id credited another
-	// Automation's feedback record. Still gated on the caller HAVING declared a
-	// source: resolving one for every reaction session would start tracking
-	// mutations that were never tracked before, which is a product change, not
-	// this fix.
+): Promise<void> {
 	const reactionAttribution = args.automation_source
 		? await resolveAutomationAttribution(ctx, args.automation_source)
 		: null;
 	// A reaction record is keyed by the producing run.
 	if (
-		reactionAttribution?.automationId != null &&
-		reactionAttribution.runId != null &&
-		"action" in result
+		reactionAttribution?.automationId == null ||
+		reactionAttribution.runId == null ||
+		!("action" in result)
 	) {
-		const reactionType =
-			result.action === "create"
-				? "entity_created"
-				: result.action === "update"
-					? "entity_updated"
-					: result.action === "link"
-						? "entity_linked"
-						: null;
-		if (reactionType) {
-			const entityId =
-				result.action === "create" && "entity" in result
-					? result.entity?.id
-					: args.entity_id;
-			await trackAutomationReaction({
-				organizationId: ctx.organizationId,
-				automationId: reactionAttribution.automationId,
-				sourceRunId: reactionAttribution.runId,
-				reactionType,
-				toolName: "manage_entity",
-				toolArgs: {
-					action: args.action,
-					entity_type: args.entity_type,
-					name: args.name,
-					entity_id: args.entity_id,
-				},
-				toolResult: result as Record<string, unknown>,
-				entityId,
-			});
-		}
+		return;
 	}
-
-	return result;
+	const reactionType =
+		result.action === "create"
+			? "entity_created"
+			: result.action === "update"
+				? "entity_updated"
+				: result.action === "link"
+					? "entity_linked"
+					: null;
+	if (!reactionType) return;
+	const entityId =
+		result.action === "create" && "entity" in result
+			? result.entity?.id
+			: args.entity_id;
+	await trackAutomationReaction({
+		organizationId: ctx.organizationId,
+		automationId: reactionAttribution.automationId,
+		sourceRunId: reactionAttribution.runId,
+		reactionType,
+		toolName: "manage_entity",
+		toolArgs: {
+			action: args.action,
+			entity_type: args.entity_type,
+			name: args.name,
+			entity_id: args.entity_id,
+		},
+		toolResult: result as Record<string, unknown>,
+		entityId,
+	});
 }
 
 // ============================================
@@ -346,18 +377,10 @@ async function manageEntityImpl(
 // ============================================
 
 async function handleCreate(
-	args: ManageEntityArgs,
+	args: Static<typeof CreateEntityAction>,
 	env: Env,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	if (!args.entity_type) {
-		throw new ToolUserError("entity_type is required for create action", 400);
-	}
-
-	if (!args.name) {
-		throw new ToolUserError("name is required for create action", 400);
-	}
-
 	// (Derived-type rejection lives in createEntity — the single chokepoint that
 	// also resolves public-catalog types.)
 
@@ -573,11 +596,11 @@ async function handleCreate(
 }
 
 async function handleUpdate(
-	entityId: number,
-	args: ManageEntityArgs,
+	args: Static<typeof UpdateEntityAction>,
 	env: Env,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
+	const entityId = args.entity_id;
   const sql = getDb();
 
   // Fetch before state for change tracking and validation
@@ -839,7 +862,7 @@ function redactMemberEmail(
  * `applyMergeGroup`; this handler is the org-scoped gate + validation.
  */
 async function handleMerge(
-	args: ManageEntityArgs,
+	args: Static<typeof MergeEntitiesAction>,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	const actor = await actingPrincipalFor(args, ctx);
@@ -862,11 +885,6 @@ async function handleMerge(
 	if (loserIds.length === 0)
 		throw new ToolUserError(
 			"entity_id or duplicate_entity_ids is required for merge",
-			400,
-		);
-	if (!winnerId)
-		throw new ToolUserError(
-			"winner_entity_id (the survivor) is required for merge",
 			400,
 		);
 	if (loserIds.includes(winnerId))
@@ -947,7 +965,7 @@ async function handleMerge(
 	// Placed after the role gate (a principal who may not merge gets no preview)
 	// and before the review branch below — a dry run must never create an
 	// approval, exactly as on the delete path.
-	if (args?.dry_run) {
+	if (args.dry_run) {
 		const preview = await previewMerge({ loserIds, winnerId });
 		return {
 			action: "merge",
@@ -1137,18 +1155,11 @@ async function handleMerge(
 }
 
 async function handleResolveDuplicates(
-	args: ManageEntityArgs,
+	args: Static<typeof ResolveDuplicatesAction>,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	const candidateIds = [...new Set(args.candidate_entity_ids ?? [])].sort(
-		(a, b) => a - b,
-	);
-	if (candidateIds.length < 2) {
-		throw new ToolUserError(
-			"candidate_entity_ids must contain at least two entities",
-			400,
-		);
-	}
+	// The schema already requires >= 2 unique ids; sorted for a stable order.
+	const candidateIds = [...args.candidate_entity_ids].sort((a, b) => a - b);
 	let discovery: Awaited<ReturnType<typeof discoverWorkspaceResolutionGroups>>;
 	try {
 		discovery = await discoverWorkspaceResolutionGroups(getDb(), {
@@ -1209,7 +1220,7 @@ async function handleResolveDuplicates(
  * + validation.
  */
 async function handleUnmerge(
-	args: ManageEntityArgs,
+	args: Static<typeof UnmergeEntityAction>,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	if (!isAdminOrOwnerRole(ctx.memberRole)) {
@@ -1219,11 +1230,6 @@ async function handleUnmerge(
 		);
 	}
 	const loserId = args.entity_id;
-	if (!loserId)
-		throw new ToolUserError(
-			"entity_id (the merged loser to split out) is required for unmerge",
-			400,
-		);
 
 	const sql = getDb();
 	// The loser is a TOMBSTONE (deleted_at set by the merge), so we validate org
@@ -1270,7 +1276,7 @@ async function handleUnmerge(
 }
 
 async function handleList(
-	args: ManageEntityArgs,
+	args: Static<typeof ListEntitiesAction>,
 	env: Env,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
@@ -1604,12 +1610,12 @@ async function handleGet(
 }
 
 async function handleDelete(
-	entityId: number,
-	force: boolean,
+	args: Static<typeof DeleteEntityAction>,
 	env: Env,
 	ctx: ToolContext,
-	args?: ManageEntityArgs,
 ): Promise<ManageEntityResult> {
+	const entityId = args.entity_id;
+	const force = args.force_delete_tree ?? false;
 	// Get entity info before deletion
 	const entity = await getEntity(entityId, env, ctx);
 	if (!entity) {
@@ -1620,7 +1626,7 @@ async function handleDelete(
 	const denialAttemptId = randomUUID();
 	const deleteAttribution = await resolveAutomationAttribution(
 		ctx,
-		args?.automation_source
+		args.automation_source
 	);
 	const attribution = attributionFor(deleteActor);
 	const current = {
@@ -1668,7 +1674,7 @@ async function handleDelete(
 	// Preflight: report what the delete would remove/detach without mutating.
 	// Runs after the gate's deny check (a denied principal gets no preview) but
 	// before defer queues anything — a dry run must never create an approval.
-	if (args?.dry_run) {
+	if (args.dry_run) {
 		const preview = await deleteEntity(entityId, force, env, ctx, {
 			dryRun: true,
 		});
@@ -1744,7 +1750,7 @@ async function handleDelete(
 			force_delete_tree: force,
 			current,
 			automation_id:
-				ctx.actingAutomationId ?? args?.automation_source?.automation_id ?? null,
+				ctx.actingAutomationId ?? args.automation_source?.automation_id ?? null,
 			attribution,
 			reason: err.verdict.reason,
 		}, deleteAttribution.runId);
@@ -1921,17 +1927,10 @@ async function resolveRelationshipType(
 }
 
 async function handleLink(
-	args: ManageEntityArgs,
+	args: Static<typeof LinkEntitiesAction>,
 	env: Env,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	if (!args.from_entity_id)
-		throw new ToolUserError("from_entity_id is required for link", 400);
-	if (!args.to_entity_id)
-		throw new ToolUserError("to_entity_id is required for link", 400);
-	if (!args.relationship_type_slug)
-		throw new ToolUserError("relationship_type_slug is required for link", 400);
-
 	const sql = getDb();
 
 	validateNoSelfReference(args.from_entity_id, args.to_entity_id);
@@ -2051,7 +2050,7 @@ async function handleLink(
  * `retractManualRelationshipClaim`) still run downstream, unchanged.
  */
 async function resolveRelationshipId(
-	args: ManageEntityArgs,
+	args: EdgeAddress,
 	ctx: ToolContext,
 	action: "unlink" | "update_link",
 ): Promise<number> {
@@ -2111,7 +2110,7 @@ async function resolveRelationshipId(
 }
 
 async function handleUnlink(
-	args: ManageEntityArgs,
+	args: Static<typeof UnlinkEntitiesAction>,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	const relationshipId = await resolveRelationshipId(args, ctx, "unlink");
@@ -2160,7 +2159,7 @@ async function handleUnlink(
 }
 
 async function handleUpdateLink(
-	args: ManageEntityArgs,
+	args: Static<typeof UpdateLinkAction>,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
 	const relationshipId = await resolveRelationshipId(args, ctx, "update_link");
@@ -2251,12 +2250,9 @@ async function handleUpdateLink(
 }
 
 async function handleListLinks(
-	args: ManageEntityArgs,
+	args: Static<typeof ListLinksAction>,
 	ctx: ToolContext,
 ): Promise<ManageEntityResult> {
-	if (!args.entity_id)
-		throw new ToolUserError("entity_id is required for list_links", 400);
-
 	const sql = getDb();
 	const typeRows = await sql<{ entity_type: string }>`
 		SELECT et.slug AS entity_type

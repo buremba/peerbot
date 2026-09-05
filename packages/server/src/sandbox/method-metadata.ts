@@ -70,7 +70,7 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 			"List entities in the current organization with optional filters. Returns `{ action, entities, metadata }` where `entities` is the page and `metadata` carries `total_count`, `has_more`, `limit`, `offset`.",
 		access: "read",
 		signature:
-			"entities.list(input?: { entity_type?: string; parent_id?: number; search?: string; limit?: number; offset?: number }): Promise<unknown>",
+			"entities.list(input?: { entity_type?: string; parent_id?: number; search?: string; category?: string; main_market?: string; market?: string; limit?: number; offset?: number; sort_by?: string; sort_order?: 'asc' | 'desc' }): Promise<unknown>",
 		example:
 			"const { entities } = await client.entities.list({ entity_type: 'company' });",
 		usageExample: `// All companies in the workspace, newest first.
@@ -181,7 +181,7 @@ export default async (_ctx, client) => {
 		summary: "List relationships for an entity.",
 		access: "read",
 		signature:
-			"entities.listLinks(input: { entity_id: number; direction?: 'outbound' | 'inbound' | 'both'; relationship_type_slug?: string; confidence_min?: number; include_deleted?: boolean }): Promise<unknown>",
+			"entities.listLinks(input: { entity_id: number; direction?: 'outbound' | 'inbound' | 'both'; relationship_type_slug?: string; source?: 'ui' | 'llm' | 'feed' | 'api'; confidence_min?: number; include_deleted?: boolean; limit?: number; offset?: number }): Promise<unknown>",
 	},
 	"entities.search": {
 		summary:

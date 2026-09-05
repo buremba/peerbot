@@ -9,10 +9,10 @@
  * payload now passes straight through; `type` survives as a registered alias
  * for the callers that guess it.
  */
+import type { EntityCreateInput } from "@lobu/core/contracts/tools/manage-entity";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import { buildClientSDK, type ClientSDK } from "../../../sandbox/client-sdk";
-import type { EntityCreateInput } from "../../../sandbox/namespaces/entities";
 import type { ToolContext } from "../../../tools/registry";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";

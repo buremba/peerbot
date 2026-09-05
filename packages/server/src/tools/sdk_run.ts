@@ -33,7 +33,7 @@ const SCRIPT_FIELDS = {
   timeout_ms: Type.Optional(
     Type.Number({
       description:
-        "Wall-clock budget. Default 60000 (max 180000 — device-bound operations may wait ~155s).",
+        "Wall-clock budget. Default 60000 (max 180000 — a device-bound operation waits up to 60s to be claimed, then up to the action's declared timeout plus 30s grace, all bounded by this budget).",
       minimum: 100,
       maximum: MAX_SCRIPT_TIMEOUT_MS,
     }),

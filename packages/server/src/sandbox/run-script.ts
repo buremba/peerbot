@@ -177,7 +177,14 @@ const DEFAULT_LIMITS: Required<RunLimits> = {
 	traceBytes: 131_072,
 	messageBytes: 4_194_304,
 };
-/** Device action waits allow 60s queue + 95s post-claim; sandbox must outlive that. */
+/**
+ * Device action waits allow a 60s queue budget plus a post-claim budget of 95s
+ * by default, or the action's declared `timeout_ms` maximum plus a 30s
+ * completion grace (see tools/admin/device-action-wait.ts). The sandbox must
+ * outlive the common case; the waiter also honors the script's own abort, so a
+ * script that hits this ceiling mid-wait finalizes its device run rather than
+ * leaking it.
+ */
 export const MAX_SCRIPT_TIMEOUT_MS = 180_000;
 export const MAX_SLEEP_MS = 30_000;
 const MAX_TRACE_ARGS_BYTES = 8192;

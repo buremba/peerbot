@@ -37,18 +37,38 @@ import {
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization, seedOwnerContext } from '../setup/test-fixtures';
 
-async function insertChromeConnector(organizationId: string): Promise<void> {
+async function insertChromeConnector(
+  organizationId: string,
+  actionsSchema: Record<string, unknown> | null = null
+): Promise<void> {
   const sql = getTestDb();
   await sql`
     INSERT INTO connector_definitions
-      (key, name, organization_id, version, status, runtime, required_capability)
+      (key, name, organization_id, version, status, runtime, required_capability,
+       actions_schema)
     VALUES (
       'chrome', 'Chrome', ${organizationId}, '0.2.0', 'active',
       ${sql.json({ platforms: ['chrome-extension'] })},
-      'browser.debugger'
+      'browser.debugger',
+      ${actionsSchema ? sql.json(actionsSchema) : null}
     )
   `;
 }
+
+// An action whose declared input schema bounds a `timeout_ms` budget — the
+// shape a shell connector's `run` declares. Keyed by the fixture's action so
+// the waiter resolves it through the run's connector definition.
+const TIMED_ACTIONS_SCHEMA = {
+  navigate: {
+    key: 'navigate',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        timeout_ms: { type: 'integer', minimum: 100, maximum: 150_000 },
+      },
+    },
+  },
+};
 
 async function insertChromeConnection(
   organizationId: string,
@@ -260,9 +280,13 @@ describe('waitForDeviceActionRun', () => {
     expect(syntheticNow).toBeGreaterThan(queueDeadline);
   });
 
-  it('honors a persisted action timeout longer than the browser watchdog', async () => {
+  // A run whose action declares a bounded `timeout_ms` budget is still running
+  // at 100s — past the 95s watchdog default — and the waiter must wait for it.
+  // This is the regression: a shell command with a 150s budget was marked
+  // timeout at 95s while the device was mid-command, and its output was lost.
+  it("honors a requested action timeout within the action's declared maximum", async () => {
     const org = await createTestOrganization();
-    await insertChromeConnector(org.id);
+    await insertChromeConnector(org.id, TIMED_ACTIONS_SCHEMA);
     const connId = await insertChromeConnection(org.id);
     const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 150_000 });
     let syntheticNow = Date.now();
@@ -275,7 +299,10 @@ describe('waitForDeviceActionRun', () => {
       now: () => syntheticNow,
       sleep: async () => {
         sleeps += 1;
-        if (sleeps === 1) { syntheticNow += 100_000; return; }
+        if (sleeps === 1) {
+          syntheticNow += 100_000;
+          return;
+        }
         if (sleeps === 2) {
           await workerCompleteAction(runId, WORKER_ID, 'success', { ok: true });
           return;
@@ -287,25 +314,33 @@ describe('waitForDeviceActionRun', () => {
     expect(sleeps).toBe(2);
   });
 
-  it.each([null, 0, -1, 1.5, '150000', 300_001])(
-    'does not extend a wait for an invalid timeout %s', async (timeout_ms) => {
+  it.each([null, 0, -1, 1.5, '150000'])(
+    'does not extend the wait for an unusable requested timeout %s',
+    async (timeout_ms) => {
       const org = await createTestOrganization();
-      await insertChromeConnector(org.id);
+      await insertChromeConnector(org.id, TIMED_ACTIONS_SCHEMA);
       const connId = await insertChromeConnection(org.id);
       const runId = await insertPendingActionRun(org.id, connId, { timeout_ms });
       let syntheticNow = Date.now();
       await claim(runId, WORKER_ID, syntheticNow);
       const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
-        queueMs: 60_000, postClaimMs: 95_000, pollMs: 1,
+        queueMs: 60_000,
+        postClaimMs: 95_000,
+        pollMs: 1,
         now: () => syntheticNow,
-        sleep: async () => { syntheticNow += 100_000; },
+        sleep: async () => {
+          syntheticNow += 100_000;
+        },
       });
       expect(out.status).toBe('timeout');
       expect(out.error_message).toContain('95000ms');
     }
   );
 
-  it('still bounds a valid long action after its completion grace', async () => {
+  // The declared schema is the contract. A requested budget under an action
+  // that declares no `timeout_ms` maximum cannot extend the wait, however
+  // large — otherwise any input key could hold the gateway open.
+  it('ignores a requested timeout when the action declares no maximum', async () => {
     const org = await createTestOrganization();
     await insertChromeConnector(org.id);
     const connId = await insertChromeConnection(org.id);
@@ -313,9 +348,56 @@ describe('waitForDeviceActionRun', () => {
     let syntheticNow = Date.now();
     await claim(runId, WORKER_ID, syntheticNow);
     const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
-      queueMs: 60_000, postClaimMs: 95_000, pollMs: 1,
+      queueMs: 60_000,
+      postClaimMs: 95_000,
+      pollMs: 1,
       now: () => syntheticNow,
-      sleep: async () => { syntheticNow += 180_000; },
+      sleep: async () => {
+        syntheticNow += 100_000;
+      },
+    });
+    expect(out.status).toBe('timeout');
+    expect(out.error_message).toContain('95000ms');
+  });
+
+  // Input validation rejects a request above the declared maximum at creation;
+  // a row that carries one anyway (a direct write) is clamped to the maximum,
+  // never honored as written.
+  it('clamps a requested timeout above the declared maximum', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id, TIMED_ACTIONS_SCHEMA);
+    const connId = await insertChromeConnection(org.id);
+    const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 300_001 });
+    let syntheticNow = Date.now();
+    await claim(runId, WORKER_ID, syntheticNow);
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+      queueMs: 60_000,
+      postClaimMs: 95_000,
+      pollMs: 1,
+      now: () => syntheticNow,
+      sleep: async () => {
+        syntheticNow += 180_000;
+      },
+    });
+    expect(out.status).toBe('timeout');
+    expect(out.error_message).toContain('180000ms');
+  });
+
+  it('still bounds a valid long action after its completion grace', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id, TIMED_ACTIONS_SCHEMA);
+    const connId = await insertChromeConnection(org.id);
+    const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 150_000 });
+    let syntheticNow = Date.now();
+    await claim(runId, WORKER_ID, syntheticNow);
+    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+      queueMs: 60_000,
+      postClaimMs: 95_000,
+      pollMs: 1,
+      now: () => syntheticNow,
+      sleep: async () => {
+        syntheticNow += 180_000;
+      },
     });
     expect(out.status).toBe('timeout');
     expect(out.error_message).toContain('180000ms');

@@ -185,7 +185,7 @@ describe("connection-to-device operation routing lifecycle", () => {
 						return { success: true, output: { inline: true, value: ctx.input.value } };
 					}
 				}
-				export { ConnectorRuntime };
+				module.exports = { ConnectorRuntime };
 			`}
 			WHERE connector_key = ${CONNECTOR_KEY}
 		`;
@@ -422,7 +422,7 @@ describe("connection-to-device operation routing lifecycle", () => {
 						return { success: true, output: { inline: true, value: ctx.input.value } };
 					}
 				}
-				export { ConnectorRuntime };
+				module.exports = { ConnectorRuntime };
 			`}
 			WHERE connector_key = ${chromePrefixKey}
 		`;
@@ -502,7 +502,7 @@ describe("connection-to-device operation routing lifecycle", () => {
 							return { success: true, output: { inline: true, value: ctx.input.value } };
 						}
 					}
-					export { ConnectorRuntime };
+					module.exports = { ConnectorRuntime };
 				`}, 'compiled-demo-override-hash', ${COMPILE_CONFIG_HASH},
 				${`device-manifest://chrome-extension/demo.device@${compiledDemoVersion}`}, NOW()
 			)

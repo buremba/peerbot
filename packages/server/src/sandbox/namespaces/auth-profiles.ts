@@ -22,10 +22,6 @@ import { manageAuthProfiles } from "../../tools/admin/manage_auth_profiles";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller, idArg } from "./action-call";
 
-// The `profile_kind` on list/create covers the four caller-manageable kinds
-// only. The stored enum also has `interactive`, which the contract deliberately
-// omits: interactive-connection setup mints those profiles itself.
-
 export interface AuthProfilesNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
 	list(input?: AuthProfileListInput): Promise<unknown>;

@@ -5,6 +5,18 @@ import type { ActionInput } from "./action-input";
 // Schema
 // ============================================
 
+/**
+ * The four caller-manageable kinds. The stored enum also has `interactive`,
+ * which this contract deliberately omits: interactive-connection setup mints
+ * those profiles itself.
+ */
+const AuthProfileKind = Type.Union([
+  Type.Literal("env"),
+  Type.Literal("oauth_app"),
+  Type.Literal("oauth_account"),
+  Type.Literal("browser_session"),
+]);
+
 export const ListAuthProfilesAction = Type.Object({
   action: Type.Literal("list_auth_profiles", {
     description: "List reusable auth profiles with filters.",
@@ -16,15 +28,9 @@ export const ListAuthProfilesAction = Type.Object({
     Type.String({ description: 'Filter by OAuth provider (e.g. "google")' })
   ),
   profile_kind: Type.Optional(
-    Type.Union(
-      [
-        Type.Literal("env"),
-        Type.Literal("oauth_app"),
-        Type.Literal("oauth_account"),
-        Type.Literal("browser_session"),
-      ],
-      { description: "Filter by auth profile kind" }
-    )
+    Type.Union(AuthProfileKind.anyOf, {
+      description: "Filter by auth profile kind",
+    })
   ),
 });
 
@@ -53,12 +59,7 @@ export const CreateAuthProfileAction = Type.Object({
         "Connector key (e.g. x, google.gmail). Required for env/oauth profiles; optional for browser_session (device-scoped resource).",
     })
   ),
-  profile_kind: Type.Union([
-    Type.Literal("env"),
-    Type.Literal("oauth_app"),
-    Type.Literal("oauth_account"),
-    Type.Literal("browser_session"),
-  ]),
+  profile_kind: AuthProfileKind,
   display_name: Type.String({ description: "User-facing auth profile name" }),
   slug: Type.Optional(
     Type.String({

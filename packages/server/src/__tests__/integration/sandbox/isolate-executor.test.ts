@@ -479,6 +479,21 @@ describe("isolate lane: fixture connector", () => {
 		expect(JSON.parse(echo.body)).toEqual({ hello: 1 });
 	});
 
+	it("honours an exact hostname entry at the address it resolves to, not only at the name", async () => {
+		// `hostAllowed` documents that naming `localhost` is how a self-hosted
+		// install reaches its own services. The resolved-address pre-flight must
+		// keep that promise: `localhost` resolves into loopback, which is
+		// reserved, and before the fix only an exact IP entry was consulted
+		// there -- so the name passed and the address it resolved to was denied.
+		const port = new URL(baseUrl).port;
+		const named = await runIsolate(
+			fixtureIsolateCode,
+			syncJob({ scenario: "fetch", url: `http://localhost:${port}/ok` }),
+			{ allowedDomains: ["localhost"] },
+		);
+		expect(checkpointOf(named.result)).toMatchObject({ status: 200, text: "hello from the fixture server" });
+	});
+
 	it("denies a fetch to an undeclared domain, on the first request and on a redirect hop", async () => {
 		const direct = await failIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
 			allowedDomains: ["example.com"],

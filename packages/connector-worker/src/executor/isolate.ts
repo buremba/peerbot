@@ -58,6 +58,12 @@ export interface IsolateExecutorOptions {
   allowedDomains: readonly string[];
   /** Where redacted console lines go (default: the worker's stdout/stderr). */
   logSink: (level: IsolateLogLevel, line: string) => void;
+  /**
+   * Name resolution for host-dialled sockets and `fetch`'s reserved-address
+   * pre-flight. The system resolver by default; tests inject one to stage a
+   * dual-stack host without touching DNS.
+   */
+  lookup: (hostname: string) => Promise<Array<{ address: string }>>;
 }
 
 const MIB = 1024 * 1024;
@@ -73,6 +79,7 @@ const DEFAULT_OPTIONS: IsolateExecutorOptions = {
     const stream = level === 'warn' || level === 'error' ? process.stderr : process.stdout;
     stream.write(`[isolate] ${line}\n`);
   },
+  lookup: (hostname) => dns.promises.lookup(hostname, { all: true }),
 };
 
 const STREAM_TAIL_CAP_BYTES = 16 * 1024;
@@ -649,14 +656,14 @@ export class IsolateExecutor implements SyncExecutor {
             .map((h) => h.trim())
             .filter(Boolean);
 
-          let targetIp: string;
+          let candidates: string[];
           if (isReservedIp(hostname)) {
             if (policy === 'block-private' && !allowHosts.includes(hostname)) {
               throw new Error(`EgressDenied: socket to ${hostname} is blocked under policy ${policy}`);
             }
-            targetIp = hostname;
+            candidates = [hostname];
           } else {
-            const addresses = await dns.promises.lookup(hostname, { all: true });
+            const addresses = await this.options.lookup(hostname);
             if (!addresses || addresses.length === 0) {
               throw new Error(`getaddrinfo ENOTFOUND ${hostname}`);
             }
@@ -669,30 +676,60 @@ export class IsolateExecutor implements SyncExecutor {
                 }
               }
             }
-            targetIp = addresses[0].address;
+            candidates = addresses.map((a) => a.address);
           }
+
+          const isTls = options?.secureTransport === 'on';
+          const dial = (targetIp: string): Promise<net.Socket> =>
+            new Promise<net.Socket>((resolve, reject) => {
+              // Direct TLS keeps Node's strict default, unlike the `startTls`
+              // upgrade below: that one is relaxed for postgres' BYO-CA reality
+              // and nothing dials `secureTransport: 'on'` today, so there is no
+              // legitimate certificate this would break.
+              const sock = isTls
+                ? tls.connect({ host: targetIp, port, servername: hostname })
+                : net.createConnection({ host: targetIp, port });
+              let settled = false;
+              const timer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                sock.destroy();
+                reject(new Error(`Connection to ${hostname}:${port} timed out`));
+              }, 10000);
+              sock.once(isTls ? 'secureConnect' : 'connect', () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(sock);
+              });
+              sock.once('error', (err: Error) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                sock.destroy();
+                reject(err);
+              });
+            });
+
+          // Dial every validated address in resolver order until one answers.
+          // Node's own `net.connect(hostname)` falls back across families
+          // (autoSelectFamily), so a dual-stack host whose AAAA record is
+          // unreachable from this machine connected on the process lane and
+          // must keep connecting here. Every candidate passed the policy
+          // above, so moving to the next one never widens what the run reaches.
+          let sock: net.Socket | null = null;
+          let lastError: Error | null = null;
+          for (const targetIp of candidates) {
+            try {
+              sock = await dial(targetIp);
+              break;
+            } catch (err) {
+              lastError = err as Error;
+            }
+          }
+          if (!sock) throw lastError ?? new Error(`Connection to ${hostname}:${port} failed`);
 
           const id = nextSocketId++;
-          let sock: net.Socket;
-          const isTls = options?.secureTransport === 'on';
-
-          if (isTls) {
-            // Direct TLS keeps Node's strict default, unlike the `startTls`
-            // upgrade below: that one is relaxed for postgres' BYO-CA reality
-            // and nothing dials `secureTransport: 'on'` today, so there is no
-            // legitimate certificate this would break.
-            sock = tls.connect({
-              host: targetIp,
-              port,
-              servername: hostname,
-            });
-          } else {
-            sock = net.createConnection({
-              host: targetIp,
-              port,
-            });
-          }
-
           const active: ActiveSocket = {
             id,
             sock,
@@ -702,40 +739,7 @@ export class IsolateExecutor implements SyncExecutor {
             closeError: null,
           };
           activeSockets.set(id, active);
-
-          await new Promise<void>((resolve, reject) => {
-            let settled = false;
-            const timer = setTimeout(() => {
-              if (settled) return;
-              settled = true;
-              sock.destroy();
-              activeSockets.delete(id);
-              reject(new Error(`Connection to ${hostname}:${port} timed out`));
-            }, 10000);
-
-            const onConnect = () => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(timer);
-              resolve();
-            };
-            const onError = (err: Error) => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(timer);
-              activeSockets.delete(id);
-              reject(err);
-            };
-
-            if (isTls) {
-              sock.once('secureConnect', onConnect);
-            } else {
-              sock.once('connect', onConnect);
-            }
-            sock.once('error', onError);
-          });
-
-          attachSocketListeners(sock!, active);
+          attachSocketListeners(sock, active);
           return id;
         },
         socketRead: async (idParam: unknown) => {
@@ -822,21 +826,8 @@ export class IsolateExecutor implements SyncExecutor {
       return t ? `${prefix}\n[console]\n${t}` : prefix;
     };
 
-    let executableCode = compiledCode;
-    if (/\bexport\s+(?:default\s+|{[^}]+})/.test(executableCode)) {
-      executableCode = executableCode
-        .replace(/\bexport\s+default\s+([^;]+);?/g, 'module.exports.default = $1;')
-        .replace(/\bexport\s*{\s*([^}]+)\s*};?/g, (_, names) => {
-          const parts = names.split(',').map((n: string) => {
-            const [orig, alias] = n.trim().split(/\s+as\s+/);
-            return `module.exports.${alias || orig} = ${orig};`;
-          });
-          return parts.join('\n');
-        });
-    }
-
     try {
-      const source = `var __job_json = ${jsonLiteral(job)};\nvar __config_json = ${jsonLiteral(mergedConfig)};\n${executableCode}\n${GUEST_RUNNER}`;
+      const source = `var __job_json = ${jsonLiteral(job)};\nvar __config_json = ${jsonLiteral(mergedConfig)};\n${compiledCode}\n${GUEST_RUNNER}`;
       let raw: unknown;
       try {
         raw = await host.run(source, { timeoutMs: this.options.timeoutMs });
@@ -945,9 +936,15 @@ export class IsolateExecutor implements SyncExecutor {
       // through — swallowing it handed the decision to `fetch`'s own resolver,
       // which resolves independently and may answer differently.
       if (ipFamily(stripIpv6Brackets(url.hostname)) === 0) {
+        // An EXACT entry for the NAME is honoured here too, or `hostAllowed`'s
+        // promise that naming `localhost` reaches a self-hosted install's own
+        // services would hold for the name and fail at the loopback address
+        // it resolves to. Reserved space is still denied for every name the
+        // list does not spell out.
+        const exactName = this.options.allowedDomains.includes(normalizeDomain(url.hostname));
         let addresses: Array<{ address: string }>;
         try {
-          addresses = await dns.promises.lookup(url.hostname, { all: true });
+          addresses = await this.options.lookup(url.hostname);
         } catch (err) {
           const denied = new Error(
             `fetch to ${url.hostname} is blocked: its address could not be resolved (${(err as Error).message})`
@@ -956,7 +953,7 @@ export class IsolateExecutor implements SyncExecutor {
           throw denied;
         }
         for (const a of addresses) {
-          if (isReservedIp(a.address) && !this.options.allowedDomains.includes(a.address)) {
+          if (isReservedIp(a.address) && !exactName && !this.options.allowedDomains.includes(a.address)) {
             const denied = new Error(
               `fetch to ${url.hostname} (${a.address}) is blocked: resolved to a private or reserved IP address`
             );

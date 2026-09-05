@@ -48,6 +48,7 @@ import {
   buildDbEgressHardening,
   parseAllowedHosts,
   readEgressPolicy,
+  requestedTlsMode,
   requiredTlsMode,
 } from './db-egress-guard.js';
 
@@ -301,12 +302,27 @@ const POOL_OPTS = {
  * was given `ssl`. So block-private still resolves `requiredTlsMode` here and
  * passes it through — without this the cloud lane would send credentials in
  * cleartext, which is exactly what the process lane it replaced never did.
+ *
+ * What the lane CANNOT do yet is verify the chain on the tenant's behalf:
+ * postgres.js's WinterCG polyfill upgrades with `startTls({ servername })`,
+ * dropping `rejectUnauthorized` and `ca`, so the host learns the SNI name and
+ * nothing else — it encrypts at the libpq `require` floor. A `verify-ca` /
+ * `verify-full` (or `sslrootcert=system`) URL would therefore connect
+ * unverified while reading as verified, the silent downgrade
+ * `requiredTlsMode` exists to prevent. Those modes fail closed here, under
+ * every egress policy, until the trust decision can ride the upgrade.
  */
 async function openGuardedPool(
   connectionString: string,
   config: Record<string, unknown>,
 ): Promise<postgres.Sql> {
   if (typeof (globalThis as unknown as { connect?: unknown }).connect === 'function') {
+    const requested = requestedTlsMode(connectionString);
+    if (requested === 'verify-ca' || requested === 'verify-full') {
+      throw new Error(
+        `DATABASE_URL asks for sslmode=${requested}, but this execution lane cannot verify server certificates yet: its TLS upgrade carries only the server name, so the session would be encrypted but unverified. Use sslmode=require (encrypted, unverified) until certificate verification lands on the isolate lane.`,
+      );
+    }
     const isolatePolicy = readEgressPolicy(config.LOBU_DB_EGRESS_POLICY);
     const isolateSsl = isolatePolicy === 'block-private' ? requiredTlsMode(connectionString) : undefined;
     return postgres(connectionString, {

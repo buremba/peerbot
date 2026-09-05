@@ -799,6 +799,10 @@ export class IsolateExecutor implements SyncExecutor {
               // most legitimate BYO databases. The guest cannot raise this: the
               // WinterCG `startTls` contract carries only `servername`, so a
               // stricter mode has to arrive with CA upload, as one change.
+              // Until then a connector that is ASKED to verify (postgres
+              // `sslmode=verify-*`) refuses before dialling rather than
+              // connecting unverified here — see `openGuardedPool` in
+              // `connectors/src/postgres.ts`.
               rejectUnauthorized: false,
             });
             tlsSock.once('secureConnect', () => {

@@ -343,5 +343,33 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
       env: { LOBU_DB_EGRESS_POLICY: 'allow-private' },
     });
     expect((selfHosted as any).rows[0].n).toBe(1);
+
+    // 6. A URL that asks the driver to VERIFY the chain fails closed on this
+    // lane, under every policy, before a socket opens. postgres.js's WinterCG
+    // polyfill upgrades with `startTls({ servername })` -- `rejectUnauthorized`
+    // and `ca` never cross -- so the host can only encrypt at the `require`
+    // floor; connecting would silently turn verify-full into unverified TLS.
+    // Mutation-proved: without the guard the same URL dies later in the
+    // handshake with a driver error that never mentions verification.
+    for (const verifying of ['sslmode=verify-full', 'sslmode=verify-ca', 'sslrootcert=system']) {
+      const verifyUrl = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${verifying}`;
+      for (const policy of ['allow-private', 'block-private'] as const) {
+        await expect(
+          executor.execute(code, {
+            mode: 'query',
+            query: 'SELECT 1 AS n',
+            config: {
+              DATABASE_URL: verifyUrl,
+              LOBU_DB_EGRESS_POLICY: policy,
+              LOBU_DB_EGRESS_ALLOW_HOSTS: '127.0.0.1',
+            },
+            checkpoint: null,
+            credentials: null,
+            sessionState: null,
+            env: {},
+          })
+        ).rejects.toThrow(/cannot verify server certificates/i);
+      }
+    }
   });
 });

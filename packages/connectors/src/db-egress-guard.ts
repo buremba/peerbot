@@ -386,6 +386,29 @@ export function readEgressPolicy(value: unknown): DbEgressPolicy {
  * against the name the tenant configured.
  */
 export function requiredTlsMode(connectionString: string): string {
+  const mode = requestedTlsMode(connectionString);
+  if (mode === 'disable' || mode === 'false') {
+    throw new Error(
+      'DATABASE_URL disables TLS (sslmode=disable), but TLS is required on this deployment (egress policy: block-private). Use sslmode=require or stronger.',
+    );
+  }
+  if (mode === '' || mode === 'allow' || mode === 'prefer' || mode === 'require') {
+    return 'require';
+  }
+  return mode;
+}
+
+/**
+ * The TLS mode postgres.js will actually apply to this connection string — the
+ * pure parse half of `requiredTlsMode`, with no deployment policy attached.
+ * Returns `''` when the URL says nothing about TLS, otherwise the lowercased
+ * last-wins `sslmode` (falling back to `ssl`), with `sslrootcert=system`
+ * forcing `verify-full` exactly as the driver does. Read this where the
+ * question is whether the tenant ASKED for certificate verification
+ * (`verify-ca` / `verify-full`) — an execution lane that cannot deliver it must
+ * refuse rather than connect unverified behind a verifying-looking URL.
+ */
+export function requestedTlsMode(connectionString: string): string {
   // postgres.js parses the URL with `new URL()`, whose `.searchParams` follows
   // WHATWG URL semantics: the fragment (everything from the FIRST `#`) is NOT
   // part of the query, and a `?` that appears AFTER that `#` is fragment text,
@@ -421,14 +444,6 @@ export function requiredTlsMode(connectionString: string): string {
   const usesSystemCa = params.getAll('sslrootcert').at(-1)?.toLowerCase() === 'system';
   if (usesSystemCa) {
     return 'verify-full';
-  }
-  if (mode === 'disable' || mode === 'false') {
-    throw new Error(
-      'DATABASE_URL disables TLS (sslmode=disable), but TLS is required on this deployment (egress policy: block-private). Use sslmode=require or stronger.',
-    );
-  }
-  if (mode === '' || mode === 'allow' || mode === 'prefer' || mode === 'require') {
-    return 'require';
   }
   return mode;
 }

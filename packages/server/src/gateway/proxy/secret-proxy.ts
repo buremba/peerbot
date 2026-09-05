@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CREDENTIAL_PLACEHOLDER_PREFIX } from "@lobu/connector-worker/egress";
 import { createLogger, type SecretRef, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -32,8 +33,6 @@ import { classifyProviderHealthStatus } from "./provider-health-status.js";
 type AgentOrgResolver = (agentId: string) => Promise<string | null>;
 
 const logger = createLogger("secret-proxy");
-
-const PLACEHOLDER_PREFIX = "lobu_secret_";
 
 /**
  * Default TTL for orphaned placeholder→secret mappings. Mappings are
@@ -200,9 +199,9 @@ export function lookupPlaceholderMapping(
   placeholder: string,
   expectedOrganizationId?: string
 ): SecretMapping | null {
-  const prefixIdx = placeholder.indexOf(PLACEHOLDER_PREFIX);
+  const prefixIdx = placeholder.indexOf(CREDENTIAL_PLACEHOLDER_PREFIX);
   if (prefixIdx === -1) return null;
-  const uuid = placeholder.slice(prefixIdx + PLACEHOLDER_PREFIX.length);
+  const uuid = placeholder.slice(prefixIdx + CREDENTIAL_PLACEHOLDER_PREFIX.length);
   const mapping = placeholderCache.get(uuid);
   if (!mapping) return null;
   if (
@@ -578,7 +577,7 @@ export class SecretProxy {
       if (data) out.push(data);
     }
     const tok = parseBearer(c.req.header("authorization"));
-    if (tok && !tok.includes(PLACEHOLDER_PREFIX)) {
+    if (tok && !tok.includes(CREDENTIAL_PLACEHOLDER_PREFIX)) {
       const data = verifyWorkerToken(tok);
       if (data) out.push(data);
     }
@@ -648,7 +647,7 @@ export class SecretProxy {
     source: string,
     expectedOrganizationId?: string
   ): Promise<string> {
-    if (value.includes(PLACEHOLDER_PREFIX)) {
+    if (value.includes(CREDENTIAL_PLACEHOLDER_PREFIX)) {
       if (resolutionFailureLimiter.isThrottled(source)) {
         // Source has burned through its failure budget — hard-fail without
         // touching the cache or logging another line.
@@ -753,7 +752,7 @@ export class SecretProxy {
     // immediately below. Legacy non-placeholder callers keep using the signed
     // worker-token org or DB resolver so a spoofed /o/{org} segment can't spend
     // another tenant's org-shared provider key.
-    const pathOrganizationId = callerToken?.includes(PLACEHOLDER_PREFIX)
+    const pathOrganizationId = callerToken?.includes(CREDENTIAL_PLACEHOLDER_PREFIX)
       ? providerContext?.organizationId
       : undefined;
     let expectedOrganizationId: string | undefined =
@@ -788,7 +787,7 @@ export class SecretProxy {
     // bound (logged as a warning) but reject any request whose placeholder
     // resolves to a different agent than the URL claims.
     if (urlAgentId) {
-      if (callerToken?.includes(PLACEHOLDER_PREFIX)) {
+      if (callerToken?.includes(CREDENTIAL_PLACEHOLDER_PREFIX)) {
         const mapping = this.lookupPlaceholderMapping(
           callerToken,
           expectedOrganizationId
@@ -816,7 +815,7 @@ export class SecretProxy {
         // key). The token already carries the agentId it was minted for.
         const workerTokenStr =
           this.getWorkerTokenString(c) ||
-          (!callerToken.includes(PLACEHOLDER_PREFIX)
+          (!callerToken.includes(CREDENTIAL_PLACEHOLDER_PREFIX)
             ? callerToken
             : undefined);
         const tokenData = workerTokenStr
@@ -1233,7 +1232,7 @@ export function generatePlaceholder(
     },
     options?.ttlSeconds
   );
-  return `${PLACEHOLDER_PREFIX}${uuid}`;
+  return `${CREDENTIAL_PLACEHOLDER_PREFIX}${uuid}`;
 }
 
 /** Test-only: drop every placeholder and reset the failure limiter. */

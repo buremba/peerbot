@@ -389,9 +389,10 @@ export interface ConnectorAuthBrowser {
  * flow. Distinct from {@link ConnectorAuthOAuth}, which is user-scoped; a single
  * connector may declare both (resolver precedence is defined server-side).
  *
- * The credential is minted/refreshed gateway-side and never handed to the
- * worker as a raw token — the worker receives a `lobu_secret_<uuid>` placeholder
- * that the secret-proxy swaps at egress (same invariant as all other creds).
+ * The credential is minted/refreshed gateway-side and never reaches connector
+ * code as a raw token: it arrives as `credentials.accessToken` on the worker
+ * HOST, which hands the run a `lobu_secret_<uuid>` placeholder and swaps the
+ * value back in at egress (same grammar the secret-proxy uses on its route).
  */
 export interface ConnectorAuthAppInstallation {
   type: 'app_installation';
@@ -911,6 +912,14 @@ export interface SyncContext<C = Record<string, unknown>, F = Record<string, unk
   updateCheckpoint?: (checkpoint: C | null) => Promise<void>;
 }
 
+/**
+ * The credential a run is handed. On the isolate lane `accessToken` is a
+ * per-run `lobu_secret_<uuid>` placeholder the host resolves into the request
+ * header, so send it in a header — never in a URL. `refreshToken` is never
+ * populated for a run: the gateway refreshes tokens itself and the wire
+ * contract (`OAuthCredentialsSchema` in `@lobu/core`) carries the access token
+ * alone.
+ */
 export interface SyncCredentials {
   provider: string;
   accessToken: string;

@@ -503,6 +503,69 @@ describe("isolate lane: fixture connector", () => {
 		});
 	});
 
+	it("hands the guest a placeholder for its access token and spends the real token only in request headers", async () => {
+		const realToken = "tok_real_9f3a";
+		const job: ExecutorJob = {
+			...syncJob({ scenario: "credential", url: `${baseUrl}/echo` }),
+			credentials: { provider: "fixture", accessToken: realToken, expiresAt: "2030-01-01T00:00:00.000Z", scope: "read" },
+		};
+		const run = await runIsolate(fixtureIsolateCode, job, { allowedDomains: ["127.0.0.1"] });
+		const cp = checkpointOf(run.result);
+		// The guest holds a placeholder in the secret proxy's grammar and the
+		// other bookkeeping fields; nothing else from the credential object.
+		expect(cp.guestToken).toMatch(/^lobu_secret_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		expect(cp.credentialKeys).toEqual(["accessToken", "expiresAt", "provider", "scope"]);
+		// The upstream saw the real token, in both headers the guest put the placeholder in.
+		expect(cp.upstreamAuthorization).toBe(`Bearer ${realToken}`);
+		expect(cp.upstreamFixtureToken).toBe(realToken);
+		// Nothing the guest can reach carries the real value: its context, the
+		// config, `process.env`, or the literals the runner embeds in the source.
+		expect(String(cp.visible)).toContain(String(cp.guestToken));
+		expect(String(cp.visible)).not.toContain(realToken);
+		// One audit line per credential per host, naming the first header it went into; never the value.
+		const audit = run.logs.filter((l) => l.line.includes("spent on"));
+		expect(audit).toHaveLength(1);
+		expect(audit[0]).toEqual({ level: "info", line: `credential ${String(cp.guestToken).slice(-12)} spent on 127.0.0.1 in header authorization` });
+		expect(run.logs.some((l) => l.line.includes(realToken))).toBe(false);
+	});
+
+	it("refuses a placeholder in the URL before the request leaves", async () => {
+		const before = hits;
+		const job: ExecutorJob = {
+			...syncJob({ scenario: "credential_in_url", url: `${baseUrl}/echo` }),
+			credentials: { provider: "fixture", accessToken: "tok_real_9f3a" },
+		};
+		const run = await runIsolate(fixtureIsolateCode, job, { allowedDomains: ["127.0.0.1"] });
+		// The lane's egress refusal: named for the guest, logged once host-side.
+		expect(checkpointOf(run.result).refused).toEqual({
+			name: "EgressDenied",
+			message: "EgressDenied: fetch to 127.0.0.1: a credential placeholder may only be sent in a request header, not in the URL",
+		});
+		expect(run.logs).toContainEqual({
+			level: "warn",
+			line: "egress denied: fetch to 127.0.0.1: a credential placeholder may only be sent in a request header, not in the URL",
+		});
+		expect(hits).toBe(before);
+	});
+
+	it("sends a credential in plaintext only to the run's own machine, never to a public name, even one the allowlist names exactly", async () => {
+		const before = hits;
+		// `api.example.test` is allowlisted exactly and resolves to the fixture
+		// server, so the address policy admits it; the credential rule still
+		// refuses plaintext because the name is not a loopback or reserved literal.
+		const job: ExecutorJob = {
+			...syncJob({ scenario: "credential", url: `http://api.example.test:${port}/echo` }),
+			credentials: { provider: "fixture", accessToken: "tok_real_9f3a" },
+		};
+		const failed = await failIsolate(fixtureIsolateCode, job, {
+			allowedDomains: ["api.example.test"],
+			lookup: async () => [{ address: "127.0.0.1" }],
+		});
+		expect(failed.message).toContain("EgressDenied: fetch to api.example.test: Credential-bearing requests require HTTPS");
+		expect(failed.message).not.toContain("tok_real_9f3a");
+		expect(hits).toBe(before);
+	});
+
 	it("fetches through the host when the domain is allowed, following redirects", async () => {
 		const ok = await runIsolate(fixtureIsolateCode, syncJob({ scenario: "fetch", url: `${baseUrl}/ok` }), {
 			allowedDomains: ["127.0.0.1"],

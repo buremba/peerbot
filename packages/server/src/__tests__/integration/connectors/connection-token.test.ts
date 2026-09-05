@@ -633,8 +633,9 @@ describe("managed connector — local resolver (env LOBU_CLOUD_PAT fallback)", (
 		});
 
 		expect(resolved.credentials?.accessToken).toBe(REFRESHED.access_token);
-		// No local refresh token / secret ever materialized.
-		expect(resolved.credentials?.refreshToken).toBeNull();
+		// No local refresh token / secret ever materialized: execution credentials
+		// carry the access token and its bookkeeping, nothing else.
+		expect(Object.keys(resolved.credentials ?? {}).sort()).toEqual(["accessToken", "expiresAt", "provider", "scope"]);
 		expect(resolved.connectionCredentials).toEqual({});
 
 		// The MCP proxy must use the same execution-auth seam. A managedBy

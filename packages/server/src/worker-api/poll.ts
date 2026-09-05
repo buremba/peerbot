@@ -1731,6 +1731,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //    capability match (no pin) is no-auth by construction, so it gets nothing —
   //    a connector misconfigured with both a `required_capability` and an auth
   //    profile still can't leak secrets to an arbitrary capability-matched device.
+  // `credentials` carries the access token for this run and never the refresh
+  // token, and it stops at the worker HOST: the isolate lane replaces it with a
+  // per-run placeholder before connector code sees it and swaps the value back
+  // into the request header at `fetch`. The other secret-bearing fields below
+  // (`connection_credentials`, `previous_credentials`) still travel resolved
+  // and reach connector code as-is.
   const connectionIsDevicePinned = row.connection_device_worker_id != null;
   const deliverConnectionAuth =
     !isDeviceOwnedRun && !!row.connection_id && (!isUserScopedWorker || connectionIsDevicePinned);

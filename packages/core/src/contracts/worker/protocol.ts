@@ -89,11 +89,14 @@ export const WorkerExitDiagnosticsSchema = Type.Object({
   exit_reason: Type.Optional(WorkerExitReasonSchema),
 });
 
-/** OAuth grant the gateway hands a worker for a run (placeholder/proxied). */
+/**
+ * OAuth grant the gateway hands a worker for a run: the access token for this
+ * run only, never the refresh token. The worker host keeps it and the isolate
+ * guest sees a per-run placeholder in its place.
+ */
 export const OAuthCredentialsSchema = Type.Object({
   accessToken: Type.String(),
   provider: Type.String(),
-  refreshToken: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   expiresAt: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   scope: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 });

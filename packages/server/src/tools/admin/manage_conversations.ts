@@ -22,9 +22,12 @@
 
 import { randomUUID } from "node:crypto";
 import {
-  type ManageConversationsArgs,
+  GetConversationAction,
+  ListConversationsAction,
   ManageConversationsSchema,
+  SendConversationMessageAction,
 } from "@lobu/core/contracts/tools/manage-conversations";
+import type { Static } from "@sinclair/typebox";
 import { createDbClientFromEnv } from "../../db/client";
 import { buildApiConversationId } from "../../gateway/services/api-conversation-id";
 import {
@@ -43,8 +46,7 @@ import { getLobuCoreServices } from "../../lobu/gateway";
 import { ToolUserError } from "../../utils/errors";
 import { isAdminOrOwnerRole } from "../access-control";
 import type { ToolContext } from "../registry";
-import { withValidatedArgs } from "../validate-args";
-import { defineFlatActionTool, flatAction } from "./action-tool";
+import { action, defineActionTool } from "./action-tool";
 
 export { ManageConversationsSchema };
 
@@ -89,7 +91,7 @@ async function assertAgentInOrg(
 }
 
 async function handleList(
-  args: ManageConversationsArgs,
+  args: Static<typeof ListConversationsAction>,
   ctx: ToolContext,
   env: Env,
 ) {
@@ -120,13 +122,10 @@ async function handleList(
 }
 
 async function handleGet(
-  args: ManageConversationsArgs,
+  args: Static<typeof GetConversationAction>,
   ctx: ToolContext,
   env: Env,
 ) {
-  if (!args.conversation_id) {
-    throw new ToolUserError("conversation_id is required for get action");
-  }
   if (!ctx.userId) {
     throw new ToolUserError("get requires an authenticated caller", 401);
   }
@@ -169,13 +168,13 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 async function handleSend(
-  args: ManageConversationsArgs,
+  args: Static<typeof SendConversationMessageAction>,
   ctx: ToolContext,
   env: Env,
 ) {
-  const text = typeof args.text === "string" ? args.text : "";
+  const text = args.text;
   if (!text.trim()) {
-    throw new ToolUserError("text is required for send action");
+    throw new ToolUserError("text must not be blank for send action");
   }
   if (!ctx.userId) {
     throw new ToolUserError(
@@ -374,23 +373,19 @@ async function handleSend(
   };
 }
 
-const runManageConversations = defineFlatActionTool<
-  ManageConversationsArgs,
-  Awaited<ReturnType<typeof handleList | typeof handleGet | typeof handleSend>>
->("manage_conversations", {
-  list: flatAction((args, ctx, env) => handleList(args, ctx, env)),
-  get: flatAction((args, ctx, env) => handleGet(args, ctx, env)),
-  send: flatAction((args, ctx, env) => handleSend(args, ctx, env)),
+const manageConversationsTool = defineActionTool("manage_conversations", {
+  list: action(ListConversationsAction, handleList),
+  get: action(GetConversationAction, handleGet),
+  send: action(SendConversationMessageAction, handleSend),
 });
 
-// Access is enforced per-action by routeAction (inside runManageConversations)
-// against tool-access.ts: send → MEMBER_WRITE_ACTIONS (any member), list/get →
-// PUBLIC_READ_ACTIONS. Do NOT re-gate here with requireOrg{Read,Write}Access —
-// canWriteOrg requires owner/admin, which would contradict the member-tier
-// `send` grant and reject a plain member the policy explicitly allows. Ownership
-// is fenced per-handler (agent-in-org + user-owned conversation).
-export const manageConversations = withValidatedArgs(
-  "manage_conversations",
-  ManageConversationsSchema,
-  runManageConversations,
-);
+// Access is enforced per-action by routeAction (inside the tool runner) against
+// tool-access.ts: send → MEMBER_WRITE_ACTIONS (any member); list/get carry no
+// write/admin entry, so they fall through to the READ tier — they are NOT
+// public-readable, and the handler requires an authenticated caller because a
+// listing exposes conversation titles. Do NOT re-gate here with
+// requireOrg{Read,Write}Access — canWriteOrg requires owner/admin, which would
+// contradict the member-tier `send` grant and reject a plain member the policy
+// explicitly allows. Ownership is fenced per-handler (agent-in-org +
+// user-owned conversation).
+export const manageConversations = manageConversationsTool.run;

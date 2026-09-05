@@ -356,7 +356,7 @@ describe("manage_conversations send", () => {
 				env,
 				ctx,
 			),
-		).rejects.toThrow(/text is required/);
+		).rejects.toThrow(/text must not be blank/);
 	});
 
 	it("rejects an unauthenticated caller (no user id to bind the conversation)", async () => {

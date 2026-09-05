@@ -620,7 +620,7 @@ function buildEmptySearchSuggestion(
   // Only a single-workspace text search names one entity worth pre-filling:
   // federated results span workspaces, and an embedding-only call has no query
   // text at all. Both fall back to a placeholder in the SAME angle-bracket
-  // shape as `<entity_type>` below — a bare `...` reads as copyable literal.
+  // shape as `<slug>` below — a bare `...` reads as copyable literal.
   const newEntityName = !isFederated && query ? query : '<entity_name>';
   // `entitySchema.createType` is admin-tier while `entities.create` is write.
   // Telling a member to create the type sends them at a call that will deny,
@@ -628,8 +628,8 @@ function buildEmptySearchSuggestion(
   const canCreateEntityType = callerMax === 'admin';
   lines.push(
     canCreateEntityType
-      ? `- To create a new entity: its type must exist first (\`client.entitySchema.listTypes()\` to check, \`client.entitySchema.createType(...)\` for a type new to this workspace), then call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${newEntityName}' })\`.`
-      : `- To create a new entity: pick a type that already exists (\`client.entitySchema.listTypes()\`), then call \`run_sdk\` with \`await client.entities.create({ type: '<entity_type>', name: '${newEntityName}' })\`. Creating a brand-new entity type needs admin access, so ask a workspace admin if none of the existing types fit.`
+      ? `- To create a new entity: its type must exist first (\`client.entitySchema.listTypes()\` to check, \`client.entitySchema.createType(...)\` for a type new to this workspace), then call \`run_sdk\` with \`await client.entities.create({ entity_type: '<slug>', name: '${newEntityName}' })\`.`
+      : `- To create a new entity: pick a type that already exists (\`client.entitySchema.listTypes()\`), then call \`run_sdk\` with \`await client.entities.create({ entity_type: '<slug>', name: '${newEntityName}' })\`. Creating a brand-new entity type needs admin access, so ask a workspace admin if none of the existing types fit.`
   );
 
   return lines.join('\n');

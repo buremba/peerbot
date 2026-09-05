@@ -24,13 +24,19 @@ export interface EntityListFilter {
 }
 
 export interface EntityCreateInput {
-	type: string;
+	entity_type: string;
 	name: string;
 	slug?: string;
 	content?: string;
 	parent_id?: number;
 	metadata?: Record<string, unknown>;
 	enabled_classifiers?: string[];
+	domain?: string;
+	category?: string;
+	platform_type?: string;
+	main_market?: string;
+	market?: string;
+	link?: string;
 }
 
 export interface EntityUpdateInput {
@@ -40,9 +46,18 @@ export interface EntityUpdateInput {
 	content?: string;
 	metadata?: Record<string, unknown>;
 	enabled_classifiers?: string[];
+	domain?: string;
+	category?: string;
+	platform_type?: string;
+	main_market?: string;
+	market?: string;
+	link?: string;
 	/** Optional note explaining a human correction; stored on the per-field
 	 *  ownership marker for the metadata fields this update sets. */
 	field_note?: string;
+	/** Metadata field names whose current value the human approves as-is:
+	 *  no value change, but each becomes human-owned. */
+	affirm_fields?: string[];
 }
 
 export interface EntityLinkInput {
@@ -103,17 +118,7 @@ export function buildEntitiesNamespace(
 		manage,
 		list: method("list"),
 		get: method("get"),
-		create: method("create", {
-			mapArgs: (input) => ({
-				entity_type: input.type,
-				name: input.name,
-				slug: input.slug,
-				content: input.content,
-				parent_id: input.parent_id,
-				metadata: input.metadata,
-				enabled_classifiers: input.enabled_classifiers,
-			}),
-		}),
+		create: method("create"),
 		update: method("update"),
 		delete: method("delete"),
 		link: method("link"),

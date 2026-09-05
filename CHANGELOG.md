@@ -1,5 +1,58 @@
 # Changelog
 
+## [19.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v18.0.0...lobu-v19.0.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **automations:** `@lobu/connector-sdk` removes `ReactionContext.window.granularity` and the twelve `automation-time` exports (`AUTOMATION_TIME_GRANULARITIES`, `AutomationTimeGranularity`, `addAutomationPeriod`, `subtractAutomationPeriod`, `shiftAutomationPeriod`, `alignToAutomationWindowStart`, `getAutomationDateTruncUnit`, `getAvailableAutomationGranularities`, `getFinerAutomationGranularities`, `getNextAutomationGranularity`, `inferAutomationGranularityFromDays`, `inferAutomationGranularityFromSchedule`, `isAutomationTimeGranularity`). Automation windows are arrival ranges on `events.created_at` and have no calendar period to describe. A reaction reads `window_start`/`window_end`.
+* **automations:** rename agent_id to managed_agent_id and forbid the empty string ([#3319](https://github.com/lobu-ai/lobu/issues/3319))
+
+### Features
+
+* **automations:** window Automations on arrival, not occurrence ([#3334](https://github.com/lobu-ai/lobu/issues/3334)) ([3382b31](https://github.com/lobu-ai/lobu/commit/3382b31b10c8cf349d8ccd5180342f7e577fa15a))
+* **cli:** display action approval management link on daemon startup ([#3351](https://github.com/lobu-ai/lobu/issues/3351)) ([642e49b](https://github.com/lobu-ai/lobu/commit/642e49b8e50a29f1a3f8f4d3c981f72060c2b516))
+* **connector-worker:** consolidate connector execution onto isolate sandbox with direct sockets ([#3337](https://github.com/lobu-ai/lobu/issues/3337)) ([952c046](https://github.com/lobu-ai/lobu/commit/952c0467b5c2b936999fbd281502c388d2848f8a))
+* **connector-worker:** hand the isolate guest a credential placeholder, not the OAuth token ([#3374](https://github.com/lobu-ai/lobu/issues/3374)) ([17ce19a](https://github.com/lobu-ai/lobu/commit/17ce19a031d5f420be7b5343b4900bbdb2f90e2e))
+* **connector-worker:** stream fetch bodies to the isolate guest chunk by chunk ([#3372](https://github.com/lobu-ai/lobu/issues/3372)) ([6365b83](https://github.com/lobu-ai/lobu/commit/6365b83c8974e3caa1d8dc50e92f36571b76d914))
+* **connectors:** add a Google Drive connector with a resumable bootstrap ([#3347](https://github.com/lobu-ai/lobu/issues/3347)) ([820888b](https://github.com/lobu-ai/lobu/commit/820888b02dd9f05f071d9d310a78d912e77bc06d))
+* **device-connectors:** give os.shell one contract both endpoints can claim ([#3375](https://github.com/lobu-ai/lobu/issues/3375)) ([02268d2](https://github.com/lobu-ai/lobu/commit/02268d2ef314025d627c12b7a1015ec6e19f8e9c))
+* Mac workspace chooser, Recent, and command-palette search ([#3339](https://github.com/lobu-ai/lobu/issues/3339)) ([82aeaad](https://github.com/lobu-ai/lobu/commit/82aeaada5d0b31e4a9f7582ae6a24c65af48693a))
+* **owletto:** bump submodule for activity sessions switcher and simplified top nav ([#3353](https://github.com/lobu-ai/lobu/issues/3353)) ([5f7a86a](https://github.com/lobu-ai/lobu/commit/5f7a86ab0030fb222fd3b67e76f38b77ce1ba9e1))
+* **server:** make empty search results explain themselves honestly ([#3340](https://github.com/lobu-ai/lobu/issues/3340)) ([bf4096a](https://github.com/lobu-ai/lobu/commit/bf4096a7cccb53ed650de999747df4eba4c7fab1))
+
+
+### Bug Fixes
+
+* **automations:** recover expired external trigger claims ([#3357](https://github.com/lobu-ai/lobu/issues/3357)) ([f81a6cc](https://github.com/lobu-ai/lobu/commit/f81a6cc983c916a201c48a85a8d3c95cd29a3812))
+* **ci:** attest release commits reachable from main, not only the tip ([#3332](https://github.com/lobu-ai/lobu/issues/3332)) ([5bb4a7b](https://github.com/lobu-ai/lobu/commit/5bb4a7bf30788039d1d89d5f4122a8a99d3d21f6))
+* **ci:** clear the pending label from a released PR so the next release opens ([#3376](https://github.com/lobu-ai/lobu/issues/3376)) ([8a3e0bf](https://github.com/lobu-ai/lobu/commit/8a3e0bf293d0bcacfa83b5510fef24e366664c8b))
+* **ci:** let the prod smoke wait out the rollout it is verifying ([#3317](https://github.com/lobu-ai/lobu/issues/3317)) ([6f88008](https://github.com/lobu-ai/lobu/commit/6f8800823dfe07bbc69456576465f24d43f6bc8a))
+* **ci:** pipe paginated API payloads into jq instead of passing them as args ([#3323](https://github.com/lobu-ai/lobu/issues/3323)) ([a2f21e8](https://github.com/lobu-ai/lobu/commit/a2f21e881bfefd3451baf0d0b64d074f91020968))
+* **ci:** pipe the attested jobs payload into jq in publish-packages ([#3324](https://github.com/lobu-ai/lobu/issues/3324)) ([a64a4cb](https://github.com/lobu-ai/lobu/commit/a64a4cbc80d7e9963c71bc005b620d3afb71ae82))
+* **ci:** stop a merge behind a release PR stranding the release forever ([#3320](https://github.com/lobu-ai/lobu/issues/3320)) ([04e4f57](https://github.com/lobu-ai/lobu/commit/04e4f575f7c1d40d2ad41d3173a4705439d70d07))
+* **ci:** wait out registry propagation in the published-artifact smoke ([#3325](https://github.com/lobu-ai/lobu/issues/3325)) ([35eb4de](https://github.com/lobu-ai/lobu/commit/35eb4deb972b5a7a39750abec324ef922c6111a3))
+* **cli:** stop apply silently clearing a feed cron it was never told about ([#3346](https://github.com/lobu-ai/lobu/issues/3346)) ([6486b04](https://github.com/lobu-ai/lobu/commit/6486b04be7e572b9a655a3fc6da4283776f8366a))
+* **connector-worker:** preserve shell supervisor failures ([#3355](https://github.com/lobu-ai/lobu/issues/3355)) ([6b30efd](https://github.com/lobu-ai/lobu/commit/6b30efdd6142b072c2b8e9190ebcc0a1cee378e3))
+* **connector-worker:** resolve the pre-upgrade socket closed on startTls so postgres.js TLS handshakes complete ([#3367](https://github.com/lobu-ai/lobu/issues/3367)) ([52a404e](https://github.com/lobu-ai/lobu/commit/52a404eb43342248a7f2a60ff657224262411dbf))
+* **connectors:** preserve feeds across transient browser failures ([#3358](https://github.com/lobu-ai/lobu/issues/3358)) ([988f18e](https://github.com/lobu-ai/lobu/commit/988f18e8fcefe10ccdd683b608fcc95c6c814b66))
+* **entities:** resolve unlink/update_link from the relationship triple ([#3352](https://github.com/lobu-ai/lobu/issues/3352)) ([260cfc9](https://github.com/lobu-ai/lobu/commit/260cfc9c0788a95b1825c74fe588f544ec1638c1))
+* **feeds:** name the feed that has no way to be dispatched ([#3338](https://github.com/lobu-ai/lobu/issues/3338)) ([ada329c](https://github.com/lobu-ai/lobu/commit/ada329c40dda89464bedc7489bc46db6e1e40084))
+* **personal-agent:** declare the cadence apply would otherwise strip ([#3350](https://github.com/lobu-ai/lobu/issues/3350)) ([07a88d0](https://github.com/lobu-ai/lobu/commit/07a88d082ad473f3f92fd1087af2d66c52ba5a88))
+* **sdk:** derive the knowledge input types from one shared contract ([#3349](https://github.com/lobu-ai/lobu/issues/3349)) ([b761420](https://github.com/lobu-ai/lobu/commit/b761420854d473d5a2b4a9c949db1c6e669bb2cc))
+* **sdk:** entities.create forwards every contract field; `type` is an alias ([#3360](https://github.com/lobu-ai/lobu/issues/3360)) ([5493e8b](https://github.com/lobu-ai/lobu/commit/5493e8bd225eb93fe6b858e80e91015fb7930472))
+* **server:** honor explicit device action timeouts ([#3373](https://github.com/lobu-ai/lobu/issues/3373)) ([c3fbf34](https://github.com/lobu-ai/lobu/commit/c3fbf34a1ae349e0fa8f684210f3dbf8dd1c8a9b))
+* **server:** let an external claimant complete the window it claimed ([#3345](https://github.com/lobu-ai/lobu/issues/3345)) ([eae673a](https://github.com/lobu-ai/lobu/commit/eae673afe81a0526c546f3a7fad56568272b70ed))
+* **server:** make the empty-search guidance's promises true ([#3343](https://github.com/lobu-ai/lobu/issues/3343)) ([ee1a463](https://github.com/lobu-ai/lobu/commit/ee1a4638218577d80535ff3699e6a4a53f7d0c3e))
+* **server:** release a device pin only if the reaper deletes that device ([#3330](https://github.com/lobu-ai/lobu/issues/3330)) ([f1cc157](https://github.com/lobu-ai/lobu/commit/f1cc157e0f2b2a8954d610664281a911a34bc916))
+* **server:** stop an archived Automation anchoring a dead device forever ([#3322](https://github.com/lobu-ai/lobu/issues/3322)) ([7fc8550](https://github.com/lobu-ai/lobu/commit/7fc855042476a43687628415dbc91708467903f7))
+* **spotify:** stop three snapshot feeds rewriting rows that never changed ([#3344](https://github.com/lobu-ai/lobu/issues/3344)) ([c13a095](https://github.com/lobu-ai/lobu/commit/c13a0957e091d56d97f0dabe255968b3d5c570f0))
+
+
+### Code Refactoring
+
+* **automations:** rename agent_id to managed_agent_id and forbid the empty string ([#3319](https://github.com/lobu-ai/lobu/issues/3319)) ([7a2228a](https://github.com/lobu-ai/lobu/commit/7a2228a80db66adc0ae5e9652d5772e2d7952011))
+
 ## [18.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v17.2.0...lobu-v18.0.0) (2026-09-03)
 
 

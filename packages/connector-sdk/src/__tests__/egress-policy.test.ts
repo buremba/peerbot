@@ -2,11 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import {
   canonicalizeHostname,
   decideEgress,
-  evaluateListPolicy,
   findLongestMatchingPattern,
   isUnrestrictedMode,
   matchesDomainPattern,
-  patternCovers,
   patternReaches,
   wildcardParentPatterns,
 } from '../egress-policy.js';
@@ -40,29 +38,29 @@ describe('canonicalizeHostname', () => {
   });
 });
 
-describe('patternCovers / matchesDomainPattern', () => {
+describe('matchesDomainPattern', () => {
   test('an exact pattern covers only that host', () => {
-    expect(patternCovers('example.com', 'example.com')).toBe(true);
-    expect(patternCovers('example.com', 'sub.example.com')).toBe(false);
-    expect(patternCovers('EXAMPLE.com', 'example.COM')).toBe(true);
+    expect(matchesDomainPattern('example.com', ['example.com'])).toBe(true);
+    expect(matchesDomainPattern('sub.example.com', ['example.com'])).toBe(false);
+    expect(matchesDomainPattern('example.COM', ['EXAMPLE.com'])).toBe(true);
   });
 
   test('a ".suffix" wildcard covers the apex and every subdomain, label-aligned', () => {
-    expect(patternCovers('.example.com', 'example.com')).toBe(true);
-    expect(patternCovers('.example.com', 'a.example.com')).toBe(true);
-    expect(patternCovers('.example.com', 'a.b.example.com')).toBe(true);
-    expect(patternCovers('.example.com', 'notexample.com')).toBe(false);
-    expect(patternCovers('.ample.com', 'example.com')).toBe(false);
+    expect(matchesDomainPattern('example.com', ['.example.com'])).toBe(true);
+    expect(matchesDomainPattern('a.example.com', ['.example.com'])).toBe(true);
+    expect(matchesDomainPattern('a.b.example.com', ['.example.com'])).toBe(true);
+    expect(matchesDomainPattern('notexample.com', ['.example.com'])).toBe(false);
+    expect(matchesDomainPattern('example.com', ['.ample.com'])).toBe(false);
   });
 
   test('"*.suffix" is the same wildcard', () => {
-    expect(patternCovers('*.example.com', 'a.example.com')).toBe(true);
-    expect(patternCovers('*.example.com', 'example.com')).toBe(true);
+    expect(matchesDomainPattern('a.example.com', ['*.example.com'])).toBe(true);
+    expect(matchesDomainPattern('example.com', ['*.example.com'])).toBe(true);
   });
 
   test('grant semantics: the wildcard does not cover its apex', () => {
-    expect(patternCovers('.example.com', 'example.com', { wildcardCoversRoot: false })).toBe(false);
-    expect(patternCovers('.example.com', 'a.example.com', { wildcardCoversRoot: false })).toBe(true);
+    expect(matchesDomainPattern('example.com', ['.example.com'], { wildcardCoversRoot: false })).toBe(false);
+    expect(matchesDomainPattern('a.example.com', ['.example.com'], { wildcardCoversRoot: false })).toBe(true);
   });
 
   test('"*" never matches as a hostname pattern', () => {
@@ -71,21 +69,24 @@ describe('patternCovers / matchesDomainPattern', () => {
   });
 });
 
-describe('evaluateListPolicy', () => {
-  test('an empty allowlist denies everything', () => {
-    expect(evaluateListPolicy('example.com', [], [])).toBe(false);
+describe('decideEgress with only the global lists', () => {
+  const globalOnly = (hostname: string, allowedDomains: string[], deniedDomains: string[]) =>
+    decideEgress({ hostname, global: { allowedDomains, deniedDomains } }).then((d) => d.allowed);
+
+  test('an empty allowlist denies everything', async () => {
+    expect(await globalOnly('example.com', [], [])).toBe(false);
   });
 
-  test('unrestricted mode allows everything the denylist does not name', () => {
-    expect(evaluateListPolicy('example.com', ['*'], [])).toBe(true);
-    expect(evaluateListPolicy('evil.com', ['*'], ['.evil.com'])).toBe(false);
-    expect(evaluateListPolicy('sub.evil.com', ['*'], ['.evil.com'])).toBe(false);
+  test('unrestricted mode allows everything the denylist does not name', async () => {
+    expect(await globalOnly('example.com', ['*'], [])).toBe(true);
+    expect(await globalOnly('evil.com', ['*'], ['.evil.com'])).toBe(false);
+    expect(await globalOnly('sub.evil.com', ['*'], ['.evil.com'])).toBe(false);
   });
 
-  test('the denylist beats the allowlist', () => {
-    expect(evaluateListPolicy('api.example.com', ['.example.com'], ['api.example.com'])).toBe(false);
-    expect(evaluateListPolicy('www.example.com', ['.example.com'], ['api.example.com'])).toBe(true);
-    expect(evaluateListPolicy('other.com', ['.example.com'], [])).toBe(false);
+  test('the denylist beats the allowlist', async () => {
+    expect(await globalOnly('api.example.com', ['.example.com'], ['api.example.com'])).toBe(false);
+    expect(await globalOnly('www.example.com', ['.example.com'], ['api.example.com'])).toBe(true);
+    expect(await globalOnly('other.com', ['.example.com'], [])).toBe(false);
   });
 });
 

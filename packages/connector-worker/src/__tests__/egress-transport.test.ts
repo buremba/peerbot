@@ -156,7 +156,7 @@ describe("surfacing the blocked-target decision", () => {
       throw new TypeError("fetch failed", { cause: blocked });
     }) as typeof globalThis.fetch;
 
-    expect(fetchPublicUrl("https://metadata.example/")).rejects.toBe(blocked);
+    await expect(fetchPublicUrl("https://metadata.example/")).rejects.toBe(blocked);
   });
 
   test("unwraps a blocked target nested in an AggregateError", async () => {
@@ -167,7 +167,7 @@ describe("surfacing the blocked-target decision", () => {
       });
     }) as typeof globalThis.fetch;
 
-    expect(fetchPublicUrl("https://multi.example/")).rejects.toBe(blocked);
+    await expect(fetchPublicUrl("https://multi.example/")).rejects.toBe(blocked);
   });
 
   test("identifies the error by class, not by message text", async () => {
@@ -181,7 +181,7 @@ describe("surfacing the blocked-target decision", () => {
       throw new TypeError("fetch failed", { cause: blocked });
     }) as typeof globalThis.fetch;
 
-    expect(fetchPublicUrl("https://reworded.example/")).rejects.toBe(blocked);
+    await expect(fetchPublicUrl("https://reworded.example/")).rejects.toBe(blocked);
   });
 
   test("leaves an ordinary upstream failure untouched", async () => {
@@ -192,6 +192,6 @@ describe("surfacing the blocked-target decision", () => {
       throw outage;
     }) as typeof globalThis.fetch;
 
-    expect(fetchPublicUrl("https://upstream.example/")).rejects.toBe(outage);
+    await expect(fetchPublicUrl("https://upstream.example/")).rejects.toBe(outage);
   });
 });

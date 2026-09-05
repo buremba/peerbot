@@ -108,7 +108,7 @@ function wildcardSuffix(pattern: string): string | null {
 }
 
 /** Whether one configured pattern covers `hostname`. Both are compared lowercased. */
-export function patternCovers(pattern: string, hostname: string, options?: PatternMatchOptions): boolean {
+function patternCovers(pattern: string, hostname: string, options?: PatternMatchOptions): boolean {
   const host = hostname.toLowerCase();
   const lower = pattern.toLowerCase();
   const suffix = wildcardSuffix(lower);
@@ -132,7 +132,7 @@ export function matchesDomainPattern(
  *  - `["*"]` allows everything the denylist does not name;
  *  - an empty allowlist denies everything.
  */
-export function evaluateListPolicy(
+function evaluateListPolicy(
   hostname: string,
   allowedDomains: readonly string[],
   deniedDomains: readonly string[],

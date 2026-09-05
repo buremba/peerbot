@@ -5726,42 +5726,111 @@ export type ManageClassifiersResponse =
   ManageClassifiersResponses[keyof ManageClassifiersResponses];
 
 export type ManageViewTemplatesData = {
-  body: {
-    /**
-     * Action to perform
-     */
-    action: "set" | "get" | "rollback" | "remove_tab" | "clear";
-    /**
-     * Type of resource: entity_type or entity
-     */
-    resource_type: "entity_type" | "entity";
-    /**
-     * Resource identifier: entity type slug (string) or entity id (number)
-     */
-    resource_id: string | number;
-    /**
-     * [set] The JSON template content. May include a data_sources key: { "data_sources": { "name": { "query": "SELECT ... FROM entities" } }, ...template }. Queries run against org-scoped virtual tables. Use {{entityId}} for current entity context.
-     */
-    json_template?: {
-      [key: string]: unknown;
-    };
-    /**
-     * Tab name. Omit for the default/overview tab.
-     */
-    tab_name?: string;
-    /**
-     * [set] Sort order for tabs (default 0)
-     */
-    tab_order?: number;
-    /**
-     * [set] Notes describing the change
-     */
-    change_notes?: string;
-    /**
-     * [rollback] Version number to rollback to
-     */
-    version?: number;
-  };
+  body:
+    | {
+        /**
+         * Create a new version of a view template / tab.
+         */
+        action: "set";
+        /**
+         * Type of resource: entity_type or entity
+         */
+        resource_type: "entity_type" | "entity";
+        /**
+         * Resource identifier: entity type slug (string) or entity id (number)
+         */
+        resource_id: string | number;
+        /**
+         * [set] The JSON template content. May include a data_sources key: { "data_sources": { "name": { "query": "SELECT ... FROM entities" } }, ...template }. Queries run against org-scoped virtual tables. Use {{entityId}} for current entity context.
+         */
+        json_template: {
+          [key: string]: unknown;
+        };
+        /**
+         * Tab name. Omit for the default/overview tab; required for `remove_tab`. `get` returns the default tab and every named tab whether or not it is given.
+         */
+        tab_name?: string;
+        /**
+         * [set] Sort order for tabs (default 0)
+         */
+        tab_order?: number;
+        /**
+         * [set] Notes describing the change
+         */
+        change_notes?: string;
+      }
+    | {
+        /**
+         * Fetch current default + tabs + history.
+         */
+        action: "get";
+        /**
+         * Type of resource: entity_type or entity
+         */
+        resource_type: "entity_type" | "entity";
+        /**
+         * Resource identifier: entity type slug (string) or entity id (number)
+         */
+        resource_id: string | number;
+        /**
+         * Tab name. Omit for the default/overview tab; required for `remove_tab`. `get` returns the default tab and every named tab whether or not it is given.
+         */
+        tab_name?: string;
+      }
+    | {
+        /**
+         * Roll back to a prior version.
+         */
+        action: "rollback";
+        /**
+         * Type of resource: entity_type or entity
+         */
+        resource_type: "entity_type" | "entity";
+        /**
+         * Resource identifier: entity type slug (string) or entity id (number)
+         */
+        resource_id: string | number;
+        /**
+         * [rollback] Version number to rollback to
+         */
+        version: number;
+        /**
+         * Tab name. Omit for the default/overview tab; required for `remove_tab`. `get` returns the default tab and every named tab whether or not it is given.
+         */
+        tab_name?: string;
+      }
+    | {
+        /**
+         * Delete a named tab.
+         */
+        action: "remove_tab";
+        /**
+         * Type of resource: entity_type or entity
+         */
+        resource_type: "entity_type" | "entity";
+        /**
+         * Resource identifier: entity type slug (string) or entity id (number)
+         */
+        resource_id: string | number;
+        /**
+         * Tab name. Omit for the default/overview tab; required for `remove_tab`. `get` returns the default tab and every named tab whether or not it is given.
+         */
+        tab_name: string;
+      }
+    | {
+        /**
+         * Null the default (non-tab) template.
+         */
+        action: "clear";
+        /**
+         * Type of resource: entity_type or entity
+         */
+        resource_type: "entity_type" | "entity";
+        /**
+         * Resource identifier: entity type slug (string) or entity id (number)
+         */
+        resource_id: string | number;
+      };
   path: {
     /**
      * Organization slug (workspace identifier)

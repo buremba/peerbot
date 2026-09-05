@@ -1073,8 +1073,11 @@ export default async (_ctx, client) => {
 			"await client.viewTemplates.rollback({ resource_type: 'entity_type', resource_id: 'deal', version: 3 });",
 	},
 	"viewTemplates.removeTab": {
-		summary: "Remove a named tab from a template.",
+		summary:
+			"Remove a named tab from a template. `tab_name` is required; the default/overview tab has no name and is nulled with `viewTemplates.manage({ action: 'clear', ... })` instead.",
 		access: "admin",
+		signature:
+			"viewTemplates.removeTab(input: { resource_type: 'entity' | 'entity_type'; resource_id: string | number; tab_name: string }): Promise<unknown>",
 	},
 
 	// metrics — governed measures (prefer over client.query / query_sql)

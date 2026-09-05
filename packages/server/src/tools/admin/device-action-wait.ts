@@ -79,8 +79,9 @@ async function sleepUnlessAborted(ms: number, abortSignal?: AbortSignal): Promis
 //
 //   - POST-CLAIM (status='running'): how long the device has to
 //     execute, after it claimed the run. The default matches the chrome
-//     extension's own per-run watchdog (tools.js RUN_TIMEOUT_MS=90s) plus a
-//     buffer, so the gateway never times out a legitimately-running tool.
+//     extension's own per-run watchdog (background.js RUN_TIMEOUT_MS=90s)
+//     plus a buffer, so the gateway never times out a legitimately-running
+//     tool.
 //     An action whose declared input schema bounds a `timeout_ms` budget (a
 //     shell command, for one) is allowed the run's requested value, clamped
 //     to that declared maximum, plus a completion grace: by contract the
@@ -111,7 +112,9 @@ const POLL_MS = 500;
  * plus completion grace. A requested value under an action that declares no
  * maximum is ignored, and a run whose definition no longer resolves keeps the
  * default. Only a JSON number counts as a request; a string "150000" or a
- * fractional value is not a budget.
+ * fractional value is not a budget. The default is a floor, never a ceiling: a
+ * request SHORTER than it leaves the wait as it was, since a device that gives
+ * up early reports the failure itself.
  */
 async function resolvePostClaimBudgetMs(
   sql: DbClient,
@@ -126,8 +129,8 @@ async function resolvePostClaimBudgetMs(
           THEN r.action_input->>'timeout_ms'
       END AS requested,
       COALESCE(
-        cd.actions_schema->r.action_key->'inputSchema',
-        cd.actions_schema->r.action_key->'input_schema'
+        def.actions_schema->r.action_key->'input_schema',
+        def.actions_schema->r.action_key->'inputSchema'
       )->'properties'->'timeout_ms'->>'maximum' AS declared_max
     FROM runs r
     LEFT JOIN LATERAL (
@@ -139,7 +142,7 @@ async function resolvePostClaimBudgetMs(
         AND (r.connector_version IS NULL OR cd.version = r.connector_version)
       ORDER BY cd.updated_at DESC, cd.id DESC
       LIMIT 1
-    ) cd ON true
+    ) def ON true
     WHERE r.id = ${runId} AND r.organization_id = ${organizationId}
     LIMIT 1
   `) as Array<{ requested: string | null; declared_max: string | null }>;

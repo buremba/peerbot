@@ -10,7 +10,8 @@
  * terminates the run by disposing the isolate (uncatchable by the guest).
  * Extracted named exports keep the old hard-fail semantics because a partial
  * schema would be worse than none. Other caps: 180s wall-clock max
- * (device-bound operations may wait up to ~155s), and 30s per `ctx.sleep()`.
+ * (a device-bound operation can consume most of it — see
+ * `MAX_SCRIPT_TIMEOUT_MS`), and 30s per `ctx.sleep()`.
  * `client.org()` is stateless — each guest call carries
  * `orgPath` so the host re-walks org swaps without holding refs.
  */

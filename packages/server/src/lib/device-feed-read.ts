@@ -117,11 +117,12 @@ export interface DeviceFeedReadParams {
   /**
    * Caller's deadline. An explicit source read (`read_feeds` /
    * `client.feeds.readMany`) bounds each feed at its own timeout — 10s by
-   * default, 30s max — not the 60s pre-claim + 95s post-claim device budget, so
-   * one sleeping laptop cannot hold the batch open. Aborting is not the same as
-   * abandoning: the waiter stops polling, finalizes the run as `timeout`, and
-   * the cleanup in {@link readDeviceFeed} still scrubs it, so no work is
-   * left orphaned behind a `Promise.race` the caller walked away from.
+   * default, 30s max — not the device budget (60s pre-claim, then 95s or the
+   * action's own declared timeout), so one sleeping laptop cannot hold the
+   * batch open. Aborting is not the same as abandoning: the waiter stops
+   * polling, finalizes the run as `timeout`, and the cleanup in
+   * {@link readDeviceFeed} still scrubs it, so no work is left orphaned behind
+   * a `Promise.race` the caller walked away from.
    */
   signal?: AbortSignal;
 }
@@ -522,10 +523,11 @@ export function deliver(
       );
     }
     // No duration is quoted here: `waitForDeviceActionRun` already names the
-    // phase-specific budget in `error_message` (60s pre-claim, 95s post-claim),
-    // and this caller cannot tell which phase it lost. Quoting the 60s queue
-    // budget would mislabel a run a device CLAIMED and then hung on as a 60s
-    // timeout when it actually waited 95s.
+    // phase-specific budget in `error_message` (60s pre-claim; post-claim is
+    // 95s unless the action declares a longer timeout), and this caller cannot
+    // tell which phase it lost. Quoting the 60s queue budget would mislabel a
+    // run a device CLAIMED and then hung on as a 60s timeout when it actually
+    // waited out the whole post-claim budget.
     throw new Error(
       `Live read of feed '${p.feedKey}' timed out: ${
         outcome.error_message ?? 'the paired device did not respond'

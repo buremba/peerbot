@@ -17,8 +17,13 @@
  *      (status='running' AND claimed_by=worker_id guard) must reject
  *      the worker write so the gateway's verdict stands.
  *   6. abort: an already-aborted signal short-circuits the poll loop.
+ *   7. post-claim budget resolution: an action whose declared input schema
+ *      bounds `timeout_ms` extends the post-claim wait to the requested value
+ *      (clamped to that maximum) plus completion grace; every other shape —
+ *      no declared maximum, a non-number request, a request under the default
+ *      — leaves the default budget standing.
  *
- * Every path runs the production implementation. Cases 1-5 shrink its budgets
+ * Every path runs the production implementation. Cases 1-5 and 7 shrink its budgets
  * so the poll loops finish in milliseconds; case 6 uses the real ones because
  * the abort fires before the first sleep. Cases 1, 2 and 4 also supply the
  * `sleep` boundary, so the worker's writes land in a poll gap by construction
@@ -57,18 +62,26 @@ async function insertChromeConnector(
 
 // An action whose declared input schema bounds a `timeout_ms` budget — the
 // shape a shell connector's `run` declares. Keyed by the fixture's action so
-// the waiter resolves it through the run's connector definition.
-const TIMED_ACTIONS_SCHEMA = {
-  navigate: {
-    key: 'navigate',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        timeout_ms: { type: 'integer', minimum: 100, maximum: 150_000 },
+// the waiter resolves it through the run's connector definition. Installed
+// definitions carry the input schema under either spelling, exactly as
+// `getLocalActionOperations` reads it, so the fixture is built per spelling.
+function timedActionsSchema(
+  schemaKey: 'input_schema' | 'inputSchema'
+): Record<string, unknown> {
+  return {
+    navigate: {
+      key: 'navigate',
+      [schemaKey]: {
+        type: 'object',
+        properties: {
+          timeout_ms: { type: 'integer', minimum: 100, maximum: 150_000 },
+        },
       },
     },
-  },
-};
+  };
+}
+
+const TIMED_ACTIONS_SCHEMA = timedActionsSchema('inputSchema');
 
 async function insertChromeConnection(
   organizationId: string,
@@ -284,37 +297,43 @@ describe('waitForDeviceActionRun', () => {
   // at 100s — past the 95s watchdog default — and the waiter must wait for it.
   // This is the regression: a shell command with a 150s budget was marked
   // timeout at 95s while the device was mid-command, and its output was lost.
-  it("honors a requested action timeout within the action's declared maximum", async () => {
-    const org = await createTestOrganization();
-    await insertChromeConnector(org.id, TIMED_ACTIONS_SCHEMA);
-    const connId = await insertChromeConnection(org.id);
-    const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 150_000 });
-    let syntheticNow = Date.now();
-    await claim(runId, WORKER_ID, syntheticNow);
-    let sleeps = 0;
-    const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
-      queueMs: 60_000,
-      postClaimMs: 95_000,
-      pollMs: 1,
-      now: () => syntheticNow,
-      sleep: async () => {
-        sleeps += 1;
-        if (sleeps === 1) {
-          syntheticNow += 100_000;
-          return;
-        }
-        if (sleeps === 2) {
-          await workerCompleteAction(runId, WORKER_ID, 'success', { ok: true });
-          return;
-        }
-        throw new Error('waiter failed to observe completion');
-      },
-    });
-    expect(out.status).toBe('completed');
-    expect(sleeps).toBe(2);
-  });
+  it.each(['input_schema', 'inputSchema'] as const)(
+    "honors a requested action timeout within the action's declared maximum (%s)",
+    async (schemaKey) => {
+      const org = await createTestOrganization();
+      await insertChromeConnector(org.id, timedActionsSchema(schemaKey));
+      const connId = await insertChromeConnection(org.id);
+      const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 150_000 });
+      let syntheticNow = Date.now();
+      await claim(runId, WORKER_ID, syntheticNow);
+      let sleeps = 0;
+      const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
+        queueMs: 60_000,
+        postClaimMs: 95_000,
+        pollMs: 1,
+        now: () => syntheticNow,
+        sleep: async () => {
+          sleeps += 1;
+          if (sleeps === 1) {
+            syntheticNow += 100_000;
+            return;
+          }
+          if (sleeps === 2) {
+            await workerCompleteAction(runId, WORKER_ID, 'success', { ok: true });
+            return;
+          }
+          throw new Error('waiter failed to observe completion');
+        },
+      });
+      expect(out.status).toBe('completed');
+      expect(sleeps).toBe(2);
+    }
+  );
 
-  it.each([null, 0, -1, 1.5, '150000'])(
+  // The fractional case is deliberately larger than the default budget: a
+  // smaller one would clear the default floor either way and prove nothing
+  // about the integer guard.
+  it.each([null, 0, -1, 100_000.5, '150000'])(
     'does not extend the wait for an unusable requested timeout %s',
     async (timeout_ms) => {
       const org = await createTestOrganization();
@@ -362,7 +381,8 @@ describe('waitForDeviceActionRun', () => {
 
   // Input validation rejects a request above the declared maximum at creation;
   // a row that carries one anyway (a direct write) is clamped to the maximum,
-  // never honored as written.
+  // never honored as written — and the clamped budget still terminates the
+  // wait once the declared maximum plus completion grace has elapsed.
   it('clamps a requested timeout above the declared maximum', async () => {
     const org = await createTestOrganization();
     await insertChromeConnector(org.id, TIMED_ACTIONS_SCHEMA);
@@ -383,11 +403,14 @@ describe('waitForDeviceActionRun', () => {
     expect(out.error_message).toContain('180000ms');
   });
 
-  it('still bounds a valid long action after its completion grace', async () => {
+  // The default is a floor: a device that requests a SHORT budget still gets
+  // the full default wait, so a run that dies at 1s is reported by the device
+  // rather than terminalized here at 31s.
+  it('does not shorten the wait below the default budget', async () => {
     const org = await createTestOrganization();
     await insertChromeConnector(org.id, TIMED_ACTIONS_SCHEMA);
     const connId = await insertChromeConnection(org.id);
-    const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 150_000 });
+    const runId = await insertPendingActionRun(org.id, connId, { timeout_ms: 1_000 });
     let syntheticNow = Date.now();
     await claim(runId, WORKER_ID, syntheticNow);
     const out = await waitForDeviceActionRunWithOptions(runId, org.id, {
@@ -396,11 +419,11 @@ describe('waitForDeviceActionRun', () => {
       pollMs: 1,
       now: () => syntheticNow,
       sleep: async () => {
-        syntheticNow += 180_000;
+        syntheticNow += 100_000;
       },
     });
     expect(out.status).toBe('timeout');
-    expect(out.error_message).toContain('180000ms');
+    expect(out.error_message).toContain('95000ms');
   });
 
   it('atomic guard: a worker that finalizes after gateway-timeout cannot overwrite the verdict', async () => {

@@ -2,31 +2,21 @@
  * ClientSDK `agents` namespace. Thin wrapper over `manageAgents`.
  */
 
+import type {
+	AgentCreateInput,
+	AgentUpdateInput,
+} from "@lobu/core/contracts/tools/manage-agents";
 import type { Env } from "../../index";
 import { manageAgents } from "../../tools/admin/manage_agents";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller, idArg } from "./action-call";
 
-export interface AgentsCreateInput {
-	agent_id: string;
-	name?: string;
-	description?: string;
-	identity_md?: string;
-}
-
-export interface AgentsUpdateInput {
-	agent_id: string;
-	name?: string;
-	description?: string;
-	identity_md?: string;
-}
-
 export interface AgentsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
 	list(): Promise<unknown>;
 	get(agent_id: string): Promise<unknown>;
-	create(input: AgentsCreateInput): Promise<unknown>;
-	update(input: AgentsUpdateInput): Promise<unknown>;
+	create(input: AgentCreateInput): Promise<unknown>;
+	update(input: AgentUpdateInput): Promise<unknown>;
 	delete(agent_id: string): Promise<unknown>;
 }
 

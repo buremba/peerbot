@@ -1,73 +1,98 @@
 import { type Static, Type } from "@sinclair/typebox";
+import type { ActionInput } from "./action-input";
 
 // ============================================
-// Typebox Schema (Flattened for MCP)
+// Typebox Schema (union of per-action variants)
 // ============================================
+//
+// The wire schema flattens this union into ONE MCP object and merges duplicate
+// properties first-occurrence-wins, so a property carried by more than one
+// variant must read true for every one of them.
 
-export const ManageAgentsSchema = Type.Object({
-  action: Type.Union(
-    [
-      Type.Literal("list", {
-        description: "List org agents.",
-      }),
-      Type.Literal("get", { description: "Fetch one agent." }),
-      Type.Literal("create", {
-        description:
-          "Create an agent owned by the caller (queued for approval).",
-      }),
-      Type.Literal("update", {
-        description: "Patch agent fields (queued for approval).",
-      }),
-      Type.Literal("delete", {
-        description: "Delete an agent (queued for approval).",
-      }),
-    ],
-    { description: "Action to perform" }
-  ),
-
-  agent_id: Type.Optional(
-    Type.String({
-      description:
-        '[get/create/update/delete] Agent ID (lowercase slug, e.g. "support").',
-    })
-  ),
-  // Editable fields carry an `x-lobu-field` annotation — the single source of
-  // truth the field engine loops over to drive create/update/proposal/pre-image
-  // (so adding a field is one annotated entry, not edits in seven places). The
-  // `store` routes the write: `column` = an `agents` table column; `model` =
-  // the settings row's `models[0]`.
-  name: Type.Optional(
-    Type.String({
-      description: "[create/update] Display name for the agent.",
-      "x-lobu-field": { store: "column" },
-    })
-  ),
-  description: Type.Optional(
-    Type.String({
-      description: "[create/update] Agent description.",
-      "x-lobu-field": { store: "column" },
-    })
-  ),
-  identity_md: Type.Optional(
-    Type.String({
-      description: "[create/update] Agent identity / system prompt (Markdown).",
-      "x-lobu-field": { store: "column" },
-    })
-  ),
-  default_model: Type.Optional(
-    Type.String({
-      description:
-        '[create/update] Default model as an explicit "<provider>/<model>" ref (e.g. "anthropic/claude-sonnet-5"). Validated against the org\'s connected providers. Without it the agent inherits the org default model; if the org has none the agent is not runnable. Pass an empty string to clear it and fall back to the org default.',
-      "x-lobu-field": { store: "model", emptyClears: true },
-    })
-  ),
+const AgentId = Type.String({
+  description: 'Agent ID (lowercase slug, e.g. "support").',
 });
+
+// Editable fields carry an `x-lobu-field` annotation — the single source of
+// truth the field engine loops over to drive create/update/proposal/pre-image
+// (so adding a field is one annotated entry, not edits in seven places). The
+// `store` routes the write: `column` = an `agents` table column; `model` =
+// the settings row's `models[0]`. `create` and `update` share this set; the
+// annotation survives `Type.Optional`.
+const AgentFields = {
+  name: Type.String({
+    description: "[create/update] Display name for the agent.",
+    "x-lobu-field": { store: "column" },
+  }),
+  description: Type.String({
+    description: "[create/update] Agent description.",
+    "x-lobu-field": { store: "column" },
+  }),
+  identity_md: Type.String({
+    description: "[create/update] Agent identity / system prompt (Markdown).",
+    "x-lobu-field": { store: "column" },
+  }),
+  default_model: Type.String({
+    description:
+      '[create/update] Default model as an explicit "<provider>/<model>" ref (e.g. "anthropic/claude-sonnet-5"). Validated against the org\'s connected providers. Without it the agent inherits the org default model; if the org has none the agent is not runnable. Pass an empty string to clear it and fall back to the org default.',
+    "x-lobu-field": { store: "model", emptyClears: true },
+  }),
+};
+
+export const ListAgentsAction = Type.Object({
+  action: Type.Literal("list", { description: "List org agents." }),
+});
+
+export const GetAgentAction = Type.Object({
+  action: Type.Literal("get", { description: "Fetch one agent." }),
+  agent_id: AgentId,
+});
+
+export const CreateAgentAction = Type.Object({
+  action: Type.Literal("create", {
+    description: "Create an agent owned by the caller (queued for approval).",
+  }),
+  agent_id: AgentId,
+  name: AgentFields.name,
+  description: Type.Optional(AgentFields.description),
+  identity_md: Type.Optional(AgentFields.identity_md),
+  default_model: Type.Optional(AgentFields.default_model),
+});
+
+export const UpdateAgentAction = Type.Object({
+  action: Type.Literal("update", {
+    description: "Patch agent fields (queued for approval).",
+  }),
+  agent_id: AgentId,
+  name: Type.Optional(AgentFields.name),
+  description: Type.Optional(AgentFields.description),
+  identity_md: Type.Optional(AgentFields.identity_md),
+  default_model: Type.Optional(AgentFields.default_model),
+});
+
+export const DeleteAgentAction = Type.Object({
+  action: Type.Literal("delete", {
+    description: "Delete an agent (queued for approval).",
+  }),
+  agent_id: AgentId,
+});
+
+export const ManageAgentsSchema = Type.Union([
+  ListAgentsAction,
+  GetAgentAction,
+  CreateAgentAction,
+  UpdateAgentAction,
+  DeleteAgentAction,
+]);
 
 // ============================================
 // Type Definitions
 // ============================================
 
 export type ManageAgentsArgs = Static<typeof ManageAgentsSchema>;
+
+export type AgentCreateInput = ActionInput<ManageAgentsArgs, "create">;
+export type AgentUpdateInput = ActionInput<ManageAgentsArgs, "update">;
 
 export interface AgentRecord {
   id: string;

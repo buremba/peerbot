@@ -74,7 +74,7 @@ describe("manage_* wire schema: action discoverability", () => {
 		//    would render as a bare `- name` line — caught by asserting the
 		//    description line for each action contains a colon (prose follows).
 		//
-		//  - Flat tools (manage_entity, manage_agents, ...): `action.anyOf` of
+		//  - Flat tools (manage_entity, manage_automations, ...): `action.anyOf` of
 		//    `{const, description}` literals — the per-action prose lives on
 		//    each literal, not the field. Assert each anyOf entry has non-empty
 		//    description text.

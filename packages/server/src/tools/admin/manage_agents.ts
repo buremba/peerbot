@@ -8,7 +8,7 @@
  * - get: Get one agent when agent_config read allows that target
  * - create: Create an agent owned by the authenticated caller (owner_platform=
  *   'external' + an agent_users mapping, so the per-user chat path can reach it)
- * - update: Update name/description/identity_md on an agent
+ * - update: Patch an agent's editable fields (name/description/identity_md/default_model)
  * - delete: Delete an agent
  *
  *
@@ -23,13 +23,18 @@ import {
   type LobuField,
 } from '@lobu/core/contracts/field-engine';
 import {
+  CreateAgentAction,
+  DeleteAgentAction,
+  GetAgentAction,
+  ListAgentsAction,
   ManageAgentsSchema,
+  UpdateAgentAction,
   type AgentModelInfo,
   type AgentRecord,
-  type ManageAgentsArgs,
   type ManageAgentsProposal,
   type ManageAgentsResult,
 } from '@lobu/core/contracts/tools/manage-agents';
+import { Type, type Static } from '@sinclair/typebox';
 import {
   resolveActingPrincipal,
   resolveWritePolicyDecision,
@@ -37,7 +42,7 @@ import {
 } from '../../authz/entity-policy';
 import { resolveNewAgentProvisioningDefaults } from '../../auth/system-provider-resolution';
 
-import { createDbClientFromEnv, getDb } from '../../db/client';
+import { createDbClientFromEnv, getDb, type DbClient } from '../../db/client';
 import type { Env } from '../../index';
 import {
   currentMcpActivityAttribution,
@@ -69,12 +74,25 @@ import { ToolUserError } from '../../utils/errors';
 import { requireOrgReadAccess, requireOrgWriteAccess } from '../../utils/organization-access';
 import { resolveRunInitiator } from '../initiator';
 import type { ToolContext } from '../registry';
-import { withValidatedArgs } from '../validate-args';
+import { validateToolArgs } from '../validate-args';
 import { getOrgUrlContext } from '../view-urls';
-import { defineFlatActionTool, flatAction } from './action-tool';
+import { action, defineActionTool } from './action-tool';
 
 export { ManageAgentsSchema };
 export type { ManageAgentsProposal };
+
+type ListArgs = Static<typeof ListAgentsAction>;
+type GetArgs = Static<typeof GetAgentAction>;
+type CreateArgs = Static<typeof CreateAgentAction>;
+type UpdateArgs = Static<typeof UpdateAgentAction>;
+type DeleteArgs = Static<typeof DeleteAgentAction>;
+/**
+ * The three actions routed through the `agent_config` write-gate. Also a
+ * schema, so a persisted proposal naming a NON-write action is rejected by
+ * {@link applyManageAgentsProposal} instead of falling through its dispatch.
+ */
+const WriteActions = Type.Union([CreateAgentAction, UpdateAgentAction, DeleteAgentAction]);
+type WriteArgs = Static<typeof WriteActions>;
 
 /**
  * Synthetic `runs.action_key` tagging a manage_agents write held for approval.
@@ -135,20 +153,24 @@ async function assertDefaultModelValid(
 // ============================================
 //
 // The editable agent fields (name/description/identity_md/default_model) are
-// declared ONCE, on the `ManageAgentsSchema` contract via `x-lobu-field`
+// declared ONCE, in the contract's shared field set, via `x-lobu-field`
 // annotations. `collectLobuFields` reads them; the binding below says, per
 // storage kind, how to read the current value, validate a new one, and persist
 // it. create / update / buildProposal / pre-image all loop this single list —
 // adding a field is one annotated schema entry, not edits in seven places.
 
-/** The editable fields of this tool, in schema declaration order. */
-const AGENT_FIELDS: LobuField[] = collectLobuFields(ManageAgentsSchema);
+/**
+ * The editable fields of this tool, in schema declaration order. Read off the
+ * `update` variant: it is the patch shape, so by construction it carries every
+ * editable field and nothing else.
+ */
+const AGENT_FIELDS: LobuField[] = collectLobuFields(UpdateAgentAction);
 
 /** Column-backed fields (an `agents` table column). Their name IS the column. */
 const COLUMN_FIELDS = AGENT_FIELDS.filter((f) => f.meta.store === 'column');
 
-/** Read a field's requested value off the flat args object. */
-function argValue(args: ManageAgentsArgs, key: string): string | undefined {
+/** Read a field's requested value off a write action's args. */
+function argValue(args: WriteArgs, key: string): string | undefined {
   return (args as Record<string, unknown>)[key] as string | undefined;
 }
 
@@ -245,7 +267,7 @@ async function agentConfigReadAllowed(
 }
 
 async function handleList(
-  _args: ManageAgentsArgs,
+  _args: ListArgs,
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
@@ -284,13 +306,10 @@ async function handleList(
 }
 
 async function handleGet(
-  args: ManageAgentsArgs,
+  args: GetArgs,
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
-  if (!args.agent_id) {
-    throw new ToolUserError('agent_id is required for get action');
-  }
   // Gate before the lookup so a denied target does not distinguish "exists" vs
   // "forbidden" via timing alone more than a 404 would — we still 403 on deny
   // after confirming org membership of the id when found; missing stays 404.
@@ -315,22 +334,17 @@ async function handleGet(
   return { action: 'get', agent: rows[0] as unknown as AgentRecord, model };
 }
 
+/**
+ * Insert the agent. Every caller runs the args through {@link buildProposal}
+ * first — the immediate path right before dispatch, the queued path when the
+ * proposal was queued and again as it is applied — so the id/name rules are
+ * enforced there, once.
+ */
 export async function applyCreate(
-  args: ManageAgentsArgs,
+  args: CreateArgs,
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
-  if (!args.agent_id) {
-    throw new ToolUserError('agent_id is required for create action');
-  }
-  if (!isValidAgentId(args.agent_id)) {
-    throw new ToolUserError(
-      `Invalid agent_id "${args.agent_id}": must match /^[a-z][a-z0-9-]{2,59}$/`
-    );
-  }
-  if (!args.name) {
-    throw new ToolUserError('name is required for create action');
-  }
   // Created agents must have an owner to attribute them to — without one the
   // agents row exists but the per-user ownership path can't reach it.
   if (!ctx.userId) {
@@ -404,7 +418,7 @@ export async function applyCreate(
 }
 
 export async function applyUpdate(
-  args: ManageAgentsArgs,
+  args: UpdateArgs,
   ctx: ToolContext,
   env: Env,
   /**
@@ -426,9 +440,6 @@ export async function applyUpdate(
    */
   requireBase = false
 ): Promise<ManageAgentsResult> {
-  if (!args.agent_id) {
-    throw new ToolUserError('agent_id is required for update action');
-  }
   const agentId = args.agent_id;
   const sql = createDbClientFromEnv(env);
 
@@ -536,13 +547,10 @@ export async function applyUpdate(
 }
 
 export async function applyDelete(
-  args: ManageAgentsArgs,
+  args: DeleteArgs,
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
-  if (!args.agent_id) {
-    throw new ToolUserError('agent_id is required for delete action');
-  }
   const sql = createDbClientFromEnv(env);
   const rows = await sql`
     DELETE FROM agents
@@ -589,22 +597,20 @@ function actionLabel(action: 'create' | 'update' | 'delete', agentId: string): s
 
 /**
  * Build the proposed-change payload held on the run for a write action, after
- * validating the per-action required fields (so a malformed proposal is
- * rejected at request time, not at approve time).
+ * the per-action rules the schema cannot express (so a malformed proposal is
+ * rejected at request time, not at approve time). Presence of `agent_id` and
+ * `name` is the schema's job.
  */
-function buildProposal(args: ManageAgentsArgs): ManageAgentsProposal {
-  const action = args.action as 'create' | 'update' | 'delete';
-  if (!args.agent_id) {
-    throw new ToolUserError(`agent_id is required for ${action} action`);
-  }
+function buildProposal(args: WriteArgs): ManageAgentsProposal {
+  const { action } = args;
   if (action === 'create') {
     if (!isValidAgentId(args.agent_id)) {
       throw new ToolUserError(
         `Invalid agent_id "${args.agent_id}": must match /^[a-z][a-z0-9-]{2,59}$/`
       );
     }
-    if (!args.name) {
-      throw new ToolUserError('name is required for create action');
+    if (!args.name.trim()) {
+      throw new ToolUserError('name must not be blank for create action');
     }
   }
   if (action === 'update') {
@@ -636,7 +642,7 @@ function buildProposal(args: ManageAgentsArgs): ManageAgentsProposal {
  * manage_operations' approve handler via {@link applyManageAgentsProposal}.
  */
 async function queueWriteForApproval(
-  args: ManageAgentsArgs,
+  args: WriteArgs,
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
@@ -816,22 +822,27 @@ export async function applyManageAgentsProposal(
   env: Env,
   ownerUserId: string | null
 ): Promise<ManageAgentsResult> {
-  // Rebuild the flat args from the proposal, loop-driven off the schema so an
-  // added field flows back through without editing this remap.
-  const args: ManageAgentsArgs = {
+  // Rebuild the action's args from the proposal, loop-driven off the schema so
+  // an added field flows back through without editing this remap. The proposal
+  // is a persisted row (`runs.action_input`), so it is re-validated against the
+  // action's variant rather than trusted as typed input.
+  const fields: Record<string, unknown> = {
     action: proposal.action,
     agent_id: proposal.agent_id,
   };
   for (const field of AGENT_FIELDS) {
     const value = (proposal as unknown as Record<string, unknown>)[field.key];
-    if (value !== undefined) {
-      (args as Record<string, unknown>)[field.key] = value;
-    }
+    if (value !== undefined) fields[field.key] = value;
   }
+  const args = validateToolArgs('manage_agents', WriteActions, fields) as WriteArgs;
+  // Re-run the rules the schema cannot express (agent_id shape, "update needs
+  // one field"); the rebuilt proposal itself is discarded — `proposal` is what
+  // the apply* handlers already carry.
+  buildProposal(args);
   // create attributes ownership to the ORIGINAL requester, not the approver.
   const applyCtx: ToolContext =
-    proposal.action === 'create' ? { ...ctx, userId: ownerUserId } : ctx;
-  switch (proposal.action) {
+    args.action === 'create' ? { ...ctx, userId: ownerUserId } : ctx;
+  switch (args.action) {
     case 'create':
       return applyCreate(args, applyCtx, env);
     case 'update':
@@ -847,27 +858,17 @@ export async function applyManageAgentsProposal(
 // Main Function
 // ============================================
 
-export const manageAgents = withValidatedArgs(
-  'manage_agents',
-  ManageAgentsSchema,
-  manageAgentsImpl
-);
+type Handler<A> = (args: A, ctx: ToolContext, env: Env) => Promise<ManageAgentsResult>;
 
-async function manageAgentsImpl(
-  args: ManageAgentsArgs,
-  env: Env,
-  ctx: ToolContext
-): Promise<ManageAgentsResult> {
-  const pgSql = createDbClientFromEnv(env);
-
-  // Validate organization access based on action type.
-  if (args.action === 'list' || args.action === 'get') {
-    await requireOrgReadAccess(pgSql, ctx);
-  } else {
-    await requireOrgWriteAccess(pgSql, ctx);
-  }
-
-  return runManageAgents(args, env, ctx);
+/** Run the org-level access check for the action's tier before its handler. */
+function orgGated<A>(
+  requireAccess: (sql: DbClient, ctx: ToolContext) => Promise<void>,
+  handler: Handler<A>
+): Handler<A> {
+  return async (args, ctx, env) => {
+    await requireAccess(createDbClientFromEnv(env), ctx);
+    return handler(args, ctx, env);
+  };
 }
 
 /**
@@ -878,11 +879,11 @@ async function manageAgentsImpl(
  * + card; `allow` → run the apply* handler now; `deny` → refuse.
  */
 async function dispatchAgentWrite(
-  action: 'create' | 'update' | 'delete',
-  args: ManageAgentsArgs,
+  args: WriteArgs,
   ctx: ToolContext,
   env: Env
 ): Promise<ManageAgentsResult> {
+  const { action } = args;
   // Resolve identity through the shared seam so an automation reaction (which sets
   // ctx.actingAutomationId but no agentId) binds its owning agent's `agent_config`
   // envelope — otherwise it would gate as a null-id agent and skip the owner's
@@ -890,8 +891,7 @@ async function dispatchAgentWrite(
   // trusted session rules apply.
   const actor = await actingPrincipalFor(ctx);
   // update/delete name the target agent; create has no target (blanket only).
-  const targetAgentId =
-    action === 'create' ? null : (args.agent_id?.trim() || null);
+  const targetAgentId = action === 'create' ? null : args.agent_id.trim() || null;
   const decision = await resolveWritePolicyDecision({
     organizationId: ctx.organizationId,
     resourceClass: 'agent_config',
@@ -914,7 +914,7 @@ async function dispatchAgentWrite(
   // allow → apply immediately (validate the proposal first so an immediate apply
   // enforces the same required-field checks the queued path does).
   buildProposal(args);
-  switch (action) {
+  switch (args.action) {
     case 'create':
       return applyCreate(args, ctx, env);
     case 'update':
@@ -924,16 +924,15 @@ async function dispatchAgentWrite(
   }
 }
 
-// create/update/delete consult the agent_config write-gate (human immediate;
-// agent/automation may queue approval). list/get honor agent_config `read` for
-// agent/automation principals.
-const runManageAgents = defineFlatActionTool<ManageAgentsArgs, ManageAgentsResult>(
-  'manage_agents',
-  {
-    list: flatAction((args, ctx, env) => handleList(args, ctx, env)),
-    get: flatAction((args, ctx, env) => handleGet(args, ctx, env)),
-    create: flatAction((args, ctx, env) => dispatchAgentWrite('create', args, ctx, env)),
-    update: flatAction((args, ctx, env) => dispatchAgentWrite('update', args, ctx, env)),
-    delete: flatAction((args, ctx, env) => dispatchAgentWrite('delete', args, ctx, env)),
-  }
-);
+// list/get are org-read and honor agent_config `read` for agent/automation
+// principals; create/update/delete are org-write and consult the agent_config
+// write-gate (human immediate; agent/automation may queue approval).
+const manageAgentsTool = defineActionTool('manage_agents', {
+  list: action(ListAgentsAction, orgGated(requireOrgReadAccess, handleList)),
+  get: action(GetAgentAction, orgGated(requireOrgReadAccess, handleGet)),
+  create: action(CreateAgentAction, orgGated(requireOrgWriteAccess, dispatchAgentWrite)),
+  update: action(UpdateAgentAction, orgGated(requireOrgWriteAccess, dispatchAgentWrite)),
+  delete: action(DeleteAgentAction, orgGated(requireOrgWriteAccess, dispatchAgentWrite)),
+});
+
+export const manageAgents = manageAgentsTool.run;

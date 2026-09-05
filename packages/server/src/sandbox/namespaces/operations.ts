@@ -5,75 +5,26 @@
  * (PR-2) intercepts these calls instead of sending them.
  */
 
+import type {
+	OperationApproveInput,
+	OperationExecuteInput,
+	OperationListAvailableInput,
+	OperationListRunsInput,
+	OperationRejectInput,
+} from "@lobu/core/contracts/tools/manage-operations";
 import type { Env } from "../../index";
 import { manageOperations } from "../../tools/admin/manage_operations";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller, idArg } from "./action-call";
 
-export interface OperationsExecuteInput {
-	connection_id: number;
-	operation_key: string;
-	input?: Record<string, unknown>;
-	idempotency_key?: string;
-	activation?: {
-		kind: "page_visit";
-		urls: string[];
-		expires_in_seconds?: number;
-	};
-	/**
-	 * Automation provenance when this operation fires from a reaction. Both ids are
-	 * numeric.
-	 */
-	automation_source?: { automation_id: number; run_id: number };
-}
-
 export interface OperationsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	listAvailable(input?: {
-		connector_key?: string;
-		connection_id?: number;
-		entity_id?: number;
-		kind?: "read" | "write";
-		backend?: "local_action" | "mcp_tool" | "http_operation";
-		query?: string;
-		include_disconnected?: boolean;
-		include_input_schema?: boolean;
-		include_output_schema?: boolean;
-		limit?: number;
-		offset?: number;
-	}): Promise<unknown>;
-	execute(input: OperationsExecuteInput): Promise<unknown>;
-	listRuns(input?: {
-		connection_id?: number;
-		connection_ids?: number[];
-		feed_ids?: number[];
-		device_worker_id?: string;
-		connector_key?: string;
-		operation_key?: string;
-		status?: string;
-		approval_status?: string;
-		/**
-		 * Omit to list every OPERATIONAL run type (sync, action, automation, auth,
-		 * …). Chat-message transport runs (streaming deltas) are excluded by
-		 * default; pass run_types: ['chat_message'] for the trace view.
-		 */
-		run_types?: string[];
-		automation_ids?: number[];
-		/** ISO 8601 inclusive lower bound on created_at. */
-		created_after?: string;
-		/** ISO 8601 exclusive upper bound on created_at. */
-		created_before?: string;
-		before_id?: number;
-		before_created_at?: string;
-		limit?: number;
-		offset?: number;
-	}): Promise<unknown>;
+	listAvailable(input?: OperationListAvailableInput): Promise<unknown>;
+	execute(input: OperationExecuteInput): Promise<unknown>;
+	listRuns(input?: OperationListRunsInput): Promise<unknown>;
 	getRun(run_id: number): Promise<unknown>;
-	approve(input: {
-		run_id: number;
-		input?: Record<string, unknown>;
-	}): Promise<unknown>;
-	reject(input: { run_id: number; reason?: string }): Promise<unknown>;
+	approve(input: OperationApproveInput): Promise<unknown>;
+	reject(input: OperationRejectInput): Promise<unknown>;
 }
 
 export function buildOperationsNamespace(

@@ -159,6 +159,12 @@
       "import": "./dist/contracts/tools/manage-entity.js",
       "require": "./dist/contracts/tools/manage-entity.js"
     },
+    "./contracts/tools/action-input": {
+      "types": "./dist/contracts/tools/action-input.d.ts",
+      "bun": "./src/contracts/tools/action-input.ts",
+      "import": "./dist/contracts/tools/action-input.js",
+      "require": "./dist/contracts/tools/action-input.js"
+    },
     "./contracts/tools/manage-automations": {
       "types": "./dist/contracts/tools/manage-automations.d.ts",
       "bun": "./src/contracts/tools/manage-automations.ts",

@@ -2,44 +2,25 @@
  * ClientSDK `schedules` namespace. Thin wrapper over `manageSchedules`.
  */
 
+import type {
+	ScheduleCancelInput,
+	ScheduleCreateInput,
+	ScheduleListInput,
+	SchedulePauseInput,
+	ScheduleUpdateInput,
+} from "@lobu/core/contracts/tools/manage-schedules";
 import type { Env } from "../../index";
 import { manageSchedules } from "../../tools/admin/manage_schedules";
 import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
-export interface SchedulesListInput {
-	agent_id?: string;
-	user_id?: string;
-	action_type?: string;
-	include_paused?: boolean;
-}
-
-export interface SchedulesCreateInput {
-	description: string;
-	run_at: string;
-	cron?: string;
-	payload: Record<string, unknown>;
-	source_run_id?: number;
-	source_event_id?: number;
-	source_thread_id?: string;
-}
-
-export interface SchedulesUpdateInput {
-	id: string;
-	description?: string;
-	run_at?: string;
-	cron?: string | null;
-	prompt?: string;
-	model?: string;
-}
-
 export interface SchedulesNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	list(input?: SchedulesListInput): Promise<unknown>;
-	create(input: SchedulesCreateInput): Promise<unknown>;
-	update(input: SchedulesUpdateInput): Promise<unknown>;
-	pause(input: { id: string; paused?: boolean }): Promise<unknown>;
-	cancel(input: { id: string }): Promise<unknown>;
+	list(input?: ScheduleListInput): Promise<unknown>;
+	create(input: ScheduleCreateInput): Promise<unknown>;
+	update(input: ScheduleUpdateInput): Promise<unknown>;
+	pause(input: SchedulePauseInput): Promise<unknown>;
+	cancel(input: ScheduleCancelInput): Promise<unknown>;
 }
 
 export function buildSchedulesNamespace(

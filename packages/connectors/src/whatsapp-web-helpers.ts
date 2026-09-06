@@ -29,8 +29,21 @@ export const MAX_MEDIA_PER_RUN = 12;
  * bound is MAX_CHATS_PER_RUN * MAX_LOADS_PER_CHAT, so this only catches a
  * `loadEarlierMsgs` that hangs: without it a stuck load burns the whole device
  * action and the run returns nothing instead of the messages already collected.
+ *
+ * It MUST stay strictly under the extension's run fence. Every
+ * `dispatch("evaluate", ...)` is claimed as its own chrome action run, and
+ * `background.js` fences each one at RUN_TIMEOUT_MS (90s) from the moment it
+ * is claimed. At 90s this budget equalled that fence, so the adapter was
+ * entitled to spend the entire run paging history and still owed a
+ * serialize-and-return it could never afford. The run died as `run timed out
+ * after 90000ms`, and because a failed run discards its collected messages the
+ * checkpoint never advanced -- the next run repeated the same oversized work.
+ * That stalled a prod feed for three days at 17 consecutive failures.
+ *
+ * 60s leaves 30s of headroom for the dispatch round trip and the answer's
+ * serialization, matching the media phase's own budget.
  */
-const COLLECT_BUDGET_MS = 90_000;
+const COLLECT_BUDGET_MS = 60_000;
 
 export type ChatFilter = "all" | "individual" | "group";
 

@@ -125,7 +125,14 @@ export function buildConnectionsNamespace(
 		}),
 		uninstallConnector: method("uninstall_connector", {
 			publicMethod: "uninstallConnector",
-			mapArgs: (connector_key) => ({ connector_key }),
+			mapArgs: (connector_key) => ({
+				connector_key: idArg(
+					"connections.uninstallConnector",
+					"connector_key",
+					connector_key,
+					"string",
+				),
+			}),
 		}),
 		getConnectorSource: method("get_connector_source", {
 			publicMethod: "getConnectorSource",

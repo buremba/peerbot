@@ -816,6 +816,9 @@ export default async (_ctx, client) => {
 	"connections.uninstallConnector": {
 		summary: "Uninstall a connector definition.",
 		access: "admin",
+		signature:
+			"connections.uninstallConnector(connector_key: string): Promise<unknown> // or connections.uninstallConnector({ connector_key })",
+		example: "await client.connections.uninstallConnector('rss');",
 	},
 	"connections.getConnectorSource": {
 		summary:

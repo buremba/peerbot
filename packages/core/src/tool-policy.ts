@@ -257,6 +257,13 @@ const DIRECT_PACKAGE_INSTALL_PATTERNS = [
 ];
 
 /**
+ * Longest command this matcher will scan. Past it the command is treated as an
+ * install attempt rather than parsed: the scan is superlinear in the command
+ * length and the caller does not control the input.
+ */
+const MAX_SCANNED_COMMAND_LENGTH = 8192;
+
+/**
  * Advisory detector for an honestly-typed package-manager install/acquire
  * command, used to return a helpful "declare it in nixPackages instead" message
  * instead of a bare "command not found". Callers: the agent worker's bash
@@ -299,6 +306,14 @@ export function isDirectPackageInstallCommand(command: string): boolean {
   const trimmed = command.trim().toLowerCase();
   if (!trimmed) {
     return false;
+  }
+  // The interpreter-body regex backtracks quadratically on adversarial option
+  // clusters (`sh -` repeated), and on the isolate lane the model writes this
+  // string, so an unbounded scan would block the guest's only thread for
+  // seconds. No honest install command is anywhere near this long, and the
+  // matcher's documented bias is to fail toward flagging.
+  if (trimmed.length > MAX_SCANNED_COMMAND_LENGTH) {
+    return true;
   }
 
   const matches = (text: string): boolean =>

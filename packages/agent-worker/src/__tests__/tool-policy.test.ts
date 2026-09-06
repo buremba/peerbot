@@ -722,4 +722,26 @@ describe("enforceBashCommandPolicy", () => {
       isDirectPackageInstallCommand('sh -c "sudo -u ls npm install"')
     ).toBe(true);
   });
+
+  test("an oversize command is flagged instead of scanned (CodeQL 581)", () => {
+    // The interpreter-body regex backtracks quadratically on repeated option
+    // clusters, and the isolate guest's `bash` tool passes a model-written
+    // string straight in. Unbounded, 160KB of this took ~3.6s on one thread.
+    const adversarial = `\nsh\t${"-\nsh\t".repeat(32_000)}`;
+    expect(adversarial.length).toBeGreaterThan(150_000);
+    const started = performance.now();
+    expect(isDirectPackageInstallCommand(adversarial)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(100);
+
+    // An honest command under the bound is still parsed, not blanket-denied,
+    // even when it is long.
+    const honest = `echo ${"x".repeat(8_000)}`;
+    expect(honest.length).toBeLessThan(8_192);
+    expect(isDirectPackageInstallCommand(honest)).toBe(false);
+    // Past the bound the same harmless command is denied — the deliberate
+    // over-denial this matcher documents everywhere else.
+    expect(isDirectPackageInstallCommand(`echo ${"x".repeat(9_000)}`)).toBe(
+      true
+    );
+  });
 });

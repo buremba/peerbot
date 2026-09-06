@@ -9,10 +9,17 @@ import {
   AgentTurnPollPayloadSchema,
   PollResponseSchema,
 } from '@lobu/core/contracts/worker/protocol';
-import { type MessagePayload, verifyWorkerToken } from '@lobu/core';
+import {
+  AGENT_ERRORS,
+  AgentErrorCode,
+  type MessagePayload,
+  verifyWorkerToken,
+} from '@lobu/core';
 import { Value } from '@sinclair/typebox/value';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { enqueueAgentTurnShadow } from '../../gateway/orchestration/agent-turn-shadow';
+import { reapStaleRuns } from '../../scheduled/check-stalled-executions';
+import { sweepStaleAgentTurnRuns } from '../../worker-api/agent-turn';
 import type { AgentSettingsStore } from '../../gateway/auth/settings/agent-settings-store';
 import type { ProviderCatalogService } from '../../gateway/auth/provider-catalog';
 import type { McpConfigService } from '../../gateway/auth/mcp/config-service';
@@ -1007,5 +1014,192 @@ describe('agent turn completion', () => {
     });
     expect(response.status).toBe(409);
     expect((await runRow(runId)).status).toBe('running');
+  });
+});
+
+/**
+ * The reaper's side of the same distinction: a fleet worker that crashes
+ * mid-turn never reaches the completion route, so the run reaper is the only
+ * thing left that can tell the client. An authoritative turn gets the error
+ * the completion route would have published; a shadow turn ends silently.
+ */
+describe('agent turn reaper', () => {
+  const STALE_THRESHOLD_SECONDS = 60;
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+    delete process.env.WORKER_API_TOKEN;
+    process.env[SHADOW_ENV] = AGENT_ID;
+  });
+
+  afterEach(() => {
+    delete process.env[SHADOW_ENV];
+  });
+
+  /** Make the run authoritative, as the cutover will. */
+  async function makeAuthoritative(runId: number) {
+    const sql = getTestDb();
+    await sql`
+      UPDATE runs
+      SET action_input = jsonb_set(action_input, '{turn,shadow}', 'false'::jsonb)
+      WHERE id = ${runId}
+    `;
+  }
+
+  /** The worker died: its last heartbeat is well past any threshold. */
+  async function loseHeartbeat(runId: number) {
+    const sql = getTestDb();
+    await sql`
+      UPDATE runs
+      SET claimed_at = now() - interval '1 hour',
+          last_heartbeat_at = now() - interval '1 hour'
+      WHERE id = ${runId}
+    `;
+  }
+
+  async function threadResponses() {
+    const sql = getTestDb();
+    return (await sql`
+      SELECT action_input FROM runs
+      WHERE queue_name = 'thread_response' AND run_type = 'chat_message'
+      ORDER BY id
+    `) as unknown as Array<{ action_input: Record<string, unknown> }>;
+  }
+
+  it('a crashed worker on an authoritative turn delivers the error instead of hanging the client', async () => {
+    const runId = await claimedShadowRun('fleet-crashed');
+    await makeAuthoritative(runId);
+    await loseHeartbeat(runId);
+
+    // Through the real reaper tick, so the lane is proven reachable from the
+    // 30s interval and not just from its own helper.
+    const result = await reapStaleRuns();
+    expect(result.acquired).toBe(true);
+    expect(result.reaped).toBe(1);
+    // A turn is never re-run behind the user's back.
+    expect(result.retriesCreated).toBe(0);
+
+    const row = await runRow(runId);
+    expect(row.status).toBe('timeout');
+    expect(row.error_message).toBe('worker_heartbeat_lost');
+
+    // The client gets the same thread_response the completion route publishes
+    // on failure, addressed from the run's own reply envelope and rendered
+    // through the shared error catalog.
+    const replies = await threadResponses();
+    expect(replies).toHaveLength(1);
+    expect(replies[0].action_input).toMatchObject({
+      messageId: 'msg-shadow',
+      channelId: 'api_user-shadow',
+      conversationId: 'conv-shadow',
+      userId: 'user-shadow',
+      platform: 'api',
+      error: AGENT_ERRORS[AgentErrorCode.WORKER_DIED].message,
+      errorCode: AgentErrorCode.WORKER_DIED,
+      processedMessageIds: ['msg-shadow'],
+    });
+    expect(replies[0].action_input.finalText).toBeUndefined();
+
+    // A second tick finds nothing: the row is terminal, so no duplicate error.
+    const again = await reapStaleRuns();
+    expect(again.reaped).toBe(0);
+    expect(await threadResponses()).toHaveLength(1);
+  });
+
+  it('a turn no worker ever claimed times out and tells the client it never started', async () => {
+    const org = await createTestOrganization();
+    await enqueueAgentTurnShadow(messageFor(org.id), {
+      agentSettings: settingsStore,
+      catalog: catalogFor(claudeModule()),
+      gatewayUrl: GATEWAY_URL,
+    });
+    const [run] = await shadowRuns();
+    await makeAuthoritative(run.id);
+    const sql = getTestDb();
+    await sql`UPDATE runs SET created_at = now() - interval '1 hour' WHERE id = ${run.id}`;
+
+    expect(await sweepStaleAgentTurnRuns(STALE_THRESHOLD_SECONDS)).toEqual({
+      reaped: 1,
+      delivered: 1,
+    });
+    const row = await runRow(run.id);
+    expect(row.status).toBe('timeout');
+    expect(row.error_message).toBe('worker_claim_timeout');
+    const replies = await threadResponses();
+    expect(replies).toHaveLength(1);
+    expect(replies[0].action_input).toMatchObject({
+      messageId: 'msg-shadow',
+      errorCode: AgentErrorCode.WORKER_STARTUP_FAILED,
+      error: AGENT_ERRORS[AgentErrorCode.WORKER_STARTUP_FAILED].message,
+    });
+  });
+
+  it('a shadow turn times out silently, and a heartbeating turn is left alone', async () => {
+    // Each claimed run is its own org and worker. A stale shadow next to a
+    // fresh authoritative turn shows one sweep reaping the former silently
+    // while leaving the latter untouched.
+    const staleShadow = await claimedShadowRun('fleet-shadow-stale');
+    await loseHeartbeat(staleShadow);
+    const live = await claimedShadowRun('fleet-live');
+    await makeAuthoritative(live);
+
+    expect(await sweepStaleAgentTurnRuns(STALE_THRESHOLD_SECONDS)).toEqual({
+      reaped: 1,
+      delivered: 0,
+    });
+    // The shadow run ends the way the bulk connector reaper ended it before,
+    // but the subprocess lane still owns the conversation's reply, so nothing
+    // reaches the client from here.
+    const shadowRow = await runRow(staleShadow);
+    expect(shadowRow.status).toBe('timeout');
+    expect(shadowRow.error_message).toBe('worker_heartbeat_lost');
+    expect(await threadResponses()).toHaveLength(0);
+    // The live turn just claimed, so its heartbeat is fresh.
+    expect((await runRow(live)).status).toBe('running');
+  });
+
+  it('an authoritative turn with no reply address terminalizes without delivering', async () => {
+    // The deploy-skew case the completion route's 409 covers: a producer that
+    // stamped an authoritative turn without saying where the reply goes. The
+    // reaper has nowhere to deliver to, but the row must not wedge the lane.
+    const runId = await claimedShadowRun('fleet-unaddressed');
+    await makeAuthoritative(runId);
+    await loseHeartbeat(runId);
+    const sql = getTestDb();
+    await sql`UPDATE runs SET action_input = action_input - 'reply' WHERE id = ${runId}`;
+
+    expect(await sweepStaleAgentTurnRuns(STALE_THRESHOLD_SECONDS)).toEqual({
+      reaped: 1,
+      delivered: 0,
+    });
+    expect((await runRow(runId)).status).toBe('timeout');
+    expect(await threadResponses()).toHaveLength(0);
+  });
+
+  it('a worker that completes between the candidate read and the timeout wins', async () => {
+    // The fenced UPDATE re-asserts the staleness predicate, so a heartbeat or
+    // completion that lands after the candidate read makes the reap a no-op
+    // rather than an overwrite of a live answer.
+    const workerId = 'fleet-late';
+    const runId = await claimedShadowRun(workerId);
+    await makeAuthoritative(runId);
+    await loseHeartbeat(runId);
+    const completion = await postAsFleet('/api/workers/complete-agent-turn', {
+      run_id: runId,
+      worker_id: workerId,
+      status: 'completed',
+      text: 'made it just in time',
+    });
+    expect(completion.status).toBe(200);
+
+    expect(await sweepStaleAgentTurnRuns(STALE_THRESHOLD_SECONDS)).toEqual({
+      reaped: 0,
+      delivered: 0,
+    });
+    expect((await runRow(runId)).status).toBe('completed');
+    // Exactly the reply the worker delivered, no timeout error beside it.
+    const replies = await threadResponses();
+    expect(replies).toHaveLength(1);
+    expect(replies[0].action_input).toMatchObject({ finalText: 'made it just in time' });
   });
 });

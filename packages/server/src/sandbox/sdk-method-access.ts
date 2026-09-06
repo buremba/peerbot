@@ -37,9 +37,11 @@ type SdkMethodAccessInput = MethodAccessMetadata | readonly MethodAccessMetadata
 export function effectiveSdkRequiredTier(
 	methodAccess: SdkMethodAccessInput,
 ): SdkRequiredTier {
-	const accesses: readonly MethodAccessMetadata[] = Array.isArray(methodAccess)
-		? methodAccess
-		: [methodAccess as MethodAccessMetadata];
+	// `Array.isArray` does not narrow a readonly-array union, so discriminate on
+	// the object shape instead: casting here would reopen the hole the
+	// MethodAccessMetadata union exists to close.
+	const accesses: readonly MethodAccessMetadata[] =
+		"access" in methodAccess ? [methodAccess] : methodAccess;
 	const required = accesses.reduce<ToolAccessLevel>((highest, access) => {
 		const candidate = requiredSdkAccess(access);
 		return TOOL_ACCESS_RANK[candidate] > TOOL_ACCESS_RANK[highest]

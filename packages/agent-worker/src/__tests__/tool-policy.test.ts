@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   type BashCommandPolicy,
   buildToolPolicy,
-  enforceBashCommandPolicy,
-  isDirectPackageInstallCommand,
   isToolAllowedByPolicy,
   normalizeToolList,
+} from "@lobu/core";
+import {
+  enforceBashCommandPolicy,
+  isDirectPackageInstallCommand,
 } from "../runtime/tool-policy";
 
 describe("normalizeToolList", () => {

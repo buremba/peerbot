@@ -32,21 +32,28 @@
  */
 
 import {
+  type AgentOptions,
+  buildToolPolicy,
   createLogger,
-  entryToMessage,
+  generateWorkerToken,
   getErrorMessage,
+  isToolAllowedByPolicy,
   type MessagePayload,
   parseSessionEntries,
   resolveSdkCompat,
+  type ToolPolicy,
+  type ToolsConfig,
+  verifyWorkerToken,
 } from "@lobu/core";
+import type { AgentTurnPollPayload } from "@lobu/core/contracts/worker/protocol";
 import { getDb } from "../../db/client.js";
+import type { McpConfigService } from "../auth/mcp/config-service.js";
+import type { McpProxy } from "../auth/mcp/proxy.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
-import {
-  readSnapshotJsonl,
-  transcriptText,
-} from "../services/transcript-snapshot.js";
+import { readSnapshotJsonl } from "../services/transcript-snapshot.js";
+import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 
 const logger = createLogger("agent-turn-shadow");
 
@@ -56,8 +63,16 @@ const SHADOW_AGENTS_ENV = "LOBU_ISOLATE_TURN_SHADOW_AGENTS";
  * pi-ai's two fetch-native adapters. Every other protocol in
  * `SDK_COMPAT_PROTOCOLS` reaches its upstream through a Node-bound SDK, which
  * cannot be bundled for the isolate — so those agents simply produce no shadow.
+ *
+ * Typed as the envelope's own `api` union so the set and the wire contract
+ * cannot drift: adding an adapter here without widening the schema is a
+ * compile error, not a run that fails validation on the worker.
  */
-const LANE_APIS = new Set(["anthropic-messages", "openai-completions"]);
+type LaneApi = TurnEnvelope["provider"]["api"];
+const LANE_APIS = new Set<string>([
+  "anthropic-messages",
+  "openai-completions",
+] satisfies LaneApi[]);
 
 /** Snapshot suffix read for history. Twelve 16 KB messages fit comfortably. */
 const HISTORY_TAIL_CHARS = 256 * 1024;
@@ -65,19 +80,31 @@ const HISTORY_MESSAGE_LIMIT = 12;
 const HISTORY_MESSAGE_CHARS = 16_000;
 const TURN_MESSAGE_CHARS = 32_000;
 
+type TurnEnvelope = AgentTurnPollPayload["turn"];
+type TurnTools = NonNullable<TurnEnvelope["tools"]>;
+
 export interface AgentTurnShadowDeps {
   /** Reads the agent's identity/soul/user layers. Absent → no shadow. */
   agentSettings?: AgentSettingsStore;
   /** Resolves the agent's provider modules. Absent → no shadow. */
   catalog?: ProviderCatalogService;
   /**
-   * Externally reachable gateway origin the fleet worker resolves the secret
-   * proxy on. Injected rather than read here so the caller owns the lookup: the
-   * canonical accessor memoizes `PUBLIC_GATEWAY_URL` for the life of the
-   * process, which a caller under test cannot vary without reaching into that
-   * cache. Absent → no shadow, because there is no URL to hand the worker.
+   * The gateway's MCP surface: which servers this agent has, and their tools.
+   * Absent → the turn runs with no tools (logged once per turn).
    */
-  publicOrigin?: string;
+  mcp?: {
+    configService: McpConfigService;
+    proxy: McpProxy;
+  };
+  /**
+   * Externally reachable gateway URL, MOUNT PATH INCLUDED, that the fleet
+   * worker resolves the secret proxy and the MCP route on. Injected rather
+   * than read here so the caller owns the lookup: the canonical accessor
+   * memoizes `PUBLIC_GATEWAY_URL` for the life of the process, which a caller
+   * under test cannot vary without reaching into that cache. Absent → no
+   * shadow, because there is no URL to hand the worker.
+   */
+  gatewayUrl?: string;
 }
 
 function shadowSelects(agentId: string): boolean {
@@ -95,17 +122,20 @@ function shadowSelects(agentId: string): boolean {
  * The system prompt for the shadow turn.
  *
  * DELIBERATELY REDUCED: the subprocess lane's prompt also carries platform,
- * network, skills and MCP instruction blocks, none of which the isolate lane
- * can act on yet (it has no tools). Composing only the three agent layers keeps
- * the comparison honest about what the lane can currently do, and matches the
- * worker's own section headings (`composeAgentInstructions`) so the identity
- * text itself is byte-identical.
+ * network and skills instruction blocks, none of which the isolate lane can
+ * act on yet. Composing the three agent layers plus each MCP server's own
+ * instructions keeps the comparison honest about what the lane can currently
+ * do, and matches the worker's own section headings
+ * (`composeAgentInstructions`) so the identity text itself is byte-identical.
  */
-function composeShadowSystemPrompt(layers: {
-  identityMd?: string | null;
-  soulMd?: string | null;
-  userMd?: string | null;
-}): string {
+function composeShadowSystemPrompt(
+  layers: {
+    identityMd?: string | null;
+    soulMd?: string | null;
+    userMd?: string | null;
+  },
+  mcpInstructions: string[]
+): string {
   const sections: string[] = [];
   const identity = layers.identityMd?.trim();
   const soul = layers.soulMd?.trim();
@@ -113,64 +143,87 @@ function composeShadowSystemPrompt(layers: {
   if (identity) sections.push(`## Agent Identity\n\n${identity}`);
   if (soul) sections.push(`## Agent Instructions\n\n${soul}`);
   if (user) sections.push(`## User Context\n\n${user}`);
+  for (const instructions of mcpInstructions) {
+    const text = instructions.trim();
+    if (text) sections.push(text);
+  }
   return sections.join("\n\n");
+}
+
+type HistoryMessage = Record<string, unknown> & { role: string };
+
+function isTextBlock(block: unknown): block is { type: "text"; text: string } {
+  return (
+    !!block &&
+    typeof block === "object" &&
+    (block as { type?: unknown }).type === "text" &&
+    typeof (block as { text?: unknown }).text === "string"
+  );
+}
+
+/** A content array with its text capped and its thinking blocks dropped. */
+function trimContent(content: unknown): unknown[] {
+  if (typeof content === "string") {
+    return [{ type: "text", text: content.slice(0, HISTORY_MESSAGE_CHARS) }];
+  }
+  if (!Array.isArray(content)) return [];
+  const out: unknown[] = [];
+  for (const block of content) {
+    if (isTextBlock(block)) {
+      out.push({ type: "text", text: block.text.slice(0, HISTORY_MESSAGE_CHARS) });
+      continue;
+    }
+    // A thinking block carries a provider signature the next provider may not
+    // accept; the text and the tool calls are what the turn resumes from.
+    if (block && typeof block === "object" && (block as { type?: unknown }).type === "thinking") continue;
+    out.push(block);
+  }
+  return out;
+}
+
+function hasToolCall(message: HistoryMessage): boolean {
+  return (
+    Array.isArray(message.content) &&
+    message.content.some(
+      (block) => !!block && typeof block === "object" && (block as { type?: unknown }).type === "toolCall"
+    )
+  );
 }
 
 /**
  * Rebuild the conversation so far as pi messages.
  *
- * The snapshot stores pi's own entries, but a stored assistant entry carries
- * provider bookkeeping (usage, stop reason, tool calls) that this lane cannot
- * replay faithfully, so history is flattened to text and re-wrapped in the
- * minimal shapes pi's provider adapters read: `role` plus `content`. Tool
- * calls and their results are dropped with the rest — the shadow lane has no
- * tools, so replaying a tool call would produce a transcript the turn could
- * never have made.
+ * The snapshot stores pi's own entries, and the lane now runs the same tool
+ * loop pi ran to produce them, so user, assistant and tool-result entries
+ * replay as they are — text capped, thinking dropped, everything else (tool
+ * calls, tool results, usage, stop reason) kept, because a provider refuses a
+ * tool call without its result and vice versa. The window is then squared off
+ * so it opens on a user message and never ends on a tool call still waiting
+ * for its result.
  */
-function historyMessages(snapshot: string, model: {
-  api: string;
-  provider: string;
-  modelId: string;
-}): Record<string, unknown>[] {
-  const timestamp = 0;
-  return parseSessionEntries(snapshot)
-    .entries.flatMap((entry): Record<string, unknown>[] => {
-      const message = entryToMessage(entry);
-      if (
-        message?.type !== "message" ||
-        (message.role !== "user" && message.role !== "assistant")
-      ) {
-        return [];
-      }
-      const text = transcriptText(message.content).slice(
-        0,
-        HISTORY_MESSAGE_CHARS
-      );
-      if (!text) return [];
-      if (message.role === "user") {
-        return [{ role: "user", content: text, timestamp }];
-      }
-      return [
-        {
-          role: "assistant",
-          content: [{ type: "text", text }],
-          api: model.api,
-          provider: model.provider,
-          model: model.modelId,
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 0,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-          },
-          stopReason: "stop",
-          timestamp,
-        },
-      ];
-    })
-    .slice(-HISTORY_MESSAGE_LIMIT);
+function historyMessages(snapshot: string): HistoryMessage[] {
+  const messages: HistoryMessage[] = [];
+  for (const entry of parseSessionEntries(snapshot).entries) {
+    if (entry.type !== "message" || !entry.message) continue;
+    const message = entry.message as unknown as HistoryMessage;
+    if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") continue;
+    const content = trimContent(message.content);
+    if (content.length === 0) continue;
+    messages.push({ ...message, content });
+  }
+  const window = messages.slice(-HISTORY_MESSAGE_LIMIT);
+  const firstUser = window.findIndex((message) => message.role === "user");
+  if (firstUser < 0) return [];
+  const squared = window.slice(firstUser);
+  while (squared.length > 0) {
+    const last = squared[squared.length - 1]!;
+    if (last.role === "assistant" && hasToolCall(last)) {
+      squared.pop();
+      continue;
+    }
+    break;
+  }
+  return squared;
 }
 
 /**
@@ -195,8 +248,12 @@ function bareModelId(
   return ref;
 }
 
+function isLaneApi(api: string): api is LaneApi {
+  return LANE_APIS.has(api);
+}
+
 interface ShadowProvider {
-  api: string;
+  api: LaneApi;
   provider: string;
   modelId: string;
   baseUrl: string;
@@ -205,9 +262,37 @@ interface ShadowProvider {
 }
 
 /**
+ * Mint the turn's one credential: a worker token scoped to this agent, user,
+ * organization and conversation, exactly as the subprocess lane's per-run
+ * token is (`buildRunJobToken`) minus the runtime-sandbox claims the isolate
+ * has no use for. The secret proxy accepts it as the provider credential and
+ * binds it to the agent in the URL; the MCP route authenticates it. The
+ * `deploymentName` names this lane so a token can never be mistaken for a
+ * subprocess deployment's.
+ */
+function mintTurnToken(data: MessagePayload): string {
+  return generateWorkerToken(
+    data.userId,
+    data.conversationId,
+    `agent-turn:${data.messageId}`,
+    {
+      ...buildWorkerTokenClaims({
+        channelId: data.channelId,
+        teamId: data.teamId,
+        agentId: data.agentId,
+        organizationId: data.organizationId,
+        platform: data.platform,
+        platformMetadata: data.platformMetadata,
+      }),
+      messageId: data.messageId,
+    }
+  );
+}
+
+/**
  * Resolve the provider exactly the way the subprocess lane's session context
  * does: the agent's installed modules, the module that owns the requested
- * model, its agent-scoped secret-proxy URL and its credential placeholder.
+ * model, its agent-scoped secret-proxy URL and its credential.
  *
  * Returns null (with one log line) whenever the turn is not shadowable, which
  * is a normal outcome, not a failure: an agent on Google or Bedrock, a provider
@@ -220,11 +305,12 @@ async function resolveShadowProvider(
     organizationId: string;
     userId: string;
     modelRef: string;
-    publicOrigin: string;
+    gatewayUrl: string;
+    workerToken: string;
   }
 ): Promise<ShadowProvider | null> {
   const protocol = resolveSdkCompat(module.sdkCompat);
-  if (!protocol || !LANE_APIS.has(protocol.api)) {
+  if (!protocol || !isLaneApi(protocol.api)) {
     logger.info(
       { agentId: args.agentId, provider: module.providerId, api: protocol?.api ?? null },
       "Agent turn shadow skipped: the provider's protocol has no fetch-native adapter on the isolate lane"
@@ -235,9 +321,10 @@ async function resolveShadowProvider(
   const context = {
     organizationId: args.organizationId,
     userId: args.userId,
+    workerToken: args.workerToken,
   };
   const mappings = module.getProxyBaseUrlMappings(
-    `${args.publicOrigin}/api/proxy`,
+    `${args.gatewayUrl}/api/proxy`,
     args.agentId,
     context
   );
@@ -255,6 +342,10 @@ async function resolveShadowProvider(
   }
   const baseUrl = routes[0];
 
+  // With the worker token in its context the base module answers the token
+  // itself, which is what makes one credential serve both hops. A module that
+  // answers something else (its own placeholder scheme) still shadows, but
+  // the turn then has no credential the MCP route would accept.
   const credential = module.buildCredentialPlaceholder
     ? await module.buildCredentialPlaceholder(args.agentId, context)
     : "lobu-proxy";
@@ -288,6 +379,81 @@ async function resolveShadowProvider(
     baseUrl,
     credential,
     host,
+  };
+}
+
+/**
+ * The agent's tool policy, built from the same options the subprocess lane
+ * reads (`agentOptions.toolsConfig`, `allowedTools`, `disallowedTools`) and
+ * through the same shared builder, so one agent's patterns mean the same thing
+ * whichever lane runs the turn.
+ */
+function turnToolPolicy(options: AgentOptions | undefined): ToolPolicy {
+  return buildToolPolicy({
+    toolsConfig: options?.toolsConfig as ToolsConfig | undefined,
+    allowedTools: options?.allowedTools,
+    disallowedTools: options?.disallowedTools,
+  });
+}
+
+/**
+ * The tools this turn may call: every tool of every MCP server the agent has,
+ * filtered through the agent's tool policy. Discovery is per server and
+ * best-effort, as it is for the subprocess lane's session context — a server
+ * that fails to list contributes nothing and one log line.
+ *
+ * The policy filter is applied here and NOT by the subprocess lane, which
+ * registers its MCP tools through `createMcpPlugin` unfiltered and only
+ * policy-filters its built-in tools. Erring strict is the safe direction for a
+ * shadow turn: it can only withhold a tool, never grant one the agent's
+ * patterns deny. Aligning the two lanes is a separate change to the
+ * subprocess lane, not to this producer.
+ */
+async function resolveTurnTools(
+  mcp: NonNullable<AgentTurnShadowDeps["mcp"]>,
+  args: {
+    agentId: string;
+    organizationId: string;
+    gatewayUrl: string;
+    workerToken: string;
+    policy: ToolPolicy;
+  }
+): Promise<{ tools: TurnTools | undefined; instructions: string[] }> {
+  const tokenData = verifyWorkerToken(args.workerToken);
+  if (!tokenData) throw new Error("the turn's own worker token does not verify");
+  const servers = await mcp.configService.getMcpStatus(args.agentId, args.organizationId);
+  const definitions: TurnTools["definitions"] = [];
+  const instructions: string[] = [];
+  const listed = await Promise.allSettled(
+    servers.map(async (server) => ({
+      mcpId: server.id,
+      ...(await mcp.proxy.fetchToolsForMcp(server.id, args.agentId, tokenData, args.workerToken)),
+    }))
+  );
+  for (const outcome of listed) {
+    if (outcome.status === "rejected") {
+      logger.warn(
+        { agentId: args.agentId, err: getErrorMessage(outcome.reason) },
+        "Agent turn shadow: an MCP server did not list its tools; the turn runs without them"
+      );
+      continue;
+    }
+    const { mcpId, tools, instructions: serverInstructions } = outcome.value;
+    if (serverInstructions) instructions.push(serverInstructions);
+    for (const tool of tools) {
+      const name = tool.name?.trim();
+      if (!name || !isToolAllowedByPolicy(name, args.policy)) continue;
+      definitions.push({
+        mcp_id: mcpId,
+        name,
+        description: tool.description || `MCP tool from ${mcpId}`,
+        input_schema: tool.inputSchema ?? { type: "object", properties: {} },
+      });
+    }
+  }
+  return {
+    tools: definitions.length > 0 ? { gateway_url: args.gatewayUrl, definitions } : undefined,
+    instructions,
   };
 }
 
@@ -333,11 +499,11 @@ export async function enqueueAgentTurnShadow(
       return;
     }
 
-    const publicOrigin = deps.publicOrigin;
-    if (!publicOrigin) {
+    const gatewayUrl = deps.gatewayUrl;
+    if (!gatewayUrl) {
       logger.info(
         { agentId: data.agentId },
-        "Agent turn shadow skipped: PUBLIC_GATEWAY_URL is not configured, so there is no URL the fleet worker can reach the proxy on"
+        "Agent turn shadow skipped: PUBLIC_GATEWAY_URL is not configured, so there is no URL the fleet worker can reach the gateway on"
       );
       return;
     }
@@ -355,14 +521,46 @@ export async function enqueueAgentTurnShadow(
       return;
     }
 
+    const workerToken = mintTurnToken(data);
     const provider = await resolveShadowProvider(module, {
       agentId: data.agentId,
       organizationId: data.organizationId,
       userId: data.userId,
       modelRef,
-      publicOrigin,
+      gatewayUrl,
+      workerToken,
     });
     if (!provider) return;
+
+    let tools: TurnTools | undefined;
+    let mcpInstructions: string[] = [];
+    const toolsConfig = data.agentOptions?.toolsConfig as ToolsConfig | undefined;
+    if (!deps.mcp) {
+      logger.info(
+        { agentId: data.agentId },
+        "Agent turn shadow: the MCP surface is not wired, so the turn runs without tools"
+      );
+    } else if (toolsConfig?.mcpExposure === "cli") {
+      logger.info(
+        { agentId: data.agentId },
+        "Agent turn shadow: the agent exposes MCP as shell commands, which this lane does not carry yet, so the turn runs without tools"
+      );
+    } else if (provider.credential !== workerToken) {
+      logger.info(
+        { agentId: data.agentId, provider: module.providerId },
+        "Agent turn shadow: the provider answers its own credential placeholder, which the MCP route cannot authenticate, so the turn runs without tools"
+      );
+    } else {
+      const resolved = await resolveTurnTools(deps.mcp, {
+        agentId: data.agentId,
+        organizationId: data.organizationId,
+        gatewayUrl,
+        workerToken,
+        policy: turnToolPolicy(data.agentOptions),
+      });
+      tools = resolved.tools;
+      mcpInstructions = resolved.instructions;
+    }
 
     const settings = await agentSettings.getSettings(data.agentId, {
       organizationId: data.organizationId,
@@ -374,22 +572,24 @@ export async function enqueueAgentTurnShadow(
       suffixChars: HISTORY_TAIL_CHARS,
     });
 
-    const turn = {
+    const turn: TurnEnvelope = {
       agent_id: data.agentId,
       conversation_id: data.conversationId,
       message_id: data.messageId,
       message_text: data.messageText.slice(0, TURN_MESSAGE_CHARS),
-      system_prompt: composeShadowSystemPrompt(settings ?? {}),
-      messages: snapshot ? historyMessages(snapshot, provider) : [],
+      system_prompt: composeShadowSystemPrompt(settings ?? {}, mcpInstructions),
+      messages: snapshot ? historyMessages(snapshot) : [],
       provider: {
         api: provider.api,
         provider: provider.provider,
         model_id: provider.modelId,
         base_url: provider.baseUrl,
       },
+      ...(tools ? { tools } : {}),
       // DENY-ALL. A connector's allowlist defaults open; an agent turn's does
-      // not. The gateway proxy is the only host this turn has any business
-      // reaching, and the provider is behind it.
+      // not. The gateway is the only host this turn has any business
+      // reaching: the provider is behind its proxy and the tools behind its
+      // MCP route.
       allowed_hosts: [provider.host],
       shadow: true,
     };
@@ -415,6 +615,7 @@ export async function enqueueAgentTurnShadow(
         provider: provider.provider,
         model: provider.modelId,
         history: turn.messages.length,
+        tools: tools?.definitions.length ?? 0,
       },
       "Enqueued a shadow agent turn on the isolate lane"
     );

@@ -34,7 +34,10 @@ import {
 } from "../infrastructure/queue/index.js";
 import { armTurnTimeout, failTurnIfPending } from "./turn-liveness.js";
 import { recordAgentRunInput } from "./agent-run-input.js";
-import { enqueueAgentTurnShadow } from "./agent-turn-shadow.js";
+import {
+  type AgentTurnShadowDeps,
+  enqueueAgentTurnShadow,
+} from "./agent-turn-shadow.js";
 import {
   buildCanonicalConversationKey,
   type DeploymentManager,
@@ -42,7 +45,7 @@ import {
   type OrchestratorConfig,
 } from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
-import { getConfiguredPublicOrigin } from "../../utils/public-origin.js";
+import { getConfiguredPublicGatewayUrl } from "../../utils/public-origin.js";
 import { resolvePinnedSelection } from "../../lobu/stores/sandbox-store.js";
 import { threadIdFromApiConversationId } from "../services/api-conversation-id.js";
 import {
@@ -130,6 +133,7 @@ export class MessageConsumer {
    */
   private deploymentLocks = new Set<string>();
   private agentSettingsStore?: AgentSettingsStore;
+  private agentTurnMcp?: AgentTurnShadowDeps["mcp"];
   private guardrailRegistry?: GuardrailRegistry;
   private recordRunInput: typeof recordAgentRunInput;
   constructor(
@@ -144,6 +148,16 @@ export class MessageConsumer {
     this.deploymentManager = deploymentManager;
     this.queue = queue;
     this.recordRunInput = recordRunInput;
+  }
+
+  /**
+   * The gateway's MCP surface for the isolate-lane shadow: which servers an
+   * agent has and what tools they publish. Same post-construction injection
+   * as the guardrails, for the same reason. Absent → shadow turns run with no
+   * tools.
+   */
+  setAgentTurnMcp(mcp?: AgentTurnShadowDeps["mcp"]): void {
+    this.agentTurnMcp = mcp;
   }
 
   /**
@@ -674,7 +688,8 @@ export class MessageConsumer {
       await enqueueAgentTurnShadow(data, {
         agentSettings: this.agentSettingsStore,
         catalog: this.deploymentManager.getProviderCatalogService?.(),
-        publicOrigin: getConfiguredPublicOrigin(),
+        mcp: this.agentTurnMcp,
+        gatewayUrl: getConfiguredPublicGatewayUrl(),
       });
 
       queueSpan?.setStatus({ code: SpanStatusCode.OK });

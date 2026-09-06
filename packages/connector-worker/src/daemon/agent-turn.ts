@@ -52,6 +52,7 @@ export async function executeAgentTurnRun(
   }
 
   let deltas = 0;
+  let toolCalls = 0;
   // The connector-lane reaper writes a claimed run off once its heartbeat goes
   // stale, and a turn's wall clock is far longer than that threshold. Beat on
   // the same interval every other lane does, so a live turn is never reaped and
@@ -89,6 +90,19 @@ export async function executeAgentTurnRun(
           systemPrompt: turn.system_prompt,
           messages: turn.messages,
           userMessage: turn.message_text,
+          ...(turn.tools
+            ? {
+                tools: {
+                  gatewayUrl: turn.tools.gateway_url,
+                  definitions: turn.tools.definitions.map((tool) => ({
+                    mcpId: tool.mcp_id,
+                    name: tool.name,
+                    description: tool.description,
+                    inputSchema: tool.input_schema,
+                  })),
+                },
+              }
+            : {}),
         },
         config: {},
         credentials: job.credentials,
@@ -98,6 +112,7 @@ export async function executeAgentTurnRun(
       {
         onTurnEvent: (event: AgentTurnEvent) => {
           if (event.type === 'text_delta') deltas += 1;
+          if (event.type === 'tool_call_start') toolCalls += 1;
         },
       }
     );
@@ -114,7 +129,7 @@ export async function executeAgentTurnRun(
       transcript: result.turn.messages,
       exit_reason: 'ok',
     });
-    log.info(`[agent-turn] run ${runId} completed after ${deltas} deltas`);
+    log.info(`[agent-turn] run ${runId} completed after ${deltas} deltas and ${toolCalls} tool calls`);
     return { itemsCollected: 0 };
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));

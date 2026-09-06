@@ -9,12 +9,14 @@ import {
   AgentTurnPollPayloadSchema,
   PollResponseSchema,
 } from '@lobu/core/contracts/worker/protocol';
-import type { MessagePayload } from '@lobu/core';
+import { type MessagePayload, verifyWorkerToken } from '@lobu/core';
 import { Value } from '@sinclair/typebox/value';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { enqueueAgentTurnShadow } from '../../gateway/orchestration/agent-turn-shadow';
 import type { AgentSettingsStore } from '../../gateway/auth/settings/agent-settings-store';
 import type { ProviderCatalogService } from '../../gateway/auth/provider-catalog';
+import type { McpConfigService } from '../../gateway/auth/mcp/config-service';
+import type { McpProxy } from '../../gateway/auth/mcp/proxy';
 import type { ModelProviderModule } from '../../gateway/modules/module-system';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import {
@@ -26,7 +28,7 @@ import {
 import { post } from '../setup/test-helpers';
 
 const SHADOW_ENV = 'LOBU_ISOLATE_TURN_SHADOW_AGENTS';
-const PUBLIC_ORIGIN = 'https://gateway.test.invalid';
+const GATEWAY_URL = 'https://gateway.test.invalid/lobu';
 const AGENT_ID = 'shadow-agent';
 
 /**
@@ -52,6 +54,50 @@ function claudeModule(overrides: Partial<ModelProviderModule> = {}): ModelProvid
     buildCredentialPlaceholder: () => 'lobu_secret_11111111-2222-3333-4444-555555555555',
     ...overrides,
   } as unknown as ModelProviderModule;
+}
+
+/**
+ * The base provider module answers the worker token it is handed as the
+ * credential — that is what lets one credential serve the proxy and the MCP
+ * route. `claudeModule` above answers a fixed placeholder to pin the
+ * lifting; this one behaves like production.
+ */
+function tokenEchoingModule(): ModelProviderModule {
+  return claudeModule({
+    buildCredentialPlaceholder: (_agentId: string, context?: { workerToken?: string }) =>
+      context?.workerToken ?? 'lobu-proxy',
+  } as Partial<ModelProviderModule>);
+}
+
+interface McpFixture {
+  mcp: { configService: McpConfigService; proxy: McpProxy };
+  /** Every (mcpId, agentId, bearer) `fetchToolsForMcp` was asked for. */
+  listed: Array<{ mcpId: string; agentId: string; token: string | undefined }>;
+}
+
+/** An MCP surface with one server publishing three tools and an instruction block. */
+function mcpFixture(options: { fail?: boolean } = {}): McpFixture {
+  const listed: McpFixture['listed'] = [];
+  const configService = {
+    getMcpStatus: async () => [
+      { id: 'lobu-memory', name: 'lobu-memory', requiresAuth: false, requiresInput: false },
+    ],
+  } as unknown as McpConfigService;
+  const proxy = {
+    fetchToolsForMcp: async (mcpId: string, agentId: string, _tokenData: unknown, token?: string) => {
+      listed.push({ mcpId, agentId, token });
+      if (options.fail) throw new Error('upstream MCP is down');
+      return {
+        instructions: 'Use query_sdk before run_sdk.',
+        tools: [
+          { name: 'query_sdk', description: 'Read data', inputSchema: { type: 'object', properties: { code: { type: 'string' } } } },
+          { name: 'run_sdk', description: 'Write data', inputSchema: { type: 'object', properties: { code: { type: 'string' } } } },
+          { name: 'query_sql', inputSchema: undefined },
+        ],
+      };
+    },
+  } as unknown as McpProxy;
+  return { mcp: { configService, proxy }, listed };
 }
 
 function catalogFor(module: ModelProviderModule | undefined): ProviderCatalogService {
@@ -124,7 +170,7 @@ async function claimedShadowRun(workerId: string): Promise<number> {
   await enqueueAgentTurnShadow(messageFor(org.id), {
     agentSettings: settingsStore,
     catalog: catalogFor(claudeModule()),
-    publicOrigin: PUBLIC_ORIGIN,
+    gatewayUrl: GATEWAY_URL,
   });
   const response = await pollFleet(workerId, { agent_turn: true });
   const body = await response.json();
@@ -162,7 +208,7 @@ describe('agent turn shadow producer', () => {
     await enqueueAgentTurnShadow(messageFor(org.id), {
       agentSettings: settingsStore,
       catalog: catalogFor(claudeModule()),
-      publicOrigin: PUBLIC_ORIGIN,
+      gatewayUrl: GATEWAY_URL,
     });
 
     const rows = await shadowRuns();
@@ -193,7 +239,7 @@ describe('agent turn shadow producer', () => {
         provider: 'anthropic',
         // Lobu stores "claude/…"; the upstream only knows the bare id.
         model_id: 'claude-opus-4-8',
-        base_url: `${PUBLIC_ORIGIN}/api/proxy/anthropic/a/${AGENT_ID}/o/${org.id}/u/user-shadow`,
+        base_url: `${GATEWAY_URL}/api/proxy/anthropic/a/${AGENT_ID}/o/${org.id}/u/user-shadow`,
       },
       // Deny-all: the gateway proxy and nothing else.
       allowed_hosts: ['gateway.test.invalid'],
@@ -210,12 +256,209 @@ describe('agent turn shadow producer', () => {
     expect(JSON.stringify(envelope.turn)).not.toContain('lobu_secret_');
   });
 
+  it('hands the turn its tools, its one credential being a worker token both gateway routes accept', async () => {
+    const org = await createTestOrganization();
+    const fixture = mcpFixture();
+    const message = messageFor(org.id);
+    message.platformMetadata = { connectionId: 'conn-shadow' };
+    await enqueueAgentTurnShadow(message, {
+      agentSettings: settingsStore,
+      catalog: catalogFor(tokenEchoingModule()),
+      mcp: fixture.mcp,
+      gatewayUrl: GATEWAY_URL,
+    });
+
+    const [run] = await shadowRuns();
+    const envelope = run.action_input as {
+      turn: { tools?: unknown; system_prompt: string };
+      credential: string;
+    };
+    expect(Value.Check(AgentTurnPollPayloadSchema, { turn: envelope.turn })).toBe(true);
+
+    // The credential is a worker token minted for THIS agent, user, org and
+    // conversation: the secret proxy binds it to the agent in the proxy URL and
+    // the MCP route authenticates it, so the guest holds exactly one secret.
+    const claims = verifyWorkerToken(envelope.credential);
+    expect(claims).toMatchObject({
+      agentId: AGENT_ID,
+      userId: 'user-shadow',
+      organizationId: org.id,
+      conversationId: 'conv-shadow',
+      channelId: 'api_user-shadow',
+      connectionId: 'conn-shadow',
+      messageId: 'msg-shadow',
+      deploymentName: 'agent-turn:msg-shadow',
+    });
+    expect(JSON.stringify(envelope.turn)).not.toContain(envelope.credential);
+
+    // Discovery ran as the turn's own identity, with the same token.
+    expect(fixture.listed).toEqual([
+      { mcpId: 'lobu-memory', agentId: AGENT_ID, token: envelope.credential },
+    ]);
+    expect(envelope.turn.tools).toEqual({
+      gateway_url: GATEWAY_URL,
+      definitions: [
+        {
+          mcp_id: 'lobu-memory',
+          name: 'query_sdk',
+          description: 'Read data',
+          input_schema: { type: 'object', properties: { code: { type: 'string' } } },
+        },
+        {
+          mcp_id: 'lobu-memory',
+          name: 'run_sdk',
+          description: 'Write data',
+          input_schema: { type: 'object', properties: { code: { type: 'string' } } },
+        },
+        // No description and no schema published: the same defaults the
+        // subprocess lane's plugin fills in.
+        {
+          mcp_id: 'lobu-memory',
+          name: 'query_sql',
+          description: 'MCP tool from lobu-memory',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ],
+    });
+    // The server's own instructions join the prompt after the agent layers.
+    expect(envelope.turn.system_prompt.endsWith('\n\nUse query_sdk before run_sdk.')).toBe(true);
+  });
+
+  // The policy is the agent's own (`buildToolPolicy`, shared with the
+  // subprocess lane); applying it to MCP tools is this lane's own stricter
+  // choice — the subprocess lane registers its MCP tools unfiltered.
+  it('filters the tools through the agent tool policy', async () => {
+    const org = await createTestOrganization();
+    const message = messageFor(org.id);
+    message.agentOptions = {
+      model: 'claude/claude-opus-4-8',
+      toolsConfig: { strictMode: true, allowedTools: ['query_*'] },
+      disallowedTools: 'query_sql',
+    };
+    await enqueueAgentTurnShadow(message, {
+      agentSettings: settingsStore,
+      catalog: catalogFor(tokenEchoingModule()),
+      mcp: mcpFixture().mcp,
+      gatewayUrl: GATEWAY_URL,
+    });
+
+    const [run] = await shadowRuns();
+    const turn = run.action_input.turn as { tools?: { definitions: Array<{ name: string }> } };
+    expect(turn.tools?.definitions.map((tool) => tool.name)).toEqual(['query_sdk']);
+  });
+
+  it('runs the turn without tools when it cannot honour them, and still enqueues it', async () => {
+    const org = await createTestOrganization();
+    const base = {
+      agentSettings: settingsStore,
+      catalog: catalogFor(tokenEchoingModule()),
+      gatewayUrl: GATEWAY_URL,
+    };
+    let produced = 0;
+    const toolless = async () => {
+      const rows = await shadowRuns();
+      produced += 1;
+      expect(rows).toHaveLength(produced);
+      const turn = rows[produced - 1].action_input.turn as { tools?: unknown };
+      expect(turn.tools).toBeUndefined();
+    };
+
+    // No MCP surface wired.
+    await enqueueAgentTurnShadow(messageFor(org.id), base);
+    await toolless();
+
+    // The agent exposes MCP as shell commands, which this lane does not carry.
+    const cli = messageFor(org.id);
+    cli.agentOptions = { model: 'claude/claude-opus-4-8', toolsConfig: { mcpExposure: 'cli' } };
+    await enqueueAgentTurnShadow(cli, { ...base, mcp: mcpFixture().mcp });
+    await toolless();
+
+    // A provider that answers its own placeholder: the MCP route could not
+    // authenticate it, so the tools stay off rather than fail on every call.
+    await enqueueAgentTurnShadow(messageFor(org.id), {
+      ...base,
+      catalog: catalogFor(claudeModule()),
+      mcp: mcpFixture().mcp,
+    });
+    await toolless();
+
+    // Discovery failed: nothing to hand the turn, but the turn itself runs.
+    await enqueueAgentTurnShadow(messageFor(org.id), { ...base, mcp: mcpFixture({ fail: true }).mcp });
+    await toolless();
+  });
+
+  it('replays the conversation with its tool calls and results, squared to a well-formed window', async () => {
+    const org = await createTestOrganization();
+    const sql = getTestDb();
+    const at = new Date(Date.now() - 60_000).toISOString();
+    const entry = (id: string, message: Record<string, unknown>) =>
+      JSON.stringify({ type: 'message', id, parentId: null, timestamp: at, message });
+    const assistant = (content: unknown[]) => ({
+      role: 'assistant',
+      content,
+      api: 'anthropic-messages',
+      provider: 'anthropic',
+      model: 'claude-opus-4-8',
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: 'toolUse',
+      timestamp: 1,
+    });
+    const snapshot = [
+      JSON.stringify({ type: 'session', version: 3, id: 'prior', timestamp: at, cwd: '/w' }),
+      // A tool result whose call fell off the window: dropped, so the window
+      // opens on the human.
+      entry('orphan', { role: 'toolResult', toolCallId: 'toolu_00', toolName: 'query_sdk', content: [{ type: 'text', text: 'stale' }], isError: false, timestamp: 1 }),
+      entry('u1', { role: 'user', content: 'how many entities?', timestamp: 1 }),
+      entry('a1', assistant([
+        { type: 'thinking', thinking: 'let me count', thinkingSignature: 'sig' },
+        { type: 'toolCall', id: 'toolu_01', name: 'query_sdk', arguments: { code: 'entities.count()' } },
+      ])),
+      entry('t1', { role: 'toolResult', toolCallId: 'toolu_01', toolName: 'query_sdk', content: [{ type: 'text', text: '3 entities' }], isError: false, timestamp: 1 }),
+      entry('a2', { ...assistant([{ type: 'text', text: 'There are 3.' }]), stopReason: 'stop' }),
+      entry('u2', { role: 'user', content: 'and companies?', timestamp: 1 }),
+      // The last turn died mid-call: a tool call with no result would be
+      // refused by the provider, so the window ends before it.
+      entry('a3', assistant([{ type: 'toolCall', id: 'toolu_02', name: 'query_sdk', arguments: {} }])),
+      '',
+    ].join('\n');
+    const [prior] = await sql<{ id: number }>`
+      INSERT INTO runs (run_type, status, organization_id, created_at, completed_at, run_at)
+      VALUES ('chat_message', 'completed', ${org.id}, ${at}, ${at}, ${at})
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO agent_transcript_snapshot
+        (organization_id, agent_id, conversation_id, run_id, snapshot_jsonl, byte_size, terminal_status, created_at)
+      VALUES (${org.id}, ${AGENT_ID}, 'conv-shadow', ${prior.id}, ${snapshot}, ${Buffer.byteLength(snapshot)}, 'completed', ${at})
+    `;
+
+    await enqueueAgentTurnShadow(messageFor(org.id), {
+      agentSettings: settingsStore,
+      catalog: catalogFor(tokenEchoingModule()),
+      mcp: mcpFixture().mcp,
+      gatewayUrl: GATEWAY_URL,
+    });
+
+    const [run] = await shadowRuns();
+    const turn = run.action_input.turn as { messages: Array<Record<string, unknown>> };
+    expect(turn.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'toolResult', 'assistant', 'user']);
+    // The call and its result replay as pi stored them; only the thinking
+    // block, whose signature belongs to the provider that made it, is gone.
+    expect(turn.messages[1]).toMatchObject({
+      content: [{ type: 'toolCall', id: 'toolu_01', name: 'query_sdk', arguments: { code: 'entities.count()' } }],
+      stopReason: 'toolUse',
+    });
+    expect(turn.messages[2]).toMatchObject({ role: 'toolResult', toolCallId: 'toolu_01', isError: false });
+    expect(turn.messages[3]).toMatchObject({ content: [{ type: 'text', text: 'There are 3.' }] });
+    expect(turn.messages[4]).toMatchObject({ role: 'user', content: [{ type: 'text', text: 'and companies?' }] });
+  });
+
   it('arms no turn marker and journals no run input', async () => {
     const org = await createTestOrganization();
     await enqueueAgentTurnShadow(messageFor(org.id), {
       agentSettings: settingsStore,
       catalog: catalogFor(claudeModule()),
-      publicOrigin: PUBLIC_ORIGIN,
+      gatewayUrl: GATEWAY_URL,
     });
 
     const sql = getTestDb();
@@ -237,7 +480,7 @@ describe('agent turn shadow producer', () => {
     await enqueueAgentTurnShadow(messageFor(org.id), {
       agentSettings: settingsStore,
       catalog: catalogFor(claudeModule()),
-      publicOrigin: PUBLIC_ORIGIN,
+      gatewayUrl: GATEWAY_URL,
     });
     const [run] = await shadowRuns();
 
@@ -266,7 +509,7 @@ describe('agent turn shadow producer', () => {
     await enqueueAgentTurnShadow(messageFor(org.id), {
       agentSettings: settingsStore,
       catalog: catalogFor(claudeModule()),
-      publicOrigin: PUBLIC_ORIGIN,
+      gatewayUrl: GATEWAY_URL,
     });
     const [run] = await shadowRuns();
 
@@ -290,7 +533,7 @@ describe('agent turn shadow producer', () => {
     await enqueueAgentTurnShadow(messageFor(org.id), {
       agentSettings: settingsStore,
       catalog: catalogFor(claudeModule()),
-      publicOrigin: PUBLIC_ORIGIN,
+      gatewayUrl: GATEWAY_URL,
     });
     const [run] = await shadowRuns();
 
@@ -322,7 +565,7 @@ describe('agent turn shadow producer', () => {
     const deps = {
       agentSettings: settingsStore,
       catalog: catalogFor(claudeModule()),
-      publicOrigin: PUBLIC_ORIGIN,
+      gatewayUrl: GATEWAY_URL,
     };
 
     process.env[SHADOW_ENV] = 'some-other-agent';
@@ -350,8 +593,8 @@ describe('agent turn shadow producer', () => {
     });
     expect(await shadowRuns()).toHaveLength(0);
 
-    // No public origin means no URL a fleet worker could reach the proxy on.
-    await enqueueAgentTurnShadow(messageFor(org.id), { ...deps, publicOrigin: undefined });
+    // No public gateway URL means no URL a fleet worker could reach the proxy on.
+    await enqueueAgentTurnShadow(messageFor(org.id), { ...deps, gatewayUrl: undefined });
     expect(await shadowRuns()).toHaveLength(0);
 
     // `*` selects every agent — the operator's blanket switch.

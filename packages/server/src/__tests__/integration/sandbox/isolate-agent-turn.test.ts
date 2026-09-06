@@ -16,7 +16,10 @@
  *  3. the transcript comes back with the turn appended, so the next turn can
  *     resume from it;
  *  4. the guest reaches the gateway host it was given and NOTHING else — an
- *     agent turn runs deny-all, unlike a connector's open default.
+ *     agent turn runs deny-all, unlike a connector's open default;
+ *  5. a tool call is one more request to the same gateway, over the same
+ *     `fetch`, carrying the same one credential — and the transcript comes
+ *     back with the call and its result in it.
  *
  * Runs under Node (vitest); like the other lane suites it FAILS rather than
  * skips when `isolated-vm` cannot load.
@@ -32,6 +35,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 /** Requests the fake provider has answered. */
 interface ProviderHit {
+	method: string;
 	url: string;
 	authorization: string | null;
 	apiKeyHeader: string | null;
@@ -93,18 +97,89 @@ async function writeAnthropicStream(res: Parameters<Parameters<typeof createServ
 	res.end();
 }
 
+/** An assistant turn that calls one tool and stops for its result. */
+function writeAnthropicToolUse(
+	res: Parameters<Parameters<typeof createServer>[0]>[1],
+	call: { id: string; name: string; input: Record<string, unknown> },
+): void {
+	res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+	const send = (type: string, data: unknown) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+	send("message_start", {
+		type: "message_start",
+		message: {
+			id: "msg_tool",
+			type: "message",
+			role: "assistant",
+			model: "claude-test",
+			content: [],
+			stop_reason: null,
+			stop_sequence: null,
+			usage: { input_tokens: 5, output_tokens: 0 },
+		},
+	});
+	send("content_block_start", {
+		type: "content_block_start",
+		index: 0,
+		content_block: { type: "tool_use", id: call.id, name: call.name, input: {} },
+	});
+	send("content_block_delta", {
+		type: "content_block_delta",
+		index: 0,
+		delta: { type: "input_json_delta", partial_json: JSON.stringify(call.input) },
+	});
+	send("content_block_stop", { type: "content_block_stop", index: 0 });
+	send("message_delta", {
+		type: "message_delta",
+		delta: { stop_reason: "tool_use", stop_sequence: null },
+		usage: { output_tokens: 3 },
+	});
+	send("message_stop", { type: "message_stop" });
+	res.end();
+}
+
+/**
+ * The tool the fake gateway serves at its MCP route, and what it answers. The
+ * route is the same one the real gateway's MCP proxy mounts.
+ */
+const TOOL_ROUTE = "/lobu/mcp/lobu-memory/tools/query_sdk";
+let toolReply: { status: number; body: unknown } = {
+	status: 200,
+	body: { content: [{ type: "text", text: "3 entities" }] },
+};
+
 beforeAll(async () => {
 	guestCode = await agentGuestBundle();
 	server = createServer((req, res) => {
 		const chunks: Buffer[] = [];
 		req.on("data", (c: Buffer) => chunks.push(c));
 		req.on("end", () => {
+			const body = Buffer.concat(chunks).toString("utf8");
 			hits.push({
+				method: req.method ?? "",
 				url: req.url ?? "",
 				authorization: (req.headers.authorization as string | undefined) ?? null,
 				apiKeyHeader: (req.headers["x-api-key"] as string | undefined) ?? null,
-				body: Buffer.concat(chunks).toString("utf8"),
+				body,
 			});
+			if (req.url === TOOL_ROUTE) {
+				res.writeHead(toolReply.status, { "content-type": "application/json" });
+				res.end(JSON.stringify(toolReply.body));
+				return;
+			}
+			// A provider request whose transcript already carries a tool result
+			// gets the answer; one whose last message is the human's gets a tool
+			// call first — the shape of every tool-using turn.
+			const request = JSON.parse(body) as { tools?: unknown[]; messages: Array<{ role: string; content: unknown }> };
+			const last = request.messages.at(-1);
+			const wantsTool =
+				Array.isArray(request.tools) &&
+				request.tools.length > 0 &&
+				last?.role === "user" &&
+				!(Array.isArray(last.content) && last.content.some((b) => (b as { type?: string }).type === "tool_result"));
+			if (wantsTool) {
+				writeAnthropicToolUse(res, { id: "toolu_01", name: "query_sdk", input: { code: "entities.count()" } });
+				return;
+			}
 			void writeAnthropicStream(res, ["Hello", " from", " the", " isolate"]);
 		});
 	});
@@ -264,5 +339,98 @@ describe("agent turn on the isolate lane", () => {
 		expect(spends).toHaveLength(1);
 		expect(spends[0]?.line).toMatch(/^credential [0-9a-f]{12} spent on 127\.0\.0\.1 in header x-api-key$/);
 		expect(spends[0]?.line).not.toContain(GATEWAY_PLACEHOLDER.slice(-12));
+	}, 120_000);
+
+	function toolJob(overrides: Partial<AgentTurnInput> = {}): ExecutorJob {
+		return turnJob({
+			tools: {
+				gatewayUrl: `http://127.0.0.1:${port}/lobu`,
+				definitions: [
+					{
+						mcpId: "lobu-memory",
+						name: "query_sdk",
+						description: "Read workspace data",
+						inputSchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
+					},
+				],
+			},
+			...overrides,
+		});
+	}
+
+	it("calls a tool through the gateway's MCP route with the same one credential, and resumes from the result", async () => {
+		hits = [];
+		toolReply = { status: 200, body: { content: [{ type: "text", text: "3 entities" }] } };
+		armFirstDeltaGate();
+		const run = await runTurn(toolJob());
+
+		expect(run.output.text).toBe("Hello from the isolate");
+		expect(run.output.stopReason).toBe("stop");
+		// Two provider calls around one tool call: usage is the turn's total.
+		expect(run.output.usage).toEqual({ input: 16, output: 10 });
+
+		expect(hits.map((h) => `${h.method} ${h.url}`)).toEqual([
+			"POST /v1/messages",
+			"POST /lobu/mcp/lobu-memory/tools/query_sdk",
+			"POST /v1/messages",
+		]);
+		// The model was offered the tool with the schema the gateway published...
+		const offered = JSON.parse(hits[0]?.body ?? "{}") as { tools?: Array<{ name: string; input_schema: unknown }> };
+		expect(offered.tools).toEqual([
+			expect.objectContaining({
+				name: "query_sdk",
+				input_schema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
+			}),
+		]);
+		// ...the tool call carried the model's arguments and the SAME credential
+		// the provider call did, resolved by the host into the bearer header...
+		expect(hits[1]?.body).toBe(JSON.stringify({ code: "entities.count()" }));
+		expect(hits[1]?.authorization).toBe(`Bearer ${GATEWAY_PLACEHOLDER}`);
+		expect(hits[1]?.apiKeyHeader).toBeNull();
+		// ...and the second provider call resumed from the tool result.
+		const resumed = JSON.parse(hits[2]?.body ?? "{}") as { messages: Array<{ role: string; content: unknown }> };
+		expect(resumed.messages.at(-1)).toMatchObject({
+			role: "user",
+			content: [expect.objectContaining({ type: "tool_result", tool_use_id: "toolu_01", content: "3 entities" })],
+		});
+
+		// The host saw the call as it happened, in order, with its outcome.
+		const toolEvents = run.events.filter((e) => e.type === "tool_call_start" || e.type === "tool_call_end");
+		expect(toolEvents).toEqual([
+			{ type: "tool_call_start", toolCallId: "toolu_01", name: "query_sdk", args: { code: "entities.count()" } },
+			{ type: "tool_call_end", toolCallId: "toolu_01", name: "query_sdk", isError: false, output: "3 entities" },
+		]);
+
+		// The transcript the next turn resumes from carries the call and its result.
+		const roles = run.output.messages.map((m) => (m as { role: string }).role);
+		expect(roles).toEqual(["user", "assistant", "toolResult", "assistant"]);
+		expect(run.output.messages[2]).toMatchObject({ role: "toolResult", toolCallId: "toolu_01", toolName: "query_sdk", isError: false });
+
+		// One credential, one host: the audit line is written once per
+		// (placeholder, host), so the tool call adds no second line — the bearer
+		// hit above is the evidence it was spent there too.
+		const spends = run.logs.filter((l) => l.line.startsWith("credential ")).map((l) => l.line.replace(/^credential [0-9a-f]{12} /, ""));
+		expect(spends).toEqual(["spent on 127.0.0.1 in header x-api-key"]);
+	}, 120_000);
+
+	it("hands a refused tool call to the model as an error result and lets the turn finish", async () => {
+		hits = [];
+		// What the gateway answers when the agent's policy gates the tool behind
+		// an approval: a 403 with the text the subprocess lane's plugin shows.
+		toolReply = {
+			status: 403,
+			body: { content: [{ type: "text", text: "Tool call requires approval. The user has been asked to approve." }], isError: true },
+		};
+		armFirstDeltaGate();
+		const run = await runTurn(toolJob());
+
+		expect(run.output.text).toBe("Hello from the isolate");
+		const end = run.events.find((e) => e.type === "tool_call_end") as { isError: boolean; output: string } | undefined;
+		expect(end?.isError).toBe(true);
+		expect(end?.output).toContain("Tool call requires approval");
+		const resumed = JSON.parse(hits[2]?.body ?? "{}") as { messages: Array<{ content: unknown }> };
+		expect(resumed.messages.at(-1)).toMatchObject({
+			content: [expect.objectContaining({ type: "tool_result", is_error: true })],
+		});
 	}, 120_000);
 });

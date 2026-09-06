@@ -28,6 +28,7 @@ import {
 import { ChatInstanceManager } from "../gateway/connections/chat-instance-manager";
 import { ChatResponseBridge } from "../gateway/connections/chat-response-bridge";
 import { Gateway } from "../gateway/gateway-main";
+import type { AgentTurnShadowDeps } from "../gateway/orchestration/agent-turn-shadow";
 import { Orchestrator } from "../gateway/orchestration/index";
 import {
 	startFilteringProxy,
@@ -35,6 +36,7 @@ import {
 	wireProxyEgressStores,
 } from "../gateway/proxy/proxy-manager";
 import { SecretStoreRegistry } from "../gateway/secrets/index";
+import type { CoreServices } from "../gateway/services/core-services";
 import type { Env } from "../index";
 import { BootConfigError } from "../utils/errors";
 import logger from "../utils/logger";
@@ -401,6 +403,7 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			coreServices.getPolicyStore() ?? undefined,
 			coreServices.getGuardrailRegistry() ?? undefined,
 			coreServices.getAgentSettingsStore() ?? undefined,
+			agentTurnMcpDeps(coreServices),
 		);
 		logger.info("[Lobu] Embedded orchestrator injected core services");
 
@@ -678,3 +681,16 @@ export function getLobuCoreServices(): any {
 }
 
 export { ensureEmbeddedGatewaySecrets };
+
+/**
+ * The MCP surface the isolate-lane shadow producer reads tools through — both
+ * halves or neither, since a proxy without its config service (or vice versa)
+ * cannot list a single tool.
+ */
+function agentTurnMcpDeps(
+	coreServices: CoreServices,
+): AgentTurnShadowDeps["mcp"] {
+	const configService = coreServices.getMcpConfigService();
+	const proxy = coreServices.getMcpProxy();
+	return configService && proxy ? { configService, proxy } : undefined;
+}

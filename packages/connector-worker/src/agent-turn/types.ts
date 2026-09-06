@@ -13,19 +13,39 @@ export interface AgentTurnProvider {
   modelId: string;
   /**
    * The gateway's agent-scoped secret-proxy URL. The guest never learns a real
-   * provider key: the proxy swaps the placeholder it sends for the real key.
+   * provider key: the proxy swaps the credential it sends for the real key.
    */
   baseUrl: string;
   /**
-   * HOST-INJECTED, never set by the producer. The provider key travels on
-   * `job.credentials.accessToken` so it goes through the lane's one credential
-   * path: the host mints a per-run vault placeholder over the gateway's own
-   * placeholder, the guest only ever sees the vault's, and the host swaps it
-   * back into the outbound header. A producer that set this itself would hand
-   * the guest a credential the vault never minted, and the vault refuses those.
+   * HOST-INJECTED, never set by the producer. The turn's ONE credential
+   * travels on `job.credentials.accessToken` so it goes through the lane's one
+   * credential path: the host mints a per-run vault placeholder over it, the
+   * guest only ever sees the vault's, and the host swaps it back into the
+   * outbound header. The value behind it is the gateway's own per-turn worker
+   * token, which the secret proxy accepts as the provider credential and the
+   * MCP route accepts as the bearer — so the same placeholder authenticates
+   * both the model call and every tool call. A producer that set this itself
+   * would hand the guest a credential the vault never minted, and the vault
+   * refuses those.
    */
   apiKey?: string;
   maxTokens?: number;
+}
+
+/** One tool the turn may call, as the gateway's MCP proxy published it. */
+export interface AgentTurnTool {
+  mcpId: string;
+  name: string;
+  description: string;
+  /** JSON schema for the arguments; pi validates calls against it as-is. */
+  inputSchema: Record<string, unknown>;
+}
+
+/** The tools of a turn and where they are called. */
+export interface AgentTurnTools {
+  /** Gateway base URL, mount path included; the MCP route hangs off it. */
+  gatewayUrl: string;
+  definitions: AgentTurnTool[];
 }
 
 /**
@@ -43,13 +63,17 @@ export interface AgentTurnInput {
   messages: AgentTurnMessage[];
   /** What the human just said. */
   userMessage: string;
+  /** Absent → the turn runs with no tools. */
+  tools?: AgentTurnTools;
 }
 
 /** What the guest streams out while the turn runs. */
 export type AgentTurnEvent =
   | { type: 'text_delta'; delta: string }
   | { type: 'thinking_delta'; delta: string }
-  | { type: 'message_end' };
+  | { type: 'message_end' }
+  | { type: 'tool_call_start'; toolCallId: string; name: string; args: unknown }
+  | { type: 'tool_call_end'; toolCallId: string; name: string; isError: boolean; output: string };
 
 /** What the turn produced. */
 export interface AgentTurnOutput {

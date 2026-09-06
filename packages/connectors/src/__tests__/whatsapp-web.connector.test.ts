@@ -225,6 +225,33 @@ describe("canonical WhatsApp identity and cutover", () => {
     );
   });
 
+  /**
+   * Measured against the live prod tab on 2026-09-06: a cold WhatsApp Web load
+   * traces 0:0 -> 5:0 -> 947:0 -> 947:23 -> ... -> 947:547 and is STILL
+   * climbing at t=24s. Readiness needs the `me:chatCount:msgCount` signature to
+   * hold for 500ms, so a 25s budget expired mid-stream on every run -- the feed
+   * failed `stores_settling` 9 times out of 10 and ingested nothing for days.
+   *
+   * The run itself is not the constraint: the executor allows 600s and each
+   * probe is its own fenced dispatch, so 25s was arbitrarily tight rather than
+   * a real bound. A warm tab still answers in ~1s, so raising this only changes
+   * how long a COLD tab is allowed to finish.
+   */
+  it("budgets readiness for a cold hydration, not just a warm tab", () => {
+    const source = readFileSync(
+      new URL("../whatsapp_web.ts", import.meta.url),
+      "utf8"
+    );
+    const match = source.match(/const READY_TIMEOUT_MS = ([\d_]+);/);
+    if (!match?.[1]) {
+      throw new Error("whatsapp_web.ts no longer declares READY_TIMEOUT_MS");
+    }
+    const readyTimeoutMs = Number(match[1].replaceAll("_", ""));
+    // A cold tab was still streaming at 24s; anything at or under that cannot
+    // outlast one measured hydration.
+    expect(readyTimeoutMs).toBeGreaterThanOrEqual(90_000);
+  });
+
   it("collects strictly after the cutover so ingested rows never replay", () => {
     const { request } = buildCollectionPlan({
       checkpoint: {
@@ -514,7 +541,10 @@ describe("sync over the generic chrome bridge", () => {
     const { dispatcher } = makeDispatcher({
       probe: () => {
         calls += 1;
-        if (calls === 1) Date.now = () => realNow() + 60_000;
+        // Jump past READY_TIMEOUT_MS so the readiness loop gives up on the
+        // first retry instead of polling for the whole (now cold-hydration
+        // sized) budget.
+        if (calls === 1) Date.now = () => realNow() + 10 * 60_000;
         return {
           ok: false,
           error: { state: "hydrating", reason: "stores_settling" },
@@ -530,6 +560,28 @@ describe("sync over the generic chrome bridge", () => {
     } finally {
       Date.now = realNow;
     }
+  });
+
+  /**
+   * `collect` re-checks readiness inside the page, so a message arriving between
+   * the passing probe and the collect dispatch surfaces `stores_settling` from
+   * the COLLECT path rather than the readiness loop. That is an ordinary race,
+   * not a broken feed: unclassified it counts against the consecutive-failure
+   * budget and walks an otherwise healthy feed toward a hard pause.
+   */
+  it("treats collect-phase hydration as transient, not a real failure", async () => {
+    const { dispatcher } = makeDispatcher({
+      probe: () => ({ ok: true, state: "ready", message_count: 1, chat_count: 1 }),
+      collect: () => ({
+        ok: false,
+        error: { state: "hydrating", reason: "stores_settling" },
+      }),
+    });
+    await expect(
+      messagesFeed().sync(syncCtx(null, dispatcher))
+    ).rejects.toThrow(
+      /^\[lobu:dependency_unavailable:browser_source_hydrating\] WhatsApp Web hydrating: stores_settling/
+    );
   });
 
   it("bumps the WhatsApp connector version for readiness semantics", () => {

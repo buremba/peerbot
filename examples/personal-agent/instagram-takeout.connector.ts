@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { assertDirectory, listFiles } from "./takeout-fs.ts";
 import {
   type RuntimeConnectorDefinition,
   ConnectorRuntime,
@@ -13,10 +14,8 @@ import {
   usernameFromProfileUrl,
 } from "./instagram-identity.ts";
 import {
-  assertDirectory,
   batchSize,
   type LocalTakeoutConfig,
-  listFiles,
   maxEventCursor,
   stableId,
   stripHtml,

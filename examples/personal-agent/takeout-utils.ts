@@ -1,6 +1,22 @@
+/**
+ * Pure takeout parsing/formatting helpers shared by every takeout-shaped
+ * connector in this example.
+ *
+ * ISOLATE-SAFE BY CONTRACT: this module must never import `node:fs`,
+ * `node:path`, or any other builtin the isolate prelude does not provide.
+ * Connector bundles run in a V8 isolate and `assertIsolateEligible` rejects the
+ * WHOLE bundle over one surviving builtin `require`, so an `fs` import here
+ * would take down the live browser feeds of every connector that shares these
+ * helpers — the LinkedIn regression in Lobu#3392.
+ *
+ * `node:crypto` is fine: the guest prelude serves it from `global.crypto`
+ * (see ISOLATE_PRELUDE_PROVIDED_BUILTINS).
+ *
+ * Filesystem readers live in `takeout-fs.ts`, imported only by connectors whose
+ * every feed is filesystem-backed.
+ */
+
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import path from "node:path";
 import type { EventEnvelope } from "@lobu/connector-sdk";
 
 export const DEFAULT_WATERMARK = "1970-01-01T00:00:00.000Z";
@@ -11,64 +27,8 @@ export interface LocalTakeoutConfig {
   batch_size?: number;
 }
 
-export function assertDirectory(
-  config: LocalTakeoutConfig,
-  label: string
-): string {
-  const dir = config.takeout_dir;
-  if (!dir) {
-    throw new Error(`Missing takeout_dir for ${label}.`);
-  }
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) {
-    throw new Error(`${label} takeout directory does not exist: ${dir}`);
-  }
-  return dir;
-}
-
 export function batchSize(config: LocalTakeoutConfig): number {
   return Math.max(1, Math.min(config.batch_size ?? DEFAULT_BATCH_SIZE, 5000));
-}
-
-export function readJsonFile<T>(filePath: string): T | undefined {
-  if (!existsSync(filePath)) return undefined;
-  try {
-    return JSON.parse(readFileSync(filePath, "utf8")) as T;
-  } catch {
-    return undefined;
-  }
-}
-
-export function readJsArray<T>(filePath: string): T[] {
-  if (!existsSync(filePath)) return [];
-  const text = readFileSync(filePath, "utf8");
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start < 0 || end < start) return [];
-  try {
-    return JSON.parse(text.slice(start, end + 1)) as T[];
-  } catch {
-    return [];
-  }
-}
-
-export function listFiles(
-  root: string,
-  predicate: (filePath: string) => boolean
-): string[] {
-  if (!existsSync(root)) return [];
-  const out: string[] = [];
-  const visit = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const filePath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        visit(filePath);
-      } else if (entry.isFile() && predicate(filePath)) {
-        out.push(filePath);
-      }
-    }
-  };
-  visit(root);
-  return out.sort();
 }
 
 export function parseDate(input: unknown): Date | undefined {

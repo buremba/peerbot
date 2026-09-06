@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { assertDirectory, readJsonFile } from "./takeout-fs.ts";
 import {
   type RuntimeConnectorDefinition,
   ConnectorRuntime,
@@ -8,14 +9,12 @@ import {
   type SyncResult,
 } from "@lobu/connector-sdk";
 import {
-  assertDirectory,
   batchSize,
   decodeHtml,
   type LocalTakeoutConfig,
   maxEventCursor,
   parseCsv,
   parseDate,
-  readJsonFile,
   stableId,
   stripHtml,
   takeBatch,

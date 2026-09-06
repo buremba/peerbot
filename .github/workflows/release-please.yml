@@ -115,10 +115,15 @@ jobs:
             current_sha=$(gh api "repos/${REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
             compare_status=$(gh api "repos/${REPOSITORY}/compare/${ATTESTED_SHA}...${current_sha}" --jq '.status')
             [ "$compare_status" = ahead ] || [ "$compare_status" = identical ] || { echo "::error::attested SHA left main while waiting for exact CI (${compare_status})"; exit 1; }
-            ci_runs=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${ATTESTED_SHA}&event=push&branch=main&status=completed&per_page=100")
-            selection=$(jq -n --argjson body "$ci_runs" --argjson workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$ATTESTED_SHA" \
-              '{runs: [$body.workflow_runs[] | . + {repo: .repository.full_name}],
-                expected: {workflow_id: $workflow_id, repo: $repo, event: "push", head_branch: "main", head_sha: $sha, status: "completed", conclusion: "success"}}' \
+            # Piped, never --argjson, for the same reason as the jobs read
+            # above: a run list is one argv entry, and Linux caps that at
+            # 128KB. Folding it into the existing `|| selection=""` also means
+            # a transient API blip now costs one more turn of this bounded
+            # wait instead of killing the release outright.
+            selection=$(gh api "repos/${REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${ATTESTED_SHA}&event=push&branch=main&status=completed&per_page=100" \
+              | jq --argjson workflow_id "$ci_workflow_id" --arg repo "$REPOSITORY" --arg sha "$ATTESTED_SHA" \
+                '{runs: [.workflow_runs[] | . + {repo: .repository.full_name}],
+                  expected: {workflow_id: $workflow_id, repo: $repo, event: "push", head_branch: "main", head_sha: $sha, status: "completed", conclusion: "success"}}' \
               | node scripts/release-provenance.mjs select-run) || selection=""
             if [ -n "$selection" ]; then
               ci_run_id=$(jq -r '.id' <<<"$selection")

@@ -816,11 +816,38 @@ describe("a cut release clears the pending label off the PR that produced it", (
 // early when the release already exists, so the line first ran for real at
 // 19.0.0 -- and froze that release. macOS has no per-argument cap, so it is
 // unreproducible on a developer machine and only a guard keeps it out.
-describe("unbounded file payloads reach jq through --rawfile, never --arg", () => {
+describe("unbounded payloads reach jq by pipe or --rawfile, never through argv", () => {
+  // Linux caps a SINGLE argv entry at MAX_ARG_STRLEN (128KB), so any value
+  // whose size is set by repository history or an API page count dies with
+  // "jq: Argument list too long" once it outgrows the cap. macOS has no
+  // per-argument cap, so none of these can be reproduced on a dev machine --
+  // the guard is the only thing that keeps the class out. Two have already
+  // bitten: the 490KB CHANGELOG froze the 19.0.0 release outright, and the
+  // paginated jobs read was fixed pre-emptively.
+
+  /** `name=$( … )` capture of a read whose size the repository decides. */
+  const SLURPED = /(\w+)=\$\(\s*(?:gh api|git show|git log)[^)]*/g;
+  /** Anything that collapses the payload to a scalar before it is captured. */
+  const REDUCED = /--jq|\| *jq |node -pe?\b|--template/;
+
   it.each(
     names
-  )("%s never hands the changelog to jq as an argument", (name) => {
-    expect(read(name)).not.toMatch(/--arg\s+changelog\b/);
+  )("%s pipes unbounded reads instead of slurping them", (name) => {
+    const body = read(name);
+    const whole = [...body.matchAll(SLURPED)]
+      .filter((match) => !REDUCED.test(match[0]))
+      .map((match) => match[1]);
+    // A whole payload only becomes a bug once it is handed to jq as an
+    // argument; `<<<` here-strings and `--rawfile` both stay clear of argv.
+    const throughArgv = whole.filter((variable) =>
+      new RegExp(
+        `--argjson\\s+\\w+\\s+"\\$${variable}"|--arg\\s+\\w+\\s+"\\$${variable}"`
+      ).test(body)
+    );
+    expect({ file: name, throughArgv }).toEqual({
+      file: name,
+      throughArgv: [],
+    });
   });
 
   it("release-please builds the release body from a file", () => {
@@ -829,5 +856,11 @@ describe("unbounded file payloads reach jq through --rawfile, never --arg", () =
     // The command substitution is the tell: slurping a file into a shell
     // variable is what forces it through argv on the next line.
     expect(body).not.toMatch(/changelog=\$\(\s*git show/);
+  });
+
+  it("publish attestation streams the CI run list into jq", () => {
+    const body = shell("publish-packages.yml", "attest-publish");
+    expect(body).toMatch(/ci\.yml\/runs[^\n]*\n\s*\| jq /);
+    expect(body).not.toMatch(/--argjson\s+body\s+"\$ci_runs"/);
   });
 });

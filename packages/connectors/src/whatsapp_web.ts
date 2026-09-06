@@ -73,7 +73,28 @@ import {
 } from "./whatsapp-web-helpers.js";
 import { whatsAppWebAdapterProgram } from "./whatsapp-web-adapter.js";
 
-const READY_TIMEOUT_MS = 25_000;
+/**
+ * How long a run waits for WhatsApp Web to finish hydrating before giving up.
+ *
+ * Measured on the live prod tab (2026-09-06): a cold load traces
+ * 0:0 -> 5:0 -> 947:0 -> 947:23 -> ... -> 947:547 and is still climbing at
+ * t=24s, converging near 947:941. Readiness needs the `me:chatCount:msgCount`
+ * signature to hold still for 500ms, so the old 25s budget expired mid-stream
+ * every time: the feed failed `stores_settling` on 9 of its last 10 runs and
+ * ingested nothing for three days.
+ *
+ * 25s was never a real bound -- the executor allows a 600s run and each probe
+ * is its own fenced dispatch. A warm tab answers in ~1s, so this ceiling only
+ * governs how long a COLD tab may take, and it must outlast one full hydration
+ * with margin.
+ *
+ * This is the server-side half of the fix. The other half lives in the
+ * extension: a `persistent: true` navigate re-issues CDP `Page.navigate` on the
+ * plain-navigate path, reloading the very tab whose state it means to reuse, so
+ * every run pays cold hydration. Until that ships, this budget is what lets a
+ * cold run finish at all.
+ */
+const READY_TIMEOUT_MS = 120_000;
 const READY_POLL_INTERVAL_MS = 500;
 /**
  * Per-item budget, enforced by the ADAPTER inside the page.
@@ -895,6 +916,35 @@ export default class WhatsAppWebConnector extends ConnectorRuntime<
   ): Promise<SyncResult<BrowserCheckpoint>> {
     const dispatcher = requireExtensionDispatcher(ctx);
     const tabId = await readyWhatsAppTab(dispatcher);
+    return await this.collectMessages(ctx, dispatcher, tabId);
+  }
+
+  /**
+   * The collect phase re-checks readiness inside the page, so a message landing
+   * between the passing probe and this dispatch surfaces the same transient
+   * `stores_settling` here. `readyWhatsAppTab` classifies that as a dependency
+   * failure; without the same treatment on this path an ordinary race counts
+   * against the feed's consecutive-failure budget and walks it toward a pause.
+   */
+  private async collectMessages(
+    ctx: SyncContext<BrowserCheckpoint, WhatsAppWebConfig>,
+    dispatcher: ChromeActionDispatcher,
+    tabId: number
+  ): Promise<SyncResult<BrowserCheckpoint>> {
+    try {
+      return await this.collectMessagesInner(ctx, dispatcher, tabId);
+    } catch (error) {
+      const transient = classifyWhatsAppReadinessFailure(error);
+      if (transient) throw new Error(transient);
+      throw error;
+    }
+  }
+
+  private async collectMessagesInner(
+    ctx: SyncContext<BrowserCheckpoint, WhatsAppWebConfig>,
+    dispatcher: ChromeActionDispatcher,
+    tabId: number
+  ): Promise<SyncResult<BrowserCheckpoint>> {
     const { checkpoint, request } = buildCollectionPlan({
       checkpoint: ctx.checkpoint as Record<string, unknown> | null,
       config: ctx.config as Record<string, unknown>,

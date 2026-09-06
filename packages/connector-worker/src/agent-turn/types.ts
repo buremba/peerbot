@@ -44,7 +44,12 @@ export interface AgentTurnTool {
 /** The guest's own workspace tools, by name. */
 export type AgentTurnBuiltinTool = 'bash' | 'read' | 'write' | 'ls' | 'find';
 
-/** The agent's bash prefix policy, in the shape `@lobu/core/tool-policy` enforces. */
+/**
+ * The agent's bash prefix policy, in the shape `@lobu/core/tool-policy`
+ * enforces. Restated rather than imported on purpose: this file is the
+ * host-side contract, and a type import here would be the first step toward a
+ * value import from the same module, which the guest bundle cannot take.
+ */
 export interface AgentTurnBashPolicy {
   allowAll: boolean;
   allowPrefixes: string[];

@@ -144,6 +144,7 @@ export * from "./utils/sentry-scrubber";
 export {
   type BashExecutionContent,
   entryToMessage,
+  estimateMessageTokens,
   type ParsedMessage,
   type ParsedMessageType,
   parseSessionEntries,

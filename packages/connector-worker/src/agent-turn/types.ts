@@ -29,6 +29,12 @@ export interface AgentTurnProvider {
    * refuses those.
    */
   apiKey?: string;
+  /**
+   * The model's real context window and output ceiling, from the producer's
+   * registry lookup. Absent for a producer that predates them, which is why
+   * the guest still carries a floor rather than requiring these.
+   */
+  contextWindow?: number;
   maxTokens?: number;
 }
 

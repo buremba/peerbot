@@ -245,3 +245,66 @@ export function titleFromSessionJsonl(
   }
   return fallback;
 }
+
+/**
+ * Approximate the tokens a transcript message costs, by the chars/4 rule.
+ *
+ * This is pi's own heuristic (`estimateTokens` in
+ * `pi-coding-agent/core/compaction`), reproduced here rather than imported for
+ * one reason: pi exports it only from its root barrel, which also pulls in the
+ * interactive TUI, the model registry and every provider SDK — 11 MB and ~2600
+ * modules measured under this repo's own bundler options. Neither the gateway
+ * nor the isolate lane can afford that import for a division by four, and both
+ * lanes must agree on the number or one will compact when the other would not.
+ *
+ * Deliberately conservative in the same direction pi is: it counts characters
+ * that reach the model and rounds up, so it over-estimates rather than under-.
+ * An over-estimate compacts slightly early; an under-estimate overflows the
+ * upstream and loses the whole turn.
+ *
+ * Images are counted at pi's flat 4800 characters (~1200 tokens) because their
+ * true cost depends on the provider's tiling rules, which are not knowable
+ * here.
+ */
+export function estimateMessageTokens(message: {
+  role?: unknown;
+  content?: unknown;
+  command?: unknown;
+  output?: unknown;
+}): number {
+  let chars = 0;
+  const content = message.content;
+  if (message.role === "bashExecution") {
+    chars =
+      (typeof message.command === "string" ? message.command.length : 0) +
+      (typeof message.output === "string" ? message.output.length : 0);
+    return Math.ceil(chars / 4);
+  }
+  if (typeof content === "string") return Math.ceil(content.length / 4);
+  if (!Array.isArray(content)) return 0;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const typed = block as {
+      type?: unknown;
+      text?: unknown;
+      thinking?: unknown;
+      name?: unknown;
+      arguments?: unknown;
+    };
+    if (typed.type === "text" && typeof typed.text === "string") {
+      chars += typed.text.length;
+    } else if (
+      typed.type === "thinking" &&
+      typeof typed.thinking === "string"
+    ) {
+      chars += typed.thinking.length;
+    } else if (typed.type === "toolCall") {
+      chars +=
+        (typeof typed.name === "string" ? typed.name.length : 0) +
+        JSON.stringify(typed.arguments ?? null).length;
+    } else if (typed.type === "image") {
+      chars += 4800;
+    }
+  }
+  return Math.ceil(chars / 4);
+}

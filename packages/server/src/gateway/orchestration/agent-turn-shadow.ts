@@ -53,7 +53,9 @@ import type { McpProxy } from "../auth/mcp/proxy.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
+import { resolveModelCapability } from "../inference/model-capability.js";
 import { readSnapshotJsonl } from "../services/transcript-snapshot.js";
+import { fitHistoryToContext, type HistoryMessage, summaryMessage } from "./turn-history.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 
 const logger = createLogger("agent-turn-shadow");
@@ -75,9 +77,26 @@ const LANE_APIS = new Set<string>([
   "openai-completions",
 ] satisfies LaneApi[]);
 
-/** Snapshot suffix read for history. Twelve 16 KB messages fit comfortably. */
-const HISTORY_TAIL_CHARS = 256 * 1024;
-const HISTORY_MESSAGE_LIMIT = 12;
+/**
+ * Snapshot suffix read for history.
+ *
+ * This is the read bound, NOT the context bound: how much of what is read
+ * actually reaches the model is decided by `fitHistoryToContext` against the
+ * model's real window, and what does not fit is summarized rather than dropped.
+ * 1 MB of transcript tail is roughly 250k tokens, which covers the largest
+ * window any lane model currently advertises, so the read never becomes the
+ * silent limit. `readSnapshotJsonl` bounds this in SQL with `right(...)`, so a
+ * long conversation costs a fixed read, not a growing one.
+ */
+const HISTORY_TAIL_CHARS = 1024 * 1024;
+/**
+ * Per-message character cap, applied before budgeting.
+ *
+ * Unlike the message-count limit this replaces, this one does not lose whole
+ * turns: it clips a single pathological message (a pasted file, a runaway tool
+ * result) so one message cannot consume the entire window on its own. The
+ * budgeter then decides how many of these capped messages fit.
+ */
 const HISTORY_MESSAGE_CHARS = 16_000;
 const TURN_MESSAGE_CHARS = 32_000;
 
@@ -231,7 +250,6 @@ const WORKSPACE_INSTRUCTIONS = [
   "It has no network access and no package manager; use your other tools to reach data.",
 ].join("\n");
 
-type HistoryMessage = Record<string, unknown> & { role: string };
 
 function isTextBlock(block: unknown): block is { type: "text"; text: string } {
   return (
@@ -262,25 +280,19 @@ function trimContent(content: unknown): unknown[] {
   return out;
 }
 
-function hasToolCall(message: HistoryMessage): boolean {
-  return (
-    Array.isArray(message.content) &&
-    message.content.some(
-      (block) => !!block && typeof block === "object" && (block as { type?: unknown }).type === "toolCall"
-    )
-  );
-}
-
 /**
- * Rebuild the conversation so far as pi messages.
+ * Rebuild the conversation so far as pi messages, oldest first.
  *
  * The snapshot stores pi's own entries, and the lane now runs the same tool
  * loop pi ran to produce them, so user, assistant and tool-result entries
  * replay as they are — text capped, thinking dropped, everything else (tool
  * calls, tool results, usage, stop reason) kept, because a provider refuses a
- * tool call without its result and vice versa. The window is then squared off
- * so it opens on a user message and never ends on a tool call still waiting
- * for its result.
+ * tool call without its result and vice versa.
+ *
+ * Everything readable is returned. Deciding how much of it the model can
+ * actually hold, and summarizing the rest, is `fitHistoryToContext`'s job —
+ * this function must not truncate, or the budgeter would be fitting an already
+ * silently shortened conversation.
  */
 function historyMessages(snapshot: string): HistoryMessage[] {
   const messages: HistoryMessage[] = [];
@@ -292,19 +304,7 @@ function historyMessages(snapshot: string): HistoryMessage[] {
     if (content.length === 0) continue;
     messages.push({ ...message, content });
   }
-  const window = messages.slice(-HISTORY_MESSAGE_LIMIT);
-  const firstUser = window.findIndex((message) => message.role === "user");
-  if (firstUser < 0) return [];
-  const squared = window.slice(firstUser);
-  while (squared.length > 0) {
-    const last = squared[squared.length - 1]!;
-    if (last.role === "assistant" && hasToolCall(last)) {
-      squared.pop();
-      continue;
-    }
-    break;
-  }
-  return squared;
+  return messages;
 }
 
 /**
@@ -693,6 +693,39 @@ export async function enqueueAgentTurnShadow(
       suffixChars: HISTORY_TAIL_CHARS,
     });
 
+    // What the model can actually hold, from pi-ai's registry rather than the
+    // guest's old hardcoded 200k, and what of the conversation fits inside it.
+    const capability = resolveModelCapability(provider.provider, provider.modelId);
+    const fitted = await fitHistoryToContext({
+      messages: snapshot ? historyMessages(snapshot) : [],
+      capability,
+      organizationId: data.organizationId,
+      agentId: data.agentId,
+      conversationId: data.conversationId,
+    });
+    if (fitted.droppedCount > 0) {
+      logger.info(
+        {
+          agentId: data.agentId,
+          conversationId: data.conversationId,
+          model: provider.modelId,
+          contextWindow: capability.contextWindow,
+          fromRegistry: capability.fromRegistry,
+          budgetTokens: fitted.budgetTokens,
+          keptTokens: fitted.keptTokens,
+          keptMessages: fitted.messages.length,
+          droppedMessages: fitted.droppedCount,
+          summarized: !fitted.summaryUnavailable,
+        },
+        fitted.summaryUnavailable
+          ? "Agent turn shadow: history exceeded the model's context and could not be summarized, so the turn resumes from the recent window with a gap"
+          : "Agent turn shadow: history exceeded the model's context and the older part was summarized"
+      );
+    }
+    const historyForTurn = fitted.summary
+      ? [summaryMessage(fitted.summary, fitted.droppedCount), ...fitted.messages]
+      : fitted.messages;
+
     const turn: TurnEnvelope = {
       agent_id: data.agentId,
       conversation_id: data.conversationId,
@@ -708,12 +741,17 @@ export async function enqueueAgentTurnShadow(
         // channel-participation one.
         [...(tools?.definitions ?? []).map((tool) => tool.name), ...gateway, ...builtin]
       ),
-      messages: snapshot ? historyMessages(snapshot) : [],
+      messages: historyForTurn,
       provider: {
         api: provider.api,
         provider: provider.provider,
         model_id: provider.modelId,
         base_url: provider.baseUrl,
+        // The guest used to assume a 200k window and an 8192 output ceiling for
+        // every model. Both now come from the registry, so pi budgets the turn
+        // against the model that will actually run it.
+        context_window: capability.contextWindow,
+        max_tokens: capability.maxTokens,
       },
       ...(tools ? { tools } : {}),
       // DENY-ALL. A connector's allowlist defaults open; an agent turn's does

@@ -58,10 +58,14 @@ function buildModel(input: AgentTurnInput): Record<string, unknown> {
     reasoning: false,
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    // Only read to decide when to compact, which this lane never does: one
-    // turn, one request, and the gateway owns the history it sends.
-    contextWindow: 200_000,
-    maxTokens: input.provider.maxTokens ?? 8192,
+    // The producer resolves both from pi-ai's registry for the model that will
+    // actually run this turn, and fits the history it sends to the window it
+    // reports. The floors below are only for a producer that sent neither; they
+    // are the same conservative pair the subprocess lane uses for a model its
+    // registry does not carry, so an unknown model budgets identically on both
+    // lanes rather than optimistically here.
+    contextWindow: input.provider.contextWindow ?? 128_000,
+    maxTokens: input.provider.maxTokens ?? 16_384,
   };
 }
 

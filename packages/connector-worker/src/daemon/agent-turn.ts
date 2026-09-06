@@ -85,6 +85,9 @@ export async function executeAgentTurnRun(
             provider: turn.provider.provider,
             modelId: turn.provider.model_id,
             baseUrl: turn.provider.base_url,
+            ...(turn.provider.context_window !== undefined
+              ? { contextWindow: turn.provider.context_window }
+              : {}),
             ...(turn.provider.max_tokens !== undefined ? { maxTokens: turn.provider.max_tokens } : {}),
           },
           systemPrompt: turn.system_prompt,

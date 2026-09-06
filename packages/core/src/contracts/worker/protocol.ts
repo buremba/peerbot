@@ -314,6 +314,13 @@ export const AgentTurnPollPayloadSchema = Type.Object({
       model_id: Type.String({ minLength: 1 }),
       /** The gateway's agent-scoped secret-proxy base URL. */
       base_url: Type.String({ minLength: 1 }),
+      /**
+       * The model's real context window and output ceiling, resolved by the
+       * producer from pi-ai's registry. The guest budgets the turn against
+       * these instead of assuming a window, so a small-window model is not
+       * overflowed and a large-window one is not needlessly starved.
+       */
+      context_window: Type.Optional(Type.Integer({ minimum: 1 })),
       max_tokens: Type.Optional(Type.Integer({ minimum: 1 })),
     }),
     /**

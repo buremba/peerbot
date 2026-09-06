@@ -129,6 +129,16 @@ function optionalNumber(args: unknown, key: string): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+/**
+ * A result cap the model asked for, or the default when it asked for something
+ * that is not a cap. A zero or negative limit would collect no rows at all and
+ * make `ls` answer "(empty directory)" and `find` "No files found" — claims
+ * about the workspace rather than about the argument.
+ */
+function positiveLimit(requested: number | undefined, fallback: number): number {
+  return requested !== undefined && requested >= 1 ? Math.floor(requested) : fallback;
+}
+
 /** A `*`/`**`/`?` glob to a regexp over a `/`-separated path. */
 function globToRegExp(pattern: string): RegExp {
   let source = '^';
@@ -308,7 +318,7 @@ export function createWorkspaceTools(names: readonly AgentTurnBuiltinTool[], bas
       } as never,
       execute: async (_id, args) => {
         const path = optionalString(args, 'path');
-        const limit = optionalNumber(args, 'limit') ?? LS_LIMIT;
+        const limit = positiveLimit(optionalNumber(args, 'limit'), LS_LIMIT);
         await ready;
         const absolute = resolve(path);
         if (!(await fs.exists(absolute))) throw new Error(`Path not found: ${absolute}`);
@@ -350,7 +360,7 @@ export function createWorkspaceTools(names: readonly AgentTurnBuiltinTool[], bas
       execute: async (_id, args) => {
         const pattern = requireString(args, 'pattern');
         const path = optionalString(args, 'path');
-        const limit = optionalNumber(args, 'limit') ?? FIND_LIMIT;
+        const limit = positiveLimit(optionalNumber(args, 'limit'), FIND_LIMIT);
         await ready;
         const root = resolve(path);
         if (!(await fs.exists(root))) throw new Error(`Path not found: ${root}`);

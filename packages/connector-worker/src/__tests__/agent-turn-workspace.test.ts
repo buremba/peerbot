@@ -106,6 +106,19 @@ describe("createWorkspaceTools", () => {
     expect(await run(t.read, { file_path: "in.txt" })).toBe("x");
   });
 
+  test("a non-positive limit falls back to the default instead of reporting nothing", async () => {
+    // Without the clamp, limit=0 collected no rows and `ls` answered
+    // "(empty directory)" for a populated directory — a claim about the
+    // workspace, not about the argument. `find` said "No files found".
+    const t = toolMap(createWorkspaceTools(["write", "ls", "find"]));
+    await run(t.write, { file_path: "a.txt", content: "x" });
+    await run(t.write, { file_path: "b.txt", content: "x" });
+    expect(await run(t.ls, { limit: 0 })).toBe("a.txt\nb.txt");
+    expect(await run(t.find, { pattern: "*.txt", limit: 0 })).toBe("a.txt\nb.txt");
+    // A real limit still truncates and says so.
+    expect(await run(t.ls, { limit: 1 })).toContain("1 entries limit reached");
+  });
+
   test("each call to createWorkspaceTools starts from an empty filesystem", async () => {
     const first = toolMap(createWorkspaceTools(["write", "ls"]));
     await run(first.write, { file_path: "kept.txt", content: "x" });

@@ -22,6 +22,7 @@ import {
   type OrchestratorConfig,
 } from "./deployment-manager.js";
 import { buildModuleEnvVars } from "./deployment-utils.js";
+import type { AgentTurnShadowDeps } from "./agent-turn-shadow.js";
 import { MessageConsumer } from "./message-consumer.js";
 
 const logger = createLogger("orchestrator");
@@ -60,7 +61,8 @@ export class Orchestrator {
     grantStore?: GrantStore,
     policyStore?: PolicyStore,
     guardrailRegistry?: GuardrailRegistry,
-    agentSettingsStore?: AgentSettingsStore
+    agentSettingsStore?: AgentSettingsStore,
+    agentTurnMcp?: AgentTurnShadowDeps["mcp"]
   ): Promise<void> {
     this.deploymentManager.setSecretStore(secretStore);
     // Lets a connection contribute an authenticated CLI to the agent sandbox
@@ -89,6 +91,10 @@ export class Orchestrator {
       this.queueConsumer.setGuardrails(guardrailRegistry, agentSettingsStore);
       logger.debug("Input-stage guardrails wired into MessageConsumer");
     }
+
+    // The isolate-lane shadow reads the agent's MCP servers and tools through
+    // the same services the worker gateway hands the subprocess lane.
+    this.queueConsumer.setAgentTurnMcp(agentTurnMcp);
 
     const providerModules = getModelProviderModules();
     this.deploymentManager.setProviderModules(providerModules);

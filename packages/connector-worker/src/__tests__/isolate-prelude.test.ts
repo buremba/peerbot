@@ -563,6 +563,79 @@ describe('guest FormData', () => {
     expect(Object.prototype.toString.call(new guest.FormData())).toBe('[object FormData]');
   });
 
+  it('deep-copies a tool call the way structuredClone does, cycles and byte arrays included', () => {
+    const { guest } = instantiateFetchGuest();
+    const clone = guest.structuredClone as typeof structuredClone;
+    const shared = { n: 1 };
+    const source: Record<string, unknown> = {
+      code: 'entities.count()',
+      when: new Date(1_700_000_000_000),
+      tags: new Set(['a', 'b']),
+      by: new Map([['k', shared]]),
+      again: shared,
+      bytes: new Uint8Array([1, 2, 3]),
+      pattern: /x+/gi,
+      nested: { list: [1, { deep: true }], nothing: null, absent: undefined },
+    };
+    source.self = source;
+    const copy = clone(source) as typeof source & { self: unknown };
+
+    expect(copy).not.toBe(source);
+    expect(copy.self).toBe(copy);
+    expect(copy.code).toBe('entities.count()');
+    expect((copy.when as Date).getTime()).toBe(1_700_000_000_000);
+    expect(copy.when).not.toBe(source.when);
+    expect(Array.from(copy.tags as Set<string>)).toEqual(['a', 'b']);
+    expect((copy.by as Map<string, { n: number }>).get('k')).toBe(copy.again);
+    expect(copy.again).not.toBe(shared);
+    expect(Array.from(copy.bytes as Uint8Array)).toEqual([1, 2, 3]);
+    expect((copy.pattern as RegExp).flags).toBe('gi');
+    expect(copy.nested).toEqual({ list: [1, { deep: true }], nothing: null, absent: undefined });
+    // Mutating the copy leaves the source alone, which is what pi relies on.
+    (copy.nested as { list: unknown[] }).list.push(2);
+    expect((copy.nested as { list: unknown[] }).list).toHaveLength(3);
+    expect((source.nested as { list: unknown[] }).list).toHaveLength(2);
+
+    expect(() => clone(() => 1)).toThrow('could not be cloned');
+    expect(() => clone(Symbol('s'))).toThrow('could not be cloned');
+    const err = clone(new RangeError('bad')) as RangeError;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('RangeError');
+    expect(err.message).toBe('bad');
+    // A non-standard error name degrades to plain Error, and own properties go
+    // with it -- the platform keeps only the standard NativeError types.
+    class Custom extends Error {
+      code = 7;
+      constructor(message: string) {
+        super(message);
+        this.name = 'Custom';
+      }
+    }
+    const degraded = clone(new Custom('nope')) as Error & { code?: number };
+    expect(degraded.name).toBe('Error');
+    expect(degraded.message).toBe('nope');
+    expect(degraded.code).toBeUndefined();
+  });
+
+  it('copies a byte view whole, keeping its offset over the full buffer', () => {
+    const { guest } = instantiateFetchGuest();
+    const clone = guest.structuredClone as typeof structuredClone;
+    const buffer = new ArrayBuffer(8);
+    new Uint8Array(buffer).set([0, 1, 2, 3, 4, 5, 6, 7]);
+
+    const view = clone(new Uint8Array(buffer, 2, 4));
+    expect(Array.from(view)).toEqual([2, 3, 4, 5]);
+    expect(view.byteOffset).toBe(2);
+    expect(view.buffer.byteLength).toBe(8);
+    expect(view.buffer).not.toBe(buffer);
+
+    const dataView = clone(new DataView(buffer, 2, 4));
+    expect(dataView.byteOffset).toBe(2);
+    expect(dataView.byteLength).toBe(4);
+    expect(dataView.buffer.byteLength).toBe(8);
+    expect(dataView.getUint8(0)).toBe(2);
+  });
+
   it('keeps every appended value and replaces in place on set', () => {
     const { guest } = instantiateFetchGuest();
     const form = new guest.FormData();

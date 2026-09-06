@@ -147,10 +147,54 @@ describe("executeAgentTurnRun", () => {
     });
     expect(seen.turn.systemPrompt).toBe("be brief");
     expect(seen.turn.userMessage).toBe("hello");
+    // A turn without tools reaches the guest without a manifest, not with an
+    // empty one: the guest builds its tool list off the field's presence.
+    expect(seen.turn.tools).toBeUndefined();
     // The provider key never appears on the turn: it rides `credentials`, and
     // the host swaps a vault placeholder over it before the guest sees it.
     expect(seen.turn.provider.apiKey).toBeUndefined();
     expect(seen.credentials?.accessToken).toBe("lobu_secret_placeholder");
+  });
+
+  test("hands the guest the tool manifest in the guest's own shape", async () => {
+    const reported: Reported = { calls: [] };
+    let seen: ExecutorJob | undefined;
+    const executor: SyncExecutor = {
+      execute: async (_code, job) => {
+        seen = job;
+        return {
+          mode: "agent_turn",
+          turn: { text: "", stopReason: "stop", usage: null, messages: [] },
+        };
+      },
+    };
+    const job = turnJob();
+    (job.payload as { turn: Record<string, unknown> }).turn.tools = {
+      gateway_url: "https://gateway.test.invalid/lobu",
+      definitions: [
+        {
+          mcp_id: "lobu-memory",
+          name: "query_sdk",
+          description: "Read data",
+          input_schema: { type: "object", properties: { code: { type: "string" } } },
+        },
+      ],
+    };
+
+    await executeAgentTurnRun(fakeClient(reported) as never, job, {}, cfgWith(executor));
+
+    if (seen?.mode !== "agent_turn") throw new Error("expected an agent_turn job");
+    expect(seen.turn.tools).toEqual({
+      gatewayUrl: "https://gateway.test.invalid/lobu",
+      definitions: [
+        {
+          mcpId: "lobu-memory",
+          name: "query_sdk",
+          description: "Read data",
+          inputSchema: { type: "object", properties: { code: { type: "string" } } },
+        },
+      ],
+    });
   });
 
   test("reports a guest failure instead of returning it, because the run is claimed", async () => {

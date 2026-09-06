@@ -317,6 +317,28 @@ export const AgentTurnPollPayloadSchema = Type.Object({
       max_tokens: Type.Optional(Type.Integer({ minimum: 1 })),
     }),
     /**
+     * Tools the turn may call. Each is an MCP tool the gateway proxies, reached
+     * from the guest as `POST {gateway_url}/mcp/{mcp_id}/tools/{name}` with the
+     * turn's one credential as the bearer — the same worker token the secret
+     * proxy accepts, so a turn with tools still carries exactly one secret.
+     * Absent → the turn runs with no tools.
+     */
+    tools: Type.Optional(
+      Type.Object({
+        /** The gateway the MCP route lives on, mount path included. */
+        gateway_url: Type.String({ minLength: 1 }),
+        definitions: Type.Array(
+          Type.Object({
+            mcp_id: Type.String({ minLength: 1 }),
+            name: Type.String({ minLength: 1 }),
+            description: Type.String(),
+            /** The tool's JSON schema for its arguments, as the MCP server published it. */
+            input_schema: Type.Record(Type.String(), Type.Unknown()),
+          })
+        ),
+      })
+    ),
+    /**
      * Hosts the turn may reach. An agent turn is deny-all by default, unlike a
      * connector's open one, so this is normally just the gateway.
      */

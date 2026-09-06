@@ -15,12 +15,14 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  type BashCommandPolicy,
   buildToolPolicy,
-  enforceBashCommandPolicy,
-  isDirectPackageInstallCommand,
   isToolAllowedByPolicy,
   normalizeToolList,
-  type BashCommandPolicy,
+} from "@lobu/core";
+import {
+  enforceBashCommandPolicy,
+  isDirectPackageInstallCommand,
 } from "../runtime/tool-policy";
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,10 @@
  *    byte-level work the host does with Node's own codecs. A decode with
  *    `{ stream: true }` opens a Node `TextDecoder` on the host that keeps the
  *    partial sequence between chunks until the flushing decode releases it.
+ *  - `structuredClone`, guest-side: a deep copy of the JSON-shaped values,
+ *    dates, regexps, maps, sets, errors and byte arrays a tool call carries,
+ *    with cycles preserved. pi-ai clones every tool call's arguments before
+ *    validating them, so a lane without it cannot run a single tool.
  *  - `URL` over the host `urlParse`/`urlSet` capabilities: the host runs Node's
  *    own URL, so both lanes agree on every input by construction.
  *    `URLSearchParams` keeps its list guest-side, parses and serializes through
@@ -79,6 +83,7 @@ export const PRELUDE_GLOBALS = [
   'TextDecoder',
   'atob',
   'btoa',
+  'structuredClone',
   'URL',
   'URLSearchParams',
   'AbortController',
@@ -573,6 +578,94 @@ var exports = module.exports;
   global.atob = function atob(data) {
     if (arguments.length === 0) throw new TypeError('1 argument required, but only 0 present');
     return hostSync('base64Decode', String(data));
+  };
+
+  // ---------------------------------------------------------------------------
+  // structuredClone: guest-side deep copy; nothing here needs the host
+  // ---------------------------------------------------------------------------
+
+  function dataCloneError(what) {
+    var err = new Error(what + ' could not be cloned.');
+    err.name = 'DataCloneError';
+    return err;
+  }
+
+  // The error types a clone may keep. Everything else becomes a plain Error.
+  var NATIVE_ERRORS = {
+    Error: Error,
+    EvalError: EvalError,
+    RangeError: RangeError,
+    ReferenceError: ReferenceError,
+    SyntaxError: SyntaxError,
+    TypeError: TypeError,
+    URIError: URIError,
+  };
+
+  function structuredCloneValue(value, seen) {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+      if (typeof value === 'symbol') throw dataCloneError('Symbol()');
+      return value;
+    }
+    if (typeof value === 'function') throw dataCloneError(String(value).slice(0, 40));
+    if (seen.has(value)) return seen.get(value);
+    var out;
+    if (Array.isArray(value)) {
+      out = new Array(value.length);
+      seen.set(value, out);
+      for (var i = 0; i < value.length; i++) out[i] = structuredCloneValue(value[i], seen);
+      return out;
+    }
+    if (value instanceof Date) return new Date(value.getTime());
+    if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+    if (value instanceof ArrayBuffer) return value.slice(0);
+    if (ArrayBuffer.isView(value)) {
+      // The whole buffer is copied and the view keeps its offset, as the
+      // platform does -- constructing from the view alone would instead
+      // compact it onto a fresh buffer of its own length, losing byteOffset
+      // and any bytes outside the window.
+      var viewBuffer = value.buffer.slice(0);
+      if (value instanceof DataView) return new DataView(viewBuffer, value.byteOffset, value.byteLength);
+      return new value.constructor(viewBuffer, value.byteOffset, value.length);
+    }
+    if (value instanceof Map) {
+      out = new Map();
+      seen.set(value, out);
+      value.forEach(function (v, k) { out.set(structuredCloneValue(k, seen), structuredCloneValue(v, seen)); });
+      return out;
+    }
+    if (value instanceof Set) {
+      out = new Set();
+      seen.set(value, out);
+      value.forEach(function (v) { out.add(structuredCloneValue(v, seen)); });
+      return out;
+    }
+    if (value instanceof Error) {
+      // Only the standard NativeError names survive; anything else (a subclass
+      // with its own name, AggregateError, DOMException) degrades to Error, as
+      // the platform does. Own properties are dropped either way.
+      var Ctor = NATIVE_ERRORS[value.name] || Error;
+      out = new Ctor(value.message);
+      out.name = Ctor.prototype.name;
+      if (typeof value.stack === 'string') out.stack = value.stack;
+      seen.set(value, out);
+      if ('cause' in value) out.cause = structuredCloneValue(value.cause, seen);
+      return out;
+    }
+    if (value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet) {
+      throw dataCloneError(Object.prototype.toString.call(value));
+    }
+    // Everything else clones as a plain object of its own enumerable string
+    // keys, prototype dropped -- what the platform does with a class instance.
+    out = {};
+    seen.set(value, out);
+    var keys = Object.keys(value);
+    for (var k = 0; k < keys.length; k++) out[keys[k]] = structuredCloneValue(value[keys[k]], seen);
+    return out;
+  }
+
+  global.structuredClone = function structuredClone(value) {
+    if (arguments.length === 0) throw new TypeError('1 argument required, but only 0 present');
+    return structuredCloneValue(value, new Map());
   };
 
   // ---------------------------------------------------------------------------

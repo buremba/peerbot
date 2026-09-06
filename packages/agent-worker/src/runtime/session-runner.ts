@@ -9,7 +9,13 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { createLogger, getOptionalEnv, type ToolsConfig } from "@lobu/core";
+import {
+  buildToolPolicy,
+  createLogger,
+  getOptionalEnv,
+  isToolAllowedByPolicy,
+  type ToolsConfig,
+} from "@lobu/core";
 import type { PluginRuntimeContext } from "@lobu/plugin-api";
 import type { GatewayParams } from "@lobu/plugin-toolkit";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
@@ -58,7 +64,6 @@ import {
   getAgentSessionContext,
   invalidateSessionContextCache,
 } from "./session-context";
-import { buildToolPolicy, isToolAllowedByPolicy } from "./tool-policy";
 import { buildToolUseEventPayload } from "./tool-use-events";
 import { createLobuTools, enforceBashPreflight } from "./tools";
 import { clearSnapshots, hydrateFromSnapshot } from "./transcript-snapshot";

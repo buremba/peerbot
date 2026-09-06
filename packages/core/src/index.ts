@@ -3,6 +3,7 @@
 // Shared exports for @lobu/core consumers (gateway, worker, external tools)
 
 export * from "./agent-policy";
+export * from "./tool-policy";
 // Agent store interface (unified storage abstraction)
 export type {
   AgentAccessStore,

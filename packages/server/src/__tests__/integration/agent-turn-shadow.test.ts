@@ -832,10 +832,11 @@ describe('agent turn completion', () => {
       SELECT organization_id FROM runs WHERE id = ${runId}
     `) as unknown as Array<{ organization_id: string }>;
 
-    // A prior transcript already past the 4MB cap. Appending to it would build
-    // a row the table refuses, and this insert shares the terminal
-    // transaction, so without the continuation fallback the rollback would
-    // take the run transition and the reply with it.
+    // A prior transcript already past MAX_SNAPSHOT_BYTES, the cap every other
+    // writer of this table honours. Appending to it would build a row well
+    // past that cap, and this insert shares the terminal transaction, so
+    // without the continuation fallback the oversize row would ride along
+    // with the run transition and the reply.
     const bulky = `${'x'.repeat(5 * 1024 * 1024)}`;
     const priorLine = JSON.stringify({
       type: 'message',

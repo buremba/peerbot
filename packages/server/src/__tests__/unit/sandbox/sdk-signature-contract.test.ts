@@ -197,6 +197,31 @@ describe("ClientSDK object signature contract", () => {
 		]);
 	});
 
+	it("normalizes both connector uninstall argument forms before dispatch", async () => {
+		const connections = builders.connections(ctx, env);
+		await connections.uninstallConnector("fixture.connector");
+		await connections.uninstallConnector({ connector_key: "fixture.connector" } as never);
+		expect(calls).toEqual([
+			{ action: "uninstall_connector", input: { connector_key: "fixture.connector" } },
+			{ action: "uninstall_connector", input: { connector_key: "fixture.connector" } },
+		]);
+	});
+
+	it("rejects malformed connector uninstall arguments before dispatch", async () => {
+		const connections = builders.connections(ctx, env);
+		const invalid: unknown[] = [
+			undefined, null, 3, {}, [],
+			{ connector_key: 3 },
+			{ connector_key: "fixture.connector", force: true },
+		];
+		for (const input of invalid) {
+			await expect(
+				Promise.resolve().then(() => connections.uninstallConnector(input as never)),
+			).rejects.toThrow("connections.uninstallConnector expects the connector_key");
+		}
+		expect(calls).toEqual([]);
+	});
+
 	it("pins both entity-schema discriminators against caller input", async () => {
 		const entitySchema = builders.entitySchema(ctx, env);
 

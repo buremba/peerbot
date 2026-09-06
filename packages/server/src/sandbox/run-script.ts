@@ -133,7 +133,12 @@ interface SdkCallTraceEntry {
 	access: MethodAccess | "unknown";
 	args: unknown[];
 	skipped: boolean;
-	required_access?: MethodAccess;
+	/**
+	 * Resolved tier, never the `external` side-effect marker: preflight maps an
+	 * external method through its `enforcedTier`, and the public `run_sdk`
+	 * schema drops any entry that still carries `external`.
+	 */
+	required_access?: Exclude<MethodAccess, "external">;
 	authorization_status?: "not_evaluated";
 }
 

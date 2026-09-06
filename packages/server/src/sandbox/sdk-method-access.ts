@@ -9,7 +9,7 @@ import {
 	resolveSdkMaxAccessLevel,
 	type ToolAccessLevel,
 } from "../auth/tool-access";
-import type { MethodAccess } from "./method-metadata";
+import { requiredSdkAccess, type MethodAccess, type MethodAccessMetadata } from "./method-metadata";
 
 export type SdkDiscoveryMode = "read" | "full";
 export type SdkRequiredTier = "read" | "operate" | "administer";
@@ -26,14 +26,24 @@ function requiredToolAccess(methodAccess: MethodAccess): ToolAccessLevel {
 	return "read";
 }
 
-/** Public discovery tier for one method or a multi-method lifecycle. */
+/** Reporting requires complete metadata; a bare external marker loses its tier. */
+type SdkMethodAccessInput = MethodAccessMetadata | readonly MethodAccessMetadata[];
+
+/**
+ * Public discovery tier for one method or a multi-method lifecycle — the tier
+ * REPORTED to callers, so an `external` method with an `enforcedTier` reports
+ * that stricter tier rather than the write its marker implies.
+ */
 export function effectiveSdkRequiredTier(
-	methodAccess: MethodAccess | readonly MethodAccess[],
+	methodAccess: SdkMethodAccessInput,
 ): SdkRequiredTier {
-	const accesses: readonly MethodAccess[] =
-		typeof methodAccess === "string" ? [methodAccess] : methodAccess;
+	// `Array.isArray` does not narrow a readonly-array union, so discriminate on
+	// the object shape instead: casting here would reopen the hole the
+	// MethodAccessMetadata union exists to close.
+	const accesses: readonly MethodAccessMetadata[] =
+		"access" in methodAccess ? [methodAccess] : methodAccess;
 	const required = accesses.reduce<ToolAccessLevel>((highest, access) => {
-		const candidate = requiredToolAccess(access);
+		const candidate = requiredSdkAccess(access);
 		return TOOL_ACCESS_RANK[candidate] > TOOL_ACCESS_RANK[highest]
 			? candidate
 			: highest;
@@ -46,7 +56,7 @@ export function effectiveSdkRequiredTier(
 }
 
 export function formatSdkRequiredTier(
-	methodAccess: MethodAccess | readonly MethodAccess[],
+	methodAccess: SdkMethodAccessInput,
 ): string {
 	const tier = effectiveSdkRequiredTier(methodAccess);
 	if (tier === "administer") {
@@ -71,7 +81,7 @@ export interface SdkAccessGuidance {
  * it can never turn a regular member into a workspace administrator.
  */
 export function resolveSdkAccessGuidance(
-	methodAccess: MethodAccess | readonly MethodAccess[],
+	methodAccess: SdkMethodAccessInput,
 	memberRole: string | null | undefined,
 	scopes: readonly string[] | null | undefined,
 ): SdkAccessGuidance {

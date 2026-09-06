@@ -114,7 +114,7 @@ describe("ClientSDK business failure boundary", () => {
 			{
 				path: "operations.execute",
 				args: [{ connection_id: 549, operation_key: "dry_run_probe" }],
-				required_access: "external",
+				required_access: "write",
 				authorization_status: "not_evaluated",
 			},
 		]);

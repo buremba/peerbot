@@ -78,7 +78,6 @@ const PublicSideEffectPreviewEntrySchema = Type.Object({
     [
       Type.Literal("read"),
       Type.Literal("write"),
-      Type.Literal("external"),
       Type.Literal("admin"),
     ],
     { description: "Access tier required by the proposed SDK method." },
@@ -193,7 +192,6 @@ function asPublicPreviewEntry(value: unknown): PublicSideEffectPreviewEntry | nu
   const requiredAccess =
     row.required_access === "read" ||
     row.required_access === "write" ||
-    row.required_access === "external" ||
     row.required_access === "admin"
       ? row.required_access
       : null;

@@ -196,7 +196,7 @@ describe("canonical WhatsApp identity and cutover", () => {
    * its own such run. The in-page history budget therefore cannot equal the
    * fence: the adapter would be entitled to spend the entire run paging
    * history and still owe a serialize-and-return, which it can never afford.
-   * That is the exact shape that stalled feed 309 in prod -- every run died
+   * That is the exact shape that stalled a prod feed -- every run died
    * as `run timed out after 90000ms`, so the checkpoint never advanced and
    * the next run repeated the identical oversized work.
    */

@@ -14,7 +14,7 @@
  * inline).
  */
 import type { McpStatus, McpToolDef } from "@lobu/core";
-import { createLogger } from "@lobu/core";
+import { createLogger, isDirectPackageInstallCommand } from "@lobu/core";
 import {
   callMcpTool,
   checkMcpLogin,
@@ -22,7 +22,6 @@ import {
   startMcpLogin,
 } from "@lobu/plugin-mcp";
 import { joinTextContent, type GatewayParams } from "@lobu/plugin-toolkit";
-import { isDirectPackageInstallCommand } from "../runtime/tool-policy";
 
 const logger = createLogger("mcp-cli");
 

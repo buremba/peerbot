@@ -100,6 +100,16 @@ export async function executeAgentTurnRun(
                     description: tool.description,
                     inputSchema: tool.input_schema,
                   })),
+                  ...(turn.tools.builtin ? { builtin: turn.tools.builtin } : {}),
+                  ...(turn.tools.bash_policy
+                    ? {
+                        bashPolicy: {
+                          allowAll: turn.tools.bash_policy.allow_all,
+                          allowPrefixes: turn.tools.bash_policy.allow_prefixes,
+                          denyPrefixes: turn.tools.bash_policy.deny_prefixes,
+                        },
+                      }
+                    : {}),
                 },
               }
             : {}),

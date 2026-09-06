@@ -21,6 +21,9 @@
  *    byte-level work the host does with Node's own codecs. A decode with
  *    `{ stream: true }` opens a Node `TextDecoder` on the host that keeps the
  *    partial sequence between chunks until the flushing decode releases it.
+ *  - `performance.now()`/`timeOrigin` over `Date`: millisecond resolution is
+ *    all just-bash reads it for (command timing), and the isolate has no
+ *    monotonic clock of its own to offer.
  *  - `structuredClone`, guest-side: a deep copy of the JSON-shaped values,
  *    dates, regexps, maps, sets, errors and byte arrays a tool call carries,
  *    with cycles preserved. pi-ai clones every tool call's arguments before
@@ -84,6 +87,7 @@ export const PRELUDE_GLOBALS = [
   'atob',
   'btoa',
   'structuredClone',
+  'performance',
   'URL',
   'URLSearchParams',
   'AbortController',
@@ -579,6 +583,16 @@ var exports = module.exports;
     if (arguments.length === 0) throw new TypeError('1 argument required, but only 0 present');
     return hostSync('base64Decode', String(data));
   };
+
+  // ---------------------------------------------------------------------------
+  // performance: wall-clock milliseconds; the isolate has no monotonic clock
+  // ---------------------------------------------------------------------------
+
+  var performanceTimeOrigin = Date.now();
+  global.performance = Object.freeze({
+    timeOrigin: performanceTimeOrigin,
+    now: function now() { return Date.now() - performanceTimeOrigin; },
+  });
 
   // ---------------------------------------------------------------------------
   // structuredClone: guest-side deep copy; nothing here needs the host

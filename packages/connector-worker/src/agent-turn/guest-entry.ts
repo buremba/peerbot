@@ -9,7 +9,9 @@
  * OpenAI path, which reaches the network through the prelude's streaming
  * `fetch` and therefore through the host's one egress module. A tool call is
  * the same kind of request to the same host: the gateway's MCP route, over the
- * same `fetch`, under the same allowlist.
+ * same `fetch`, under the same allowlist. A workspace tool never leaves the
+ * isolate at all: `bash` is just-bash over an in-memory filesystem that lives
+ * for this turn.
  *
  * The turn holds ONE credential and never a real one. `provider.apiKey` is the
  * host's vault placeholder over the gateway's per-turn worker token; the host
@@ -22,6 +24,7 @@ import type { AgentTool } from '@mariozechner/pi-agent-core';
 import { streamAnthropic } from '@mariozechner/pi-ai/anthropic';
 import { streamOpenAICompletions } from '@mariozechner/pi-ai/openai-completions';
 import type { AgentTurnEvent, AgentTurnInput, AgentTurnOutput, AgentTurnTool } from './types.js';
+import { createWorkspaceTools } from './workspace.js';
 
 /**
  * A turn's tool-call budget. pi would otherwise loop for as long as the model
@@ -118,11 +121,12 @@ async function callMcpTool(
   return text || `${tool.name} completed.`;
 }
 
-/** pi's tool objects for the turn's manifest. */
+/** pi's tool objects for the turn's manifest: the gateway's MCP tools, then the workspace's own. */
 function buildTools(input: AgentTurnInput, credential: string): AgentTool[] {
   const tools = input.tools;
   if (!tools) return [];
-  return tools.definitions.map((tool) => ({
+  const workspace = tools.builtin ? createWorkspaceTools(tools.builtin, tools.bashPolicy) : [];
+  const mcp: AgentTool[] = tools.definitions.map((tool) => ({
     name: tool.name,
     label: `${tool.mcpId}/${tool.name}`,
     description: tool.description,
@@ -133,6 +137,7 @@ function buildTools(input: AgentTurnInput, credential: string): AgentTool[] {
       details: {},
     }),
   }));
+  return [...mcp, ...workspace];
 }
 
 function clip(text: string): string {

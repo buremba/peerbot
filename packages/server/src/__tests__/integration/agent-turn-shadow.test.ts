@@ -245,9 +245,24 @@ describe('agent turn shadow producer', () => {
       allowed_hosts: ['gateway.test.invalid'],
     });
     expect(envelope.turn.system_prompt).toBe(
-      '## Agent Identity\n\nI am the shadow agent.\n\n## Agent Instructions\n\nAnswer briefly.'
+      '## Agent Identity\n\nI am the shadow agent.\n\n## Agent Instructions\n\nAnswer briefly.\n\n## Workspace\n\n' +
+        'Your bash, read, write, ls and find tools act on a private in-memory workspace at /workspace.\n' +
+        'It starts empty on every turn and nothing written there persists after the turn ends.\n' +
+        'It has no network access and no package manager; use your other tools to reach data.'
     );
     expect(envelope.turn.messages).toEqual([]);
+    // With no tool policy every workspace tool is admitted, bash with the
+    // default package-manager denylist and no allowlist.
+    const tools = envelope.turn.tools as {
+      definitions: unknown[];
+      builtin: string[];
+      bash_policy: { allow_all: boolean; allow_prefixes: string[]; deny_prefixes: string[] };
+    };
+    expect(tools.definitions).toEqual([]);
+    expect(tools.builtin).toEqual(['bash', 'read', 'write', 'ls', 'find']);
+    expect(tools.bash_policy.allow_all).toBe(false);
+    expect(tools.bash_policy.allow_prefixes).toEqual([]);
+    expect(tools.bash_policy.deny_prefixes).toContain('pip install ');
 
     // The credential rides OUTSIDE the turn so the poll can lift it onto the
     // response's `credentials` and the worker can conceal it before the guest
@@ -270,7 +285,7 @@ describe('agent turn shadow producer', () => {
 
     const [run] = await shadowRuns();
     const envelope = run.action_input as {
-      turn: { tools?: unknown; system_prompt: string };
+      turn: { tools?: Record<string, unknown>; system_prompt: string };
       credential: string;
     };
     expect(Value.Check(AgentTurnPollPayloadSchema, { turn: envelope.turn })).toBe(true);
@@ -295,8 +310,9 @@ describe('agent turn shadow producer', () => {
     expect(fixture.listed).toEqual([
       { mcpId: 'lobu-memory', agentId: AGENT_ID, token: envelope.credential },
     ]);
-    expect(envelope.turn.tools).toEqual({
+    expect(envelope.turn.tools).toMatchObject({
       gateway_url: GATEWAY_URL,
+      builtin: ['bash', 'read', 'write', 'ls', 'find'],
       definitions: [
         {
           mcp_id: 'lobu-memory',
@@ -343,8 +359,49 @@ describe('agent turn shadow producer', () => {
     });
 
     const [run] = await shadowRuns();
-    const turn = run.action_input.turn as { tools?: { definitions: Array<{ name: string }> } };
+    const turn = run.action_input.turn as {
+      tools?: { definitions: Array<{ name: string }>; builtin?: string[]; bash_policy?: unknown };
+      system_prompt: string;
+    };
     expect(turn.tools?.definitions.map((tool) => tool.name)).toEqual(['query_sdk']);
+    // Strict mode admits only what the allowlist names, and `query_*` names
+    // no workspace tool — so there is no workspace, no bash policy to carry,
+    // and no workspace section in the prompt.
+    expect(turn.tools?.builtin).toBeUndefined();
+    expect(turn.tools?.bash_policy).toBeUndefined();
+    expect(turn.system_prompt).not.toContain('## Workspace');
+  });
+
+  it('carries the bash prefix policy with the workspace, and drops the tools the policy denies', async () => {
+    const org = await createTestOrganization();
+    const message = messageFor(org.id);
+    message.agentOptions = {
+      model: 'claude/claude-opus-4-8',
+      toolsConfig: { allowedTools: ['Bash(git:*)', 'Bash(ls:*)'], deniedTools: ['write', 'Bash(rm:*)'] },
+    };
+    await enqueueAgentTurnShadow(message, {
+      agentSettings: settingsStore,
+      catalog: catalogFor(tokenEchoingModule()),
+      gatewayUrl: GATEWAY_URL,
+    });
+
+    const [run] = await shadowRuns();
+    const turn = run.action_input.turn as {
+      tools?: {
+        definitions: unknown[];
+        builtin: string[];
+        bash_policy: { allow_all: boolean; allow_prefixes: string[]; deny_prefixes: string[] };
+      };
+    };
+    expect(Value.Check(AgentTurnPollPayloadSchema, { turn })).toBe(true);
+    // No MCP surface wired, yet the workspace still ships: the two halves of
+    // the manifest are independent.
+    expect(turn.tools?.definitions).toEqual([]);
+    expect(turn.tools?.builtin).toEqual(['bash', 'read', 'ls', 'find']);
+    expect(turn.tools?.bash_policy.allow_all).toBe(false);
+    expect(turn.tools?.bash_policy.allow_prefixes).toEqual(['git', 'ls']);
+    expect(turn.tools?.bash_policy.deny_prefixes.slice(-1)).toEqual(['rm']);
+    expect(turn.tools?.bash_policy.deny_prefixes).toContain('npm install ');
   });
 
   it('runs the turn without tools when it cannot honour them, and still enqueues it', async () => {
@@ -359,8 +416,11 @@ describe('agent turn shadow producer', () => {
       const rows = await shadowRuns();
       produced += 1;
       expect(rows).toHaveLength(produced);
-      const turn = rows[produced - 1].action_input.turn as { tools?: unknown };
-      expect(turn.tools).toBeUndefined();
+      const turn = rows[produced - 1].action_input.turn as { tools?: { definitions: unknown[]; builtin?: string[] } };
+      // The workspace tools are the policy's business, not the MCP surface's:
+      // they ship regardless, with no MCP definitions beside them.
+      expect(turn.tools?.definitions).toEqual([]);
+      expect(turn.tools?.builtin).toEqual(['bash', 'read', 'write', 'ls', 'find']);
     };
 
     // No MCP surface wired.

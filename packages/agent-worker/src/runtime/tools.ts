@@ -10,11 +10,11 @@ import {
   createWriteTool,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import type { BashCommandPolicy } from "@lobu/core";
 import {
+  type BashCommandPolicy,
   enforceBashCommandPolicy,
   isDirectPackageInstallCommand,
-} from "./tool-policy";
+} from "@lobu/core";
 import { buildAgentEnv } from "../shared/worker-env-keys";
 
 type RequiredParamGroup = {

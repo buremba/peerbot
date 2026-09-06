@@ -80,6 +80,24 @@ const HISTORY_MESSAGE_LIMIT = 12;
 const HISTORY_MESSAGE_CHARS = 16_000;
 const TURN_MESSAGE_CHARS = 32_000;
 
+/**
+ * Where an agent turn's reply is delivered. This rides `action_input` beside
+ * the guest's envelope rather than inside it: delivery is the host's business,
+ * and the poll route lifts only `turn` and `credential` out, so these fields
+ * never cross into the isolate. `completeAgentTurnRun` is the only reader.
+ *
+ * `team_id` is optional for the same reason `MessagePayload.teamId` is: Slack
+ * carries the workspace id in `platform_metadata` instead.
+ */
+export interface TurnReply {
+  message_id: string;
+  channel_id: string;
+  user_id: string;
+  team_id?: string;
+  platform: string;
+  platform_metadata?: Record<string, unknown>;
+}
+
 type TurnEnvelope = AgentTurnPollPayload["turn"];
 type TurnTools = NonNullable<TurnEnvelope["tools"]>;
 type BuiltinTool = NonNullable<TurnTools["builtin"]>[number];
@@ -642,6 +660,20 @@ export async function enqueueAgentTurnShadow(
       shadow: true,
     };
 
+    // Where this turn's reply would be delivered, kept beside the envelope
+    // rather than inside it: the guest has no use for a channel id, and the
+    // poll route lifts only `turn` and `credential` out of `action_input`, so
+    // a third sibling never crosses into the isolate. The completion route
+    // reads it to publish the same thread_response the subprocess lane does.
+    const reply: TurnReply = {
+      message_id: data.messageId,
+      channel_id: data.channelId,
+      user_id: data.userId,
+      team_id: data.teamId,
+      platform: data.platform,
+      platform_metadata: data.platformMetadata,
+    };
+
     const sql = getDb();
     const rows = await sql<{ id: number }>`
       INSERT INTO runs (
@@ -649,7 +681,7 @@ export async function enqueueAgentTurnShadow(
         approval_status, action_input, created_at
       ) VALUES (
         ${data.organizationId}, 'agent_turn', 'pending',
-        'auto', ${sql.json({ turn, credential: provider.credential })},
+        'auto', ${sql.json({ turn, credential: provider.credential, reply })},
         current_timestamp
       )
       RETURNING id

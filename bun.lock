@@ -17,7 +17,7 @@
     },
     "packages/agent-worker": {
       "name": "@lobu/worker",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "bin": {
         "lobu-worker": "./dist/index.js",
       },
@@ -59,7 +59,7 @@
     },
     "packages/cli": {
       "name": "@lobu/cli",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "bin": {
         "lobu": "bin/lobu.js",
       },
@@ -144,7 +144,7 @@
     },
     "packages/client": {
       "name": "@lobu/client",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "devDependencies": {
         "@hey-api/client-fetch": "^0.13.1",
         "@hey-api/openapi-ts": "^0.99.0",
@@ -153,7 +153,7 @@
     },
     "packages/connector-sdk": {
       "name": "@lobu/connector-sdk",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "dependencies": {
         "@lobu/core": "workspace:*",
         "@sinclair/typebox": "^0.34.41",
@@ -177,7 +177,7 @@
     },
     "packages/connector-worker": {
       "name": "@lobu/connector-worker",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "bin": {
         "connector-worker": "./dist/bin.js",
       },
@@ -188,7 +188,12 @@
         "@lobu/connector-sdk": "workspace:*",
         "@lobu/core": "workspace:*",
         "@lobu/embeddings": "workspace:*",
+        "@lobu/plugin-api": "workspace:*",
         "@lobu/plugin-conversations": "workspace:*",
+        "@lobu/plugin-host": "workspace:*",
+        "@lobu/plugin-media": "workspace:*",
+        "@lobu/plugin-memory": "workspace:*",
+        "@lobu/plugin-toolkit": "workspace:*",
         "@mariozechner/pi-agent-core": "^0.73.1",
         "@mariozechner/pi-ai": "^0.73.1",
         "@xenova/transformers": "^2.17.2",
@@ -224,7 +229,7 @@
     },
     "packages/core": {
       "name": "@lobu/core",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "dependencies": {
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/exporter-trace-otlp-grpc": "^0.57.0",
@@ -256,7 +261,7 @@
     },
     "packages/embeddings": {
       "name": "@lobu/embeddings",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "dependencies": {
         "@hono/node-server": "^2.0.11",
         "@xenova/transformers": "^2.17.2",
@@ -360,7 +365,7 @@
     },
     "packages/pgvector-embedded": {
       "name": "@lobu/pgvector-embedded",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "devDependencies": {
         "@types/node": "20.19.9",
         "typescript": "^5.7.2",
@@ -368,7 +373,7 @@
     },
     "packages/plugin-api": {
       "name": "@lobu/plugin-api",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "dependencies": {
         "@sinclair/typebox": "^0.34.41",
       },
@@ -394,7 +399,7 @@
     },
     "packages/plugin-host": {
       "name": "@lobu/plugin-host",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "dependencies": {
         "@lobu/plugin-api": "workspace:*",
       },
@@ -422,12 +427,10 @@
       "name": "@lobu/plugin-media",
       "version": "0.0.0",
       "dependencies": {
-        "@lobu/core": "workspace:*",
         "@lobu/plugin-api": "workspace:*",
         "@lobu/plugin-toolkit": "workspace:*",
         "@mariozechner/pi-coding-agent": "^0.73.1",
         "@sinclair/typebox": "^0.34.33",
-        "form-data": "^4.0.4",
       },
       "devDependencies": {
         "@types/node": "^20.19.9",
@@ -463,7 +466,7 @@
     },
     "packages/promptfoo-provider": {
       "name": "@lobu/promptfoo-provider",
-      "version": "18.0.0",
+      "version": "19.1.0",
       "devDependencies": {
         "@types/node": "^20.10.0",
         "typescript": "^5.3.3",

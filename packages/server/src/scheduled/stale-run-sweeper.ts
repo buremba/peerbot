@@ -1,11 +1,14 @@
 /**
  * Shared stale-run reaping core.
  *
- * Two reapers mark stale `runs` rows as `timeout` when their liveness signal
+ * Three reapers mark stale `runs` rows as `timeout` when their liveness signal
  * lapses. Callers may additionally include never-claimed `pending` rows:
  *
  *   - the connector-lane reaper (scheduled/check-stalled-executions.ts) —
  *     sync/action/embed_backfill/auth, single 120s threshold
+ *   - the agent-turn sweep (worker-api/agent-turn.ts) — `agent_turn` on the
+ *     connector reaper's threshold, one row per transaction so the timeout
+ *     can publish the client's `thread_response` alongside it
  *   - the automation sweep (automations/automation.ts) — 3min heartbeat-stale fast
  *     path + 2h coarse TTL for runs that never heartbeated
  *

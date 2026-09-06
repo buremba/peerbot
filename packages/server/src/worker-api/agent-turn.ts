@@ -11,8 +11,13 @@
  * client is waiting on, both inside the same fenced terminal transition, the
  * way `device-chat.ts` does for the other non-subprocess lane. Which of the
  * two a run is, is the run's own `turn.shadow`, stamped by the producer.
+ *
+ * `sweepStaleAgentTurnRuns` is the same distinction applied by the stale-run
+ * reaper: a worker that crashes mid-turn never reaches this route, so the
+ * reaper terminalizes the run and, for an authoritative turn, delivers the
+ * error the completion route would have.
  */
-import { parseSessionEntries } from "@lobu/core";
+import { AGENT_ERRORS, AgentErrorCode, parseSessionEntries } from "@lobu/core";
 import {
 	type CompleteAgentTurnRequest,
 	CompleteAgentTurnRequestSchema,
@@ -31,6 +36,8 @@ import {
 } from "../gateway/services/transcript-snapshot";
 import type { Env } from "../index";
 import { runLeaseFence } from "../runs/run-lease";
+import { classifyRunOutcome } from "../runs/run-outcome";
+import { buildStaleRunWhereSql } from "../scheduled/stale-run-sweeper";
 import { stripNul } from "../utils/strip-nul";
 import { authorizeRunForWorker } from "./shared";
 
@@ -274,4 +281,122 @@ export async function completeAgentTurnRun(c: Context<{ Bindings: Env }>) {
 	// woken for a row a rollback would take back.
 	if (!isShadow) await notifyThreadResponse();
 	return c.json({ ok: true, status: failed ? "failed" : "completed" });
+}
+
+/**
+ * Reap stale `agent_turn` runs, delivering the failure where a client is
+ * waiting on one.
+ *
+ * The turn lane shares the connector lanes' claim and heartbeat contract, so
+ * the staleness predicate is theirs (`buildStaleRunWhereSql`): a never-claimed
+ * `pending` row past the threshold, or a `claimed`/`running` row whose
+ * heartbeat lapsed. What differs is what a timeout MEANS. A connector run just
+ * ends; an authoritative turn has a client blocked on its reply, and the
+ * completion route that would have answered it never fires for a worker that
+ * died. Without this the client waits forever with no error ever surfacing.
+ *
+ * Shape and reason follow `sweepStaleDeviceChatRuns`: candidates are read
+ * once, then each is terminalized in its own transaction by an UPDATE that
+ * re-asserts the full predicate, so a worker whose heartbeat or completion
+ * wins after the candidate read makes this a no-op instead of an overwrite.
+ * The `thread_response` joins the same transaction, and the listener is woken
+ * only after commit.
+ *
+ * Delivery follows the run's own envelope, exactly as the completion route
+ * does: a shadow turn (`turn.shadow === true`) delivers nothing, and so does a
+ * run with no `reply` address — there is nowhere to deliver to, and the row
+ * still terminalizes so the lane cannot wedge.
+ */
+export async function sweepStaleAgentTurnRuns(
+	thresholdSeconds: number,
+): Promise<{ reaped: number; delivered: number }> {
+	const sql = getDb();
+	const staleWhereSql = buildStaleRunWhereSql({
+		runTypes: ["agent_turn"],
+		heartbeatSemantics: "any-heartbeat",
+		heartbeatStaleInterval: `${thresholdSeconds} seconds`,
+		coarseStaleInterval: `${thresholdSeconds} seconds`,
+		includePending: true,
+	});
+	const candidates = await sql.unsafe<{
+		id: number | string;
+		status: "pending" | "claimed" | "running";
+		organization_id: string;
+		action_input: {
+			turn?: { shadow?: unknown; conversation_id?: unknown };
+			reply?: TurnReply;
+		} | null;
+	}>(
+		`SELECT id, status, organization_id, action_input
+     FROM public.runs
+     WHERE ${staleWhereSql}
+     ORDER BY id
+     LIMIT 100`,
+	);
+
+	let reaped = 0;
+	let delivered = 0;
+	for (const candidate of candidates) {
+		const runId = Number(candidate.id);
+		const neverClaimed = candidate.status === "pending";
+		const workerError = neverClaimed
+			? "worker_claim_timeout"
+			: "worker_heartbeat_lost";
+		// The catalog owns the prose, as turn-liveness does for the subprocess
+		// lane: a run nobody claimed never started; a lapsed heartbeat is a
+		// worker that died mid-turn.
+		const code = neverClaimed
+			? AgentErrorCode.WORKER_STARTUP_FAILED
+			: AgentErrorCode.WORKER_DIED;
+		const envelope = candidate.action_input ?? {};
+		const reply =
+			envelope.turn?.shadow === true ? undefined : envelope.reply;
+		const outcome = await sql.begin(async (tx) => {
+			const rows = await tx.unsafe<{ id: number | string }>(
+				`UPDATE public.runs
+         SET status = 'timeout',
+             outcome = $2,
+             completed_at = current_timestamp,
+             error_message = $3
+         WHERE id = $1
+           AND status = $4
+           AND ${staleWhereSql}
+         RETURNING id`,
+				[
+					runId,
+					classifyRunOutcome({ status: "timeout" }),
+					workerError,
+					candidate.status,
+				],
+			);
+			if (rows.length === 0) return "won_by_worker";
+			if (!reply) return "reaped";
+			await insertThreadResponseRow(
+				tx,
+				{
+					messageId: reply.message_id,
+					channelId: reply.channel_id,
+					conversationId: String(envelope.turn?.conversation_id ?? ""),
+					userId: reply.user_id,
+					teamId: reply.team_id ?? "api",
+					platform: reply.platform,
+					organizationId: candidate.organization_id,
+					platformMetadata: reply.platform_metadata,
+					error: AGENT_ERRORS[code].message,
+					errorCode: code,
+					processedMessageIds: [reply.message_id],
+					timestamp: Date.now(),
+				},
+				candidate.organization_id,
+			);
+			return "delivered";
+		});
+		if (outcome === "won_by_worker") continue;
+		reaped += 1;
+		if (outcome === "delivered") delivered += 1;
+	}
+	// Outside the transaction, as device-chat does: the listener must not be
+	// woken for a row a rollback would take back.
+	if (delivered > 0) await notifyThreadResponse();
+	return { reaped, delivered };
 }

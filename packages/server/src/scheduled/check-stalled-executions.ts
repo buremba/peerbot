@@ -19,6 +19,12 @@
  *    full four-lane set here. The browser-worker (Chrome) lane runs out
  *    of a service-worker and also heartbeats now (owletto#186) but uses
  *    its own `chrome.alarms` cadence — it shares this WHERE clause.
+ *  - `agent_turn` — the isolate turn lane, on the same fleet worker with the
+ *    same claim + heartbeat contract, so it shares the staleness predicate
+ *    but not the bulk CTE: an authoritative turn has a client waiting on its
+ *    reply, so its timeout must publish a `thread_response` in the same
+ *    transaction. `sweepStaleAgentTurnRuns` (worker-api/agent-turn.ts) owns
+ *    that, the way `sweepStaleDeviceChatRuns` does for device chat.
  *  - `automation` — driven in-process by the embedded gateway. Lifecycle is
  *    handled by the durable terminal-event resolution (run-completion.ts)
  *    + the dedicated `sweepStaleAutomationRuns` / `resetOrphanedAutomationRuns`
@@ -60,6 +66,7 @@ import {
   DEVICE_FEED_READ_SCRUB_GRACE_SECONDS,
 } from '../lib/device-feed-read-protocol';
 import { buildStaleRunWhereSql } from './stale-run-sweeper';
+import { sweepStaleAgentTurnRuns } from '../worker-api/agent-turn';
 import { sweepStaleDeviceChatRuns } from '../worker-api/device-chat';
 
 /** Advisory-lock key for cross-pod coordination of the stale-run reaper.
@@ -212,10 +219,11 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
   // the executor beat at least once; rows with none are judged on
   // COALESCE(claimed_at, created_at). One threshold covers both paths.
   const staleWhereSql = buildStaleRunWhereSql({
-    // `agent_turn` joins the connector lanes because it runs on the SAME
-    // worker with the same claim + heartbeat contract; without it a crashed
-    // fleet worker leaves the turn `running` forever.
-    runTypes: ['sync', 'action', 'embed_backfill', 'auth', 'agent_turn'],
+    // `agent_turn` runs on the SAME worker with the same claim + heartbeat
+    // contract, but is reaped by `sweepStaleAgentTurnRuns` below rather than
+    // the bulk CTE: an authoritative turn's timeout has to publish the
+    // thread_response its client is waiting on, in the same transaction.
+    runTypes: ['sync', 'action', 'embed_backfill', 'auth'],
     heartbeatSemantics: 'any-heartbeat',
     heartbeatStaleInterval: `${thresholdSeconds} seconds`,
     coarseStaleInterval: `${thresholdSeconds} seconds`,
@@ -556,9 +564,30 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
         );
       }
 
+      // Agent turns share the connector lanes' claim + heartbeat contract but
+      // not their terminal semantics: a crashed fleet worker leaves a client
+      // waiting on an authoritative turn's reply, so the sweep that times the
+      // run out also publishes the thread_response the completion route would
+      // have. A shadow turn terminalizes silently.
+      let agentTurnsReaped = 0;
+      let agentTurnErrorsDelivered = 0;
+      try {
+        const swept = await sweepStaleAgentTurnRuns(thresholdSeconds);
+        agentTurnsReaped = swept.reaped;
+        agentTurnErrorsDelivered = swept.delivered;
+      } catch (err) {
+        logger.error(
+          { error: String(err) },
+          '[reaper] Failed to sweep stale agent turn runs'
+        );
+      }
+
       const reapedRow = reaped[0];
       const reapedCount =
-        deviceChatsReaped + approvalActionsReaped + (reapedRow?.reaped ?? 0);
+        deviceChatsReaped +
+        agentTurnsReaped +
+        approvalActionsReaped +
+        (reapedRow?.reaped ?? 0);
       const retriesCreated = reapedRow?.retries_created ?? 0;
       const syncEligible = reapedRow?.sync_eligible ?? 0;
 
@@ -619,6 +648,8 @@ export async function reapStaleRuns(): Promise<ReapStaleRunsResult> {
           reaped: reapedCount,
           approvalActionsReaped,
           deviceChatsReaped,
+          agentTurnsReaped,
+          agentTurnErrorsDelivered,
           retriesCreated,
           thresholdSeconds,
         },

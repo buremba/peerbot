@@ -234,6 +234,16 @@ describe("access-model cross-check", () => {
 			const [namespace, method] = path.split(".");
 			const tool = NAMESPACE_TOOL[namespace];
 			if (!tool || !method) continue;
+			// `enforcedTier` disambiguates `external` only; anywhere else it is dead
+			// weight that can silently contradict `access`. Checked before the
+			// branches below so it covers the `.manage` wrappers too — they take the
+			// `expected`-vs-`reported` path, which reads `enforcedTier` only when
+			// `access` is external and so would never notice a stray one.
+			if (meta.access !== "external" && meta.enforcedTier !== undefined) {
+				mismatches.push(
+					`${path}: enforcedTier is only meaningful with access:"external" (access=${meta.access})`,
+				);
+			}
 			// `.manage` is the raw action-passthrough wrapper: it accepts ANY action
 			// of its tool, so it carries the namespace's most-privileged tier rather
 			// than one action's. That is a derivable expectation, not an exemption —

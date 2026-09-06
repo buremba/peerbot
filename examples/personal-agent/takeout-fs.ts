@@ -25,7 +25,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { type LocalTakeoutConfig, parseCsv } from "./takeout-utils.ts";
+import type { LocalTakeoutConfig } from "./takeout-utils.ts";
 
 export function assertDirectory(
   config: LocalTakeoutConfig,
@@ -81,32 +81,4 @@ export function listFiles(
   };
   visit(root);
   return out.sort();
-}
-
-/**
- * The on-disk implementation of `linkedin-takeout.ts`'s `TakeoutCsvReader`:
- * resolves a relative CSV path inside `takeoutDir` and parses it, yielding `[]`
- * for a file the export omitted.
- *
- * This is the ONLY place LinkedIn takeout touches a filesystem. Handing it to a
- * reader-taking parser (rather than importing `fs` beside the parsers) is what
- * lets the connector's live browser feeds keep a bundle the isolate accepts.
- *
- * The directory itself is asserted ONCE, here, and eagerly — a missing CSV is a
- * section the member never used (`[]`), but a missing directory is a
- * misconfiguration, and letting it fall through as "no files found" would report
- * a typo'd `takeout_dir` as a clean zero-event sync the scheduler advances past.
- * The isolate-side caller cannot make this check: it has no filesystem to stat.
- */
-export function localCsvReader(
-  takeoutDir: string
-): (relativePath: string) => Record<string, string>[] {
-  if (!existsSync(takeoutDir) || !statSync(takeoutDir).isDirectory()) {
-    throw new Error(`LinkedIn takeout directory does not exist: ${takeoutDir}`);
-  }
-  return (relativePath) => {
-    const filePath = path.join(takeoutDir, ...relativePath.split("/"));
-    if (!existsSync(filePath)) return [];
-    return parseCsv(readFileSync(filePath, "utf8"));
-  };
 }

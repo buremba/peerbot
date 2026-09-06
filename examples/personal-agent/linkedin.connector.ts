@@ -2903,8 +2903,8 @@ const LINKEDIN_TAKEOUT_FEEDS: Record<
  * The configured export directory, or a thrown error naming what is missing.
  *
  * Only checks that the value is SET; it cannot stat the path, because this runs
- * inside the isolate, which has no filesystem. `localCsvReader` asserts the
- * directory actually exists — it is the only part of takeout holding an `fs`.
+ * inside the isolate, which has no filesystem. An injected host reader must
+ * validate its directory before reading; the platform does not provide one.
  */
 function assertTakeoutDir(config: LinkedInConfig): string {
   const dir = config.takeout_dir;
@@ -3425,18 +3425,19 @@ export default class LinkedInConnector extends ConnectorRuntime<
     // capability to actually READ the export is supplied here. Injecting it
     // (rather than importing `node:fs` alongside the live feeds) is what keeps
     // the whole bundle isolate-eligible — see this class's header.
-    const takeout = LINKEDIN_TAKEOUT_FEEDS[feedKey];
+    const takeout = Object.hasOwn(LINKEDIN_TAKEOUT_FEEDS, feedKey)
+      ? LINKEDIN_TAKEOUT_FEEDS[feedKey]
+      : undefined;
     if (takeout) {
       const readCsv = this.csvReader;
       if (!readCsv) {
         throw new Error(
-          `LinkedIn feed '${feedKey}' reads the local LinkedIn Data Export, ` +
-            `and this runtime provides no filesystem access. Connector code runs ` +
-            `in a V8 isolate; no worker advertises a local-file capability today, ` +
-            `so no lane can serve this feed. The feed, its checkpoint and its ` +
-            `already-ingested items are intact — run it once a filesystem ` +
-            `backend exists, or construct the connector with a reader in a ` +
-            `Node-hosted context.`
+          "LinkedIn feed '" +
+            feedKey +
+            "' reads the local LinkedIn Data Export, " +
+            "and this runtime provides no filesystem access. This invocation has no CSV reader; " +
+            "browser-backed live feeds do not require one. For a local import, construct " +
+            "the connector with an explicit reader in a filesystem-capable host."
         );
       }
       return this.result(

@@ -1,5 +1,18 @@
 # Changelog
 
+## [19.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v19.0.0...lobu-v19.1.0) (2026-09-06)
+
+
+### Features
+
+* **agent-turn:** call the agent's MCP tools from the isolate lane ([#3383](https://github.com/lobu-ai/lobu/issues/3383)) ([c87afc0](https://github.com/lobu-ai/lobu/commit/c87afc0247959e92d11e9ea56a3863add895f9e5))
+
+
+### Bug Fixes
+
+* **ci:** stream the CI run list into jq instead of through argv ([#3380](https://github.com/lobu-ai/lobu/issues/3380)) ([f7392ca](https://github.com/lobu-ai/lobu/commit/f7392ca3122d561c4d495ec746626149bde99682))
+* **connectors:** stop the WhatsApp collect budget racing the run fence ([#3382](https://github.com/lobu-ai/lobu/issues/3382)) ([9242f3b](https://github.com/lobu-ai/lobu/commit/9242f3b146864cf6893abf9dcf3dbca5d64d8ef6))
+
 ## [19.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v18.0.0...lobu-v19.0.0) (2026-09-05)
 
 

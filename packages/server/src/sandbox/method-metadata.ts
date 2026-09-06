@@ -8,6 +8,24 @@ export type MethodAccess = "read" | "write" | "external" | "admin";
 export interface MethodMetadata {
 	summary: string;
 	access: MethodAccess;
+	/**
+	 * The tier the delegated `manage_*` action actually enforces, for `external`
+	 * methods whose enforcement is stricter than the write visibility `external`
+	 * implies.
+	 *
+	 * `external` is a side-effect marker, not a tier: it keeps a method
+	 * write-VISIBLE so an owner/admin can trigger the progressive mcp:admin OAuth
+	 * challenge by calling it. But the reported tier was derived from that same
+	 * marker, so an admin-enforced external method advertised itself as "operate
+	 * (mcp:write)" — an mcp:write caller was told to retry, then hit a hard
+	 * "requires an MCP session with admin access." dead end.
+	 *
+	 * Set this to the tier `getRequiredAccessLevel` returns for the underlying
+	 * action so the reported tier matches enforcement. Visibility is unchanged.
+	 * Only meaningful alongside `access: "external"`;
+	 * access-model-cross-check.test.ts pins each value against the live tier map.
+	 */
+	enforcedTier?: Exclude<MethodAccess, "external">;
 	/** Exact callable signature when the method shape is easy to misinfer. */
 	signature?: string;
 	throws?: readonly string[];
@@ -63,7 +81,7 @@ export const METHOD_METADATA: Record<string, MethodMetadata> = {
 	// entities
 	"entities.manage": {
 		summary: "Raw manage_entity action wrapper. Prefer named methods.",
-		access: "write",
+		access: "admin",
 	},
 	"entities.list": {
 		summary:
@@ -534,6 +552,7 @@ export default async (_ctx, client) => {
 		summary:
 			"Raw manage_automations action wrapper. Prefer named methods such as automations.trigger or automations.createVersion.",
 		access: "external",
+		enforcedTier: "admin",
 		example:
 			"await client.automations.manage({ action: 'trigger', automation_id: '42' });",
 	},
@@ -593,6 +612,7 @@ export default async (_ctx, client) => {
 		summary:
 			"Create or reuse an immediate Automation run. The typed result identifies the durable execution owner. Pending runs use their persisted managed_agent, device_worker, or external_client lane. An existing external lease returns owner caller with a resume_claim action when this caller owns it, or owner another_caller with handled_elsewhere. A pending external_client run uses next_action.read (knowledge.read with automation_id + run_id) then automations.completeWindow. created is false when an active run was reused.",
 		access: "external",
+		enforcedTier: "write",
 		signature:
 			"automations.trigger(input: { automation_id: string }): Promise<AutomationTriggerResult>",
 		example:
@@ -679,6 +699,7 @@ export default async (_ctx, client) => {
 	"connections.manage": {
 		summary: "Raw manage_connections action wrapper. Prefer named methods.",
 		access: "external",
+		enforcedTier: "admin",
 	},
 	"connections.list": {
 		summary: "List configured connections in the current organization.",
@@ -778,6 +799,7 @@ export default async (_ctx, client) => {
 		summary:
 			"Inspect a connection's authentication or device availability: OAuth token validity/expiry, env/app-auth presence, browser-session cookies, or (for an auth-free connection pinned to a device) whether the paired device is online. Only the browser-session CDP path makes an outbound network probe; the rest are metadata checks.",
 		access: "external",
+		enforcedTier: "admin",
 		signature:
 			"connections.test(connection_id: number): Promise<unknown> // or connections.test({ connection_id })",
 		example: "await client.connections.test(42);",
@@ -848,6 +870,7 @@ export default async (_ctx, client) => {
 	"operations.manage": {
 		summary: "Raw manage_operations action wrapper. Prefer named methods.",
 		access: "external",
+		enforcedTier: "write",
 	},
 	"operations.listAvailable": {
 		summary:
@@ -858,6 +881,7 @@ export default async (_ctx, client) => {
 		summary:
 			"Execute a connector action. OBJECT signature: execute({ connection_id: number, operation_key: string, input?: object, idempotency_key?: string, automation_source?: { automation_id: number, run_id: number } }). connector_key is not accepted. A durable idempotency_key replays the original run instead of repeating the external request.",
 		access: "external",
+		enforcedTier: "write",
 		cost: "expensive",
 		example:
 			"await client.operations.execute({ connection_id: 42, operation_key: 'create_issue', input: { title: 'Follow up' } });",
@@ -889,6 +913,7 @@ export default async (_ctx, client) => {
 	"feeds.manage": {
 		summary: "Raw manage_feeds action wrapper. Prefer named methods.",
 		access: "external",
+		enforcedTier: "admin",
 	},
 	"feeds.list": {
 		summary:
@@ -938,6 +963,7 @@ export default async (_ctx, client) => {
 		summary:
 			"Trigger an immediate sync for a feed (external side-effect). Pass dry_run: true to execute the connector for real but persist nothing — no events, entities or attachments, and the feed's checkpoint and sync state do not move; the run executes asynchronously, and once it completes a capped preview of what would have been ingested is on its dry_run_preview, readable via feeds.get. Use it to test a feed's config or credentials without writing to the workspace. Two limits: it cannot undo side effects the connector causes UPSTREAM (marking a message read, etc.), and it occupies the feed's single active-sync slot while it runs.",
 		access: "external",
+		enforcedTier: "admin",
 		signature:
 			"feeds.trigger(input: { feed_id: number; dry_run?: boolean }): Promise<unknown>",
 		example:
@@ -948,6 +974,7 @@ export default async (_ctx, client) => {
 	"authProfiles.manage": {
 		summary: "Raw manage_auth_profiles action wrapper. Prefer named methods.",
 		access: "external",
+		enforcedTier: "admin",
 	},
 	"authProfiles.list": {
 		summary: "List reusable auth profiles.",
@@ -966,6 +993,7 @@ export default async (_ctx, client) => {
 	"authProfiles.test": {
 		summary: "Test auth-profile credentials.",
 		access: "external",
+		enforcedTier: "admin",
 		signature:
 			"authProfiles.test(auth_profile_slug: string): Promise<unknown> // or authProfiles.test({ auth_profile_slug })",
 		example: "await client.authProfiles.test('google-calendar-account');",
@@ -994,7 +1022,7 @@ export default async (_ctx, client) => {
 	// classifiers
 	"classifiers.manage": {
 		summary: "Raw manage_classifiers action wrapper. Prefer named methods.",
-		access: "write",
+		access: "admin",
 	},
 	"classifiers.list": {
 		summary: "List classifier templates.",
@@ -1047,7 +1075,7 @@ export default async (_ctx, client) => {
 	// viewTemplates
 	"viewTemplates.manage": {
 		summary: "Raw manage_view_templates action wrapper. Prefer named methods.",
-		access: "write",
+		access: "admin",
 	},
 	"viewTemplates.get": {
 		summary:

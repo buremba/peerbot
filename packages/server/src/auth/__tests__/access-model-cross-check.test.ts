@@ -217,23 +217,45 @@ describe("access-model cross-check", () => {
 		// Compare the discovery tier `sdkMethodVisible` uses with the tier the
 		// delegated manage_* action enforces.
 		//
-		// `external` is exempt from the exact-match requirement: it is a
-		// side-effect marker (this method calls out to an external system), not a
-		// pure tier. `sdkMethodVisible` treats it as write-visible, and the
-		// project deliberately keeps external methods write-visible even when the
-		// underlying tool action is admin-enforced (see method-metadata.test.ts:
-		// operations.execute / feeds.trigger / connections.test stay "external"
-		// while their trigger_feed / execute / test actions are owner-admin). So
-		// `external` only asserts "not read-tier" — never that it equals admin.
+		// `external` splits the two: it is a side-effect marker (this method calls
+		// out to an external system), not a pure tier. VISIBILITY still follows the
+		// marker — `sdkMethodVisible` keeps external methods write-visible even when
+		// the underlying action is admin-enforced, so an owner/admin can trigger the
+		// progressive mcp:admin OAuth challenge by calling one (operations.execute /
+		// feeds.trigger / connections.test all stay "external" while trigger_feed /
+		// test are owner-admin).
+		//
+		// The tier REPORTED to callers is a separate question, and it must match
+		// enforcement exactly or search_sdk sends an mcp:write caller to retry into
+		// a hard admin rejection. That is what `enforcedTier` carries, and what the
+		// external branch below pins against the live tier map.
 		const mismatches: string[] = [];
 		for (const [path, meta] of Object.entries(METHOD_METADATA)) {
 			const [namespace, method] = path.split(".");
 			const tool = NAMESPACE_TOOL[namespace];
 			if (!tool || !method) continue;
-			// `.manage` is the raw action-passthrough wrapper — it carries the
-			// namespace's most-privileged tier, not a single action, so it has no
-			// single tool-action to compare against.
-			if (method === "manage") continue;
+			// `.manage` is the raw action-passthrough wrapper: it accepts ANY action
+			// of its tool, so it carries the namespace's most-privileged tier rather
+			// than one action's. That is a derivable expectation, not an exemption —
+			// skipping it entirely hid half the `external` class, leaving all five
+			// wrappers reporting "operate (mcp:write)" while four of them accept
+			// admin actions (connections.manage({action:'delete'}) from an mcp:write
+			// caller is the exact symptom this guard exists to catch).
+			if (method === "manage") {
+				// Only the TIER is derivable. Whether a wrapper is also `external` is
+				// a property of its namespace (does it call out to an external
+				// system?), so entities/entitySchema/agents/schedules/classifiers/
+				// viewTemplates legitimately use a plain tier instead.
+				const expected = OWNER_ADMIN_ACTIONS[tool]?.size ? "admin" : "write";
+				const reported =
+					meta.access === "external" ? meta.enforcedTier : meta.access;
+				if (reported !== expected) {
+					mismatches.push(
+						`${path}: reports ${reported ?? "(unset)"} but ${tool} has ${OWNER_ADMIN_ACTIONS[tool]?.size ?? 0} owner-admin action(s), so the passthrough must report "${expected}"${meta.access === "external" ? ' via enforcedTier' : ""}`,
+					);
+				}
+				continue;
+			}
 			if (NO_TOOL_ACTION.has(path)) continue;
 			// The action this method REALLY dispatches, recorded from the live
 			// dispatch path. Never guessed: `feeds.list` dispatches `list_feeds`,
@@ -262,8 +284,27 @@ describe("access-model cross-check", () => {
 					mismatches.push(
 						`${path}: SDK=external but runtime(${tool}.${action})=read`,
 					);
+					continue;
+				}
+				// `external` governs VISIBILITY, but the tier search_sdk REPORTS comes
+				// from `enforcedTier`. It must state the enforced tier exactly:
+				// omitting it on an admin-enforced method reported "operate
+				// (mcp:write)" and sent an mcp:write caller to retry straight into
+				// "requires an MCP session with admin access."; stating the wrong tier
+				// is the same bug with extra confidence.
+				if (meta.enforcedTier !== runtimeTier) {
+					mismatches.push(
+						`${path}: SDK=external enforcedTier=${meta.enforcedTier ?? "(unset)"} but runtime(${tool}.${action})=${runtimeTier} — set enforcedTier to "${runtimeTier}" in method-metadata.ts so the reported tier matches enforcement`,
+					);
 				}
 				continue;
+			}
+			// `enforcedTier` disambiguates `external` only; on a plainly-tiered
+			// method it is dead weight that can silently contradict `access`.
+			if (meta.enforcedTier !== undefined) {
+				mismatches.push(
+					`${path}: enforcedTier is only meaningful with access:"external" (access=${meta.access})`,
+				);
 			}
 			// read / write / admin must match the enforced tier exactly.
 			if (meta.access !== runtimeTier) {

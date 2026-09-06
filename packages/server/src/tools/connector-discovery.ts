@@ -86,10 +86,14 @@ function lifecycleForCaller(
   lifecycle: string,
   ctx: ToolContext
 ): string {
+  // Whole metadata, not the bare `access` marker: a connector lifecycle
+  // includes `feeds.trigger`, an `external` method whose manage_feeds action is
+  // admin-enforced. Dropping its `enforcedTier` reported the lifecycle as
+  // operate-tier and told an mcp:write caller to proceed into a hard rejection.
   const accesses = methodPaths.map((path) => {
-    const access = METHOD_METADATA[path]?.access;
-    if (!access) throw new Error(`Missing SDK metadata for lifecycle method: ${path}`);
-    return access;
+    const meta = METHOD_METADATA[path];
+    if (!meta) throw new Error(`Missing SDK metadata for lifecycle method: ${path}`);
+    return meta;
   });
   const guidance = resolveSdkAccessGuidance(accesses, ctx.memberRole, ctx.scopes);
   if (guidance.available) return lifecycle;

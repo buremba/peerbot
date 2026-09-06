@@ -190,18 +190,22 @@ function hiddenMethodNote(
 	if (policyDenied.has(path)) {
 		return `${path} is blocked by this agent's agent_config permissions.`;
 	}
+	// Pass the whole metadata, not just `meta.access`: an `external` method
+	// carries the tier its manage_* action really enforces on `enforcedTier`, and
+	// the reported tier must match enforcement or the caller is sent to retry
+	// into a hard admin rejection.
 	const guidance = resolveSdkAccessGuidance(
-		meta.access,
+		meta,
 		ctx.allowCrossOrg ? "owner" : ctx.memberRole,
 		ctx.scopes,
 	);
 	if (mode === "read" && meta.access !== "read") {
 		if (guidance.available || guidance.progressivelyAuthorizable) {
-			return `${path} exists but requires run_sdk (access: ${formatSdkRequiredTier(meta.access)}). Retry with mode='full'. ${guidance.progressivelyAuthorizable ? guidance.instruction ?? "" : ""}`.trim();
+			return `${path} exists but requires run_sdk (access: ${formatSdkRequiredTier(meta)}). Retry with mode='full'. ${guidance.progressivelyAuthorizable ? guidance.instruction ?? "" : ""}`.trim();
 		}
-		return `${path} is not available at your access tier (access: ${formatSdkRequiredTier(meta.access)}). ${guidance.instruction ?? ""}`.trim();
+		return `${path} is not available at your access tier (access: ${formatSdkRequiredTier(meta)}). ${guidance.instruction ?? ""}`.trim();
 	}
-	return `${path} is not available at your access tier (access: ${formatSdkRequiredTier(meta.access)}). ${guidance.instruction ?? ""}`.trim();
+	return `${path} is not available at your access tier (access: ${formatSdkRequiredTier(meta)}). ${guidance.instruction ?? ""}`.trim();
 }
 
 /**
@@ -228,7 +232,7 @@ function renderDrillDown(path: string, meta: MethodMetadata): string {
 	lines.push(path);
 	lines.push(`  ${meta.summary}`);
 	lines.push(
-		`  access: ${formatSdkRequiredTier(meta.access)}${meta.cost ? ` (cost: ${meta.cost})` : ""}`
+		`  access: ${formatSdkRequiredTier(meta)}${meta.cost ? ` (cost: ${meta.cost})` : ""}`
 	);
 	if (meta.signature) {
 		lines.push(`  signature: ${meta.signature}`);
@@ -475,7 +479,9 @@ async function sdkMethodSearch(
 				p.toLowerCase().startsWith(prefix)
 			);
 			if (hiddenNs.length > 0) {
-				const accesses = hiddenNs.map(([, meta]) => meta.access);
+				// Full metadata, not the bare marker: an `external` method's
+				// `enforcedTier` is what the namespace's aggregate tier must reflect.
+				const accesses = hiddenNs.map(([, meta]) => meta);
 				const accessLabels = [...new Set(accesses.map(formatSdkRequiredTier))]
 					.sort()
 					.join(", ");

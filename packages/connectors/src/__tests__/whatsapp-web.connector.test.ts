@@ -190,6 +190,41 @@ describe("canonical WhatsApp identity and cutover", () => {
     expect(source).not.toContain("request.deadline");
   });
 
+  /**
+   * The extension fences EVERY claimed run at RUN_TIMEOUT_MS (90s) from the
+   * moment it is claimed, and each `dispatcher.dispatch("evaluate", ...)` is
+   * its own such run. The in-page history budget therefore cannot equal the
+   * fence: the adapter would be entitled to spend the entire run paging
+   * history and still owe a serialize-and-return, which it can never afford.
+   * That is the exact shape that stalled feed 309 in prod -- every run died
+   * as `run timed out after 90000ms`, so the checkpoint never advanced and
+   * the next run repeated the identical oversized work.
+   */
+  it("leaves the collect budget headroom under the extension run fence", () => {
+    // Read the fence from the extension rather than hardcoding it: the two
+    // constants live in different repos with nothing linking them, so a
+    // hardcoded copy would keep passing while prod broke again.
+    const background = readFileSync(
+      new URL("../../../owletto/apps/chrome/background.js", import.meta.url),
+      "utf8"
+    );
+    const fenceMatch = background.match(
+      /const RUN_TIMEOUT_MS = ([\d_]+);/
+    );
+    if (!fenceMatch?.[1]) {
+      throw new Error(
+        "background.js no longer declares RUN_TIMEOUT_MS; the collect budget's headroom is now unverified"
+      );
+    }
+    const runFenceMs = Number(fenceMatch[1].replaceAll("_", ""));
+    const { request } = buildCollectionPlan({});
+    expect(Number(request.budget_ms)).toBeLessThan(runFenceMs);
+    // Enough headroom for the round trip the answer still has to make.
+    expect(runFenceMs - Number(request.budget_ms)).toBeGreaterThanOrEqual(
+      20_000
+    );
+  });
+
   it("collects strictly after the cutover so ingested rows never replay", () => {
     const { request } = buildCollectionPlan({
       checkpoint: {

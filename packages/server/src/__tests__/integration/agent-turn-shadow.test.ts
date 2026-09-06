@@ -760,16 +760,223 @@ describe('agent turn completion', () => {
     expect((await runRow(runId)).status).toBe('running');
   });
 
-  it('refuses to record a reply for a turn that did not declare itself observational', async () => {
-    const workerId = 'fleet-authoritative';
+  it('an authoritative turn publishes the reply and appends the transcript', async () => {
+    const workerId = 'fleet-delivers';
     const runId = await claimedShadowRun(workerId);
-    // Strip the flag the producer sets. This is the deploy-skew shape the guard
-    // exists for: a producer that starts marking turns authoritative before the
-    // reply path exists would otherwise have every reply recorded and dropped.
+    // Flip the run the way the cutover will: authoritative, with the reply
+    // envelope the producer stamps beside the guest's turn.
     const sql = getTestDb();
     await sql`
       UPDATE runs
       SET action_input = jsonb_set(action_input, '{turn,shadow}', 'false'::jsonb)
+      WHERE id = ${runId}
+    `;
+
+    const response = await postAsFleet('/api/workers/complete-agent-turn', {
+      run_id: runId,
+      worker_id: workerId,
+      status: 'completed',
+      text: 'the isolate lane answered',
+      transcript: [{ role: 'assistant', content: [{ type: 'text', text: 'the isolate lane answered' }] }],
+    });
+    expect(response.status).toBe(200);
+
+    const row = await runRow(runId);
+    expect(row.status).toBe('completed');
+
+    // The reply is queued for the same thread_response delivery the subprocess
+    // lane uses, addressed from the run's own reply envelope.
+    const [reply] = (await sql`
+      SELECT action_input FROM runs
+      WHERE queue_name = 'thread_response' AND run_type = 'chat_message'
+      ORDER BY id DESC LIMIT 1
+    `) as unknown as Array<{ action_input: Record<string, unknown> }>;
+    expect(reply.action_input).toMatchObject({
+      messageId: 'msg-shadow',
+      channelId: 'api_user-shadow',
+      conversationId: 'conv-shadow',
+      userId: 'user-shadow',
+      platform: 'api',
+      finalText: 'the isolate lane answered',
+    });
+
+    // And the turn joins the conversation's transcript, so the next turn's
+    // history includes it.
+    const [snapshot] = (await sql`
+      SELECT snapshot_jsonl FROM agent_transcript_snapshot WHERE run_id = ${runId}
+    `) as unknown as Array<{ snapshot_jsonl: string }>;
+    const entries = snapshot.snapshot_jsonl
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line));
+    expect(entries.map((entry) => entry.message.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    // Block-array content, the shape every other writer of this table emits
+    // and the shape `historyMessages` reads back for the next turn.
+    expect(entries.map((entry) => entry.message.content)).toEqual([
+      [{ type: 'text', text: 'what is the shadow lane?' }],
+      [{ type: 'text', text: 'the isolate lane answered' }],
+    ]);
+    // The reply is chained onto the user message, so the next turn's parent
+    // walk reaches both.
+    expect(entries[1].parentId).toBe(entries[0].id);
+  });
+
+  it('an oversize prior transcript starts a continuation instead of hanging the client', async () => {
+    const workerId = 'fleet-delivers-oversize';
+    const runId = await claimedShadowRun(workerId);
+    const sql = getTestDb();
+    const [run] = (await sql`
+      SELECT organization_id FROM runs WHERE id = ${runId}
+    `) as unknown as Array<{ organization_id: string }>;
+
+    // A prior transcript already past MAX_SNAPSHOT_BYTES, the cap every other
+    // writer of this table honours. Appending to it would build a row well
+    // past that cap, and this insert shares the terminal transaction, so
+    // without the continuation fallback the oversize row would ride along
+    // with the run transition and the reply.
+    const bulky = `${'x'.repeat(5 * 1024 * 1024)}`;
+    const priorLine = JSON.stringify({
+      type: 'message',
+      id: 'prior-assistant',
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: { role: 'assistant', content: [{ type: 'text', text: bulky }] },
+    });
+    // The snapshot's `run_id` is a real foreign key, so the prior transcript
+    // needs the run that produced it.
+    const [prior] = (await sql`
+      INSERT INTO runs (organization_id, run_type, queue_name, status, action_input)
+      VALUES (${run.organization_id}, 'agent_turn', 'agent_turns', 'completed', '{}'::jsonb)
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    await sql`
+      INSERT INTO agent_transcript_snapshot
+        (organization_id, agent_id, conversation_id, run_id,
+         snapshot_jsonl, byte_size, terminal_status)
+      VALUES (${run.organization_id}, ${AGENT_ID}, 'conv-shadow', ${prior.id},
+              ${`${priorLine}\n`}, ${Buffer.byteLength(priorLine, 'utf8') + 1}, 'completed')
+    `;
+
+    await sql`
+      UPDATE runs
+      SET action_input = jsonb_set(action_input, '{turn,shadow}', 'false'::jsonb)
+      WHERE id = ${runId}
+    `;
+
+    const response = await postAsFleet('/api/workers/complete-agent-turn', {
+      run_id: runId,
+      worker_id: workerId,
+      status: 'completed',
+      text: 'answered despite the long history',
+    });
+    expect(response.status).toBe(200);
+    expect((await runRow(runId)).status).toBe('completed');
+
+    // The client still gets its answer — the whole point of the fallback.
+    const [reply] = (await sql`
+      SELECT action_input FROM runs
+      WHERE queue_name = 'thread_response' AND run_type = 'chat_message'
+      ORDER BY id DESC LIMIT 1
+    `) as unknown as Array<{ action_input: Record<string, unknown> }>;
+    expect(reply.action_input).toMatchObject({
+      messageId: 'msg-shadow',
+      finalText: 'answered despite the long history',
+    });
+
+    // And the stored row is a compact continuation carrying only this turn,
+    // not the oversize prefix. The prior run's row stays queryable.
+    const [snapshot] = (await sql`
+      SELECT snapshot_jsonl, byte_size FROM agent_transcript_snapshot WHERE run_id = ${runId}
+    `) as unknown as Array<{ snapshot_jsonl: string; byte_size: number }>;
+    expect(snapshot.byte_size).toBeLessThan(4 * 1024 * 1024);
+    const entries = snapshot.snapshot_jsonl
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line));
+    expect(entries.map((entry) => entry.message.role)).toEqual([
+      'user',
+      'assistant',
+    ]);
+    // A continuation has no prior tail to chain onto.
+    expect(entries[0].parentId).toBeNull();
+    const [{ n }] = (await sql`
+      SELECT count(*)::int AS n FROM agent_transcript_snapshot WHERE run_id = ${prior.id}
+    `) as unknown as Array<{ n: number }>;
+    expect(n).toBe(1);
+  });
+
+  it('a failed authoritative turn delivers the error instead of hanging the client', async () => {
+    const workerId = 'fleet-delivers-error';
+    const runId = await claimedShadowRun(workerId);
+    const sql = getTestDb();
+    await sql`
+      UPDATE runs
+      SET action_input = jsonb_set(action_input, '{turn,shadow}', 'false'::jsonb)
+      WHERE id = ${runId}
+    `;
+
+    const response = await postAsFleet('/api/workers/complete-agent-turn', {
+      run_id: runId,
+      worker_id: workerId,
+      status: 'failed',
+      error: 'the provider refused',
+    });
+    expect(response.status).toBe(200);
+
+    const [reply] = (await sql`
+      SELECT action_input FROM runs
+      WHERE queue_name = 'thread_response' AND run_type = 'chat_message'
+      ORDER BY id DESC LIMIT 1
+    `) as unknown as Array<{ action_input: Record<string, unknown> }>;
+    expect(reply.action_input).toMatchObject({ messageId: 'msg-shadow', error: 'the provider refused' });
+    // A failed turn writes no transcript: there is no answer to remember.
+    const [{ n }] = (await sql`
+      SELECT count(*)::int AS n FROM agent_transcript_snapshot WHERE run_id = ${runId}
+    `) as unknown as Array<{ n: number }>;
+    expect(n).toBe(0);
+  });
+
+  it('a shadow turn still delivers nothing', async () => {
+    const workerId = 'fleet-shadow-silent';
+    const runId = await claimedShadowRun(workerId);
+    const sql = getTestDb();
+    const [before] = (await sql`
+      SELECT count(*)::int AS n FROM runs WHERE queue_name = 'thread_response'
+    `) as unknown as Array<{ n: number }>;
+
+    const response = await postAsFleet('/api/workers/complete-agent-turn', {
+      run_id: runId,
+      worker_id: workerId,
+      status: 'completed',
+      text: 'an observational copy',
+    });
+    expect(response.status).toBe(200);
+
+    const [after] = (await sql`
+      SELECT count(*)::int AS n FROM runs WHERE queue_name = 'thread_response'
+    `) as unknown as Array<{ n: number }>;
+    expect(after.n).toBe(before.n);
+    const [{ n }] = (await sql`
+      SELECT count(*)::int AS n FROM agent_transcript_snapshot WHERE run_id = ${runId}
+    `) as unknown as Array<{ n: number }>;
+    expect(n).toBe(0);
+  });
+
+  it('refuses an authoritative turn that carries nowhere to deliver', async () => {
+    const workerId = 'fleet-authoritative';
+    const runId = await claimedShadowRun(workerId);
+    // Authoritative, but with the reply envelope removed — the deploy-skew
+    // shape where a newer producer marks turns authoritative and an older one
+    // stamped no address. Completing it would transition the run and drop the
+    // answer, leaving the client waiting forever, so it stays claimable.
+    const sql = getTestDb();
+    await sql`
+      UPDATE runs
+      SET action_input =
+        jsonb_set(action_input, '{turn,shadow}', 'false'::jsonb) - 'reply'
       WHERE id = ${runId}
     `;
 

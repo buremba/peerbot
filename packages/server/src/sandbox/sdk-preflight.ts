@@ -1,10 +1,10 @@
 import type { MethodAccess } from "./method-metadata";
-import { METHOD_METADATA } from "./method-metadata";
+import { METHOD_METADATA, requiredSdkAccess } from "./method-metadata";
 import { getArgsValidator } from "../tools/validate-args";
 
 export interface SdkPreflightResult {
 	args: unknown[];
-	required_access: MethodAccess;
+	required_access: Exclude<MethodAccess, "external">;
 	authorization_status: "not_evaluated";
 }
 
@@ -54,7 +54,7 @@ export function createValidatedSdkMethod<
 		}
 		return {
 			args: options.projectArgs?.(validated) ?? [validated],
-			required_access: metadata.access,
+			required_access: requiredSdkAccess(metadata),
 			authorization_status: "not_evaluated",
 		};
 	};

@@ -9,7 +9,7 @@ import {
 	resolveSdkMaxAccessLevel,
 	type ToolAccessLevel,
 } from "../auth/tool-access";
-import type { MethodAccess } from "./method-metadata";
+import { requiredSdkAccess, type MethodAccess, type MethodAccessMetadata } from "./method-metadata";
 
 export type SdkDiscoveryMode = "read" | "full";
 export type SdkRequiredTier = "read" | "operate" | "administer";
@@ -26,36 +26,8 @@ function requiredToolAccess(methodAccess: MethodAccess): ToolAccessLevel {
 	return "read";
 }
 
-/**
- * One method's access as the tier resolvers consume it: either the bare
- * `MethodAccess` marker, or that marker paired with the tier its delegated
- * `manage_*` action really enforces.
- *
- * Reporting and VISIBILITY deliberately diverge for `external`. Visibility
- * stays keyed on the marker (write-visible, so an owner/admin can trigger the
- * progressive mcp:admin challenge by calling the method); only the tier we
- * REPORT follows `enforcedTier`.
- */
-export interface SdkMethodAccess {
-	access: MethodAccess;
-	enforcedTier?: Exclude<MethodAccess, "external">;
-}
-
-export type SdkMethodAccessInput =
-	| MethodAccess
-	| SdkMethodAccess
-	| readonly (MethodAccess | SdkMethodAccess)[];
-
-/**
- * The tool-access level a method's tier REPORTING should be based on: the
- * declared `enforcedTier` when the method carries one, else the marker's own
- * mapping.
- */
-function reportedToolAccess(entry: MethodAccess | SdkMethodAccess): ToolAccessLevel {
-	if (typeof entry === "string") return requiredToolAccess(entry);
-	if (entry.enforcedTier) return requiredToolAccess(entry.enforcedTier);
-	return requiredToolAccess(entry.access);
-}
+/** Reporting requires complete metadata; a bare external marker loses its tier. */
+type SdkMethodAccessInput = MethodAccessMetadata | readonly MethodAccessMetadata[];
 
 /**
  * Public discovery tier for one method or a multi-method lifecycle — the tier
@@ -65,12 +37,11 @@ function reportedToolAccess(entry: MethodAccess | SdkMethodAccess): ToolAccessLe
 export function effectiveSdkRequiredTier(
 	methodAccess: SdkMethodAccessInput,
 ): SdkRequiredTier {
-	const accesses: readonly (MethodAccess | SdkMethodAccess)[] =
-		typeof methodAccess === "string" || !Array.isArray(methodAccess)
-			? [methodAccess as MethodAccess | SdkMethodAccess]
-			: (methodAccess as readonly (MethodAccess | SdkMethodAccess)[]);
+	const accesses: readonly MethodAccessMetadata[] = Array.isArray(methodAccess)
+		? methodAccess
+		: [methodAccess as MethodAccessMetadata];
 	const required = accesses.reduce<ToolAccessLevel>((highest, access) => {
-		const candidate = reportedToolAccess(access);
+		const candidate = requiredSdkAccess(access);
 		return TOOL_ACCESS_RANK[candidate] > TOOL_ACCESS_RANK[highest]
 			? candidate
 			: highest;

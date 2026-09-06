@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { requiredSdkAccess, type MethodAccessMetadata } from "../../../sandbox/method-metadata";
 import {
 	effectiveSdkRequiredTier,
 	resolveSdkAccessGuidance,
@@ -38,12 +39,12 @@ describe("sdkMethodVisible", () => {
 });
 
 describe("SDK access guidance", () => {
-	it("keeps write/external on operate and admin on administer", () => {
-		expect(effectiveSdkRequiredTier("read")).toBe("read");
-		expect(effectiveSdkRequiredTier("write")).toBe("operate");
-		expect(effectiveSdkRequiredTier("external")).toBe("operate");
-		expect(effectiveSdkRequiredTier("admin")).toBe("administer");
-		expect(effectiveSdkRequiredTier(["read", "external", "admin"])).toBe(
+	it("reports each explicit permission tier", () => {
+		expect(effectiveSdkRequiredTier({ access: "read" })).toBe("read");
+		expect(effectiveSdkRequiredTier({ access: "write" })).toBe("operate");
+		expect(effectiveSdkRequiredTier({ access: "external", enforcedTier: "write" })).toBe("operate");
+		expect(effectiveSdkRequiredTier({ access: "admin" })).toBe("administer");
+		expect(effectiveSdkRequiredTier([{ access: "read" }, { access: "external", enforcedTier: "write" }, { access: "admin" }])).toBe(
 			"administer",
 		);
 	});
@@ -61,8 +62,8 @@ describe("SDK access guidance", () => {
 		expect(
 			effectiveSdkRequiredTier({ access: "external", enforcedTier: "write" }),
 		).toBe("operate");
-		// No enforcedTier keeps the historical marker-derived tier.
-		expect(effectiveSdkRequiredTier({ access: "external" })).toBe("operate");
+		// Incomplete metadata is rejected rather than under-reporting permissions.
+		expect(() => effectiveSdkRequiredTier({ access: "external" } as never)).toThrow("no enforced tier");
 	});
 
 	it("takes the strictest enforcedTier across a lifecycle", () => {
@@ -70,7 +71,7 @@ describe("SDK access guidance", () => {
 		// must be the admin the trigger enforces, not the operate its peers imply.
 		expect(
 			effectiveSdkRequiredTier([
-				"read",
+				{ access: "read" },
 				{ access: "external", enforcedTier: "admin" },
 			]),
 		).toBe("administer");
@@ -96,7 +97,7 @@ describe("SDK access guidance", () => {
 	});
 
 	it("marks owner/admin mcp:write callers as progressively authorizable for admin methods", () => {
-		const guidance = resolveSdkAccessGuidance("admin", "owner", [
+		const guidance = resolveSdkAccessGuidance({ access: "admin" }, "owner", [
 			"mcp:read",
 			"mcp:write",
 		]);
@@ -109,7 +110,7 @@ describe("SDK access guidance", () => {
 	});
 
 	it("tells a regular member to hand administer work to an owner/admin", () => {
-		const guidance = resolveSdkAccessGuidance("admin", "member", [
+		const guidance = resolveSdkAccessGuidance({ access: "admin" }, "member", [
 			"mcp:read",
 			"mcp:write",
 			"mcp:admin",
@@ -121,11 +122,37 @@ describe("SDK access guidance", () => {
 	});
 
 	it("recognizes an owner/admin with mcp:admin as ready to administer", () => {
-		const guidance = resolveSdkAccessGuidance("admin", "admin", [
+		const guidance = resolveSdkAccessGuidance({ access: "admin" }, "admin", [
 			"mcp:admin",
 		]);
 
 		expect(guidance.available).toBe(true);
 		expect(guidance.instruction).toBeUndefined();
+	});
+});
+
+describe("requiredSdkAccess", () => {
+	// `MethodAccessMetadata` makes `{ access: "external" }` with no
+	// `enforcedTier` unrepresentable, but tsconfig.json excludes
+	// `src/**/__tests__/**` from the typecheck program, so the compiler does not
+	// police this file. These assert the runtime half: metadata reaching the
+	// resolver from an untyped edge (JSON, a cast) fails loudly instead of
+	// silently under-reporting the tier a caller needs.
+	it("returns the enforced tier for an external method", () => {
+		expect(
+			requiredSdkAccess({ access: "external", enforcedTier: "admin" }),
+		).toBe("admin");
+	});
+
+	it("returns the marker itself for a plainly-tiered method", () => {
+		expect(requiredSdkAccess({ access: "read" })).toBe("read");
+		expect(requiredSdkAccess({ access: "write" })).toBe("write");
+		expect(requiredSdkAccess({ access: "admin" })).toBe("admin");
+	});
+
+	it("throws rather than under-report when an external method has no tier", () => {
+		expect(() =>
+			requiredSdkAccess({ access: "external" } as MethodAccessMetadata),
+		).toThrow("no enforced tier");
 	});
 });

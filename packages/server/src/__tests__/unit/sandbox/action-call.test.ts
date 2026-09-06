@@ -221,6 +221,20 @@ describe("createActionCaller", () => {
 		await expect(method("delete")({ entity_id: 7 })).resolves.toEqual(queued);
 	});
 
+	it.each([
+		["connections", "test", "test", "admin"],
+		["feeds", "trigger_feed", "trigger", "admin"],
+		["operations", "execute", "execute", "write"],
+	])("preflight reports the enforced tier for %s.%s without executing it", async (namespace, action, publicMethod, requiredAccess) => {
+		let executed = false;
+		const { method } = createTestCaller(async () => { executed = true; return {}; }, namespace);
+		const call = method(action, { publicMethod });
+		const preview = await getSdkPreflight(call)?.({});
+		expect(preview?.required_access).toBe(requiredAccess);
+		expect(preview?.authorization_status).toBe("not_evaluated");
+		expect(executed).toBe(false);
+	});
+
 	it("preflights through the handler schema without entering the handler or inspecting its result", async () => {
 		let executed = false;
 		const handler = withValidatedArgs(

@@ -5,27 +5,35 @@
 
 export type MethodAccess = "read" | "write" | "external" | "admin";
 
-export interface MethodMetadata {
+/**
+ * A side effect and an authorization tier are different facts.
+ *
+ * `external` is a side-effect marker (this method calls out to an external
+ * system), not a tier. It keeps a method write-VISIBLE so an owner/admin can
+ * trigger the progressive mcp:admin OAuth challenge by calling it — but the
+ * tier REPORTED to callers must match what the delegated `manage_*` action
+ * actually enforces, or an admin-enforced method advertises "operate
+ * (mcp:write)" and sends an mcp:write caller to retry into a hard
+ * "requires an MCP session with admin access." dead end.
+ *
+ * So `external` must pair with the tier `getRequiredAccessLevel` returns for
+ * its underlying action, and a plain tier must not carry a contradictory
+ * override. access-model-cross-check.test.ts pins each value against the live
+ * tier map; visibility is unchanged either way.
+ */
+export type MethodAccessMetadata =
+	| { access: "external"; enforcedTier: Exclude<MethodAccess, "external"> }
+	| { access: Exclude<MethodAccess, "external">; enforcedTier?: never };
+
+/** The same required tier drives discovery and dry-run previews. */
+export function requiredSdkAccess(metadata: MethodAccessMetadata): Exclude<MethodAccess, "external"> {
+	if (metadata.access !== "external") return metadata.access;
+	if (!metadata.enforcedTier) throw new Error("External SDK method has no enforced tier");
+	return metadata.enforcedTier;
+}
+
+export type MethodMetadata = MethodAccessMetadata & {
 	summary: string;
-	access: MethodAccess;
-	/**
-	 * The tier the delegated `manage_*` action actually enforces, for `external`
-	 * methods whose enforcement is stricter than the write visibility `external`
-	 * implies.
-	 *
-	 * `external` is a side-effect marker, not a tier: it keeps a method
-	 * write-VISIBLE so an owner/admin can trigger the progressive mcp:admin OAuth
-	 * challenge by calling it. But the reported tier was derived from that same
-	 * marker, so an admin-enforced external method advertised itself as "operate
-	 * (mcp:write)" — an mcp:write caller was told to retry, then hit a hard
-	 * "requires an MCP session with admin access." dead end.
-	 *
-	 * Set this to the tier `getRequiredAccessLevel` returns for the underlying
-	 * action so the reported tier matches enforcement. Visibility is unchanged.
-	 * Only meaningful alongside `access: "external"`;
-	 * access-model-cross-check.test.ts pins each value against the live tier map.
-	 */
-	enforcedTier?: Exclude<MethodAccess, "external">;
 	/** Exact callable signature when the method shape is easy to misinfer. */
 	signature?: string;
 	throws?: readonly string[];
@@ -35,7 +43,7 @@ export interface MethodMetadata {
 	usageExample?: string;
 	/** Cost hint: 'cheap' | 'normal' | 'expensive'. Normal if omitted. */
 	cost?: "cheap" | "normal" | "expensive";
-}
+};
 
 /** Runtime helpers passed through `ctx`, not dispatchable ClientSDK methods. */
 export const RUNTIME_HELPER_METADATA: Record<string, MethodMetadata> = {

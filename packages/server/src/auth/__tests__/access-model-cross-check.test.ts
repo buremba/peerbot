@@ -25,6 +25,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { Type } from "@sinclair/typebox";
 import {
 	getRequiredAccessLevel,
+	isPublicReadable,
 	MEMBER_WRITE_ACTIONS,
 	OWNER_ADMIN_ACTIONS,
 	PUBLIC_READ_ACTIONS,
@@ -54,6 +55,7 @@ const TIERED_NAMESPACES = [
 	["catalog", "manage_catalog", "../../tools/admin/manage_catalog", "manageCatalog"],
 	["agents", "manage_agents", "../../tools/admin/manage_agents", "manageAgents"],
 	["schedules", "manage_schedules", "../../tools/admin/manage_schedules", "manageSchedules"],
+	["conversations", "manage_conversations", "../../tools/admin/manage_conversations", "manageConversations"],
 ] as const;
 
 const NAMESPACE_TOOL = Object.fromEntries(
@@ -76,6 +78,8 @@ const NO_TOOL_ACTION = new Set([
 	"entities.search",
 	// Same shape: delegates to the standalone `get_automation` tool.
 	"automations.get",
+	// Uses the owner-scoped current MCP conversation helper, not manage_conversations.
+	"conversations.setTitle",
 ]);
 
 /**
@@ -174,7 +178,12 @@ function declaredRuntimeTier(
 ): ToolAccessLevel | null {
 	const action = payload.action;
 	if (typeof action !== "string") return null;
-	const isExplicitlyDeclared =
+	// These are deliberately authenticated reads: tool-access.ts explicitly
+	// documents their read fallback. Adding them to PUBLIC_READ_ACTIONS would
+	// expose conversation titles to anonymous callers, so test the distinction.
+	const authenticatedConversationRead = tool === "manage_conversations" &&
+		(action === "list" || action === "get");
+	const isExplicitlyDeclared = authenticatedConversationRead ||
 		OWNER_ADMIN_ACTIONS[tool]?.has(action) ||
 		MEMBER_WRITE_ACTIONS[tool]?.has(action) ||
 		PUBLIC_READ_ACTIONS[tool]?.has(action);
@@ -186,6 +195,13 @@ function declaredRuntimeTier(
 }
 
 describe("access-model cross-check", () => {
+	it("keeps conversation reads authenticated while reporting read tier", () => {
+		for (const action of ["list", "get"]) {
+			expect(getRequiredAccessLevel("manage_conversations", { action }, false)).toBe("read");
+			expect(isPublicReadable("manage_conversations", { action })).toBe(false);
+		}
+	});
+
 	it("no manage_* action is declared in conflicting tiers", () => {
 		// The three tier maps partition actions: an action that is both
 		// member-write and owner-admin (or public-read) is a contradiction —

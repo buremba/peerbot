@@ -9,7 +9,7 @@
  * happened. The subprocess lane never had that problem because pi compacted
  * against the model's own window.
  *
- * This module restores that behaviour on the producer side, where it belongs:
+ * This module restores that on the producer side, where it belongs:
  *
  *  - the budget comes from the model's REAL context window
  *    (`resolveModelCapability`), not a hardcoded 200k;

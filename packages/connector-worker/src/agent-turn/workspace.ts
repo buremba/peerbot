@@ -35,6 +35,23 @@ const FIND_IGNORED = /(^|\/)(node_modules|\.git)(\/|$)/;
 /** The same interpreter budget the subprocess lane gave its shell. */
 const BASH_LIMITS = { maxCommandCount: 50_000, maxLoopIterations: 50_000 };
 
+/**
+ * Total bytes the turn may hold in its workspace.
+ *
+ * just-bash's `InMemoryFs` has no quota of its own, so without this a `write`
+ * loop is bounded only by the isolate's 512 MB memory limit — which fail-closes
+ * as `MemoryLimitExceeded`, a generic OOM that tells the model nothing and
+ * costs it the whole turn. 64 MB is far above anything the measured workloads
+ * do (the largest transcript ever seen is 633 KB) and far below the limit that
+ * would kill the isolate, so the model gets a legible refusal it can act on
+ * instead of a dead turn.
+ *
+ * Enforced on `write` only. `bash` redirection goes through just-bash's own
+ * filesystem and is not intercepted here; the isolate memory limit remains the
+ * backstop for that path, which is the honest limit of this guard.
+ */
+const WORKSPACE_MAX_BYTES = 64 * 1024 * 1024;
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -181,6 +198,9 @@ export function createWorkspaceTools(names: readonly AgentTurnBuiltinTool[], bas
   const fs = new InMemoryFs();
   const ready = fs.mkdir(WORKSPACE_ROOT, { recursive: true });
   const shell = new Bash({ fs, cwd: WORKSPACE_ROOT, executionLimits: BASH_LIMITS });
+  // Bytes this turn has written through the `write` tool, so the quota above is
+  // per turn like the filesystem it guards.
+  let written = 0;
   // Every file-tool path resolves inside the workspace root. `resolvePath`
   // happily normalizes `..` and an absolute path past it, and the in-memory
   // tree just-bash builds has `/etc`, `/usr` and the rest in it, so without
@@ -300,9 +320,19 @@ export function createWorkspaceTools(names: readonly AgentTurnBuiltinTool[], bas
         if (typeof content !== 'string') throw new Error('Missing required parameter: content');
         await ready;
         const absolute = resolve(path);
+        const incoming = byteLength(content);
+        // An overwrite only costs the difference, so rewriting one big file in
+        // place is not a leak. `exists` first: `stat` throws on a missing path.
+        const replaced = (await fs.exists(absolute)) ? (await fs.readFileBuffer(absolute)).length : 0;
+        if (written - replaced + incoming > WORKSPACE_MAX_BYTES) {
+          throw new Error(
+            `Workspace limit reached: writing ${formatSize(incoming)} would exceed the ${formatSize(WORKSPACE_MAX_BYTES)} workspace. Delete files you no longer need, or keep less in the workspace.`
+          );
+        }
         await fs.mkdir(dirname(absolute), { recursive: true });
         await fs.writeFile(absolute, content);
-        return text(`Successfully wrote ${byteLength(content)} bytes to ${path}`);
+        written = written - replaced + incoming;
+        return text(`Successfully wrote ${incoming} bytes to ${path}`);
       },
     },
     ls: {

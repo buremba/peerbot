@@ -270,7 +270,8 @@ describe('agent turn shadow producer', () => {
         '## Workspace\n\n' +
         'Your bash, read, write, ls and find tools act on a private in-memory workspace at /workspace.\n' +
         'It starts empty on every turn and nothing written there persists after the turn ends.\n' +
-        'It has no network access and no package manager; use your other tools to reach data.'
+        'It has no network access and no package manager; use your other tools to reach data.\n' +
+        'It holds at most 64MB. If a write is refused for space, delete or shrink what you no longer need.'
     );
     expect(envelope.turn.messages).toEqual([]);
     // With no tool policy every workspace tool is admitted, bash with the

@@ -119,6 +119,36 @@ describe("createWorkspaceTools", () => {
     expect(await run(t.ls, { limit: 1 })).toContain("1 entries limit reached");
   });
 
+  test("refuses a write that would blow the workspace budget, and counts an overwrite as a delta", async () => {
+    // just-bash's InMemoryFs has no quota, so without this guard a write loop
+    // is bounded only by the isolate's 512 MB limit — which fail-closes as a
+    // generic MemoryLimitExceeded and costs the model the whole turn instead
+    // of telling it what happened.
+    const t = toolMap(createWorkspaceTools(["write", "read", "ls"]));
+    const big = "x".repeat(32 * 1024 * 1024);
+
+    // Two 32 MB files fit exactly; a third does not.
+    await run(t.write, { file_path: "a.bin", content: big });
+    await run(t.write, { file_path: "b.bin", content: big });
+    await expect(run(t.write, { file_path: "c.bin", content: big })).rejects.toThrow(
+      "Workspace limit reached"
+    );
+    // The refusal names the budget so the model can act on it.
+    await expect(run(t.write, { file_path: "c.bin", content: big })).rejects.toThrow("64.0MB");
+
+    // Rewriting an existing file IN PLACE costs only the difference, so a
+    // model that edits one large file repeatedly is not slowly locked out by
+    // its own edits: this succeeds at a workspace that is already exactly full.
+    await run(t.write, { file_path: "a.bin", content: big });
+
+    // Shrinking a file gives its bytes back, so the space a delete or a
+    // truncation frees is usable again — the refusal above tells the model to
+    // do exactly this, and it has to work.
+    await run(t.write, { file_path: "a.bin", content: "tiny" });
+    await run(t.write, { file_path: "c.bin", content: "x".repeat(16 * 1024 * 1024) });
+    expect(await run(t.ls, {})).toBe("a.bin\nb.bin\nc.bin");
+  });
+
   test("each call to createWorkspaceTools starts from an empty filesystem", async () => {
     const first = toolMap(createWorkspaceTools(["write", "ls"]));
     await run(first.write, { file_path: "kept.txt", content: "x" });

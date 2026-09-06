@@ -248,6 +248,7 @@ const WORKSPACE_INSTRUCTIONS = [
   "Your bash, read, write, ls and find tools act on a private in-memory workspace at /workspace.",
   "It starts empty on every turn and nothing written there persists after the turn ends.",
   "It has no network access and no package manager; use your other tools to reach data.",
+  "It holds at most 64MB. If a write is refused for space, delete or shrink what you no longer need.",
 ].join("\n");
 
 

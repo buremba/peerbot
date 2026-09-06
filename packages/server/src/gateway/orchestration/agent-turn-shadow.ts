@@ -82,6 +82,16 @@ const TURN_MESSAGE_CHARS = 32_000;
 
 type TurnEnvelope = AgentTurnPollPayload["turn"];
 type TurnTools = NonNullable<TurnEnvelope["tools"]>;
+type BuiltinTool = NonNullable<TurnTools["builtin"]>[number];
+
+/**
+ * The workspace tools the guest can run, in the order the model is offered
+ * them. `grep` and `edit` are absent on purpose: pi's `grep` spawns ripgrep as
+ * a child process, which an isolate cannot do, and neither tool is needed to
+ * reach the workspace — just-bash's own `rg`, `grep` and `sed` run inside
+ * `bash`. Adding either means writing an in-isolate implementation first.
+ */
+const WORKSPACE_TOOLS: readonly BuiltinTool[] = ["bash", "read", "write", "ls", "find"];
 
 export interface AgentTurnShadowDeps {
   /** Reads the agent's identity/soul/user layers. Absent → no shadow. */
@@ -134,7 +144,8 @@ function composeShadowSystemPrompt(
     soulMd?: string | null;
     userMd?: string | null;
   },
-  mcpInstructions: string[]
+  mcpInstructions: string[],
+  workspace: boolean
 ): string {
   const sections: string[] = [];
   const identity = layers.identityMd?.trim();
@@ -143,12 +154,28 @@ function composeShadowSystemPrompt(
   if (identity) sections.push(`## Agent Identity\n\n${identity}`);
   if (soul) sections.push(`## Agent Instructions\n\n${soul}`);
   if (user) sections.push(`## User Context\n\n${user}`);
+  if (workspace) sections.push(WORKSPACE_INSTRUCTIONS);
   for (const instructions of mcpInstructions) {
     const text = instructions.trim();
     if (text) sections.push(text);
   }
   return sections.join("\n\n");
 }
+
+/**
+ * What the model must know about the workspace its tools act on, and only
+ * that: it is private to this turn, starts empty, and has no network. The
+ * subprocess lane's own file-IO block is not reused — it instructs the model
+ * to hand every generated file to `upload_file`, a tool this lane does not
+ * carry.
+ */
+const WORKSPACE_INSTRUCTIONS = [
+  "## Workspace",
+  "",
+  "Your bash, read, write, ls and find tools act on a private in-memory workspace at /workspace.",
+  "It starts empty on every turn and nothing written there persists after the turn ends.",
+  "It has no network access and no package manager; use your other tools to reach data.",
+].join("\n");
 
 type HistoryMessage = Record<string, unknown> & { role: string };
 
@@ -534,6 +561,7 @@ export async function enqueueAgentTurnShadow(
 
     let tools: TurnTools | undefined;
     let mcpInstructions: string[] = [];
+    const policy = turnToolPolicy(data.agentOptions);
     const toolsConfig = data.agentOptions?.toolsConfig as ToolsConfig | undefined;
     if (!deps.mcp) {
       logger.info(
@@ -556,10 +584,30 @@ export async function enqueueAgentTurnShadow(
         organizationId: data.organizationId,
         gatewayUrl,
         workerToken,
-        policy: turnToolPolicy(data.agentOptions),
+        policy,
       });
       tools = resolved.tools;
       mcpInstructions = resolved.instructions;
+    }
+
+    // The workspace tools the policy admits. `bash` carries its prefix policy
+    // with it; the file tools need none beyond being admitted.
+    const builtin = WORKSPACE_TOOLS.filter((name) => isToolAllowedByPolicy(name, policy));
+    if (builtin.length > 0) {
+      tools = {
+        gateway_url: gatewayUrl,
+        definitions: tools?.definitions ?? [],
+        builtin,
+        ...(builtin.includes("bash")
+          ? {
+              bash_policy: {
+                allow_all: policy.bashPolicy.allowAll,
+                allow_prefixes: policy.bashPolicy.allowPrefixes,
+                deny_prefixes: policy.bashPolicy.denyPrefixes,
+              },
+            }
+          : {}),
+      };
     }
 
     const settings = await agentSettings.getSettings(data.agentId, {
@@ -577,7 +625,7 @@ export async function enqueueAgentTurnShadow(
       conversation_id: data.conversationId,
       message_id: data.messageId,
       message_text: data.messageText.slice(0, TURN_MESSAGE_CHARS),
-      system_prompt: composeShadowSystemPrompt(settings ?? {}, mcpInstructions),
+      system_prompt: composeShadowSystemPrompt(settings ?? {}, mcpInstructions, builtin.length > 0),
       messages: snapshot ? historyMessages(snapshot) : [],
       provider: {
         api: provider.api,
@@ -616,6 +664,7 @@ export async function enqueueAgentTurnShadow(
         model: provider.modelId,
         history: turn.messages.length,
         tools: tools?.definitions.length ?? 0,
+        workspaceTools: builtin,
       },
       "Enqueued a shadow agent turn on the isolate lane"
     );

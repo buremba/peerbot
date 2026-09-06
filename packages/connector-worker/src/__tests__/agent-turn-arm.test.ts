@@ -179,6 +179,8 @@ describe("executeAgentTurnRun", () => {
           input_schema: { type: "object", properties: { code: { type: "string" } } },
         },
       ],
+      builtin: ["bash", "read"],
+      bash_policy: { allow_all: false, allow_prefixes: ["git "], deny_prefixes: ["rm "] },
     };
 
     await executeAgentTurnRun(fakeClient(reported) as never, job, {}, cfgWith(executor));
@@ -194,6 +196,8 @@ describe("executeAgentTurnRun", () => {
           inputSchema: { type: "object", properties: { code: { type: "string" } } },
         },
       ],
+      builtin: ["bash", "read"],
+      bashPolicy: { allowAll: false, allowPrefixes: ["git "], denyPrefixes: ["rm "] },
     });
   });
 

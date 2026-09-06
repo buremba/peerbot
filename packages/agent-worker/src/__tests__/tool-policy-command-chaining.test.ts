@@ -18,8 +18,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { BashCommandPolicy } from "@lobu/core";
-import { enforceBashCommandPolicy } from "../runtime/tool-policy";
+import { type BashCommandPolicy, enforceBashCommandPolicy } from "@lobu/core";
 
 describe("enforceBashCommandPolicy command-chaining bypass", () => {
   const denyPolicy: BashCommandPolicy = {

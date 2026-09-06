@@ -28,6 +28,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** esbuild namespace for the aliased-away provider SDKs. */
 const STUB_NAMESPACE = 'lobu-agent-guest-stub';
+/** esbuild namespace for just-bash's lazily used zlib import. */
+const ZLIB_STUB_NAMESPACE = 'lobu-agent-guest-zlib-stub';
 
 /**
  * The compiled guest entry. `tsc` emits `guest-entry.js` next to this module;
@@ -62,6 +64,20 @@ async function buildAgentGuest(): Promise<string> {
               ? { path: args.path, namespace: STUB_NAMESPACE }
               : undefined
           );
+          // just-bash's browser build imports gunzip/gzip for its gzip, zcat
+          // and rg-over-.gz commands and nothing else; the import is static, so
+          // it must resolve, but the functions are only ever called when one of
+          // those commands runs. The stub answers the import and throws on use.
+          pluginBuild.onResolve({ filter: /^(node:)?zlib$/ }, (args) =>
+            /just-bash[/\\]dist[/\\]/.test(args.importer) ? { path: args.path, namespace: ZLIB_STUB_NAMESPACE } : undefined
+          );
+          pluginBuild.onLoad({ filter: /.*/, namespace: ZLIB_STUB_NAMESPACE }, () => ({
+            contents: [
+              "function unavailable() { throw new Error('gzip is not available in the agent workspace'); }",
+              'module.exports = { gunzipSync: unavailable, gzipSync: unavailable, constants: {} };',
+            ].join('\n'),
+            loader: 'js',
+          }));
           pluginBuild.onLoad({ filter: /.*/, namespace: STUB_NAMESPACE }, () => ({
             contents: 'module.exports = {};',
             loader: 'js',

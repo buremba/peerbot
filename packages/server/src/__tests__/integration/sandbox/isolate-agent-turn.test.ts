@@ -19,7 +19,10 @@
  *     agent turn runs deny-all, unlike a connector's open default;
  *  5. a tool call is one more request to the same gateway, over the same
  *     `fetch`, carrying the same one credential — and the transcript comes
- *     back with the call and its result in it.
+ *     back with the call and its result in it;
+ *  6. the workspace tools run inside the isolate against a filesystem the
+ *     turn owns: a `bash` write is visible to `read`, and no request leaves
+ *     the guest for either.
  *
  * Runs under Node (vitest); like the other lane suites it FAILS rather than
  * skips when `isolated-vm` cannot load.
@@ -147,6 +150,24 @@ let toolReply: { status: number; body: unknown } = {
 	body: { content: [{ type: "text", text: "3 entities" }] },
 };
 
+/**
+ * The tool calls the fake model makes, in order, one per provider round; the
+ * round after the last one answers with text. The MCP scenario is the default.
+ */
+let toolScript: Array<{ id: string; name: string; input: Record<string, unknown> }> = [
+	{ id: "toolu_01", name: "query_sdk", input: { code: "entities.count()" } },
+];
+
+/** How many tool results the transcript already carries. */
+function toolResultCount(messages: Array<{ role: string; content: unknown }>): number {
+	let count = 0;
+	for (const message of messages) {
+		if (!Array.isArray(message.content)) continue;
+		for (const block of message.content) if ((block as { type?: string }).type === "tool_result") count += 1;
+	}
+	return count;
+}
+
 beforeAll(async () => {
 	guestCode = await agentGuestBundle();
 	server = createServer((req, res) => {
@@ -166,18 +187,12 @@ beforeAll(async () => {
 				res.end(JSON.stringify(toolReply.body));
 				return;
 			}
-			// A provider request whose transcript already carries a tool result
-			// gets the answer; one whose last message is the human's gets a tool
-			// call first — the shape of every tool-using turn.
+			// The fake model follows its script: one tool call per round until
+			// every scripted call has its result in the transcript, then the answer.
 			const request = JSON.parse(body) as { tools?: unknown[]; messages: Array<{ role: string; content: unknown }> };
-			const last = request.messages.at(-1);
-			const wantsTool =
-				Array.isArray(request.tools) &&
-				request.tools.length > 0 &&
-				last?.role === "user" &&
-				!(Array.isArray(last.content) && last.content.some((b) => (b as { type?: string }).type === "tool_result"));
-			if (wantsTool) {
-				writeAnthropicToolUse(res, { id: "toolu_01", name: "query_sdk", input: { code: "entities.count()" } });
+			const next = Array.isArray(request.tools) && request.tools.length > 0 ? toolScript[toolResultCount(request.messages)] : undefined;
+			if (next) {
+				writeAnthropicToolUse(res, next);
 				return;
 			}
 			void writeAnthropicStream(res, ["Hello", " from", " the", " isolate"]);
@@ -360,6 +375,7 @@ describe("agent turn on the isolate lane", () => {
 
 	it("calls a tool through the gateway's MCP route with the same one credential, and resumes from the result", async () => {
 		hits = [];
+		toolScript = [{ id: "toolu_01", name: "query_sdk", input: { code: "entities.count()" } }];
 		toolReply = { status: 200, body: { content: [{ type: "text", text: "3 entities" }] } };
 		armFirstDeltaGate();
 		const run = await runTurn(toolJob());
@@ -415,6 +431,7 @@ describe("agent turn on the isolate lane", () => {
 
 	it("hands a refused tool call to the model as an error result and lets the turn finish", async () => {
 		hits = [];
+		toolScript = [{ id: "toolu_01", name: "query_sdk", input: { code: "entities.count()" } }];
 		// What the gateway answers when the agent's policy gates the tool behind
 		// an approval: a 403 with the text the subprocess lane's plugin shows.
 		toolReply = {
@@ -432,5 +449,64 @@ describe("agent turn on the isolate lane", () => {
 		expect(resumed.messages.at(-1)).toMatchObject({
 			content: [expect.objectContaining({ type: "tool_result", is_error: true })],
 		});
+	}, 120_000);
+
+	it("runs the workspace tools inside the isolate: bash writes, read sees it, and nothing leaves the guest", async () => {
+		hits = [];
+		toolScript = [
+			{ id: "toolu_b1", name: "bash", input: { command: "echo hello > notes.txt && wc -c notes.txt" } },
+			{ id: "toolu_r1", name: "read", input: { file_path: "notes.txt" } },
+			{ id: "toolu_f1", name: "find", input: { pattern: "*.txt" } },
+		];
+		armFirstDeltaGate();
+		const run = await runTurn(
+			turnJob({
+				tools: {
+					gatewayUrl: `http://127.0.0.1:${port}/lobu`,
+					definitions: [],
+					builtin: ["bash", "read", "write", "ls", "find"],
+					bashPolicy: { allowAll: false, allowPrefixes: [], denyPrefixes: ["rm "] },
+				},
+			}),
+		);
+
+		expect(run.output.text).toBe("Hello from the isolate");
+		// Four provider rounds and not one other request: the tools never left the isolate.
+		expect(hits.map((h) => h.url)).toEqual(["/v1/messages", "/v1/messages", "/v1/messages", "/v1/messages"]);
+		const offered = JSON.parse(hits[0]?.body ?? "{}") as { tools?: Array<{ name: string }> };
+		expect(offered.tools?.map((t) => t.name)).toEqual(["bash", "read", "write", "ls", "find"]);
+
+		const ends = run.events.filter((e) => e.type === "tool_call_end") as Array<{ name: string; isError: boolean; output: string }>;
+		expect(ends.map((e) => [e.name, e.isError, e.output])).toEqual([
+			["bash", false, "6 notes.txt\n"],
+			["read", false, "hello\n"],
+			["find", false, "notes.txt"],
+		]);
+		const roles = run.output.messages.map((m) => (m as { role: string }).role);
+		expect(roles).toEqual(["user", "assistant", "toolResult", "assistant", "toolResult", "assistant", "toolResult", "assistant"]);
+	}, 120_000);
+
+	it("enforces the bash policy inside the guest and starts every turn from an empty workspace", async () => {
+		hits = [];
+		toolScript = [
+			{ id: "toolu_b2", name: "bash", input: { command: "rm -rf /workspace" } },
+			{ id: "toolu_l1", name: "ls", input: {} },
+		];
+		armFirstDeltaGate();
+		const run = await runTurn(
+			turnJob({
+				tools: {
+					gatewayUrl: `http://127.0.0.1:${port}/lobu`,
+					definitions: [],
+					builtin: ["bash", "ls"],
+					bashPolicy: { allowAll: false, allowPrefixes: [], denyPrefixes: ["rm "] },
+				},
+			}),
+		);
+		const ends = run.events.filter((e) => e.type === "tool_call_end") as Array<{ name: string; isError: boolean; output: string }>;
+		expect(ends[0]).toMatchObject({ name: "bash", isError: true });
+		expect(ends[0]?.output).toContain("Bash command denied by policy");
+		// The previous test wrote notes.txt; this turn's workspace never saw it.
+		expect(ends[1]).toEqual({ type: "tool_call_end", toolCallId: "toolu_l1", name: "ls", isError: false, output: "(empty directory)" });
 	}, 120_000);
 });

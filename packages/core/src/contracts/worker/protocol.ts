@@ -336,6 +336,31 @@ export const AgentTurnPollPayloadSchema = Type.Object({
             input_schema: Type.Record(Type.String(), Type.Unknown()),
           })
         ),
+        /**
+         * The guest's own workspace tools the agent's tool policy admits. They
+         * run against a per-turn in-memory filesystem inside the isolate:
+         * `bash` is just-bash, the rest are pi's file tools over the same
+         * filesystem. Absent or empty → no workspace tools.
+         */
+        builtin: Type.Optional(
+          Type.Array(
+            Type.Union([
+              Type.Literal("bash"),
+              Type.Literal("read"),
+              Type.Literal("write"),
+              Type.Literal("ls"),
+              Type.Literal("find"),
+            ])
+          )
+        ),
+        /** The agent's bash prefix policy, enforced before a command runs. */
+        bash_policy: Type.Optional(
+          Type.Object({
+            allow_all: Type.Boolean(),
+            allow_prefixes: Type.Array(Type.String()),
+            deny_prefixes: Type.Array(Type.String()),
+          })
+        ),
       })
     ),
     /**

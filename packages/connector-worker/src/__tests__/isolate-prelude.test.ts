@@ -563,6 +563,17 @@ describe('guest FormData', () => {
     expect(Object.prototype.toString.call(new guest.FormData())).toBe('[object FormData]');
   });
 
+  it('keeps a performance clock that starts at zero and moves with wall time', () => {
+    const { guest } = instantiateFetchGuest();
+    const perf = guest.performance as { now: () => number; timeOrigin: number };
+    expect(typeof perf.timeOrigin).toBe('number');
+    const first = perf.now();
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(first).toBeLessThan(1_000);
+    expect(perf.now()).toBeGreaterThanOrEqual(first);
+    expect(Object.isFrozen(guest.performance)).toBe(true);
+  });
+
   it('deep-copies a tool call the way structuredClone does, cycles and byte arrays included', () => {
     const { guest } = instantiateFetchGuest();
     const clone = guest.structuredClone as typeof structuredClone;

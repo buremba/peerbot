@@ -39,6 +39,12 @@
       "import": "./dist/testing/index.js",
       "require": "./dist/testing/index.js"
     },
+    "./tool-policy": {
+      "types": "./dist/tool-policy.d.ts",
+      "bun": "./src/tool-policy.ts",
+      "import": "./dist/tool-policy.js",
+      "require": "./dist/tool-policy.js"
+    },
     "./errors": {
       "types": "./dist/errors.d.ts",
       "bun": "./src/errors.ts",

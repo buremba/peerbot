@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { JSDOM } from "jsdom";
@@ -40,6 +40,10 @@ let verifyLinkedInStagedComment: any;
 let genericScrape: (
   config: Record<string, unknown>
 ) => Promise<Record<string, unknown>>;
+let readConnections: any;
+let readJobs: any;
+let assertDirectory: any;
+let parseCsv: any;
 
 // Most tests below exercise author, engagement, media, or noise parsing rather
 // than post identity recovery. Give those synthetic rows a durable URN derived
@@ -107,6 +111,12 @@ beforeAll(async () => {
   genericScrape = (
     await import("../../../packages/owletto/apps/chrome/tools.js")
   ).genericScrape;
+  const takeoutMod = await import("../linkedin-takeout");
+  readConnections = takeoutMod.readConnections;
+  readJobs = takeoutMod.readJobs;
+  const takeoutFsMod = await import("../takeout-fs");
+  assertDirectory = takeoutFsMod.assertDirectory;
+  parseCsv = (await import("../takeout-utils")).parseCsv;
   const identityMod = await import("../linkedin-identity");
   normalizeLinkedInSlug = identityMod.normalizeLinkedInSlug;
   normalizeLinkedInMemberId = identityMod.normalizeLinkedInMemberId;
@@ -2630,6 +2640,50 @@ describe("normalizeLinkedInSlug", () => {
 });
 
 describe("LinkedInConnector takeout identity attributions", () => {
+  test.each([
+    "constructor",
+    "toString",
+    "__proto__",
+  ])("rejects inherited feed key %s", async (feedKey) => {
+    const connector = new LinkedInConnector();
+    await expect(
+      connector.definition.feeds.home_feed.sync({ feedKey, config: {} })
+    ).rejects.toThrow("Unknown LinkedIn feed");
+  });
+
+  test("rejects a missing export directory rather than returning an empty sync", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "li-reader-missing-"));
+    try {
+      expect(() =>
+        assertDirectory({ takeout_dir: path.join(dir, "missing") }, "LinkedIn")
+      ).toThrow("takeout directory does not exist");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a regular file as an export directory", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "li-reader-file-"));
+    try {
+      const file = path.join(dir, "not-a-directory");
+      writeFileSync(file, "fixture");
+      expect(() => assertDirectory({ takeout_dir: file }, "LinkedIn")).toThrow(
+        "takeout directory does not exist"
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts a valid export directory", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "li-reader-empty-"));
+    try {
+      expect(assertDirectory({ takeout_dir: dir }, "LinkedIn")).toBe(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("connections feed mints a person keyed on linkedin_slug + email, neither primary", () => {
     const def = new LinkedInConnector().definition;
     const attr = def.feeds.connections.eventKinds.connection.attributions?.[0];
@@ -2695,7 +2749,13 @@ describe("LinkedInConnector takeout identity attributions", () => {
     );
 
     const connector = new LinkedInConnector();
-    const events = (connector as any).readConnections(dir);
+    // The reader is injected, not imported: `linkedin-takeout.ts` must stay
+    // filesystem-free so the live feeds' bundle loads in the isolate. Here the
+    // real on-disk reader supplies the capability, so this still exercises the
+    // genuine CSV -> event path against a genuine file.
+    const events = readConnections((file: string) =>
+      parseCsv(readFileSync(path.join(dir, file), "utf8"))
+    );
     expect(events).toHaveLength(1);
     const [event] = events;
     expect(event.origin_type).toBe("connection");
@@ -2725,11 +2785,14 @@ describe("LinkedInConnector takeout identity attributions", () => {
   });
 
   test("applied_jobs feed reads the user's own job postings CSV", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "li-takeout-jobs-"));
+    const rows = parseCsv(
+      "Title,Company Name,Create Date\nEngineer,Example,2024-01-01"
+    );
     const connector = new LinkedInConnector();
     // readJobs is source-agnostic; the applied_jobs feedKey routes here.
-    const events = (connector as any).readJobs(dir);
-    expect(Array.isArray(events)).toBe(true);
+    const events = readJobs(() => rows);
+    expect(events).toHaveLength(1);
+    expect(events[0].title).toBe("Engineer");
     // The definition exposes the renamed feed key, not the old "jobs" takeout.
     expect(connector.definition.feeds.applied_jobs).toBeDefined();
     expect(connector.definition.feeds.applied_jobs.name).toBe("Applied Jobs");
@@ -3111,7 +3174,7 @@ describe("prepare_comment helpers", () => {
     expect(action?.inputSchema?.properties).not.toHaveProperty(
       "browser_connection_id"
     );
-    expect(c.definition.version).toBe("3.11.9");
+    expect(c.definition.version).toBe("3.11.10");
     expect(String(action?.description ?? "")).toMatch(
       /NEVER opens a tab or submits/i
     );

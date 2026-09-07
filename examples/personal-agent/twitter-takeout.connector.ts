@@ -1,4 +1,5 @@
 import path from "node:path";
+import { assertDirectory, readJsArray } from "./takeout-fs.ts";
 import {
   type RuntimeConnectorDefinition,
   ConnectorRuntime,
@@ -8,11 +9,9 @@ import {
   type SyncResult,
 } from "@lobu/connector-sdk";
 import {
-  assertDirectory,
   batchSize,
   type LocalTakeoutConfig,
   maxEventCursor,
-  readJsArray,
   stableId,
   takeBatch,
   twitterSnowflakeDate,

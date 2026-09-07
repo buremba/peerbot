@@ -30,12 +30,15 @@ import { fileURLToPath } from "node:url";
 import { build, type Metafile, type Plugin } from "esbuild";
 import { describe, expect, it } from "vitest";
 import { ISOLATE_LANE_BUILD_OPTIONS } from "../../../utils/compiler-core";
+import { compileConnectorSource } from "../../../utils/connector-compiler";
+import { flattenConnectorSourceFromFile } from "@lobu/connector-worker/compile";
 import { findIsolateIneligibleBuiltins, GUEST_PRELUDE } from "@lobu/connector-worker/isolate";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGES_DIR = resolve(HERE, "../../../../..");
 const SDK_DIR = join(PACKAGES_DIR, "connector-sdk");
 const CONNECTORS_DIR = join(PACKAGES_DIR, "connectors/src");
+const PERSONAL_AGENT_DIR = resolve(PACKAGES_DIR, "../examples/personal-agent");
 
 /**
  * Node builtins each bundled connector's own bundle imports, keyed by file
@@ -236,6 +239,224 @@ describe("connector isolate lane", () => {
 				throw new Error(`${file} failed to load in an isolate: ${error instanceof Error ? error.message : String(error)}`);
 			}
 			expect(loaded.kind, `${file} default export`).toMatch(/^(function|object)$/);
+		}
+	});
+});
+
+/**
+ * The `personal-agent` example ships a LinkedIn connector that declares LIVE
+ * browser feeds and local Data Export (takeout) feeds under ONE connector key,
+ * so a person met in the live feed and a person in the CSV export collapse onto
+ * the same identity.
+ *
+ * That made it the case the bundled connectors above never cover: a single
+ * `node:fs` import reached transitively by the takeout half rejected the WHOLE
+ * bundle, so the LIVE feeds failed with "requires Node builtins [fs, path]"
+ * before a browser was ever dispatched (Lobu#3392). Compiling here — with the
+ * real build options, the real eligibility gate and a real isolate — is what
+ * distinguishes "the parser split is tidy" from "the live lane actually loads".
+ *
+ * Only mixed live/takeout connectors are asserted eligible. A connector whose
+ * every feed reads the filesystem (the twitter/instagram/google takeouts) is
+ * legitimately ineligible and declares `requiredCapability: "os.files"`, which
+ * no worker serves yet; pinning that here would freeze an unrelated decision.
+ */
+describe("personal-agent example: mixed live/takeout connector", () => {
+	const ENTRY = join(PERSONAL_AGENT_DIR, "linkedin.connector.ts");
+
+	it("compiles to an isolate-eligible bundle so the live feeds can load", async () => {
+		const report = await bundle(ENTRY);
+		// The gate the runtime itself applies, not a restatement of it.
+		expect(findIsolateIneligibleBuiltins(report.code)).toEqual([]);
+		// `crypto` is prelude-provided (stableId hashes takeout row identity);
+		// `fs`/`path` appearing here is the regression this test exists for.
+		expect([...report.builtins.keys()].sort()).toEqual(["crypto"]);
+	});
+
+	it("loads and executes in a real isolate, exposing the connector's feeds", async () => {
+		const ivm = await loadIsolatedVm();
+		const report = await bundle(ENTRY);
+		const loaded = await loadInIsolate(ivm, report.code);
+		expect(loaded.kind).toBe("function");
+		expect(loaded.isClass).toBe(true);
+	});
+
+	/**
+	 * Construction and feed dispatch inside the guest — not just module init.
+	 * A bundle can load and still be useless if the class body touches a
+	 * capability the isolate lacks, so this instantiates the connector and reads
+	 * the definition the platform reads, in the isolate.
+	 */
+	it("constructs in the isolate and still declares every live and takeout feed", async () => {
+		const ivm = await loadIsolatedVm();
+		const report = await bundle(ENTRY);
+		const isolate = new ivm.Isolate({ memoryLimit: 256 });
+		try {
+			const context = await isolate.createContext();
+			await context.global.set("global", context.global.derefInto());
+			const okEnvelope = { __lobu: 1, ok: true, value: undefined };
+			await context.global.set("__host_sync", new ivm.Reference(() => okEnvelope));
+			await context.global.set("__host_async", new ivm.Reference(async () => okEnvelope));
+			await context.global.set("__host_env_json", "{}");
+			const runner = `
+(function () {
+  var Connector = module.exports.default;
+  var def = new Connector().definition;
+  return JSON.stringify({ key: def.key, feeds: Object.keys(def.feeds).sort(), actions: Object.keys(def.actions || {}).sort() });
+})()`;
+			const script = await isolate.compileScript(`${GUEST_PREAMBLE}\n${report.code}\n${runner}`);
+			const out = JSON.parse(
+				(await script.run(context, { timeout: 10_000, copy: true })) as string,
+			) as { key: string; feeds: string[]; actions: string[] };
+
+			expect(out.key).toBe("linkedin");
+			// The three live browser feeds — the ones the isolate rejection was
+			// blocking — plus the ten takeout feeds, pinned by key because a feed
+			// key is the persisted identity a feed row and its checkpoint key on.
+			// The split moved the takeout readers into another module, so this is
+			// what catches a feed dropped or renamed on the way out.
+			expect(out.feeds).toEqual([
+				"applied_jobs",
+				"companies",
+				"company_updates",
+				"connections",
+				"endorsements",
+				"events",
+				"home_feed",
+				"invitations",
+				"jobs",
+				"learning",
+				"media",
+				"messages",
+				"profile",
+			]);
+			expect(out.actions).toContain("prepare_comment");
+		} finally {
+			isolate.dispose();
+		}
+	});
+
+	/**
+	 * The takeout half is preserved, not silently disabled. Inside the isolate
+	 * there is no filesystem, so a takeout feed must FAIL LOUDLY naming the
+	 * missing capability — never return zero events, which a scheduler would
+	 * record as a clean empty sync and advance right past.
+	 */
+	it("fails a takeout feed loudly in the isolate instead of syncing it empty", async () => {
+		const ivm = await loadIsolatedVm();
+		const report = await bundle(ENTRY);
+		const isolate = new ivm.Isolate({ memoryLimit: 256 });
+		try {
+			const context = await isolate.createContext();
+			await context.global.set("global", context.global.derefInto());
+			const okEnvelope = { __lobu: 1, ok: true, value: undefined };
+			await context.global.set("__host_sync", new ivm.Reference(() => okEnvelope));
+			await context.global.set("__host_async", new ivm.Reference(async () => okEnvelope));
+			await context.global.set("__host_env_json", "{}");
+			const runner = `
+(function () {
+  var Connector = module.exports.default;
+  var def = new Connector().definition;
+  return def.feeds.connections.sync({
+    feedKey: 'connections',
+    config: { takeout_dir: '/nonexistent/export' },
+    checkpoint: null,
+    credentials: null,
+    entityIds: [],
+  }).then(
+    function (r) { return JSON.stringify({ outcome: 'resolved', events: r.events.length }); },
+    function (e) { return JSON.stringify({ outcome: 'threw', message: String(e && e.message) }); }
+  );
+})()`;
+			const script = await isolate.compileScript(`${GUEST_PREAMBLE}\n${report.code}\n${runner}`);
+			const out = JSON.parse(
+				(await script.run(context, { timeout: 10_000, copy: true, promise: true })) as string,
+			) as { outcome: string; events?: number; message?: string };
+
+			expect(out.outcome).toBe("threw");
+			expect(out.message).toMatch(/filesystem/i);
+		} finally {
+			isolate.dispose();
+		}
+	});
+
+	/**
+	 * The DEPLOYABLE artifact, not just the repo layout.
+	 *
+	 * A stored connector source must be a single file: the server writes
+	 * `source_code` alone into a temp dir and its `import-guard` plugin rejects
+	 * every relative import. So the split modules cannot be uploaded directly —
+	 * and neither could the pre-split file, which has imported
+	 * `./linkedin-identity.ts` for far longer. `flattenConnectorSourceFromFile`
+	 * flattens them; this asserts the flattened text is what the server actually
+	 * accepts, so "the tests pass" cannot diverge from "this can be applied".
+	 */
+	it("flattens to a single-file source the server's own compiler accepts", async () => {
+		const flat = await flattenConnectorSourceFromFile(ENTRY);
+		// No relative import may survive: each one is a compile error upstream.
+		expect(flat).not.toMatch(/from\s+["']\.\.?\//);
+		// The REAL compile entry point an uploaded `source_code` goes through:
+		// `resolveConnectorInstallSource` calls exactly this, so the build options
+		// and the eligibility gate come from the pipeline rather than being
+		// restated here (a restated option list is how a test starts passing on
+		// config the server no longer uses). It throws
+		// `IsolateLaneIneligibleError` itself when a builtin survives.
+		const compiled = await compileConnectorSource(flat);
+		expect(compiled.compiledCode.length).toBeGreaterThan(0);
+		// And the compiled artifact is still isolate-eligible.
+		expect(findIsolateIneligibleBuiltins(compiled.compiledCode)).toEqual([]);
+	});
+
+	/**
+	 * THE regression, stated as the run that failed: a live `home_feed` sync now
+	 * gets far enough to ask for the Chrome dispatcher.
+	 *
+	 * Before the split it never reached its own code — module init threw
+	 * "requires Node builtins [fs, path]" and the sync failed BEFORE browser
+	 * dispatch, which is precisely what Lobu#3392 recorded. Asserting the error
+	 * is now the dispatcher's (no extension is paired in a test isolate) proves
+	 * the failure moved past module loading into the live path. It is not a
+	 * claim that a real scrape succeeds — that needs a signed-in browser.
+	 */
+	it("reaches extension dispatch on a live feed instead of failing at module load", async () => {
+		const ivm = await loadIsolatedVm();
+		const report = await bundle(ENTRY);
+		const isolate = new ivm.Isolate({ memoryLimit: 256 });
+		try {
+			const context = await isolate.createContext();
+			await context.global.set("global", context.global.derefInto());
+			const okEnvelope = { __lobu: 1, ok: true, value: undefined };
+			await context.global.set("__host_sync", new ivm.Reference(() => okEnvelope));
+			await context.global.set("__host_async", new ivm.Reference(async () => okEnvelope));
+			await context.global.set("__host_env_json", "{}");
+			const runner = `
+(function () {
+  var Connector = module.exports.default;
+  var def = new Connector().definition;
+  return def.feeds.home_feed.sync({
+    feedKey: 'home_feed',
+    config: { min_scrolls: 1, max_scrolls: 2 },
+    checkpoint: null,
+    credentials: null,
+    entityIds: [],
+    sessionState: null,
+  }).then(
+    function () { return JSON.stringify({ outcome: 'resolved' }); },
+    function (e) { return JSON.stringify({ outcome: 'threw', message: String(e && e.message) }); }
+  );
+})()`;
+			const script = await isolate.compileScript(`${GUEST_PREAMBLE}\n${report.code}\n${runner}`);
+			const out = JSON.parse(
+				(await script.run(context, { timeout: 10_000, copy: true, promise: true })) as string,
+			) as { outcome: string; message?: string };
+
+			expect(out.outcome).toBe("threw");
+			// The LIVE path's own precondition, reached and reported...
+			expect(out.message).toMatch(/paired Owletto Chrome extension/);
+			// ...and emphatically not the module-load rejection it used to be.
+			expect(out.message).not.toMatch(/Node builtin|node:fs|node:path/);
+		} finally {
+			isolate.dispose();
 		}
 	});
 });

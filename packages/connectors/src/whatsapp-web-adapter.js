@@ -221,11 +221,68 @@ export function whatsAppWebAdapterProgram() {
 
   function collectionByRawId(collection, id) {
     if (!id) return null;
+    const index = rawIdIndex(collection);
+    if (index) return index.get(id) ?? null;
     for (const model of models(collection)) {
       const row = modelData(model);
       if (rawId(row.id ?? model?.id) === id) return model;
     }
     return null;
+  }
+
+  /**
+   * Index a WhatsApp collection by raw id, once per collect.
+   *
+   * `normalizeMessage` runs per message and each call used to rescan a whole
+   * collection: chat name over 947 chats, sender name over 5323 contacts, and a
+   * reaction's target over every message. That is O(messages x collection), and
+   * it is SYNCHRONOUS -- measured on a live prod tab, the contact scan alone
+   * projects to ~6.8s and the whole collect exceeded a 70s in-page timer, which
+   * could not even fire because the main thread never yielded. The extension's
+   * per-dispatch run fence then killed the run at 90s, so the feed ingested
+   * nothing and every run was slower than the last as backfill grew the store.
+   *
+   * The index is cached on the collection under a symbol and rebuilt whenever
+   * the model count changes, so a collect that loads history still sees it.
+   */
+  const RAW_ID_INDEX = Symbol.for("owletto.whatsapp.rawIdIndex");
+  const WID_INDEX = Symbol.for("owletto.whatsapp.widIndex");
+
+  function buildIndex(collection, key, keyOf) {
+    if (!collection || typeof collection !== "object") return null;
+    const rows = models(collection);
+    const cached = collection[key];
+    if (cached && cached.size === rows.length) return cached.map;
+    const map = new Map();
+    for (const model of rows) {
+      const id = keyOf(model);
+      // First writer wins: a duplicate id means the same model twice, and the
+      // scans this replaces also returned the first match.
+      if (id && !map.has(id)) map.set(id, model);
+    }
+    try {
+      Object.defineProperty(collection, key, {
+        value: { map, size: rows.length },
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      });
+    } catch {
+      /* A frozen collection just means no cache; the map is still correct. */
+    }
+    return map;
+  }
+
+  function rawIdIndex(collection) {
+    return buildIndex(collection, RAW_ID_INDEX, (model) =>
+      rawId(modelData(model).id ?? model?.id)
+    );
+  }
+
+  function widIndex(collection) {
+    return buildIndex(collection, WID_INDEX, (model) =>
+      widString(modelData(model).id ?? model?.id)
+    );
   }
 
   function reactionTargetId(row) {
@@ -260,30 +317,26 @@ export function whatsAppWebAdapterProgram() {
 
   function contactName(collections, jid) {
     if (!jid) return null;
-    for (const contact of models(collections?.Contact)) {
-      const row = modelData(contact);
-      if (widString(row.id ?? contact?.id) !== jid) continue;
-      return (
-        row.name ?? row.pushname ?? row.shortName ?? row.formattedName ?? null
-      );
-    }
-    return null;
+    const contact = widIndex(collections?.Contact)?.get(jid);
+    if (!contact) return null;
+    const row = modelData(contact);
+    return (
+      row.name ?? row.pushname ?? row.shortName ?? row.formattedName ?? null
+    );
   }
 
   function chatName(collections, jid) {
     if (!jid) return null;
-    for (const chat of models(collections?.Chat)) {
-      const row = modelData(chat);
-      if (widString(row.id ?? chat?.id) !== jid) continue;
-      return (
-        row.name ??
-        row.formattedTitle ??
-        row.contact?.name ??
-        row.contact?.pushname ??
-        null
-      );
-    }
-    return null;
+    const chat = widIndex(collections?.Chat)?.get(jid);
+    if (!chat) return null;
+    const row = modelData(chat);
+    return (
+      row.name ??
+      row.formattedTitle ??
+      row.contact?.name ??
+      row.contact?.pushname ??
+      null
+    );
   }
 
   async function normalizeMessage(
